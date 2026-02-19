@@ -1,0 +1,11 @@
+# Epitope Head v1 — Frozen dependencies
+
+torch==2.5.1
+numpy==2.2.5
+pandas==2.3.3
+pyarrow==23.0.0
+pyyaml==6.0.3
+fair-esm
+
+# Dev / testing
+pytest==9.0.2

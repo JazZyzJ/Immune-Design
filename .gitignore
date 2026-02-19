@@ -1,0 +1,35 @@
+# OS / editor
+.DS_Store
+.cursor/
+.vscode/
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Large datasets and generated artifacts
+data/**
+!data/README.md
+!data/README_v2.md
+data_copy/
+outputs/
+figures/
+
+# Notebook scratch
+*.ipynb
+
+# Model/checkpoint artifacts
+*.pt
+*.pth
+*.ckpt
+
