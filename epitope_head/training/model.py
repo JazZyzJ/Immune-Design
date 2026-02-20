@@ -292,7 +292,7 @@ class ScorerMLP(nn.Module):
     Output is raw logit (no activation).
     """
 
-    def __init__(self, d_phi: int, hidden_dim: int, activation: str = "gelu", dropout: float = 0.3):
+    def __init__(self, d_phi: int, hidden_dim: int, activation: str = "gelu", dropout: float = 0.1):
         super().__init__()
         act_fn = nn.GELU() if activation == "gelu" else nn.ReLU()
         self.net = nn.Sequential(

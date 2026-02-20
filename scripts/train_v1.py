@@ -363,6 +363,10 @@ def main() -> None:
         device=device,
         registry_path=registry_path,
         wandb_cfg=wandb_cfg,
+        val_entries=val_entries,
+        tokenizer=tokenizer,
+        min_k=data_cfg["min_k"],
+        max_k=data_cfg["max_k"],
     )
 
     logger.info("=" * 60)

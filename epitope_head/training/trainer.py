@@ -24,6 +24,7 @@ import torch
 import torch.nn as nn
 import yaml
 
+from epitope_head.training.eval_metrics import full_val_eval
 from epitope_head.training.losses import compute_loss
 from epitope_head.training.negatives import sample_negatives
 from epitope_head.training.registry import (
@@ -550,11 +551,25 @@ class Trainer:
         device: torch.device | str = "cpu",
         registry_path: Path | str | None = None,
         wandb_cfg: dict | None = None,
+        # Per-protein full-scan evaluation (optional; enabled when all are provided)
+        val_entries: list | None = None,
+        tokenizer=None,
+        min_k: int = 12,
+        max_k: int = 25,
+        context_len: int = 1022,
     ):
         self.model = model.to(device)
         self.device = torch.device(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
+
+        # Per-protein eval resources
+        self.val_entries = val_entries
+        self.tokenizer = tokenizer
+        self.min_k = min_k
+        self.max_k = max_k
+        self.context_len = context_len
+        self._pp_eval_enabled = (val_entries is not None and tokenizer is not None)
         self.cfg = train_cfg
         self.run_dir = Path(run_dir)
         self.registry_path = Path(registry_path) if registry_path is not None else None
@@ -711,6 +726,20 @@ class Trainer:
         epoch_metrics["phase"] = "val"
         epoch_metrics["timestamp"] = time.time()
 
+        # Per-protein full-window-scan evaluation
+        if self._pp_eval_enabled:
+            pp_metrics = full_val_eval(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                val_entries=self.val_entries,
+                min_k=self.min_k,
+                max_k=self.max_k,
+                device=self.device,
+                recall_ks=(50, 100),
+                context_len=self.context_len,
+            )
+            epoch_metrics.update(pp_metrics)
+
         write_log_entry(self.val_log_path, epoch_metrics)
         return epoch_metrics
 
@@ -726,7 +755,9 @@ class Trainer:
             train_metrics = self.train_epoch(epoch)
             val_metrics = self.val_epoch(epoch)
 
-            monitor_val = val_metrics.get(self.monitor_metric, 0.0)
+            monitor_val = val_metrics.get(self.monitor_metric)
+            if monitor_val is None:
+                monitor_val = float("-inf") if self.monitor_mode == "max" else float("inf")
 
             # Checkpoint every N epochs
             if (epoch + 1) % self.checkpoint_every_n == 0:
@@ -765,11 +796,14 @@ class Trainer:
                 log_dict["patience"] = self.patience_counter
                 self._wandb.log(log_dict, step=epoch)
 
+            pp_auc_str = "%.4f" % val_metrics["pp_auc"] if val_metrics.get("pp_auc") is not None else "N/A"
+            pp_ap_str = "%.4f" % val_metrics["pp_ap"] if val_metrics.get("pp_ap") is not None else "N/A"
             logger.info(
-                "Epoch %d — train_loss=%.4f, val_loss=%.4f, logit_gap=%.4f, patience=%d/%d",
+                "Epoch %d — train_loss=%.4f, val_loss=%.4f, "
+                "pp_auc=%s, pp_ap=%s, patience=%d/%d",
                 epoch, train_metrics.get("loss_total", 0),
                 val_metrics.get("loss_total", 0),
-                val_metrics.get("logit_gap", 0),
+                pp_auc_str, pp_ap_str,
                 self.patience_counter, self.early_stopping_patience,
             )
 
