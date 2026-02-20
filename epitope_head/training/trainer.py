@@ -309,13 +309,16 @@ def train_step(
     attention_mask = batch["attention_mask"]
     chunk_lengths = batch["chunk_ends"] - batch["chunk_starts"]
 
-    # Combine pos + neg spans for model forward
+    # Combine pos + neg spans for model forward (move to same device as token_ids)
+    device = token_ids.device
     all_spans_list = []
     all_allele_list = []
     pos_counts = []
     for ps, ns, ap, an in zip(pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list):
-        all_spans_list.append(torch.cat([ps, ns], dim=0) if ps.shape[0] > 0 else ns)
-        all_allele_list.append(torch.cat([ap, an], dim=0) if ap.shape[0] > 0 else an)
+        combined_spans = torch.cat([ps, ns], dim=0) if ps.shape[0] > 0 else ns
+        combined_allele = torch.cat([ap, an], dim=0) if ap.shape[0] > 0 else an
+        all_spans_list.append(combined_spans.to(device))
+        all_allele_list.append(combined_allele.to(device))
         pos_counts.append(ps.shape[0])
 
     logits_list = model(token_ids, attention_mask, all_spans_list, all_allele_list, chunk_lengths)
@@ -396,12 +399,15 @@ def val_step(
     attention_mask = batch["attention_mask"]
     chunk_lengths = batch["chunk_ends"] - batch["chunk_starts"]
 
+    device = token_ids.device
     all_spans_list = []
     all_allele_list = []
     pos_counts = []
     for ps, ns, ap, an in zip(pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list):
-        all_spans_list.append(torch.cat([ps, ns], dim=0) if ps.shape[0] > 0 else ns)
-        all_allele_list.append(torch.cat([ap, an], dim=0) if ap.shape[0] > 0 else an)
+        combined_spans = torch.cat([ps, ns], dim=0) if ps.shape[0] > 0 else ns
+        combined_allele = torch.cat([ap, an], dim=0) if ap.shape[0] > 0 else an
+        all_spans_list.append(combined_spans.to(device))
+        all_allele_list.append(combined_allele.to(device))
         pos_counts.append(ps.shape[0])
 
     logits_list = model(token_ids, attention_mask, all_spans_list, all_allele_list, chunk_lengths)
@@ -515,6 +521,7 @@ class Trainer:
         run_dir: Path,
         device: torch.device | str = "cpu",
         registry_path: Path | str | None = None,
+        wandb_cfg: dict | None = None,
     ):
         self.model = model.to(device)
         self.device = torch.device(device)
@@ -579,6 +586,27 @@ class Trainer:
 
         # Save resolved config
         save_resolved_config(train_cfg, self.run_dir)
+
+        # W&B integration
+        self._wandb = None
+        if wandb_cfg and wandb_cfg.get("enabled", False):
+            try:
+                import wandb
+                self._wandb = wandb
+                wandb.init(
+                    entity=wandb_cfg.get("entity"),
+                    project=wandb_cfg.get("project", "Immune-Design"),
+                    name=wandb_cfg.get("name", self.run_id),
+                    config=train_cfg,
+                    dir=str(self.run_dir),
+                    resume="allow",
+                )
+                wandb.watch(self.model, log="gradients", log_freq=50)
+                logger.info("W&B initialized: %s", wandb.run.url or wandb.run.id)
+            except ImportError:
+                logger.warning("wandb not installed, skipping W&B logging")
+            except Exception as e:
+                logger.warning("wandb init failed: %s", e)
 
     def _frozen_encoder_guard(self):
         """Verify encoder params still have requires_grad=False after step."""
@@ -687,6 +715,19 @@ class Trainer:
             else:
                 self.patience_counter += 1
 
+            # W&B epoch logging
+            if self._wandb is not None:
+                log_dict = {"epoch": epoch}
+                for k, v in train_metrics.items():
+                    if isinstance(v, (int, float)):
+                        log_dict[f"train/{k}"] = v
+                for k, v in val_metrics.items():
+                    if isinstance(v, (int, float)):
+                        log_dict[f"val/{k}"] = v
+                log_dict["lr"] = self.optimizer.param_groups[0]["lr"]
+                log_dict["patience"] = self.patience_counter
+                self._wandb.log(log_dict, step=epoch)
+
             logger.info(
                 "Epoch %d — train_loss=%.4f, val_loss=%.4f, logit_gap=%.4f, patience=%d/%d",
                 epoch, train_metrics.get("loss_total", 0),
@@ -741,6 +782,10 @@ class Trainer:
                 logger.warning(
                     "Skipping registry write: best.pt not found at %s", best_ckpt,
                 )
+
+        if self._wandb is not None:
+            self._wandb.log({"best_monitor_value": self.best_monitor_value})
+            self._wandb.finish()
 
         return summary
 

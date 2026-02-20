@@ -121,6 +121,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config-dir", type=str,
                     default=str(PROJECT_ROOT / "epitope_head" / "configs"),
                     help="Directory containing data.yaml, model.yaml, train.yaml")
+    p.add_argument("--data-dir", type=str, default=None,
+                    help="Directory containing manifests (parquet + splits). "
+                         "Defaults to PROJECT_ROOT/outputs/manifests")
     p.add_argument("--profile", type=str, default="strict",
                     choices=["strict", "balanced"],
                     help="Data profile to train on")
@@ -144,6 +147,16 @@ def parse_args() -> argparse.Namespace:
     encoder = p.add_argument_group("encoder options")
     encoder.add_argument("--mock-encoder", action="store_true",
                          help="Use mock encoder (no ESM download; for pipeline testing)")
+
+    wb = p.add_argument_group("wandb")
+    wb.add_argument("--wandb", action="store_true",
+                    help="Enable Weights & Biases logging")
+    wb.add_argument("--wandb-entity", type=str, default=None,
+                    help="W&B entity (team/user)")
+    wb.add_argument("--wandb-project", type=str, default="Immune-Design",
+                    help="W&B project name")
+    wb.add_argument("--wandb-name", type=str, default=None,
+                    help="W&B run name (default: auto-generated run_id)")
 
     return p.parse_args()
 
@@ -174,7 +187,9 @@ def main() -> None:
     logger.info("Seed=%d, deterministic=%s", seed, train_cfg.get("deterministic", False))
 
     # ── Resolve data paths ────────────────────────────────────────────
-    manifest_dir = PROJECT_ROOT / "outputs" / "manifests"
+    manifest_dir = Path(args.data_dir) if args.data_dir else (
+        PROJECT_ROOT / "outputs" / "manifests"
+    )
     splits_dir = manifest_dir / "splits"
     profile = args.profile
 
@@ -328,6 +343,16 @@ def main() -> None:
     )
     registry_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # ── W&B config ─────────────────────────────────────────────────────
+    wandb_cfg = None
+    if args.wandb:
+        wandb_cfg = {
+            "enabled": True,
+            "entity": args.wandb_entity,
+            "project": args.wandb_project,
+            "name": args.wandb_name,
+        }
+
     # ── Train ─────────────────────────────────────────────────────────
     trainer = Trainer(
         model=model,
@@ -337,6 +362,7 @@ def main() -> None:
         run_dir=run_dir,
         device=device,
         registry_path=registry_path,
+        wandb_cfg=wandb_cfg,
     )
 
     logger.info("=" * 60)
