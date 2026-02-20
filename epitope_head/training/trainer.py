@@ -104,7 +104,12 @@ def compute_sanity_metrics(
 
 
 def aggregate_epoch_metrics(step_metrics_list: list[StepMetrics]) -> dict:
-    """Aggregate step metrics into epoch-level summary."""
+    """Aggregate step metrics into epoch-level summary.
+
+    Excludes empty-positive chunks (n_pos == 0) to avoid diluting metrics.
+    """
+    # Filter out steps with no positives (empty chunks contribute no gradient)
+    step_metrics_list = [m for m in step_metrics_list if m.n_pos > 0]
     if not step_metrics_list:
         return {}
     n = len(step_metrics_list)
@@ -145,12 +150,31 @@ def build_optimizer(
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
 ) -> torch.optim.Optimizer:
-    """Build optimizer with only learnable (non-frozen) parameters."""
-    params = [p for p in model.parameters() if p.requires_grad]
+    """Build optimizer with only learnable (non-frozen) parameters.
+
+    Splits params into decay (Linear.weight only) and no-decay groups
+    (bias, LayerNorm, Embedding, learnable Parameters) to avoid
+    regularizing normalization/embedding/bias terms.
+    """
+    decay_params = []
+    no_decay_params = []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        # Only apply weight decay to Linear weight matrices
+        if p.dim() >= 2 and "embedding" not in name.lower():
+            decay_params.append(p)
+        else:
+            no_decay_params.append(p)
+
+    param_groups = [
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0},
+    ]
     if optimizer_name == "adamw":
-        return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+        return torch.optim.AdamW(param_groups, lr=lr)
     elif optimizer_name == "adam":
-        return torch.optim.Adam(params, lr=lr, weight_decay=weight_decay)
+        return torch.optim.Adam(param_groups, lr=lr)
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
@@ -364,8 +388,12 @@ def train_step(
 
     optimizer.step()
 
-    # Warmup: linear ramp
-    if scheduler is not None and global_step >= warmup_steps:
+    # Warmup: linear ramp from 0 to base_lr, then cosine decay
+    if warmup_steps > 0 and global_step < warmup_steps:
+        warmup_factor = (global_step + 1) / warmup_steps
+        for pg in optimizer.param_groups:
+            pg["lr"] = pg.get("initial_lr", pg["lr"]) * warmup_factor
+    elif scheduler is not None:
         scheduler.step()
 
     # Compute metrics
@@ -538,6 +566,9 @@ class Trainer:
             lr=train_cfg["lr"],
             weight_decay=train_cfg["weight_decay"],
         )
+        # Store initial_lr for warmup linear ramp
+        for pg in self.optimizer.param_groups:
+            pg["initial_lr"] = pg["lr"]
 
         # Build scheduler
         steps_per_epoch = len(train_loader) if hasattr(train_loader, '__len__') else 100
@@ -564,7 +595,9 @@ class Trainer:
         # Checkpointing
         self.cfg_hash = config_hash(train_cfg)
         self.monitor_metric = train_cfg["monitor_metric"]
-        self.best_monitor_value = float("-inf")
+        # Determine early stopping direction: loss metrics are minimized, others maximized
+        self.monitor_mode = "min" if "loss" in self.monitor_metric else "max"
+        self.best_monitor_value = float("inf") if self.monitor_mode == "min" else float("-inf")
         self.patience_counter = 0
         self.early_stopping_patience = train_cfg["early_stopping_patience"]
         self.checkpoint_every_n = train_cfg["checkpoint_every_n_epochs"]
@@ -658,6 +691,8 @@ class Trainer:
     @torch.no_grad()
     def val_epoch(self, epoch: int) -> dict:
         """Run one validation epoch. Returns epoch metrics dict."""
+        # Reset val RNG each epoch for deterministic, comparable val metrics
+        self.val_rng = np.random.RandomState(self.cfg["seed"] + 1)
         step_metrics_list = []
 
         for batch_idx, batch in enumerate(self.val_loader):
@@ -702,8 +737,10 @@ class Trainer:
                     diff_ids_applied=self.diff_ids_applied,
                 )
 
-            # Best checkpoint
-            if monitor_val > self.best_monitor_value:
+            # Best checkpoint (direction-aware: min for loss, max for gap/auc)
+            improved = (monitor_val < self.best_monitor_value) if self.monitor_mode == "min" \
+                else (monitor_val > self.best_monitor_value)
+            if improved:
                 self.best_monitor_value = monitor_val
                 self.patience_counter = 0
                 best_path = self.run_dir / "best.pt"

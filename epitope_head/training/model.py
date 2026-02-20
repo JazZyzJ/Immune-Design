@@ -130,11 +130,12 @@ class FrozenESMEncoder(nn.Module):
 # ── Projection Head ─────────────────────────────────────────────────────────
 
 class ProjectionHead(nn.Module):
-    """Linear projection D_enc → D_proj."""
+    """Linear projection D_enc → D_proj with optional LayerNorm."""
 
-    def __init__(self, d_enc: int, d_proj: int):
+    def __init__(self, d_enc: int, d_proj: int, layer_norm: bool = True):
         super().__init__()
         self.linear = nn.Linear(d_enc, d_proj)
+        self.norm = nn.LayerNorm(d_proj) if layer_norm else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Project encoder embeddings.
@@ -144,7 +145,7 @@ class ProjectionHead(nn.Module):
         Returns:
             [B, L, D_proj]
         """
-        return self.linear(x)
+        return self.norm(self.linear(x))
 
 
 # ── Span Feature Builder ────────────────────────────────────────────────────
@@ -291,12 +292,13 @@ class ScorerMLP(nn.Module):
     Output is raw logit (no activation).
     """
 
-    def __init__(self, d_phi: int, hidden_dim: int, activation: str = "gelu"):
+    def __init__(self, d_phi: int, hidden_dim: int, activation: str = "gelu", dropout: float = 0.3):
         super().__init__()
         act_fn = nn.GELU() if activation == "gelu" else nn.ReLU()
         self.net = nn.Sequential(
             nn.Linear(d_phi, hidden_dim),
             act_fn,
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
 
@@ -332,12 +334,14 @@ class EpitopeScorer(nn.Module):
         n_alleles: int = 1,
         scorer_hidden_dim: int = 256,
         scorer_activation: str = "gelu",
+        scorer_dropout: float = 0.3,
+        projection_layer_norm: bool = True,
         pad_left_init: str = "zeros",
         pad_right_init: str = "zeros",
     ):
         super().__init__()
         self.encoder = encoder
-        self.projection = ProjectionHead(d_enc, d_proj)
+        self.projection = ProjectionHead(d_enc, d_proj, layer_norm=projection_layer_norm)
         self.span_features = SpanFeatureBuilder(
             d_proj=d_proj,
             length_emb_dim=length_emb_dim,
@@ -352,6 +356,7 @@ class EpitopeScorer(nn.Module):
             d_phi=self.span_features.d_phi,
             hidden_dim=scorer_hidden_dim,
             activation=scorer_activation,
+            dropout=scorer_dropout,
         )
 
     @property

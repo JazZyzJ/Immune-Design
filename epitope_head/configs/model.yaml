@@ -15,6 +15,8 @@ model:
   allele_embedding_dim: 16   # v0 placeholder: single entry
   scorer_hidden_dim: 256
   scorer_activation: gelu
+  scorer_dropout: 0.3             # (v0: 0.0 — no dropout caused overfitting)
+  projection_layer_norm: true     # (v0: false — no normalization on projected embeddings)
 
   # Boundary pad initialization
   pad_left_init: zeros

@@ -66,8 +66,8 @@ def validate_registry_row(row: dict) -> list[str]:
         errors.append("diff_ids_applied must be a list")
     if not isinstance(row["config_hash"], str):
         errors.append("config_hash must be a string")
-    if not isinstance(row["protocol_signature"], str):
-        errors.append("protocol_signature must be a string")
+    if not isinstance(row["protocol_signature"], str) or not row["protocol_signature"]:
+        errors.append("protocol_signature must be a non-empty string")
 
     # primary_metrics
     pm = row["primary_metrics"]
@@ -309,23 +309,31 @@ def build_registry_row(
 def build_registry_row_from_summary(
     run_summary: dict,
     run_dir: Path | str,
-    manifest_version: str = "v1.1",
+    manifest_version: str | None = None,
     diff_ids_applied: list[str] | None = None,
-    protocol_signature: str = "",
+    protocol_signature: str | None = None,
     prediction_digest: str | None = None,
 ) -> dict:
     """Build registry row from an existing run_summary.json (G3/G5 helper).
 
     Extracts run_id, config_hash, metrics from the summary.
+    Resolution order for each field: explicit arg > summary value > fallback.
     """
     run_dir = Path(run_dir)
 
     run_id = run_summary.get("run_id")
     if run_id is None:
-        # Derive from run_dir name if not in summary
         run_id = run_dir.name
 
     config_hash = run_summary.get("config_hash", "")
+
+    # Resolve manifest_version: explicit arg > summary > "v1.1"
+    if manifest_version is None:
+        manifest_version = run_summary.get("manifest_version", "v1.1")
+
+    # Resolve protocol_signature: explicit arg > summary > "" (empty will fail G0 validation)
+    if protocol_signature is None:
+        protocol_signature = run_summary.get("protocol_signature", "")
     best_monitor_value = run_summary.get("best_monitor_value")
     monitor_metric = run_summary.get("monitor_metric", "logit_gap")
 
@@ -364,6 +372,23 @@ def is_comparable(run_a: dict, run_b: dict) -> dict:
             raise ValueError(f"run_a missing comparability key: {key}")
         if key not in run_b:
             raise ValueError(f"run_b missing comparability key: {key}")
+
+    # Empty comparability fields make runs non-comparable (G4 strict guard)
+    for key in COMPARABILITY_KEYS:
+        empty_sides = []
+        if not run_a[key]:
+            empty_sides.append("run_a")
+        if not run_b[key]:
+            empty_sides.append("run_b")
+        if empty_sides:
+            return {
+                "comparable": False,
+                "reason": "unknown_protocol",
+                "details": (
+                    f"{key} is empty in {' and '.join(empty_sides)}; "
+                    f"cannot determine comparability"
+                ),
+            }
 
     if run_a["manifest_version"] != run_b["manifest_version"]:
         return {
@@ -424,16 +449,21 @@ def write_comparability_report(
 def backfill_registry(
     metrics_dir: Path | str,
     registry_path: Path | str,
-    manifest_version: str = "v1.1",
-    protocol_signature: str = "",
+    manifest_version: str | None = None,
+    protocol_signature: str | None = None,
 ) -> dict:
     """Scan existing run directories and backfill valid rows into registry (G5).
+
+    Resolution order for each field: explicit arg > run_summary value > fallback.
+    Runs whose protocol_signature cannot be recovered (not in summary and not
+    provided by caller) will fail G0 schema validation and be skipped with an
+    explicit reason — matching the G5 "unverifiable = explicitly marked" contract.
 
     Args:
         metrics_dir: directory containing run_* subdirectories.
         registry_path: path to run_registry.jsonl.
-        manifest_version: default manifest version for backfill.
-        protocol_signature: default protocol signature for backfill.
+        manifest_version: override manifest version (None = read from summary).
+        protocol_signature: override protocol signature (None = read from summary).
 
     Returns:
         dict with {appended: list[str], skipped: list[dict{run_dir, reason}]}.

@@ -66,8 +66,13 @@ def _make_run_dir_with_summary(
     run_name: str,
     config_hash: str = "abc",
     monitor_value: float = 0.5,
+    protocol_signature: str = "test_proto_sig",
 ) -> Path:
-    """Create a run directory with summary, config, and checkpoint."""
+    """Create a run directory with summary, config, and checkpoint.
+
+    Summary includes run_id, protocol_signature, and manifest_version
+    matching what Trainer.fit() produces, so backfill can recover them.
+    """
     run_dir = base / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -84,12 +89,15 @@ def _make_run_dir_with_summary(
     )
 
     summary = {
+        "run_id": run_name,
         "final_epoch": 3,
         "best_monitor_value": monitor_value,
         "monitor_metric": "logit_gap",
         "global_steps": 50,
         "config_hash": config_hash,
         "run_dir": str(run_dir),
+        "manifest_version": "v1.1",
+        "protocol_signature": protocol_signature,
     }
     with open(run_dir / "run_summary.json", "w") as f:
         json.dump(summary, f)
@@ -128,6 +136,12 @@ class TestG0RegistrySchema:
         row["timestamp"] = "not_a_number"
         errors = validate_registry_row(row)
         assert any("timestamp" in e for e in errors)
+
+    def test_empty_protocol_signature_fails(self, tmp_path: Path):
+        row = _minimal_valid_row(tmp_path)
+        row["protocol_signature"] = ""
+        errors = validate_registry_row(row)
+        assert any("protocol_signature" in e and "non-empty" in e for e in errors)
 
 
 # ── G1: Run Identity + Protocol Signature ────────────────────────────────────
@@ -308,6 +322,20 @@ class TestG4Comparability:
         with pytest.raises(ValueError, match="comparability key"):
             is_comparable(a, b)
 
+    def test_empty_protocol_signature_not_comparable(self):
+        a = {"manifest_version": "v1.1", "protocol_signature": "", "run_id": "a"}
+        b = {"manifest_version": "v1.1", "protocol_signature": "", "run_id": "b"}
+        result = is_comparable(a, b)
+        assert result["comparable"] is False
+        assert result["reason"] == "unknown_protocol"
+
+    def test_one_empty_protocol_signature_not_comparable(self):
+        a = {"manifest_version": "v1.1", "protocol_signature": "sig1", "run_id": "a"}
+        b = {"manifest_version": "v1.1", "protocol_signature": "", "run_id": "b"}
+        result = is_comparable(a, b)
+        assert result["comparable"] is False
+        assert result["reason"] == "unknown_protocol"
+
     def test_write_comparability_report(self, tmp_path: Path):
         a = {"manifest_version": "v1.1", "protocol_signature": "sig1", "run_id": "run_a"}
         b = {"manifest_version": "v1.1", "protocol_signature": "sig1", "run_id": "run_b"}
@@ -366,6 +394,35 @@ class TestG5Backfill:
         result = backfill_registry(tmp_path / "nonexistent", reg)
         assert result["appended"] == []
         assert result["skipped"] == []
+
+    def test_backfill_recovers_protocol_signature_from_summary(self, tmp_path: Path):
+        """Backfill should read protocol_signature from run_summary.json."""
+        metrics = tmp_path / "metrics"
+        _make_run_dir_with_summary(metrics, "run_sig", protocol_signature="recovered_sig")
+
+        reg = tmp_path / "registry.jsonl"
+        result = backfill_registry(metrics, reg)
+        assert len(result["appended"]) == 1
+        rows = load_registry(reg)
+        assert rows[0]["protocol_signature"] == "recovered_sig"
+
+    def test_backfill_skips_missing_protocol_signature(self, tmp_path: Path):
+        """Runs without protocol_signature in summary are skipped (G5 unverifiable)."""
+        metrics = tmp_path / "metrics"
+        run_dir = _make_run_dir_with_summary(metrics, "run_nosig")
+        # Remove protocol_signature from summary to simulate legacy run
+        with open(run_dir / "run_summary.json") as f:
+            summary = json.load(f)
+        del summary["protocol_signature"]
+        with open(run_dir / "run_summary.json", "w") as f:
+            json.dump(summary, f)
+
+        reg = tmp_path / "registry.jsonl"
+        result = backfill_registry(metrics, reg)
+        assert len(result["appended"]) == 0
+        assert len(result["skipped"]) == 1
+        assert "schema errors" in result["skipped"][0]["reason"]
+        assert "protocol_signature" in result["skipped"][0]["reason"]
 
 
 # ── G6: End-to-End Smoke ─────────────────────────────────────────────────────
