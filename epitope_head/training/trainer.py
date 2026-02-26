@@ -657,8 +657,19 @@ class Trainer:
                 logger.warning("wandb init failed: %s", e)
 
     def _frozen_encoder_guard(self):
-        """Verify encoder params still have requires_grad=False after step."""
+        """Verify encoder params still have requires_grad=False after step.
+
+        Only applies when the encoder is expected to be frozen (e.g. ESM-2).
+        Trainable encoders (E1/E2) skip this check.
+        """
         encoder = self.model.encoder
+        # Skip guard if encoder has any trainable params (it's intentionally trainable)
+        has_trainable = any(p.requires_grad for p in encoder.parameters())
+        if has_trainable:
+            # For trainable encoders, this guard is not applicable
+            # Check if the encoder was supposed to be frozen (FrozenESMEncoder pattern)
+            if not hasattr(encoder, 'esm'):
+                return  # Non-ESM encoder, trainable by design
         for name, p in encoder.named_parameters():
             if p.requires_grad:
                 raise RuntimeError(

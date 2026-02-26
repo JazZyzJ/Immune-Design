@@ -1,0 +1,57 @@
+# Encoder ablation profiles for Module H.
+# Frozen comparison constants: only encoder architecture/trainability/d_enc vary.
+# All other head/loss/split/evaluation parameters are invariant.
+
+ablation:
+  # Allowed variable set for H
+  variable_keys: [encoder_type, encoder_cfg, d_enc, trainable_encoder]
+
+  profiles:
+    E0:
+      encoder_type: esm2_frozen
+      d_enc: 1280
+      trainable_encoder: false
+      encoder_cfg:
+        encoder_name: esm2_t33_650M_UR50D
+
+    E1:
+      encoder_type: dilated_cnn
+      d_enc: 256
+      trainable_encoder: true
+      encoder_cfg:
+        token_emb_dim: 256
+        n_blocks: 8
+        kernel_size: 5
+        dilations: [1, 2, 4, 8, 8, 4, 2, 1]
+        hidden_channels: 256
+        block_dropout: 0.1
+
+    E2:
+      encoder_type: shallow_transformer
+      d_enc: 256
+      trainable_encoder: true
+      encoder_cfg:
+        d_model: 256
+        n_layers: 4
+        n_heads: 8
+        ffn_dim: 1024
+        dropout: 0.1
+        max_seq_len: 1022
+
+  # Frozen constants (must match train.yaml / model.yaml)
+  frozen_constants:
+    d_proj: 128
+    scorer_hidden_dim: 256
+    scorer_activation: gelu
+    scorer_dropout: 0.3
+    neg_ratio: 7
+    hard_negative_fraction: 0.3
+    min_k: 12
+    max_k: 25
+    loss_tau: 0.5
+    context_len: 1022
+    stride: 512
+    margin: 32
+    seeds: [42, 43, 44]
+    monitor_metric: pp_auc
+    profile: strict

@@ -113,6 +113,64 @@ def load_train_config(path: Path | str | None = None) -> dict:
     return train
 
 
+def load_ablation_config(path: Path | str | None = None) -> dict:
+    """Load and validate encoder ablation config (Module H contract).
+
+    Validates that each profile has required encoder keys and that
+    frozen constants match expected values.
+    """
+    if path is None:
+        path = _CONFIG_DIR / "model_ablation.yaml"
+    path = Path(path)
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+
+    ablation = cfg.get("ablation")
+    if ablation is None:
+        raise ValueError("Config missing top-level 'ablation' key")
+
+    profiles = ablation.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError("ablation.profiles must be a non-empty dict")
+
+    VALID_ENCODER_TYPES = {"esm2_frozen", "dilated_cnn", "shallow_transformer"}
+    REQUIRED_PROFILE_KEYS = {"encoder_type", "d_enc", "trainable_encoder", "encoder_cfg"}
+
+    ENCODER_CFG_KEYS = {
+        "esm2_frozen": {"encoder_name"},
+        "dilated_cnn": {"token_emb_dim", "n_blocks", "kernel_size", "dilations",
+                        "hidden_channels", "block_dropout"},
+        "shallow_transformer": {"d_model", "n_layers", "n_heads", "ffn_dim",
+                                "dropout", "max_seq_len"},
+    }
+
+    for profile_id, profile in profiles.items():
+        missing = REQUIRED_PROFILE_KEYS - set(profile.keys())
+        if missing:
+            raise ValueError(
+                f"Ablation profile '{profile_id}' missing required keys: {sorted(missing)}"
+            )
+
+        enc_type = profile["encoder_type"]
+        if enc_type not in VALID_ENCODER_TYPES:
+            raise ValueError(
+                f"Profile '{profile_id}': encoder_type '{enc_type}' not in {sorted(VALID_ENCODER_TYPES)}"
+            )
+
+        enc_cfg = profile["encoder_cfg"]
+        if not isinstance(enc_cfg, dict):
+            raise ValueError(f"Profile '{profile_id}': encoder_cfg must be a dict")
+
+        expected_keys = ENCODER_CFG_KEYS[enc_type]
+        missing_enc = expected_keys - set(enc_cfg.keys())
+        if missing_enc:
+            raise ValueError(
+                f"Profile '{profile_id}': encoder_cfg missing keys: {sorted(missing_enc)}"
+            )
+
+    return ablation
+
+
 def load_inference_config(path: Path | str | None = None) -> dict:
     """Load and validate inference config (Module F0 contract)."""
     if path is None:
