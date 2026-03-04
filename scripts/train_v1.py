@@ -296,6 +296,10 @@ def main() -> None:
         n_alleles=1,
         scorer_hidden_dim=model_cfg["scorer_hidden_dim"],
         scorer_activation=model_cfg["scorer_activation"],
+        scorer_dropout=model_cfg.get("scorer_dropout", 0.1),
+        logit_scale_init=model_cfg.get("logit_scale_init", 10.0),
+        logit_scale_max=model_cfg.get("logit_scale_max", 20.0),
+        projection_layer_norm=model_cfg.get("projection_layer_norm", True),
         pad_left_init=model_cfg.get("pad_left_init", "zeros"),
         pad_right_init=model_cfg.get("pad_right_init", "zeros"),
     )

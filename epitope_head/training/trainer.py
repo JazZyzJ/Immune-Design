@@ -805,6 +805,8 @@ class Trainer:
                         log_dict[f"val/{k}"] = v
                 log_dict["lr"] = self.optimizer.param_groups[0]["lr"]
                 log_dict["patience"] = self.patience_counter
+                if hasattr(self.model, "scorer") and hasattr(self.model.scorer, "log_logit_scale"):
+                    log_dict["logit_scale"] = self.model.scorer.log_logit_scale.exp().item()
                 self._wandb.log(log_dict, step=epoch)
 
             pp_auc_str = "%.4f" % val_metrics["pp_auc"] if val_metrics.get("pp_auc") is not None else "N/A"

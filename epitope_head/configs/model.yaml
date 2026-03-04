@@ -15,8 +15,10 @@ model:
   allele_embedding_dim: 16   # v0 placeholder: single entry
   scorer_hidden_dim: 256
   scorer_activation: gelu
-  scorer_dropout: 0.3             # (v0: 0.0 — no dropout caused overfitting)
-  projection_layer_norm: true     # (v0: false — no normalization on projected embeddings)
+  scorer_dropout: 0.3
+  logit_scale_init: 10.0          # initial learnable logit scale (CLIP-style)
+  logit_scale_max: 20.0           # upper clamp for logit scale
+  projection_layer_norm: true
 
   # Boundary pad initialization
   pad_left_init: zeros

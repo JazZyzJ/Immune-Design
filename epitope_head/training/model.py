@@ -287,20 +287,34 @@ class SpanFeatureBuilder(nn.Module):
 # ── Scorer MLP ──────────────────────────────────────────────────────────────
 
 class ScorerMLP(nn.Module):
-    """2-layer MLP: D_phi → scorer_hidden → 1.
+    """Span scorer with cosine similarity and learnable logit scale.
 
-    Output is raw logit (no activation).
+    Architecture: D_phi → hidden → L2-normalize → cosine(h, prototype) × logit_scale.
+    Logit output is bounded to [-logit_scale, logit_scale], preventing
+    unbounded logit growth that causes val-loss explosion in InfoNCE.
     """
 
-    def __init__(self, d_phi: int, hidden_dim: int, activation: str = "gelu", dropout: float = 0.1):
+    def __init__(
+        self,
+        d_phi: int,
+        hidden_dim: int,
+        activation: str = "gelu",
+        dropout: float = 0.1,
+        logit_scale_init: float = 10.0,
+        logit_scale_max: float = 20.0,
+    ):
         super().__init__()
         act_fn = nn.GELU() if activation == "gelu" else nn.ReLU()
-        self.net = nn.Sequential(
+        self.hidden = nn.Sequential(
             nn.Linear(d_phi, hidden_dim),
             act_fn,
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
         )
+        self.prototype = nn.Parameter(torch.randn(hidden_dim) * 0.02)
+        self.log_logit_scale = nn.Parameter(
+            torch.tensor(float(logit_scale_init)).log()
+        )
+        self.logit_scale_max = logit_scale_max
 
     def forward(self, phi: torch.Tensor) -> torch.Tensor:
         """Score span features.
@@ -308,9 +322,14 @@ class ScorerMLP(nn.Module):
         Args:
             phi: [N, D_phi]
         Returns:
-            z: [N] raw logits
+            z: [N] logits in [-logit_scale, logit_scale]
         """
-        return self.net(phi).squeeze(-1)
+        h = self.hidden(phi)
+        h_norm = F.normalize(h, dim=-1)
+        w_norm = F.normalize(self.prototype, dim=0)
+        similarity = h_norm @ w_norm
+        logit_scale = self.log_logit_scale.exp().clamp(max=self.logit_scale_max)
+        return logit_scale * similarity
 
 
 # ── Full Model ──────────────────────────────────────────────────────────────
@@ -335,6 +354,8 @@ class EpitopeScorer(nn.Module):
         scorer_hidden_dim: int = 256,
         scorer_activation: str = "gelu",
         scorer_dropout: float = 0.3,
+        logit_scale_init: float = 10.0,
+        logit_scale_max: float = 20.0,
         projection_layer_norm: bool = True,
         pad_left_init: str = "zeros",
         pad_right_init: str = "zeros",
@@ -357,6 +378,8 @@ class EpitopeScorer(nn.Module):
             hidden_dim=scorer_hidden_dim,
             activation=scorer_activation,
             dropout=scorer_dropout,
+            logit_scale_init=logit_scale_init,
+            logit_scale_max=logit_scale_max,
         )
 
     @property

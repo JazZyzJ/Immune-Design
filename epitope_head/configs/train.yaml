@@ -11,7 +11,7 @@ train:
 
   # Loss
   loss:
-    tau: 0.5            # InfoNCE temperature (v0: 0.1 explosive; 0.3 still tight; 0.5 for stable small-data regime)
+    tau: 1.0            # temperature handled by learnable logit_scale; keep tau=1.0 (neutral)
     T_mp: 0.1           # multi-positive temperature (independent from tau)
     lambda_mp: 0.0      # multi-positive weight (disabled in v0)
     lambda_smooth: 0.0  # hotspot smoothness regularizer (disabled in v0)
