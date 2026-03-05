@@ -15,6 +15,10 @@ train:
     T_mp: 0.1           # multi-positive temperature (independent from tau)
     lambda_mp: 0.0      # multi-positive weight (disabled in v0)
     lambda_smooth: 0.0  # hotspot smoothness regularizer (disabled in v0)
+    objective_mode: infonce  # infonce | mixed_margin | margin_only
+    margin_m: 0.5       # margin threshold for hard-example loss
+    hard_topk: 8        # number of hardest negatives per positive
+    lambda_margin: 0.5  # weight for margin term in mixed_margin mode
 
   # Optimization
   lr: 5.0e-4

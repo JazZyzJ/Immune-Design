@@ -133,7 +133,7 @@ def load_ablation_config(path: Path | str | None = None) -> dict:
     if not isinstance(profiles, dict) or not profiles:
         raise ValueError("ablation.profiles must be a non-empty dict")
 
-    VALID_ENCODER_TYPES = {"esm2_frozen", "dilated_cnn", "shallow_transformer"}
+    VALID_ENCODER_TYPES = {"esm2_frozen", "dilated_cnn", "shallow_transformer", "multiscale_cnn"}
     REQUIRED_PROFILE_KEYS = {"encoder_type", "d_enc", "trainable_encoder", "encoder_cfg"}
 
     ENCODER_CFG_KEYS = {
@@ -142,7 +142,11 @@ def load_ablation_config(path: Path | str | None = None) -> dict:
                         "hidden_channels", "block_dropout"},
         "shallow_transformer": {"d_model", "n_layers", "n_heads", "ffn_dim",
                                 "dropout", "max_seq_len"},
+        "multiscale_cnn": {"token_emb_dim", "n_blocks", "dilations",
+                           "hidden_channels", "branch_channels", "block_dropout"},
     }
+
+    OPTIONAL_PROFILE_KEYS = {"loss_overrides"}
 
     for profile_id, profile in profiles.items():
         missing = REQUIRED_PROFILE_KEYS - set(profile.keys())

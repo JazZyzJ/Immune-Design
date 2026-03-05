@@ -55,6 +55,8 @@ from epitope_head.training.trainer import Trainer
 logger = logging.getLogger(__name__)
 
 VALID_ENCODER_IDS = {"E0", "E1", "E2"}
+STAGE_I_VARIANT_IDS = {"B0", "L1", "C1", "LC1"}
+VALID_VARIANT_IDS = VALID_ENCODER_IDS | STAGE_I_VARIANT_IDS
 VALID_SEEDS = {42, 43, 44}
 
 
@@ -64,8 +66,10 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    p.add_argument("--encoder-id", type=str, required=True, choices=sorted(VALID_ENCODER_IDS),
-                    help="Encoder ablation profile (E0, E1, E2)")
+    p.add_argument("--variant-id", type=str, default=None, choices=sorted(VALID_VARIANT_IDS),
+                    help="Variant profile (E0, E1, E2, B0, L1, C1, LC1)")
+    p.add_argument("--encoder-id", type=str, default=None, choices=sorted(VALID_ENCODER_IDS),
+                    help="(Deprecated: use --variant-id) Encoder ablation profile (E0, E1, E2)")
     p.add_argument("--seed", type=int, required=True,
                     help="Random seed (must be one of 42, 43, 44)")
     p.add_argument("--profile", type=str, default="strict", choices=["strict"],
@@ -100,6 +104,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> dict:
     args = parse_args()
 
+    # Resolve variant-id vs deprecated encoder-id
+    if args.variant_id is not None:
+        variant_id = args.variant_id
+    elif args.encoder_id is not None:
+        variant_id = args.encoder_id
+        logger.warning("--encoder-id is deprecated, use --variant-id instead")
+    else:
+        raise SystemExit("Error: one of --variant-id or --encoder-id is required")
+
+    is_stage_i = variant_id in STAGE_I_VARIANT_IDS
+
     # Validate seed
     if args.seed not in VALID_SEEDS and not args.smoke:
         logger.warning("Seed %d not in canonical set %s — results may not be comparable", args.seed, VALID_SEEDS)
@@ -118,12 +133,25 @@ def main() -> dict:
     train_cfg = load_train_config(config_dir / "train.yaml")
     ablation_cfg = load_ablation_config(config_dir / "model_ablation.yaml")
 
-    profile_cfg = ablation_cfg["profiles"][args.encoder_id]
+    profile_cfg = ablation_cfg["profiles"][variant_id]
     encoder_type = profile_cfg["encoder_type"]
     d_enc = profile_cfg["d_enc"]
     encoder_cfg = profile_cfg["encoder_cfg"]
 
-    logger.info("Ablation run: encoder=%s, seed=%d, profile=%s", args.encoder_id, args.seed, args.profile)
+    logger.info("Ablation run: variant=%s, seed=%d, profile=%s", variant_id, args.seed, args.profile)
+
+    # ── Apply loss_overrides from profile (Module I) ────────────────
+    loss_overrides = profile_cfg.get("loss_overrides", {})
+    if loss_overrides:
+        train_cfg["loss"].update(loss_overrides)
+        logger.info("Loss overrides applied: %s", loss_overrides)
+
+    # ── Stage-I: override monitor metric to pp_ap ─────────────────
+    if is_stage_i:
+        stage_i_constants = ablation_cfg.get("stage_i_frozen_constants", {})
+        if "monitor_metric" in stage_i_constants:
+            train_cfg["monitor_metric"] = stage_i_constants["monitor_metric"]
+            logger.info("Stage-I monitor metric: %s", train_cfg["monitor_metric"])
 
     # ── Override seed ─────────────────────────────────────────────────
     train_cfg["seed"] = args.seed
@@ -224,11 +252,15 @@ def main() -> dict:
     logger.info("Model: %d trainable / %d total params", trainable, total)
 
     # ── Run directory ─────────────────────────────────────────────────
-    output_root = Path(args.output_root) if args.output_root else (
-        PROJECT_ROOT / "outputs" / "ablation" / "encoder_v2"
-    )
+    if args.output_root:
+        output_root = Path(args.output_root)
+    elif is_stage_i:
+        stage_i_constants = ablation_cfg.get("stage_i_frozen_constants", {})
+        output_root = PROJECT_ROOT / stage_i_constants.get("output_root", "outputs/ablation/cnn_enhance_v2")
+    else:
+        output_root = PROJECT_ROOT / "outputs" / "ablation" / "encoder_v2"
     suffix = "smoke" if args.smoke else f"seed_{args.seed}"
-    run_dir = output_root / "runs" / args.encoder_id / suffix
+    run_dir = output_root / "runs" / variant_id / suffix
     run_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Run directory: %s", run_dir)
 
@@ -240,14 +272,14 @@ def main() -> dict:
     train_cfg_for_trainer = dict(train_cfg)
     train_cfg_for_trainer["manifest_version"] = "v1.1"
     train_cfg_for_trainer["diff_ids_applied"] = ["d001", "d002"]
-    train_cfg_for_trainer["ablation_encoder_id"] = args.encoder_id
+    train_cfg_for_trainer["ablation_encoder_id"] = variant_id
 
     resolved = {
         "data": data_cfg,
         "model": model_cfg,
         "train": train_cfg_for_trainer,
         "ablation": {
-            "encoder_id": args.encoder_id,
+            "variant_id": variant_id,
             "encoder_type": encoder_type,
             "d_enc": d_enc,
             "encoder_cfg": encoder_cfg,
@@ -276,7 +308,7 @@ def main() -> dict:
             "enabled": True,
             "entity": args.wandb_entity,
             "project": args.wandb_project,
-            "name": args.wandb_name or f"{args.encoder_id}_seed{args.seed}",
+            "name": args.wandb_name or f"{variant_id}_seed{args.seed}",
         }
 
     # ── Train ─────────────────────────────────────────────────────────
@@ -297,8 +329,8 @@ def main() -> dict:
     )
 
     logger.info("=" * 60)
-    logger.info("Starting ablation: encoder=%s, seed=%d, epochs=%d, device=%s",
-                args.encoder_id, args.seed, train_cfg_for_trainer["max_epochs"], device)
+    logger.info("Starting ablation: variant=%s, seed=%d, epochs=%d, device=%s",
+                variant_id, args.seed, train_cfg_for_trainer["max_epochs"], device)
     logger.info("=" * 60)
 
     summary = trainer.fit()

@@ -29,7 +29,7 @@ class TestH0AblationConfig:
         """GREEN: default model_ablation.yaml loads without error."""
         cfg = load_ablation_config()
         assert "profiles" in cfg
-        assert set(cfg["profiles"].keys()) == {"E0", "E1", "E2"}
+        assert {"E0", "E1", "E2"}.issubset(set(cfg["profiles"].keys()))
 
     def test_missing_encoder_type(self, tmp_path):
         """RED→GREEN: profile missing encoder_type raises."""

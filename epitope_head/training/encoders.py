@@ -205,6 +205,163 @@ class DilatedCNNEncoder(nn.Module):
         return embeddings, residue_lengths
 
 
+# ── C1: Multi-Scale Dilated CNN Encoder ──────────────────────────────────────
+
+class _MultiScaleResidualBlock(nn.Module):
+    """Residual block with parallel multi-scale conv branches.
+
+    Parallel branches with kernel sizes {3, 5, 9} (configurable), each with
+    per-branch dilation → BN → GELU → concat → 1x1 fusion → residual.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        branch_channels: int,
+        branch_kernels: list[int],
+        dilation: int,
+        dropout: float,
+    ):
+        super().__init__()
+        n_branches = len(branch_kernels)
+        self.branches = nn.ModuleList()
+        self._paddings = []
+        for k in branch_kernels:
+            padding = (k - 1) * dilation
+            self._paddings.append(padding)
+            self.branches.append(nn.Sequential(
+                nn.Conv1d(channels, branch_channels, k, dilation=dilation, padding=0),
+                nn.BatchNorm1d(branch_channels),
+                nn.GELU(),
+            ))
+        # 1x1 fusion: concat of all branches → back to channels
+        self.fusion = nn.Conv1d(n_branches * branch_channels, channels, 1)
+        self.bn_out = nn.BatchNorm1d(channels)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B, C, L] feature tensor
+            mask: [B, L] bool mask (True = valid)
+        Returns:
+            [B, C, L] with residual connection
+        """
+        x_masked = x * mask.unsqueeze(1).float()
+        branch_outs = []
+        for branch, padding in zip(self.branches, self._paddings):
+            pad_left = padding // 2
+            pad_right = padding - pad_left
+            h = F.pad(x_masked, (pad_left, pad_right), value=0.0)
+            branch_outs.append(branch(h))
+
+        # Concat along channel dim → fuse
+        h = torch.cat(branch_outs, dim=1)  # [B, n_branches * branch_channels, L]
+        h = self.fusion(h)                  # [B, channels, L]
+        h = self.bn_out(h)
+        h = F.gelu(h)
+        h = self.dropout(h)
+        h = h * mask.unsqueeze(1).float()
+
+        return x + h  # residual
+
+
+class MultiScaleDilatedCNNEncoder(nn.Module):
+    """C1: Multi-scale dilated CNN encoder with parallel conv branches.
+
+    Same IO contract as DilatedCNNEncoder — BOS/EOS stripping,
+    forward(token_ids, attention_mask) → (embeddings, lengths).
+    Uses _MultiScaleResidualBlock with parallel {3, 5, 9} kernel branches.
+    """
+
+    def __init__(
+        self,
+        d_enc: int = 256,
+        token_emb_dim: int = 256,
+        n_blocks: int = 8,
+        dilations: list[int] | None = None,
+        hidden_channels: int = 256,
+        branch_channels: int = 64,
+        branch_kernels: list[int] | None = None,
+        block_dropout: float = 0.1,
+        vocab_size: int = AATokenizer.VOCAB_SIZE,
+    ):
+        super().__init__()
+        self.d_enc = d_enc
+
+        if dilations is None:
+            dilations = [1, 2, 4, 8, 8, 4, 2, 1]
+        assert len(dilations) == n_blocks
+
+        if branch_kernels is None:
+            branch_kernels = [3, 5, 9]
+
+        self.token_embedding = nn.Embedding(vocab_size, token_emb_dim, padding_idx=1)
+
+        self.input_proj = (
+            nn.Linear(token_emb_dim, hidden_channels)
+            if token_emb_dim != hidden_channels
+            else nn.Identity()
+        )
+
+        self.blocks = nn.ModuleList([
+            _MultiScaleResidualBlock(hidden_channels, branch_channels, branch_kernels, d, block_dropout)
+            for d in dilations
+        ])
+
+        self.output_proj = (
+            nn.Linear(hidden_channels, d_enc)
+            if hidden_channels != d_enc
+            else nn.Identity()
+        )
+
+    def forward(
+        self,
+        token_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass — same contract as DilatedCNNEncoder.
+
+        Args:
+            token_ids: [B, T] with BOS/EOS/PAD
+            attention_mask: [B, T] bool mask
+
+        Returns:
+            embeddings: [B, L_max, d_enc] residue embeddings (BOS/EOS stripped)
+            lengths: [B] residue counts
+        """
+        # Compute residue lengths (strip BOS + EOS)
+        real_counts = attention_mask.sum(dim=1)
+        residue_lengths = real_counts - 2
+
+        B, T = token_ids.shape
+        L_max = int(residue_lengths.max().item())
+
+        # Build residue-only token_ids and mask
+        residue_ids = torch.full((B, L_max), 1, dtype=torch.long, device=token_ids.device)
+        residue_mask = torch.zeros(B, L_max, dtype=torch.bool, device=token_ids.device)
+        for i in range(B):
+            L_i = int(residue_lengths[i].item())
+            residue_ids[i, :L_i] = token_ids[i, 1:1 + L_i]
+            residue_mask[i, :L_i] = True
+
+        # Embed → project → conv blocks
+        x = self.token_embedding(residue_ids)
+        x = self.input_proj(x)
+        x = x.transpose(1, 2)  # [B, hidden, L_max]
+
+        for block in self.blocks:
+            x = block(x, residue_mask)
+
+        x = x.transpose(1, 2)  # [B, L_max, hidden]
+        embeddings = self.output_proj(x)
+
+        # Zero out padded positions
+        embeddings = embeddings * residue_mask.unsqueeze(-1).float()
+
+        return embeddings, residue_lengths
+
+
 # ── E2: Shallow Transformer Encoder ─────────────────────────────────────────
 
 class ShallowTransformerEncoder(nn.Module):
@@ -333,6 +490,17 @@ def build_encoder(
             kernel_size=encoder_cfg["kernel_size"],
             dilations=encoder_cfg["dilations"],
             hidden_channels=encoder_cfg["hidden_channels"],
+            block_dropout=encoder_cfg["block_dropout"],
+        )
+    elif encoder_type == "multiscale_cnn":
+        encoder = MultiScaleDilatedCNNEncoder(
+            d_enc=d_enc,
+            token_emb_dim=encoder_cfg["token_emb_dim"],
+            n_blocks=encoder_cfg["n_blocks"],
+            dilations=encoder_cfg["dilations"],
+            hidden_channels=encoder_cfg["hidden_channels"],
+            branch_channels=encoder_cfg["branch_channels"],
+            branch_kernels=encoder_cfg.get("branch_kernels"),
             block_dropout=encoder_cfg["block_dropout"],
         )
     elif encoder_type == "shallow_transformer":

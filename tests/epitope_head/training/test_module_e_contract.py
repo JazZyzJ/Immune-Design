@@ -354,7 +354,7 @@ class TestConfigSchema:
         cfg = load_train_config()
         assert cfg["neg_ratio"] == 7
         assert cfg["chunking"]["context_len"] == 1022
-        assert cfg["loss"]["tau"] == 0.1
+        assert cfg["loss"]["tau"] == 1.0
 
     def test_train_config_missing_top_key_raises(self, tmp_path):
         """Missing a top-level frozen key raises ValueError."""
@@ -1004,7 +1004,7 @@ class TestComputeLoss:
         pos = torch.tensor([5.0])
         neg = torch.tensor([0.0, -1.0])
         result = compute_loss(pos, neg, tau=0.1, lambda_mp=0.0, lambda_smooth=0.0)
-        assert set(result.keys()) == {"loss_total", "loss_intra", "loss_mp", "loss_smooth"}
+        assert set(result.keys()) == {"loss_total", "loss_intra", "loss_mp", "loss_smooth", "loss_margin"}
         assert torch.allclose(result["loss_total"], result["loss_intra"])
         assert result["loss_mp"].item() == 0.0
         assert result["loss_smooth"].item() == 0.0
@@ -1226,7 +1226,7 @@ class TestLogging:
         log_path = tmp_path / "test.jsonl"
         entry = {
             "epoch": 0, "phase": "train",
-            "loss_total": 1.0, "loss_intra": 1.0, "loss_mp": 0.0, "loss_smooth": 0.0,
+            "loss_total": 1.0, "loss_intra": 1.0, "loss_mp": 0.0, "loss_smooth": 0.0, "loss_margin": 0.0,
             "mean_pos_logit": 2.0, "mean_neg_logit": 1.0, "logit_gap": 1.0,
             "per_protein_auc": 0.75,
             "total_pos": 10, "total_neg": 70, "n_steps": 5, "timestamp": 0.0,

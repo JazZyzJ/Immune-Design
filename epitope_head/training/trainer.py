@@ -46,6 +46,7 @@ class StepMetrics:
     loss_intra: float = 0.0
     loss_mp: float = 0.0
     loss_smooth: float = 0.0
+    loss_margin: float = 0.0
     mean_pos_logit: float = 0.0
     mean_neg_logit: float = 0.0
     logit_gap: float = 0.0
@@ -59,6 +60,7 @@ class StepMetrics:
             "loss_intra": self.loss_intra,
             "loss_mp": self.loss_mp,
             "loss_smooth": self.loss_smooth,
+            "loss_margin": self.loss_margin,
             "mean_pos_logit": self.mean_pos_logit,
             "mean_neg_logit": self.mean_neg_logit,
             "logit_gap": self.logit_gap,
@@ -95,6 +97,7 @@ def compute_sanity_metrics(
         loss_intra=loss_dict["loss_intra"].item(),
         loss_mp=loss_dict["loss_mp"].item(),
         loss_smooth=loss_dict["loss_smooth"].item(),
+        loss_margin=loss_dict["loss_margin"].item(),
         mean_pos_logit=mean_pos,
         mean_neg_logit=mean_neg,
         logit_gap=mean_pos - mean_neg,
@@ -120,6 +123,7 @@ def aggregate_epoch_metrics(step_metrics_list: list[StepMetrics]) -> dict:
         "loss_intra": sum(m.loss_intra for m in step_metrics_list) / n,
         "loss_mp": sum(m.loss_mp for m in step_metrics_list) / n,
         "loss_smooth": sum(m.loss_smooth for m in step_metrics_list) / n,
+        "loss_margin": sum(m.loss_margin for m in step_metrics_list) / n,
         "mean_pos_logit": sum(m.mean_pos_logit for m in step_metrics_list) / n,
         "mean_neg_logit": sum(m.mean_neg_logit for m in step_metrics_list) / n,
         "logit_gap": sum(m.logit_gap for m in step_metrics_list) / n,
@@ -208,11 +212,12 @@ def normalize_loss_cfg(loss_cfg: dict) -> dict:
         normalized["T_mp"] = normalized.pop("tau_mp")
 
     required = {"tau", "T_mp", "lambda_mp", "lambda_smooth"}
+    optional = {"objective_mode", "margin_m", "hard_topk", "lambda_margin"}
     missing = required - set(normalized.keys())
     if missing:
         raise ValueError(f"Loss config missing required keys after normalization: {sorted(missing)}")
 
-    unknown = set(normalized.keys()) - required
+    unknown = set(normalized.keys()) - (required | optional)
     if unknown:
         raise ValueError(f"Loss config has unknown keys: {sorted(unknown)}")
 
@@ -466,8 +471,8 @@ CHECKPOINT_METADATA_KEYS = frozenset({
 
 LOG_ENTRY_KEYS = frozenset({
     "epoch", "phase", "loss_total", "loss_intra", "loss_mp", "loss_smooth",
-    "mean_pos_logit", "mean_neg_logit", "logit_gap", "per_protein_auc",
-    "total_pos", "total_neg", "n_steps", "timestamp",
+    "loss_margin", "mean_pos_logit", "mean_neg_logit", "logit_gap",
+    "per_protein_auc", "total_pos", "total_neg", "n_steps", "timestamp",
 })
 
 

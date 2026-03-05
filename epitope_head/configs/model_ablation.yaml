@@ -38,6 +38,65 @@ ablation:
         dropout: 0.1
         max_seq_len: 1022
 
+    # ── Module I: CNN Enhancement profiles ──
+    B0:
+      encoder_type: dilated_cnn
+      d_enc: 256
+      trainable_encoder: true
+      encoder_cfg:
+        token_emb_dim: 256
+        n_blocks: 8
+        kernel_size: 5
+        dilations: [1, 2, 4, 8, 8, 4, 2, 1]
+        hidden_channels: 256
+        block_dropout: 0.1
+
+    L1:
+      encoder_type: dilated_cnn
+      d_enc: 256
+      trainable_encoder: true
+      encoder_cfg:
+        token_emb_dim: 256
+        n_blocks: 8
+        kernel_size: 5
+        dilations: [1, 2, 4, 8, 8, 4, 2, 1]
+        hidden_channels: 256
+        block_dropout: 0.1
+      loss_overrides:
+        objective_mode: mixed_margin
+        margin_m: 0.5
+        hard_topk: 8
+        lambda_margin: 0.5
+
+    C1:
+      encoder_type: multiscale_cnn
+      d_enc: 256
+      trainable_encoder: true
+      encoder_cfg:
+        token_emb_dim: 256
+        n_blocks: 8
+        dilations: [1, 2, 4, 8, 8, 4, 2, 1]
+        hidden_channels: 256
+        branch_channels: 64
+        block_dropout: 0.1
+
+    LC1:
+      encoder_type: multiscale_cnn
+      d_enc: 256
+      trainable_encoder: true
+      encoder_cfg:
+        token_emb_dim: 256
+        n_blocks: 8
+        dilations: [1, 2, 4, 8, 8, 4, 2, 1]
+        hidden_channels: 256
+        branch_channels: 64
+        block_dropout: 0.1
+      loss_overrides:
+        objective_mode: mixed_margin
+        margin_m: 0.5
+        hard_topk: 8
+        lambda_margin: 0.5
+
   # Frozen constants (must match train.yaml / model.yaml)
   frozen_constants:
     d_proj: 128
@@ -55,3 +114,9 @@ ablation:
     seeds: [42, 43, 44]
     monitor_metric: pp_auc
     profile: strict
+
+  # Stage-I (Module I) frozen constants
+  stage_i_frozen_constants:
+    monitor_metric: pp_ap
+    seeds: [42, 43, 44]
+    output_root: outputs/ablation/cnn_enhance_v2
