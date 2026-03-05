@@ -194,7 +194,12 @@ def main() -> dict:
 
     # ── Build chunks ──────────────────────────────────────────────────
     chunking = train_cfg["chunking"]
-    ck_params = dict(context_len=chunking["context_len"], stride=chunking["stride"], margin=chunking["margin"])
+    # CNN encoders process full proteins — bypass chunking
+    if encoder_type in ("dilated_cnn", "multiscale_cnn"):
+        max_len = max(e.sequence_length for e in train_entries + val_entries)
+        ck_params = dict(context_len=max_len, stride=max_len, margin=0)
+    else:
+        ck_params = dict(context_len=chunking["context_len"], stride=chunking["stride"], margin=chunking["margin"])
     train_chunks = build_chunk_samples(train_entries, **ck_params)
     val_chunks = build_chunk_samples(val_entries, **ck_params)
     logger.info("Chunks: %d train, %d val", len(train_chunks), len(val_chunks))
@@ -325,7 +330,7 @@ def main() -> dict:
         tokenizer=tokenizer,
         min_k=data_cfg["min_k"],
         max_k=data_cfg["max_k"],
-        context_len=chunking["context_len"],
+        context_len=ck_params["context_len"],
     )
 
     logger.info("=" * 60)
