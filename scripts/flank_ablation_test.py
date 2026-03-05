@@ -10,77 +10,25 @@ import sys
 import time
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from epitope_head.configs import load_inference_config, load_model_config
+from epitope_head.configs import (
+    load_ablation_config,
+    load_inference_config,
+    load_model_config,
+)
 from epitope_head.inference.flank_ablation import (
     flank_ablation_context,
     load_split_proteins_for_pp_auc,
     pp_auc_from_prediction,
+    resolve_cnn_variant_profile,
 )
-from epitope_head.inference.predictor import InferencePredictor, build_epitope_scorer_from_config
-from epitope_head.training.model import ESMTokenizer, FrozenESMEncoder
+from epitope_head.inference.predictor import InferencePredictor
+from epitope_head.training.encoders import build_encoder
+from epitope_head.training.model import EpitopeScorer
 
 logger = logging.getLogger(__name__)
-
-
-class _MockFrozenEncoder(nn.Module):
-    """Deterministic mock encoder for quick smoke."""
-
-    def __init__(self, d_enc: int = 1280, vocab_size: int = 33):
-        super().__init__()
-        self.d_enc = d_enc
-        self.embed = nn.Embedding(vocab_size, d_enc)
-        for p in self.parameters():
-            p.requires_grad = False
-
-    def train(self, mode: bool = True):
-        self.training = mode
-        return self
-
-    @torch.no_grad()
-    def forward(
-        self,
-        token_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        bsz, _ = token_ids.shape
-        hidden = self.embed(token_ids.clamp(0, self.embed.num_embeddings - 1))
-        lengths = attention_mask.sum(dim=1) - 2
-        l_max = int(lengths.max().item())
-        out = torch.zeros(bsz, l_max, self.d_enc, device=hidden.device, dtype=hidden.dtype)
-        for i in range(bsz):
-            l_i = int(lengths[i].item())
-            out[i, :l_i] = hidden[i, 1 : 1 + l_i]
-        return out, lengths
-
-
-class _MockTokenizer:
-    AA_ORDER = "ACDEFGHIKLMNPQRSTVWY"
-
-    def __init__(self) -> None:
-        self.cls_idx = 0
-        self.eos_idx = 2
-        self.pad_idx = 1
-        self._aa_map = {aa: i + 4 for i, aa in enumerate(self.AA_ORDER)}
-        self._unk_idx = 3
-
-    def __call__(self, sequences: list[str]) -> dict[str, torch.Tensor]:
-        max_len = max(len(s) for s in sequences) + 2
-        bsz = len(sequences)
-        token_ids = torch.full((bsz, max_len), self.pad_idx, dtype=torch.long)
-        attention_mask = torch.zeros((bsz, max_len), dtype=torch.bool)
-        for i, seq in enumerate(sequences):
-            ids = [self.cls_idx]
-            ids.extend(self._aa_map.get(ch, self._unk_idx) for ch in seq)
-            ids.append(self.eos_idx)
-            token_ids[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
-            attention_mask[i, : len(ids)] = True
-        return {"token_ids": token_ids, "attention_mask": attention_mask}
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,6 +41,12 @@ def parse_args() -> argparse.Namespace:
         "--config-dir",
         type=str,
         default=str(PROJECT_ROOT / "epitope_head" / "configs"),
+    )
+    p.add_argument(
+        "--variant-id",
+        type=str,
+        default="B0",
+        help="CNN variant id in model_ablation.yaml (e.g., E1, B0, L1, C1, LC1)",
     )
     p.add_argument("--profile", type=str, default="strict", choices=["strict", "balanced"])
     p.add_argument("--split", type=str, default="val", choices=["train", "val", "test"])
@@ -115,39 +69,46 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=str(PROJECT_ROOT / "outputs" / "ablation" / "flank_ablation_summary.json"),
     )
-    p.add_argument("--mock-encoder", action="store_true")
     return p.parse_args()
 
 
 def build_predictor(
     model_cfg: dict,
+    ablation_cfg: dict,
     inference_cfg: dict,
+    variant_id: str,
     checkpoint_path: Path,
     device: str,
-    use_mock_encoder: bool,
 ) -> InferencePredictor:
+    profile_cfg = resolve_cnn_variant_profile(ablation_cfg, variant_id)
+    encoder_type = profile_cfg["encoder_type"]
+    d_enc = int(profile_cfg["d_enc"])
+    encoder_cfg = profile_cfg["encoder_cfg"]
+    frozen = ablation_cfg["frozen_constants"]
+
     inference_cfg = dict(inference_cfg)
     inference_cfg["device"] = device
 
-    d_enc = int(model_cfg["d_enc"])
-    if use_mock_encoder:
-        logger.warning("Using mock encoder for ablation test")
-        encoder = _MockFrozenEncoder(d_enc=d_enc)
-        tokenizer = _MockTokenizer()
-    else:
-        try:
-            import esm
-        except ImportError as exc:
-            raise RuntimeError(
-                "Package 'fair-esm' is required for real inference. "
-                "Install dependencies or run with --mock-encoder.",
-            ) from exc
-        logger.info("Loading ESM encoder: %s", model_cfg["encoder_name"])
-        esm_model, alphabet = getattr(esm.pretrained, model_cfg["encoder_name"])()
-        encoder = FrozenESMEncoder(esm_model, d_enc=d_enc)
-        tokenizer = ESMTokenizer(alphabet)
-
-    model = build_epitope_scorer_from_config(model_cfg, encoder)
+    encoder, tokenizer = build_encoder(encoder_type, d_enc, encoder_cfg)
+    model = EpitopeScorer(
+        encoder=encoder,
+        d_enc=d_enc,
+        d_proj=int(frozen["d_proj"]),
+        length_emb_dim=int(model_cfg["length_embedding_dim"]),
+        allele_emb_dim=int(model_cfg["allele_embedding_dim"]),
+        min_k=int(frozen["min_k"]),
+        max_k=int(frozen["max_k"]),
+        n_alleles=int(model_cfg.get("n_alleles", 1)),
+        scorer_hidden_dim=int(frozen["scorer_hidden_dim"]),
+        scorer_activation=str(frozen["scorer_activation"]),
+        scorer_dropout=float(frozen.get("scorer_dropout", model_cfg.get("scorer_dropout", 0.3))),
+        logit_scale_init=float(model_cfg.get("logit_scale_init", 10.0)),
+        logit_scale_max=float(model_cfg.get("logit_scale_max", 20.0)),
+        projection_layer_norm=bool(model_cfg.get("projection_layer_norm", True)),
+        pad_left_init=str(model_cfg.get("pad_left_init", "zeros")),
+        pad_right_init=str(model_cfg.get("pad_right_init", "zeros")),
+    )
+    logger.info("Using CNN encoder variant=%s (%s)", variant_id, encoder_type)
     return InferencePredictor.from_checkpoint(
         checkpoint_path=checkpoint_path,
         model=model,
@@ -179,13 +140,15 @@ def main() -> None:
 
     config_dir = Path(args.config_dir)
     model_cfg = load_model_config(config_dir / "model.yaml")
+    ablation_cfg = load_ablation_config(config_dir / "model_ablation.yaml")
     inference_cfg = load_inference_config(config_dir / "inference.yaml")
     predictor = build_predictor(
         model_cfg=model_cfg,
+        ablation_cfg=ablation_cfg,
         inference_cfg=inference_cfg,
+        variant_id=args.variant_id,
         checkpoint_path=checkpoint_path,
         device=args.device,
-        use_mock_encoder=args.mock_encoder,
     )
 
     samples_path = Path(args.samples_path) if args.samples_path else (
@@ -250,6 +213,7 @@ def main() -> None:
         "samples_path": str(samples_path),
         "split_ids_path": str(split_ids_path),
         "checkpoint": str(checkpoint_path),
+        "variant_id": args.variant_id,
     }
 
     out_json = Path(args.output_json)
@@ -263,4 +227,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

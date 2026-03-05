@@ -50,10 +50,10 @@ echo "============================================================"
 python "${PROJECT_ROOT}/scripts/flank_ablation_test.py" \
   --checkpoint "${CHECKPOINT}" \
   --config-dir "${PROJECT_ROOT}/epitope_head/configs" \
+  --variant-id B0 \
   --profile strict \
   --split val \
   --device cuda \
   --output-json "${OUTPUT_JSON}"
 
 echo "Done: ${OUTPUT_JSON}"
-

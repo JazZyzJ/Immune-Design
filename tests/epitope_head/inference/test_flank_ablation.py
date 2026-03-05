@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from epitope_head.training.model import SpanFeatureBuilder
 from epitope_head.inference.flank_ablation import (
     binary_auc_from_scores,
     flank_ablation_context,
+    resolve_cnn_variant_profile,
 )
 
 
@@ -55,3 +57,37 @@ def test_flank_ablation_overrides_flanks_for_all_spans():
     assert not torch.allclose(phi_orig[:, left_slice], phi_abl[:, left_slice])
     assert not torch.allclose(phi_orig[:, right_slice], phi_abl[:, right_slice])
 
+
+def test_resolve_cnn_variant_profile_rejects_non_cnn_encoder():
+    ablation_cfg = {
+        "profiles": {
+            "E0": {
+                "encoder_type": "esm2_frozen",
+                "d_enc": 1280,
+                "encoder_cfg": {"encoder_name": "esm2_t33_650M_UR50D"},
+            },
+        },
+    }
+    with pytest.raises(ValueError, match="CNN"):
+        resolve_cnn_variant_profile(ablation_cfg, "E0")
+
+
+def test_resolve_cnn_variant_profile_accepts_cnn_profile():
+    ablation_cfg = {
+        "profiles": {
+            "B0": {
+                "encoder_type": "dilated_cnn",
+                "d_enc": 256,
+                "encoder_cfg": {
+                    "token_emb_dim": 256,
+                    "n_blocks": 8,
+                    "kernel_size": 5,
+                    "dilations": [1, 2, 4, 8, 8, 4, 2, 1],
+                    "hidden_channels": 256,
+                    "block_dropout": 0.1,
+                },
+            },
+        },
+    }
+    profile = resolve_cnn_variant_profile(ablation_cfg, "B0")
+    assert profile["encoder_type"] == "dilated_cnn"

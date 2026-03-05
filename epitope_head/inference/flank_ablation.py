@@ -11,6 +11,9 @@ import pandas as pd
 import torch
 
 
+CNN_ENCODER_TYPES = frozenset({"dilated_cnn", "multiscale_cnn"})
+
+
 def binary_auc_from_scores(
     pos_scores: torch.Tensor,
     neg_scores: torch.Tensor,
@@ -117,3 +120,18 @@ def pp_auc_from_prediction(
         torch.tensor(neg_scores, dtype=torch.float32),
     )
 
+
+def resolve_cnn_variant_profile(ablation_cfg: dict, variant_id: str) -> dict:
+    """Resolve one ablation profile and enforce CNN-only encoder type."""
+    profiles = ablation_cfg.get("profiles", {})
+    if variant_id not in profiles:
+        raise ValueError(f"Unknown ablation variant_id: {variant_id}")
+
+    profile = profiles[variant_id]
+    encoder_type = profile.get("encoder_type")
+    if encoder_type not in CNN_ENCODER_TYPES:
+        raise ValueError(
+            f"Variant '{variant_id}' is not a CNN profile (encoder_type={encoder_type}). "
+            f"Allowed CNN encoder types: {sorted(CNN_ENCODER_TYPES)}",
+        )
+    return profile
