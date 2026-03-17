@@ -83,6 +83,33 @@ def load_split_proteins(
     return entries
 
 
+def load_augmented_proteins(
+    aug_parquet_path: Path | str,
+) -> list[ProteinEntry]:
+    """Load augmented ProteinSample parquet as ProteinEntry list.
+
+    Augmented entries have AUG:: prefixed protein_ids and are train-only.
+    No split ID filtering — the artifact is already train-only by construction.
+    """
+    path = Path(aug_parquet_path)
+    if not path.exists():
+        return []
+
+    df = pd.read_parquet(path)
+    entries = []
+    for _, row in df.iterrows():
+        positives = json.loads(row["positives_json"])
+        entries.append(ProteinEntry(
+            protein_id=row["protein_id"],
+            protein_seq=row["protein_seq"],
+            allele=row["allele"],
+            positives=positives,
+            sequence_length=row["sequence_length"],
+        ))
+
+    return entries
+
+
 def build_chunk_samples(
     entries: list[ProteinEntry],
     context_len: int = 1022,

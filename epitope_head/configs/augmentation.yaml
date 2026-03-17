@@ -1,0 +1,36 @@
+# Stage J: NetMHCIIpan Mutation Augmentation Config
+# Frozen decisions per PLAN.md Task J0
+
+augmentation:
+  profile: strict
+  tool: netmhciipan
+  tool_version: "4.3"
+  tool_mode: EL
+  allele: "HLA-DRB1*07:01"
+
+  # WT verification thresholds
+  wt_rank_threshold: 0.02        # < 2% -> eligible WT positive
+  wt_uncertain_upper: 0.05       # 2%-5% -> skip_uncertain
+  # (> 5% -> reject_wt_disagree)
+
+  # Disruption thresholds
+  mut_rank_threshold: 0.20       # > 20% -> disrupted
+  delta_rank_threshold: 0.18     # delta_rank > 18pp
+
+  # Registry selection
+  top_n_per_protein: 64          # max retained mutations per source protein
+
+  # Input paths (read-only references to existing manifests)
+  inputs:
+    source_parquet: outputs/manifests/protein_samples_strict.parquet
+    train_ids: outputs/manifests/splits/strict/train_ids.txt
+    val_ids: outputs/manifests/splits/strict/val_ids.txt
+    test_ids: outputs/manifests/splits/strict/test_ids.txt
+
+  # Output paths (all under outputs/augmentation/)
+  outputs:
+    pilot: outputs/augmentation/mutation_pilot_strict.json
+    registry: outputs/augmentation/mutation_registry_strict.parquet
+    registry_summary: outputs/augmentation/mutation_registry_strict_summary.json
+    aug_train_samples: outputs/augmentation/protein_samples_strict_aug_train.parquet
+    aug_train_summary: outputs/augmentation/protein_samples_strict_aug_train_summary.json
