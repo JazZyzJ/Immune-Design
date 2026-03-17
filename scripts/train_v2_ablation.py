@@ -46,6 +46,7 @@ from epitope_head.configs import (
 from epitope_head.training.datamodule import (
     build_chunk_samples,
     build_dataloader,
+    load_augmented_proteins,
     load_split_proteins,
 )
 from epitope_head.training.encoders import AATokenizer, build_encoder
@@ -97,6 +98,10 @@ def parse_args() -> argparse.Namespace:
     wb.add_argument("--wandb-entity", type=str, default=None)
     wb.add_argument("--wandb-project", type=str, default="Immune-Design")
     wb.add_argument("--wandb-name", type=str, default=None)
+
+    aug = p.add_argument_group("augmentation (Stage J)")
+    aug.add_argument("--aug-train-parquet", type=str, default=None,
+                     help="Path to augmented train-only parquet (Stage J)")
 
     return p.parse_args()
 
@@ -176,6 +181,12 @@ def main() -> dict:
     train_entries = load_split_proteins(samples_path, train_ids_path)
     val_entries = load_split_proteins(samples_path, val_ids_path)
     logger.info("Loaded %d train, %d val proteins", len(train_entries), len(val_entries))
+
+    # ── Stage J: optional augmented train entries ──────────────────
+    if args.aug_train_parquet:
+        aug_entries = load_augmented_proteins(args.aug_train_parquet)
+        logger.info("Loaded %d augmented train entries from %s", len(aug_entries), args.aug_train_parquet)
+        train_entries = train_entries + aug_entries
 
     # ── Smoke overrides ───────────────────────────────────────────────
     if args.smoke:
