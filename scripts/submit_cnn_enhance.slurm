@@ -57,7 +57,7 @@ echo "============================================================"
 # Monitor metric: pp_ap (Stage-I, AP-centric ranking)
 # Output root:    cnn_enhance_v2/
 
-VARIANTS=(B0 L1 C1 LC1)
+VARIANTS=(LC1)
 SEEDS=(42)
 
 FAIL_COUNT=0
@@ -75,6 +75,7 @@ for variant in "${VARIANTS[@]}"; do
       --data-dir "${DATA_DIR}" \
       --output-root "${ABLATION_ROOT}" \
       --wandb \
+      --wandb-name "LC1_lite_seed${seed}" \
       --wandb-entity "chenzijie040528-zhejiang-university" \
       --wandb-project "Immune-Design"; then
       echo "<<< Finished variant=${variant}, seed=${seed}"

@@ -30,6 +30,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -73,14 +75,18 @@ def parse_args() -> argparse.Namespace:
                     help="(Deprecated: use --variant-id) Encoder ablation profile (E0, E1, E2)")
     p.add_argument("--seed", type=int, required=True,
                     help="Random seed (must be one of 42, 43, 44)")
-    p.add_argument("--profile", type=str, default="strict", choices=["strict"],
-                    help="Data profile (frozen to strict for H)")
+    p.add_argument("--profile", type=str, default="strict", choices=["strict", "balanced"],
+                    help="Data profile (strict or balanced)")
     p.add_argument("--device", type=str, default="cpu",
                     help="Torch device (cpu, cuda, cuda:0, mps)")
 
     p.add_argument("--config-dir", type=str,
                     default=str(PROJECT_ROOT / "epitope_head" / "configs"),
                     help="Config directory")
+    p.add_argument("--override-config", type=str, default=None,
+                    help="Path to a YAML file with highest-priority overrides. "
+                         "Applied AFTER all other configs (train.yaml + ablation loss_overrides). "
+                         "Format mirrors train.yaml, e.g. train.loss.tau, train.lr, etc.")
     p.add_argument("--data-dir", type=str, default=None,
                     help="Manifest directory (default: outputs/manifests)")
     p.add_argument("--output-root", type=str, default=None,
@@ -157,6 +163,27 @@ def main() -> dict:
         if "monitor_metric" in stage_i_constants:
             train_cfg["monitor_metric"] = stage_i_constants["monitor_metric"]
             logger.info("Stage-I monitor metric: %s", train_cfg["monitor_metric"])
+
+    # ── User override config (HIGHEST priority) ──────────────────
+    if args.override_config:
+        override_path = Path(args.override_config)
+        if not override_path.exists():
+            logger.error("Override config not found: %s", override_path)
+            sys.exit(1)
+        with open(override_path) as f:
+            override_raw = yaml.safe_load(f)
+        override = override_raw.get("train", override_raw)
+
+        def _deep_update(base: dict, patch: dict) -> dict:
+            for k, v in patch.items():
+                if isinstance(v, dict) and isinstance(base.get(k), dict):
+                    _deep_update(base[k], v)
+                else:
+                    base[k] = v
+            return base
+
+        _deep_update(train_cfg, override)
+        logger.info("User override config applied from %s: %s", override_path, override)
 
     # ── Override seed ─────────────────────────────────────────────────
     train_cfg["seed"] = args.seed

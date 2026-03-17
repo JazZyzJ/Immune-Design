@@ -94,8 +94,8 @@ ablation:
       loss_overrides:
         objective_mode: mixed_margin
         margin_m: 0.5
-        hard_topk: 8
-        lambda_margin: 0.5
+        hard_topk: 4
+        lambda_margin: 0.1
 
   # Frozen constants (must match train.yaml / model.yaml)
   frozen_constants:
@@ -103,7 +103,7 @@ ablation:
     scorer_hidden_dim: 256
     scorer_activation: gelu
     scorer_dropout: 0.3
-    neg_ratio: 7
+    neg_ratio: 15
     hard_negative_fraction: 0.3
     min_k: 12
     max_k: 25
