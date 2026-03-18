@@ -85,21 +85,31 @@ def main():
     logger.info(f"Written: {out_path}")
 
     # Write summary
-    pos_counts = aug_df["positive_count"].sum()
-    summary = {
-        "n_augmented_samples": len(aug_df),
-        "total_remaining_positives": int(pos_counts),
-        "avg_positives_per_sample": round(pos_counts / max(len(aug_df), 1), 2),
-        "n_zero_positive_samples": int((aug_df["positive_count"] == 0).sum()),
-        "unique_source_proteins": int(
-            aug_df["protein_id"].str.extract(r"AUG::(.+?)::")[0].nunique()
-        ),
-        "sequence_length_stats": {
-            "min": int(aug_df["sequence_length"].min()),
-            "max": int(aug_df["sequence_length"].max()),
-            "mean": round(float(aug_df["sequence_length"].mean()), 1),
-        },
-    }
+    if len(aug_df) > 0:
+        pos_counts = aug_df["positive_count"].sum()
+        summary = {
+            "n_augmented_samples": len(aug_df),
+            "total_remaining_positives": int(pos_counts),
+            "avg_positives_per_sample": round(pos_counts / max(len(aug_df), 1), 2),
+            "n_zero_positive_samples": int((aug_df["positive_count"] == 0).sum()),
+            "unique_source_proteins": int(
+                aug_df["protein_id"].str.extract(r"AUG::(.+?)::")[0].nunique()
+            ),
+            "sequence_length_stats": {
+                "min": int(aug_df["sequence_length"].min()),
+                "max": int(aug_df["sequence_length"].max()),
+                "mean": round(float(aug_df["sequence_length"].mean()), 1),
+            },
+        }
+    else:
+        summary = {
+            "n_augmented_samples": 0,
+            "total_remaining_positives": 0,
+            "avg_positives_per_sample": 0.0,
+            "n_zero_positive_samples": 0,
+            "unique_source_proteins": 0,
+            "sequence_length_stats": {"min": 0, "max": 0, "mean": 0.0},
+        }
 
     summary_path = out_dir / "protein_samples_strict_aug_train_summary.json"
     with open(summary_path, "w") as f:

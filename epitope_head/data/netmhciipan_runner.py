@@ -102,29 +102,55 @@ class StandaloneRunner(NetMHCIIpanRunner):
     def _parse_output(self, stdout: str) -> list[PeptideScore]:
         """Parse NetMHCIIpan 4.3 stdout into PeptideScore list.
 
-        Verified column layout (4.3i):
-          [0] Pos  [1] MHC  [2] Peptide  [3] Of  [4] Core  [5] Core_Rel
-          [6] Inverted  [7] Identity  [8] Score_EL  [9] %Rank_EL
-          [10] Exp_Bind  [11-12] BindLevel (optional: <= SB/WB)
+        Output structure (verified 4.3i):
+            ---              ← separator 1
+            Header line      ← column names (Pos, MHC, ..., Score_EL, %Rank_EL, ...)
+            ---              ← separator 2
+            Data lines...    ← actual scores
+            ---              ← separator 3
+
+        Data is between separator 2 and 3 (the second pair of ---).
+        Auto-detects Score_EL/%Rank_EL column positions from the header.
         """
         scores = []
-        in_data = False
+        dash_count = 0
+        # Column indices — auto-detected from header
+        idx_score_el = 8  # default for 4.3i with Inverted column
+        idx_rank_el = 9
+
         for line in stdout.splitlines():
-            line = line.strip()
-            if line.startswith("---"):
-                in_data = not in_data
+            stripped = line.strip()
+
+            if stripped.startswith("---"):
+                dash_count += 1
                 continue
-            if not in_data or not line:
+
+            # Header is between dash 1 and dash 2
+            if dash_count == 1 and "Score_EL" in stripped:
+                header_parts = stripped.split()
+                for i, h in enumerate(header_parts):
+                    if h == "Score_EL":
+                        idx_score_el = i
+                    elif h == "%Rank_EL":
+                        idx_rank_el = i
                 continue
-            parts = line.split()
-            if len(parts) < 10:
+
+            # Data is between dash 2 and dash 3
+            if dash_count < 2 or dash_count >= 3:
                 continue
+            if not stripped:
+                continue
+
+            parts = stripped.split()
+            if len(parts) < idx_rank_el + 1:
+                continue
+
             try:
                 pos = int(parts[0]) - 1  # 1-based → 0-based
                 peptide = parts[2]
                 core = parts[4]
-                el_score = float(parts[8])
-                el_rank = float(parts[9]) / 100.0  # percent → fraction
+                el_score = float(parts[idx_score_el])
+                el_rank = float(parts[idx_rank_el]) / 100.0  # percent → fraction
                 scores.append(PeptideScore(
                     pos=pos, peptide=peptide, core=core,
                     el_score=el_score, el_rank=el_rank,
