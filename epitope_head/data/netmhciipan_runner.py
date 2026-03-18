@@ -280,13 +280,9 @@ class MockRunner(NetMHCIIpanRunner):
         import numpy as np
         self.rng = np.random.RandomState(seed)
 
-    def score_protein(
-        self,
-        protein_id: str,
-        protein_seq: str,
-        allele: str,
-        pep_length: int,
-    ) -> list[PeptideScore]:
+    @staticmethod
+    def _score_seq(protein_seq: str, pep_length: int) -> list[PeptideScore]:
+        """Deterministic scoring based on sequence content only (ID-independent)."""
         import numpy as np
 
         n_windows = len(protein_seq) - pep_length + 1
@@ -296,8 +292,8 @@ class MockRunner(NetMHCIIpanRunner):
         scores = []
         for i in range(n_windows):
             peptide = protein_seq[i:i + pep_length]
-            # Deterministic seed per (protein, pos, peptide)
-            h = hash((protein_id, i, peptide)) & 0xFFFFFFFF
+            # Seed from (position, peptide content) — not protein_id
+            h = hash((i, peptide)) & 0xFFFFFFFF
             local_rng = np.random.RandomState(h % (2**31))
 
             # Base rank: bimodal — ~30% binders (low rank), ~70% non-binders
@@ -315,6 +311,24 @@ class MockRunner(NetMHCIIpanRunner):
                 el_rank=el_rank,
             ))
         return scores
+
+    def score_protein(
+        self,
+        protein_id: str,
+        protein_seq: str,
+        allele: str,
+        pep_length: int,
+    ) -> list[PeptideScore]:
+        return self._score_seq(protein_seq, pep_length)
+
+    def score_batch(
+        self,
+        entries: list[tuple[str, str]],
+        allele: str,
+        pep_length: int,
+    ) -> dict[str, list[PeptideScore]]:
+        """Batch scoring: same sequence → same scores regardless of ID."""
+        return {pid: self._score_seq(seq, pep_length) for pid, seq in entries}
 
 
 def build_runner(
