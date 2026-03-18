@@ -320,6 +320,11 @@ def enumerate_mutations(
 
 # ── Mutation scoring + affected-span recalculation (J3+J4) ────────────────
 
+def _span_key(pep_len: int, start_0b: int) -> str:
+    """JSON-safe key for per-span rank storage: '15:85'."""
+    return f"{pep_len}:{start_0b}"
+
+
 @dataclass
 class ScoredMutation:
     """A scored and filtered mutation with affected spans."""
@@ -329,8 +334,8 @@ class ScoredMutation:
     mut_aa: str
     seed_spans: list[dict]
     affected_spans: list[dict]  # spans disrupted by this mutation
-    wt_ranks: dict              # {pep_len: wt_el_rank} for each affected length
-    mut_ranks: dict             # {pep_len: mut_el_rank} for each affected length
+    wt_ranks: dict              # {"pep_len:start_0b": wt_el_rank} per affected span
+    mut_ranks: dict             # {"pep_len:start_0b": mut_el_rank} per affected span
 
 
 def score_and_filter_mutations(
@@ -345,61 +350,85 @@ def score_and_filter_mutations(
 ) -> list[ScoredMutation]:
     """Score mutations and determine affected spans (J3+J4 combined).
 
-    For each candidate:
-    1. Build mutant protein sequence
-    2. Find all known positives overlapping the mutation position
-    3. Score mutant protein at each relevant pep_len
-    4. Check disruption for each overlapping span
-    5. Retain if at least one span is disrupted
+    Batches all mutant proteins into a single runner.score_batch() call per
+    pep_len, instead of one subprocess per candidate.
+
+    Per-span ranks use key 'pep_len:start_0b' to avoid collisions when
+    multiple affected spans share the same pep_len.
     """
     if wt_scores_cache is None:
         wt_scores_cache = {}
 
-    scored = []
-    for cand in candidates:
-        # Build mutant sequence
-        mut_seq = protein_seq[:cand.mut_pos_0b] + cand.mut_aa + protein_seq[cand.mut_pos_0b + 1:]
+    # Pre-compute: for each candidate, find overlapping positives and needed lengths
+    cand_overlaps: list[tuple[MutationCandidate, list[dict], str, str]] = []
+    all_lengths_needed: set[int] = set()
 
-        # Find all positives overlapping mutation position
+    for cand in candidates:
+        mut_seq = protein_seq[:cand.mut_pos_0b] + cand.mut_aa + protein_seq[cand.mut_pos_0b + 1:]
         overlapping = [
             p for p in all_positives
             if p["start_0b"] <= cand.mut_pos_0b < p["end_0b"]
         ]
         if not overlapping:
             continue
+        mut_id = f"{protein_id}__mut_{cand.mut_pos_0b}{cand.wt_aa}>{cand.mut_aa}"
+        cand_overlaps.append((cand, overlapping, mut_seq, mut_id))
+        for p in overlapping:
+            all_lengths_needed.add(p["pep_len"])
 
-        # Group overlapping spans by pep_len
-        lengths_needed = set(p["pep_len"] for p in overlapping)
+    if not cand_overlaps:
+        return []
 
-        # Score mutant at each length
-        mut_rank_by_len: dict[int, dict[int, float]] = {}  # {pep_len: {pos: rank}}
-        for pep_len in lengths_needed:
-            mut_scores = runner.score_protein(protein_id, mut_seq, allele, pep_len)
-            mut_rank_by_len[pep_len] = {s.pos: s.el_rank for s in mut_scores}
+    # Cache WT scores (one call per pep_len for the source protein)
+    for pep_len in all_lengths_needed:
+        cache_key = (protein_id, pep_len)
+        if cache_key not in wt_scores_cache:
+            wt_scores = runner.score_protein(protein_id, protein_seq, allele, pep_len)
+            wt_scores_cache[cache_key] = {s.pos: s.el_rank for s in wt_scores}
 
-        # Get WT scores (cache to avoid redundant calls)
-        wt_rank_by_len: dict[int, dict[int, float]] = {}
-        for pep_len in lengths_needed:
-            cache_key = (protein_id, pep_len)
-            if cache_key not in wt_scores_cache:
-                wt_scores = runner.score_protein(protein_id, protein_seq, allele, pep_len)
-                wt_scores_cache[cache_key] = {s.pos: s.el_rank for s in wt_scores}
-            wt_rank_by_len[pep_len] = wt_scores_cache[cache_key]
+    # Batch-score all mutant proteins per pep_len
+    # mut_batch_results[pep_len][mut_id] = {pos: el_rank}
+    mut_batch_results: dict[int, dict[str, dict[int, float]]] = {}
+    for pep_len in all_lengths_needed:
+        # Build batch entries: (mut_id, mut_seq) for all candidates needing this length
+        batch_entries = []
+        for cand, overlapping, mut_seq, mut_id in cand_overlaps:
+            if any(p["pep_len"] == pep_len for p in overlapping):
+                batch_entries.append((mut_id, mut_seq))
 
-        # Check disruption for each overlapping span
+        # Deduplicate: same mut_id can appear if candidate overlaps multiple spans
+        seen = set()
+        deduped = []
+        for mid, mseq in batch_entries:
+            if mid not in seen:
+                seen.add(mid)
+                deduped.append((mid, mseq))
+
+        batch_out = runner.score_batch(deduped, allele, pep_len)
+        mut_batch_results[pep_len] = {
+            mid: {s.pos: s.el_rank for s in scores}
+            for mid, scores in batch_out.items()
+        }
+
+    # Check disruption per candidate using batched results
+    scored = []
+    for cand, overlapping, mut_seq, mut_id in cand_overlaps:
         affected = []
         wt_ranks = {}
         mut_ranks = {}
+
         for p in overlapping:
             pep_len = p["pep_len"]
             pos = p["start_0b"]
-            wt_r = wt_rank_by_len.get(pep_len, {}).get(pos, 1.0)
-            mut_r = mut_rank_by_len.get(pep_len, {}).get(pos, 0.0)
+            sk = _span_key(pep_len, pos)
+
+            wt_r = wt_scores_cache.get((protein_id, pep_len), {}).get(pos, 1.0)
+            mut_r = mut_batch_results.get(pep_len, {}).get(mut_id, {}).get(pos, 0.0)
 
             if is_disrupted(mut_r, wt_r, cfg.mut_rank_threshold, cfg.delta_rank_threshold):
                 affected.append(p)
-                wt_ranks[pep_len] = wt_r
-                mut_ranks[pep_len] = mut_r
+                wt_ranks[sk] = wt_r
+                mut_ranks[sk] = mut_r
 
         if affected:
             scored.append(ScoredMutation(
@@ -425,8 +454,8 @@ def select_top_mutations(
     """Select top-N mutations per protein by max delta_rank across affected spans."""
     def max_delta(m: ScoredMutation) -> float:
         deltas = []
-        for pep_len in m.mut_ranks:
-            deltas.append(m.mut_ranks[pep_len] - m.wt_ranks.get(pep_len, 0))
+        for sk in m.mut_ranks:
+            deltas.append(m.mut_ranks[sk] - m.wt_ranks.get(sk, 0))
         return max(deltas) if deltas else 0.0
 
     ranked = sorted(mutations, key=max_delta, reverse=True)

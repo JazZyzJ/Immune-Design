@@ -29,6 +29,12 @@ class PeptideScore:
     el_rank: float      # %Rank_EL (as fraction, e.g. 0.02 = 2%)
 
 
+@dataclass
+class BatchPeptideScore(PeptideScore):
+    """PeptideScore with identity for batch output."""
+    identity: str = ""
+
+
 class NetMHCIIpanRunner(ABC):
     """Abstract interface for NetMHCIIpan prediction."""
 
@@ -40,18 +46,23 @@ class NetMHCIIpanRunner(ABC):
         allele: str,
         pep_length: int,
     ) -> list[PeptideScore]:
-        """Score all windows of given length in a protein sequence.
-
-        Args:
-            protein_id: identifier for the protein
-            protein_seq: full protein AA sequence
-            allele: MHC allele (e.g. 'HLA-DRB1*07:01')
-            pep_length: peptide length to scan
-
-        Returns:
-            List of PeptideScore for each valid window position.
-        """
+        """Score all windows of given length in a protein sequence."""
         ...
+
+    def score_batch(
+        self,
+        entries: list[tuple[str, str]],
+        allele: str,
+        pep_length: int,
+    ) -> dict[str, list[PeptideScore]]:
+        """Score multiple proteins in one call. Returns {protein_id: [scores]}.
+
+        Default: sequential fallback. Subclasses override for true batching.
+        """
+        results = {}
+        for pid, seq in entries:
+            results[pid] = self.score_protein(pid, seq, allele, pep_length)
+        return results
 
 
 class StandaloneRunner(NetMHCIIpanRunner):
@@ -98,6 +109,100 @@ class StandaloneRunner(NetMHCIIpanRunner):
             return self._parse_output(result.stdout)
         finally:
             Path(fasta_path).unlink(missing_ok=True)
+
+    def score_batch(
+        self,
+        entries: list[tuple[str, str]],
+        allele: str,
+        pep_length: int,
+    ) -> dict[str, list[PeptideScore]]:
+        """Score multiple proteins in one subprocess via multi-sequence FASTA."""
+        if not entries:
+            return {}
+
+        # Write multi-sequence FASTA
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".fasta", delete=False
+        ) as f:
+            for pid, seq in entries:
+                f.write(f">{pid}\n{seq}\n")
+            fasta_path = f.name
+
+        allele_fmt = allele.replace("HLA-", "").replace("*", "_").replace(":", "")
+        cmd = [
+            str(self.binary_path),
+            "-f", fasta_path,
+            "-a", allele_fmt,
+            "-length", str(pep_length),
+            "-context",
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=600,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"NetMHCIIpan batch failed (rc={result.returncode}): "
+                    f"{result.stderr[:500]}"
+                )
+            return self._parse_batch_output(result.stdout)
+        finally:
+            Path(fasta_path).unlink(missing_ok=True)
+
+    def _parse_batch_output(
+        self, stdout: str,
+    ) -> dict[str, list[PeptideScore]]:
+        """Parse multi-sequence output, grouping by Identity column."""
+        results: dict[str, list[PeptideScore]] = {}
+        dash_count = 0
+        idx_score_el = 8
+        idx_rank_el = 9
+        idx_identity = 7
+
+        for line in stdout.splitlines():
+            stripped = line.strip()
+
+            if stripped.startswith("---"):
+                dash_count += 1
+                continue
+
+            if dash_count == 1 and "Score_EL" in stripped:
+                header_parts = stripped.split()
+                for i, h in enumerate(header_parts):
+                    if h == "Score_EL":
+                        idx_score_el = i
+                    elif h == "%Rank_EL":
+                        idx_rank_el = i
+                    elif h == "Identity":
+                        idx_identity = i
+                continue
+
+            if dash_count < 2 or dash_count >= 3:
+                continue
+            if not stripped:
+                continue
+
+            parts = stripped.split()
+            if len(parts) < idx_rank_el + 1:
+                continue
+
+            try:
+                pos = int(parts[0]) - 1
+                peptide = parts[2]
+                core = parts[4]
+                identity = parts[idx_identity]
+                el_score = float(parts[idx_score_el])
+                el_rank = float(parts[idx_rank_el]) / 100.0
+
+                results.setdefault(identity, []).append(PeptideScore(
+                    pos=pos, peptide=peptide, core=core,
+                    el_score=el_score, el_rank=el_rank,
+                ))
+            except (ValueError, IndexError):
+                continue
+
+        return results
 
     def _parse_output(self, stdout: str) -> list[PeptideScore]:
         """Parse NetMHCIIpan 4.3 stdout into PeptideScore list.

@@ -33,3 +33,10 @@ figures/
 *.pth
 *.ckpt
 
+# Software
+netMHCIIpan-4.3/
+
+# Scripts
+scripts/legacy_v1/
+scripts/iedb/
+scripts/atlas/

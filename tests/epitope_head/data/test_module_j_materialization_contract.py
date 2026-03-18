@@ -115,11 +115,11 @@ class TestJ5TopN:
     def test_top_n_selects_highest_delta(self):
         mutations = [
             ScoredMutation("P1", 10, "A", "G", [], [{}],
-                           wt_ranks={15: 0.01}, mut_ranks={15: 0.30}),
+                           wt_ranks={"15:10": 0.01}, mut_ranks={"15:10": 0.30}),
             ScoredMutation("P1", 20, "L", "K", [], [{}],
-                           wt_ranks={15: 0.01}, mut_ranks={15: 0.50}),
+                           wt_ranks={"15:20": 0.01}, mut_ranks={"15:20": 0.50}),
             ScoredMutation("P1", 30, "M", "D", [], [{}],
-                           wt_ranks={15: 0.01}, mut_ranks={15: 0.40}),
+                           wt_ranks={"15:30": 0.01}, mut_ranks={"15:30": 0.40}),
         ]
         selected = select_top_mutations(mutations, top_n=2)
         assert len(selected) == 2
@@ -130,10 +130,23 @@ class TestJ5TopN:
     def test_top_n_returns_all_if_fewer(self):
         mutations = [
             ScoredMutation("P1", 10, "A", "G", [], [{}],
-                           wt_ranks={15: 0.01}, mut_ranks={15: 0.30}),
+                           wt_ranks={"15:10": 0.01}, mut_ranks={"15:10": 0.30}),
         ]
         selected = select_top_mutations(mutations, top_n=64)
         assert len(selected) == 1
+
+    def test_no_key_collision_same_peplen_different_pos(self):
+        """Two affected spans with same pep_len but different start positions."""
+        mutations = [
+            ScoredMutation("P1", 15, "H", "A", [], [{}, {}],
+                           wt_ranks={"15:10": 0.01, "15:12": 0.005},
+                           mut_ranks={"15:10": 0.35, "15:12": 0.40}),
+        ]
+        selected = select_top_mutations(mutations, top_n=1)
+        assert len(selected) == 1
+        # Both span ranks are preserved, not overwritten
+        assert len(selected[0].wt_ranks) == 2
+        assert len(selected[0].mut_ranks) == 2
 
 
 # ── J6: Materialization ───────────────────────────────────────────────────
