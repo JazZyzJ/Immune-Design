@@ -68,8 +68,9 @@ class NetMHCIIpanRunner(ABC):
 class StandaloneRunner(NetMHCIIpanRunner):
     """Calls NetMHCIIpan standalone binary via subprocess."""
 
-    def __init__(self, binary_path: str | Path):
+    def __init__(self, binary_path: str | Path, batch_size: int = 30):
         self.binary_path = Path(binary_path)
+        self.batch_size = batch_size
         if not self.binary_path.exists():
             raise FileNotFoundError(f"NetMHCIIpan binary not found: {self.binary_path}")
 
@@ -116,39 +117,46 @@ class StandaloneRunner(NetMHCIIpanRunner):
         allele: str,
         pep_length: int,
     ) -> dict[str, list[PeptideScore]]:
-        """Score multiple proteins in one subprocess via multi-sequence FASTA."""
+        """Score multiple proteins via multi-sequence FASTA, chunked to avoid timeout."""
         if not entries:
             return {}
 
-        # Write multi-sequence FASTA
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".fasta", delete=False
-        ) as f:
-            for pid, seq in entries:
-                f.write(f">{pid}\n{seq}\n")
-            fasta_path = f.name
-
         allele_fmt = allele.replace("HLA-", "").replace("*", "_").replace(":", "")
-        cmd = [
-            str(self.binary_path),
-            "-f", fasta_path,
-            "-a", allele_fmt,
-            "-length", str(pep_length),
-            "-context",
-        ]
+        all_results: dict[str, list[PeptideScore]] = {}
 
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=600,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"NetMHCIIpan batch failed (rc={result.returncode}): "
-                    f"{result.stderr[:500]}"
+        for chunk_start in range(0, len(entries), self.batch_size):
+            chunk = entries[chunk_start:chunk_start + self.batch_size]
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".fasta", delete=False
+            ) as f:
+                for pid, seq in chunk:
+                    f.write(f">{pid}\n{seq}\n")
+                fasta_path = f.name
+
+            cmd = [
+                str(self.binary_path),
+                "-f", fasta_path,
+                "-a", allele_fmt,
+                "-length", str(pep_length),
+                "-context",
+            ]
+
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=600,
                 )
-            return self._parse_batch_output(result.stdout)
-        finally:
-            Path(fasta_path).unlink(missing_ok=True)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"NetMHCIIpan batch failed (rc={result.returncode}): "
+                        f"{result.stderr[:500]}"
+                    )
+                chunk_results = self._parse_batch_output(result.stdout)
+                all_results.update(chunk_results)
+            finally:
+                Path(fasta_path).unlink(missing_ok=True)
+
+        return all_results
 
     def _parse_batch_output(
         self, stdout: str,
@@ -335,12 +343,13 @@ def build_runner(
     backend: str = "standalone",
     binary_path: str | Path | None = None,
     seed: int = 42,
+    batch_size: int = 30,
 ) -> NetMHCIIpanRunner:
     """Factory for NetMHCIIpan runners."""
     if backend == "standalone":
         if binary_path is None:
             raise ValueError("binary_path required for standalone backend")
-        return StandaloneRunner(binary_path)
+        return StandaloneRunner(binary_path, batch_size=batch_size)
     elif backend == "mock":
         return MockRunner(seed=seed)
     else:
