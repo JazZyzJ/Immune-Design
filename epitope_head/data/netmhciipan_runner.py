@@ -99,7 +99,7 @@ class StandaloneRunner(NetMHCIIpanRunner):
 
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300,
+                cmd, capture_output=True, text=True,
             )
             if result.returncode != 0:
                 raise RuntimeError(
@@ -147,7 +147,7 @@ class StandaloneRunner(NetMHCIIpanRunner):
 
             try:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=1200,
+                    cmd, capture_output=True, text=True,
                 )
                 if result.returncode != 0:
                     raise RuntimeError(
