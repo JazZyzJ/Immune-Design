@@ -77,10 +77,17 @@ def main():
                         help="Override manifest directory (e.g. ~/scratch/.../manifests)")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Override output directory for registry artifacts")
+    parser.add_argument("--shard", type=int, default=None,
+                        help="Shard index (0-based) for SLURM array parallelism")
+    parser.add_argument("--n-shards", type=int, default=None,
+                        help="Total number of shards")
+    parser.add_argument("--batch-size", type=int, default=30,
+                        help="Max mutant proteins per NetMHCIIpan subprocess call")
     args = parser.parse_args()
 
     cfg = load_augmentation_config(args.config)
-    runner = build_runner(backend=args.backend, binary_path=args.binary)
+    runner = build_runner(backend=args.backend, binary_path=args.binary,
+                          batch_size=args.batch_size)
 
     # Resolve paths — CLI overrides config
     if args.data_root:
@@ -104,6 +111,12 @@ def main():
 
     if args.protein_ids:
         train_df = train_df[train_df["protein_id"].isin(args.protein_ids)]
+
+    # Sharding for SLURM array parallelism
+    if args.shard is not None and args.n_shards is not None:
+        train_df = train_df.sort_values("protein_id").reset_index(drop=True)
+        train_df = train_df.iloc[args.shard::args.n_shards]
+        logger.info("Shard %d/%d: processing %d proteins", args.shard, args.n_shards, len(train_df))
 
     logger.info(f"Processing {len(train_df)} train proteins")
 
@@ -164,8 +177,12 @@ def main():
                 f"[total elapsed: {elapsed:.0f}s]"
             )
 
-    # Write registry
-    registry_path = args.output or str(out_dir / "mutation_registry_strict.parquet")
+    # Write registry (shard-specific filename if sharding)
+    if args.shard is not None:
+        reg_name = f"mutation_registry_strict_shard{args.shard:03d}.parquet"
+    else:
+        reg_name = "mutation_registry_strict.parquet"
+    registry_path = args.output or str(out_dir / reg_name)
     Path(registry_path).parent.mkdir(parents=True, exist_ok=True)
 
     registry_df = pd.DataFrame(all_rows)

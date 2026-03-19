@@ -386,29 +386,24 @@ def score_and_filter_mutations(
             wt_scores = runner.score_protein(protein_id, protein_seq, allele, pep_len)
             wt_scores_cache[cache_key] = {s.pos: s.el_rank for s in wt_scores}
 
-    # Batch-score all mutant proteins per pep_len
-    # mut_batch_results[pep_len][mut_id] = {pos: el_rank}
+    # Batch-score all mutant proteins × all pep_lens in one call
+    # Build deduplicated batch entries
+    seen_ids = set()
+    batch_entries = []
+    for cand, overlapping, mut_seq, mut_id in cand_overlaps:
+        if mut_id not in seen_ids:
+            seen_ids.add(mut_id)
+            batch_entries.append((mut_id, mut_seq))
+
+    batch_out = runner.score_batch(batch_entries, allele, sorted(all_lengths_needed))
+
+    # Reshape: mut_batch_results[pep_len][mut_id] = {pos: el_rank}
     mut_batch_results: dict[int, dict[str, dict[int, float]]] = {}
-    for pep_len in all_lengths_needed:
-        # Build batch entries: (mut_id, mut_seq) for all candidates needing this length
-        batch_entries = []
-        for cand, overlapping, mut_seq, mut_id in cand_overlaps:
-            if any(p["pep_len"] == pep_len for p in overlapping):
-                batch_entries.append((mut_id, mut_seq))
-
-        # Deduplicate: same mut_id can appear if candidate overlaps multiple spans
-        seen = set()
-        deduped = []
-        for mid, mseq in batch_entries:
-            if mid not in seen:
-                seen.add(mid)
-                deduped.append((mid, mseq))
-
-        batch_out = runner.score_batch(deduped, allele, pep_len)
-        mut_batch_results[pep_len] = {
-            mid: {s.pos: s.el_rank for s in scores}
-            for mid, scores in batch_out.items()
-        }
+    for mut_id, by_len in batch_out.items():
+        for pep_len, scores in by_len.items():
+            mut_batch_results.setdefault(pep_len, {})[mut_id] = {
+                s.pos: s.el_rank for s in scores
+            }
 
     # Check disruption per candidate using batched results
     scored = []
