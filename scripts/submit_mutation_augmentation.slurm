@@ -7,8 +7,8 @@
 #SBATCH --mem=32G
 #SBATCH --time=6:00:00
 #SBATCH --array=0-19
-#SBATCH --output=/scratch/network/zc1519/run/augmentation/shard_%a_%j.out
-#SBATCH --error=/scratch/network/zc1519/run/augmentation/shard_%a_%j.err
+#SBATCH --output=/scratch/network/zc1519/logs/augmentation/shard_%a_%j.out
+#SBATCH --error=/scratch/network/zc1519/logs/augmentation/shard_%a_%j.err
 
 set -uo pipefail
 
@@ -16,12 +16,12 @@ set -uo pipefail
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
 DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests"
 AUG_OUTPUT="/scratch/network/zc1519/work/immune-design/augmentation"
+LOG_DIR="/scratch/network/zc1519/logs/augmentation"
 NETMHCIIPAN_BIN="${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan"
 
 N_SHARDS=20
 
-mkdir -p "${AUG_OUTPUT}"
-mkdir -p /scratch/network/zc1519/run/augmentation
+mkdir -p "${AUG_OUTPUT}" "${LOG_DIR}"
 
 # ── Environment ───────────────────────────────────────────────────────────
 module purge
@@ -32,9 +32,16 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export TMPDIR="/tmp/netmhciipan_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 mkdir -p "${TMPDIR}"
 
-echo "=========================================="
+# ── Diagnostics ───────────────────────────────────────────────────────────
+echo "============================================================"
 echo "Stage J: Mutation Registry — Shard ${SLURM_ARRAY_TASK_ID}/${N_SHARDS}"
-echo "=========================================="
+echo "  Job ID       : ${SLURM_JOB_ID}"
+echo "  Node         : ${SLURM_NODELIST}"
+echo "  Data dir     : ${DATA_DIR}"
+echo "  Output dir   : ${AUG_OUTPUT}"
+echo "  NetMHCIIpan  : ${NETMHCIIPAN_BIN}"
+echo "  Timestamp    : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "============================================================"
 
 # ── Build registry shard ─────────────────────────────────────────────────
 python -m scripts.build_mutation_registry \

@@ -145,8 +145,8 @@ def main():
         total_wt_rejected += sum(1 for r in wt_results if r.classification == "reject_wt_disagree")
 
         if n_confirmed == 0:
-            if (idx + 1) % 100 == 0:
-                logger.info(f"  [{idx+1}/{len(train_df)}] {pid}: no confirmed spans, skip")
+            elapsed = time.time() - t_start
+            logger.info(f"  [{idx+1}/{len(train_df)}] {pid}: 0/{len(positives)} confirmed, skip [{elapsed:.0f}s]")
             continue
 
         # J3: Enumerate
@@ -169,13 +169,14 @@ def main():
 
         all_rows.extend(build_registry_rows(selected))
 
-        if (idx + 1) % 50 == 0 or (idx + 1) == len(train_df):
-            elapsed = time.time() - t_start
-            logger.info(
-                f"  [{idx+1}/{len(train_df)}] {pid}: {n_confirmed} confirmed, "
-                f"{len(candidates)} cand, {len(scored)} disrupt, {len(selected)} selected "
-                f"[total elapsed: {elapsed:.0f}s]"
-            )
+        elapsed = time.time() - t_start
+        avg = elapsed / (idx + 1)
+        eta = avg * (len(train_df) - idx - 1)
+        logger.info(
+            f"  [{idx+1}/{len(train_df)}] {pid}: {n_confirmed} confirmed, "
+            f"{len(candidates)} cand, {len(scored)} disrupt, {len(selected)} selected "
+            f"[{elapsed:.0f}s elapsed, ~{eta:.0f}s ETA]"
+        )
 
     # Write registry (shard-specific filename if sharding)
     if args.shard is not None:
