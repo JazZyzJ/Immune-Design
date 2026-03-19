@@ -83,11 +83,18 @@ def main():
                         help="Total number of shards")
     parser.add_argument("--batch-size", type=int, default=30,
                         help="Max mutant proteins per NetMHCIIpan subprocess call")
+    parser.add_argument("--max-candidates", type=int, default=100,
+                        help="Max mutation candidates per protein (sampled if exceeded)")
+    parser.add_argument("--subprocess-timeout", type=int, default=600,
+                        help="Timeout per NetMHCIIpan subprocess call in seconds")
     args = parser.parse_args()
 
     cfg = load_augmentation_config(args.config)
-    runner = build_runner(backend=args.backend, binary_path=args.binary,
-                          batch_size=args.batch_size)
+    runner = build_runner(
+        backend=args.backend, binary_path=args.binary,
+        batch_size=args.batch_size,
+        subprocess_timeout=args.subprocess_timeout,
+    )
 
     # Resolve paths — CLI overrides config
     if args.data_root:
@@ -160,6 +167,7 @@ def main():
         # J3+J4: Score and filter
         scored = score_and_filter_mutations(
             pid, seq, candidates, positives, runner, cfg.allele, cfg,
+            max_candidates=args.max_candidates,
         )
         total_disruptions += len(scored)
 

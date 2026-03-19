@@ -106,7 +106,7 @@ if _RICH_AVAILABLE:
                 return Text()
             if self._trainer.training and task.id not in self._tasks:
                 self._tasks[task.id] = "None"
-                if self._renderable_cache:
+                if self._renderable_cache and self._current_task_id in self._renderable_cache:
                     self._tasks[
                         self._current_task_id
                     ] = self._renderable_cache[self._current_task_id][1]

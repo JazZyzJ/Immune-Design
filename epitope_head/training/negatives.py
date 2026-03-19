@@ -25,10 +25,10 @@ class NegativeSamplingShortfall(RuntimeError):
 def sample_negatives(
     protein_length: int,
     positives: list[dict],
-    neg_ratio: int = 7,
+    neg_ratio: int = 15,
     hard_negative_fraction: float = 0.3,
     hard_neg_max_overlap_ratio: float = 0.8,
-    hard_neg_offset_range: int = 5,
+    hard_neg_offset_range: int = 20,
     neg_length_sampling: str = "match_positive",
     min_k: int = 12,
     max_k: int = 25,
