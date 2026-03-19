@@ -145,7 +145,8 @@ class StandaloneRunner(NetMHCIIpanRunner):
     ) -> dict[str, dict[int, list[PeptideScore]]]:
         """Score multiple proteins × multiple lengths, chunked to avoid timeout.
 
-        Uses `-length 14,15,18` to merge all lengths into one call per chunk.
+        Uses short FASTA IDs (S000000, S000001, ...) to avoid NetMHCIIpan's
+        ~15-char Identity truncation, then remaps back to original IDs.
         Returns {protein_id: {pep_length: [scores]}}.
         """
         if not entries or not pep_lengths:
@@ -160,12 +161,15 @@ class StandaloneRunner(NetMHCIIpanRunner):
             range(0, len(entries), self.batch_size)
         ):
             chunk = entries[chunk_start:chunk_start + self.batch_size]
+            short_to_orig: dict[str, str] = {}
 
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".fasta", delete=False
             ) as f:
-                for pid, seq in chunk:
-                    f.write(f">{pid}\n{seq}\n")
+                for i, (pid, seq) in enumerate(chunk):
+                    short_id = f"S{chunk_start + i:06d}"
+                    short_to_orig[short_id] = pid
+                    f.write(f">{short_id}\n{seq}\n")
                 fasta_path = f.name
 
             cmd = [
@@ -186,11 +190,12 @@ class StandaloneRunner(NetMHCIIpanRunner):
                     )
                     continue
                 chunk_results = self._parse_batch_output(result.stdout)
-                for pid, by_len in chunk_results.items():
-                    if pid not in all_results:
-                        all_results[pid] = {}
+                for short_id, by_len in chunk_results.items():
+                    orig_id = short_to_orig.get(short_id, short_id)
+                    if orig_id not in all_results:
+                        all_results[orig_id] = {}
                     for pl, scores in by_len.items():
-                        all_results[pid][pl] = scores
+                        all_results[orig_id][pl] = scores
             except subprocess.TimeoutExpired:
                 logger.warning(
                     "NetMHCIIpan batch chunk %d/%d timed out after %ds "
