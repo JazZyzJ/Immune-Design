@@ -217,25 +217,28 @@ class StandaloneRunner(NetMHCIIpanRunner):
         Groups by Identity and peptide length.
         Returns {identity: {pep_length: [PeptideScore]}}.
 
-        NetMHCIIpan outputs one block per (allele, identity) combination,
-        each block wrapped in --- separators. For multi-length runs,
-        peptide length varies per row and is inferred from len(peptide).
+        Robust parser: skips separators/headers/summaries by content,
+        does NOT rely on dash counting (which breaks for multi-protein output
+        where each protein has its own --- block).
         """
         results: dict[str, dict[int, list[PeptideScore]]] = {}
-        dash_count = 0
         idx_score_el = 8
         idx_rank_el = 9
         idx_identity = 7
 
         for line in stdout.splitlines():
             stripped = line.strip()
-
-            if stripped.startswith("---"):
-                dash_count += 1
+            if not stripped:
                 continue
 
-            # Header detection (between first pair of ---)
-            if dash_count == 1 and "Score_EL" in stripped:
+            # Skip separators, comments, summary lines
+            if stripped.startswith("---") or stripped.startswith("#"):
+                continue
+            if "Number of" in stripped:
+                continue
+
+            # Detect header line (appears once or repeated per block)
+            if "Score_EL" in stripped and "%Rank_EL" in stripped:
                 header_parts = stripped.split()
                 for i, h in enumerate(header_parts):
                     if h == "Score_EL":
@@ -246,12 +249,7 @@ class StandaloneRunner(NetMHCIIpanRunner):
                         idx_identity = i
                 continue
 
-            # Data lines are between dash 2 and dash 3
-            if dash_count < 2 or dash_count >= 3:
-                continue
-            if not stripped:
-                continue
-
+            # Try to parse as data line
             parts = stripped.split()
             if len(parts) < idx_rank_el + 1:
                 continue
@@ -280,31 +278,21 @@ class StandaloneRunner(NetMHCIIpanRunner):
     def _parse_output(self, stdout: str) -> list[PeptideScore]:
         """Parse NetMHCIIpan 4.3 stdout into PeptideScore list.
 
-        Output structure (verified 4.3i):
-            ---              ← separator 1
-            Header line      ← column names (Pos, MHC, ..., Score_EL, %Rank_EL, ...)
-            ---              ← separator 2
-            Data lines...    ← actual scores
-            ---              ← separator 3
-
-        Data is between separator 2 and 3 (the second pair of ---).
+        Robust content-based parser (no dash counting).
         Auto-detects Score_EL/%Rank_EL column positions from the header.
         """
         scores = []
-        dash_count = 0
-        # Column indices — auto-detected from header
-        idx_score_el = 8  # default for 4.3i with Inverted column
+        idx_score_el = 8
         idx_rank_el = 9
 
         for line in stdout.splitlines():
             stripped = line.strip()
-
-            if stripped.startswith("---"):
-                dash_count += 1
+            if not stripped or stripped.startswith("---") or stripped.startswith("#"):
+                continue
+            if "Number of" in stripped:
                 continue
 
-            # Header is between dash 1 and dash 2
-            if dash_count == 1 and "Score_EL" in stripped:
+            if "Score_EL" in stripped and "%Rank_EL" in stripped:
                 header_parts = stripped.split()
                 for i, h in enumerate(header_parts):
                     if h == "Score_EL":
@@ -313,22 +301,16 @@ class StandaloneRunner(NetMHCIIpanRunner):
                         idx_rank_el = i
                 continue
 
-            # Data is between dash 2 and dash 3
-            if dash_count < 2 or dash_count >= 3:
-                continue
-            if not stripped:
-                continue
-
             parts = stripped.split()
             if len(parts) < idx_rank_el + 1:
                 continue
 
             try:
-                pos = int(parts[0]) - 1  # 1-based → 0-based
+                pos = int(parts[0]) - 1
                 peptide = parts[2]
                 core = parts[4]
                 el_score = float(parts[idx_score_el])
-                el_rank = float(parts[idx_rank_el]) / 100.0  # percent → fraction
+                el_rank = float(parts[idx_rank_el]) / 100.0
                 scores.append(PeptideScore(
                     pos=pos, peptide=peptide, core=core,
                     el_score=el_score, el_rank=el_rank,
