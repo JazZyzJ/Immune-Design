@@ -31,7 +31,7 @@ class BitConfig:
 @dataclass
 class DPLM2BitConfig(DPLM2Config):
     ## bit dplm2 config
-    bit: BitConfig = field(default=BitConfig())
+    bit: BitConfig = field(default_factory=BitConfig)
 
 
 @register_model("dplm2_bit")

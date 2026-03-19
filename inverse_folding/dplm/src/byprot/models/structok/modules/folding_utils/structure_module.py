@@ -53,7 +53,10 @@ from openfold.utils.tensor_utils import (
 
 from ..nn import TransformerEncoder
 
-attn_core_inplace_cuda = importlib.import_module("attn_core_inplace_cuda")
+try:
+    attn_core_inplace_cuda = importlib.import_module("attn_core_inplace_cuda")
+except ImportError:
+    attn_core_inplace_cuda = None
 
 
 class AngleResnetBlock(nn.Module):

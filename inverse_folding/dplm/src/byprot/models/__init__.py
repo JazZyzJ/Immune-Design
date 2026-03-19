@@ -25,5 +25,5 @@ def register_model(name):
 import_modules(
     os.path.dirname(__file__),
     "byprot.models",
-    excludes=["protein_structure_prediction"],
+    excludes=["protein_structure_prediction", "dplm2"],
 )

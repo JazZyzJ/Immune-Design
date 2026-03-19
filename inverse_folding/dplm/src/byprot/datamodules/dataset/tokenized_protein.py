@@ -1,4 +1,4 @@
-import imp
+import importlib
 import math
 import os
 from typing import Iterable, Sequence, TypeVar

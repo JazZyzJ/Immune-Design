@@ -31,8 +31,8 @@ class GVPTransEncoderConfig:
 
 @dataclass
 class DPLMInvFoldConfig:
-    encoder: GVPTransEncoderConfig = field(default=GVPTransEncoderConfig())
-    decoder: DPLMWithAdapterConfig = field(default=DPLMWithAdapterConfig())
+    encoder: GVPTransEncoderConfig = field(default_factory=GVPTransEncoderConfig)
+    decoder: DPLMWithAdapterConfig = field(default_factory=DPLMWithAdapterConfig)
     init_pred_where: bool = True
 
 

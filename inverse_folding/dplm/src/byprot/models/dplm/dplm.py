@@ -29,8 +29,8 @@ from byprot.models.utils import (
 @dataclass
 class DPLMConfig:
     num_diffusion_timesteps: int = field(default=500)
-    lora: LoRAConfig = field(default=LoRAConfig())
-    net: NetConfig = field(default=NetConfig())
+    lora: LoRAConfig = field(default_factory=LoRAConfig)
+    net: NetConfig = field(default_factory=NetConfig)
     gradient_ckpt: bool = field(default=False)
     rdm_couple: bool = field(default=False)
 

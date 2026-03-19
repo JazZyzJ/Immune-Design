@@ -4,7 +4,7 @@ lightning==2.2.0
 torchmetrics
 torch_geometric
 # torch_scatter
-torchtext==0.17.0
+# torchtext==0.17.0  # deprecated since PyTorch 2.5, unused by DPLM
 
 # --------- hydra --------- #
 hydra-core==1.2.0

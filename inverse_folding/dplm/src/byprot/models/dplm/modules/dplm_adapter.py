@@ -31,7 +31,7 @@ class DPLMWithAdapterConfig:
     adapter_dropout: float = field(default=0.1)
     encoder_d_model: int = field(default=512)
     dplm_name: str = field(default="")
-    net: NetConfig = field(default=NetConfig())
+    net: NetConfig = field(default_factory=NetConfig)
 
 
 class DPLMWithConditionalAdatper(nn.Module):

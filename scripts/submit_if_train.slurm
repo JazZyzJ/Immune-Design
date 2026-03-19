@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:2
 #SBATCH --time=48:00:00
 #SBATCH --output=/scratch/network/zc1519/logs/inverse_folding/if-train-%j.out
 #SBATCH --error=/scratch/network/zc1519/logs/inverse_folding/if-train-%j.err
@@ -29,7 +29,11 @@ conda activate immune-design
 
 export PYTHONHASHSEED=42
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
 export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
+export HF_HOME="/scratch/network/zc1519/model_cache/huggingface"
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
 export WANDB_MODE=offline
 
 # ── Diagnostics ───────────────────────────────────────────────────────────
@@ -54,7 +58,7 @@ python -m scripts.train_if_v1 \
     --data-dir "${DATA_DIR}" \
     --output-root "${OUTPUT_ROOT}" \
     --dplm-root "${DPLM_ROOT}" \
-    --num-gpus 4 \
+    --num-gpus 2 \
     --seed 42
 
 echo "Training job finished."

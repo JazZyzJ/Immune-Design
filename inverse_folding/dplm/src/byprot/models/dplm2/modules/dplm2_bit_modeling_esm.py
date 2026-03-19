@@ -21,6 +21,20 @@ from transformers.modeling_outputs import (
     BaseModelOutputWithPoolingAndCrossAttentions,
 )
 from transformers.models.esm.modeling_esm import *
+from transformers.models.esm.modeling_esm import (
+    EsmSelfAttention,
+    EsmSelfOutput,
+    EsmAttention,
+    EsmLayer,
+    EsmEncoder,
+    EsmIntermediate,
+    EsmOutput,
+    EsmEmbeddings,
+    EsmPooler,
+    EsmContactPredictionHead,
+    EsmLMHead,
+    RotaryEmbedding,
+)
 
 from byprot.models import register_model
 

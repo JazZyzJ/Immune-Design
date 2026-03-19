@@ -44,9 +44,9 @@ class StructTokenizerConfig:
 class DPLM2Config:
     ## DPLM model
     num_diffusion_timesteps: int = field(default=500)
-    tokenizer: TokenizerConfig = field(default=TokenizerConfig())
-    lora: LoRAConfig = field(default=LoRAConfig())
-    net: NetConfig = field(default=NetConfig())
+    tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
+    lora: LoRAConfig = field(default_factory=LoRAConfig)
+    net: NetConfig = field(default_factory=NetConfig)
     gradient_ckpt: bool = field(default=False)
 
     ## multi-modal training

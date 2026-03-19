@@ -12,7 +12,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 import typing as T
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 import esm
@@ -37,7 +37,7 @@ from .trunk import FoldingTrunk, FoldingTrunkConfig
 
 @dataclass
 class ESMFoldConfig:
-    trunk: T.Any = FoldingTrunkConfig()
+    trunk: T.Any = field(default_factory=FoldingTrunkConfig)
     lddt_head_hid_dim: int = 128
     use_esm_attn_map: bool = False
     input_dim: int = 256
