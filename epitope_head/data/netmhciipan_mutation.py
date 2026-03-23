@@ -10,6 +10,7 @@ Implements PLAN.md Module J (J0-J5):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -504,3 +505,158 @@ def select_top_mutations(
 
     ranked = sorted(mutations, key=max_delta, reverse=True)
     return ranked[:top_n]
+
+
+# ── Runtime augmentation (J7) ─────────────────────────────────────────────
+
+@dataclass
+class MutationRegistryIndex:
+    """Pre-loaded registry index for runtime p_aug replacement.
+
+    Groups eligible mutations by source_protein_id with precomputed
+    sampling weights (linear proportional to delta_rank_seed).
+    """
+    # {source_protein_id: list of registry row dicts}
+    by_protein: dict[str, list[dict]] = field(default_factory=dict)
+    # {source_protein_id: np.ndarray of sampling weights}
+    weights: dict[str, np.ndarray] = field(default_factory=dict)
+
+    @staticmethod
+    def from_parquet(registry_path: Path | str) -> "MutationRegistryIndex":
+        """Load registry and build weighted index for runtime sampling."""
+        path = Path(registry_path)
+        if not path.exists():
+            return MutationRegistryIndex()
+
+        df = pd.read_parquet(path)
+        if len(df) == 0:
+            return MutationRegistryIndex()
+
+        # Filter to runtime-eligible only
+        if "runtime_train_eligible" in df.columns:
+            df = df[df["runtime_train_eligible"] == True]
+
+        idx = MutationRegistryIndex()
+        for pid, group in df.groupby("source_protein_id"):
+            rows = group.to_dict("records")
+            idx.by_protein[pid] = rows
+            # Linear proportional weights from max_delta_rank
+            deltas = np.array([r["max_delta_rank"] for r in rows], dtype=np.float64)
+            deltas = np.clip(deltas, 0.0, None)
+            total = deltas.sum()
+            if total > 0:
+                idx.weights[pid] = deltas / total
+            else:
+                idx.weights[pid] = np.ones(len(rows)) / len(rows)
+
+        return idx
+
+    @property
+    def n_eligible_proteins(self) -> int:
+        return len(self.by_protein)
+
+    @property
+    def n_eligible_mutations(self) -> int:
+        return sum(len(v) for v in self.by_protein.values())
+
+
+def apply_runtime_augmentation(
+    entries: list,  # list[ProteinEntry] — avoid circular import
+    registry_idx: MutationRegistryIndex,
+    p_aug: float,
+    seed: int,
+    epoch: int,
+    return_stats: bool = False,
+) -> list | tuple[list, dict]:
+    """Build augmented epoch view by runtime p_aug replacement.
+
+    For each base train protein with eligible registry mutations:
+    - with probability (1 - p_aug): keep original
+    - with probability p_aug: sample one mutation (weighted by delta_rank)
+      and apply it (mutate seq + remove affected spans)
+
+    Does NOT change list length — base protein count stays fixed.
+    Deterministic: same (seed, epoch, protein_id) → same choice.
+
+    Returns a new list (original entries are not mutated).
+    When ``return_stats=True``, returns ``(entries, stats)`` where stats
+    contains structured augmentation exposure counters for logging/audit.
+    """
+    n_base_entries = len(entries)
+    n_eligible_entries = sum(1 for entry in entries if entry.protein_id in registry_idx.by_protein)
+
+    def _stats(n_replaced: int) -> dict:
+        return {
+            "epoch": epoch,
+            "configured_p_aug": float(p_aug),
+            "n_base_entries": n_base_entries,
+            "n_eligible_entries": n_eligible_entries,
+            "n_replaced": n_replaced,
+            "effective_aug_fraction": (
+                float(n_replaced) / n_base_entries if n_base_entries > 0 else 0.0
+            ),
+        }
+
+    if not registry_idx.by_protein or p_aug <= 0:
+        entries_out = list(entries)
+        return (entries_out, _stats(0)) if return_stats else entries_out
+
+    result = []
+    n_replaced = 0
+
+    for entry in entries:
+        pid = entry.protein_id
+        if pid not in registry_idx.by_protein:
+            result.append(entry)
+            continue
+
+        # Deterministic RNG per (seed, epoch, protein) — stable across processes
+        h = int(hashlib.blake2b(
+            f"{seed}:{epoch}:{pid}".encode(), digest_size=4,
+        ).hexdigest(), 16)
+        rng = np.random.RandomState(h)
+
+        if rng.random() >= p_aug:
+            result.append(entry)
+            continue
+
+        # Sample one mutation weighted by delta_rank
+        mutations = registry_idx.by_protein[pid]
+        weights = registry_idx.weights[pid]
+        chosen_idx = rng.choice(len(mutations), p=weights)
+        mut_row = mutations[chosen_idx]
+
+        # Apply mutation to a COPY of the entry
+        mut_pos = mut_row["mut_pos_0b"]
+        mut_aa = mut_row["mut_aa"]
+        mut_seq = entry.protein_seq[:mut_pos] + mut_aa + entry.protein_seq[mut_pos + 1:]
+
+        affected = set()
+        for a in json.loads(mut_row["affected_spans_json"]):
+            affected.add((a["start_0b"], a["end_0b"], a["pep_len"]))
+
+        remaining_positives = [
+            p for p in entry.positives
+            if (p["start_0b"], p["end_0b"], p["pep_len"]) not in affected
+        ]
+
+        # Safety: skip if no positives remain (shouldn't happen with registry filter)
+        if not remaining_positives:
+            result.append(entry)
+            continue
+
+        # Create mutated entry (same type as input)
+        from copy import copy
+        mut_entry = copy(entry)
+        mut_entry.protein_seq = mut_seq
+        mut_entry.positives = remaining_positives
+        # Keep original protein_id so cardinality doesn't change
+        result.append(mut_entry)
+        n_replaced += 1
+
+    logger.info(
+        "Runtime augmentation: epoch=%d, p_aug=%.2f, replaced=%d/%d proteins",
+        epoch, p_aug, n_replaced, len(entries),
+    )
+    stats = _stats(n_replaced)
+    return (result, stats) if return_stats else result

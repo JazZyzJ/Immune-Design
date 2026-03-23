@@ -40,10 +40,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-def build_registry_rows(mutations: list[ScoredMutation]) -> list[dict]:
+def build_registry_rows(
+    mutations: list[ScoredMutation],
+    source_positive_count: int,
+) -> list[dict]:
     """Convert ScoredMutation list to flat registry rows."""
     rows = []
     for m in mutations:
+        remaining = source_positive_count - len(m.affected_spans)
         rows.append({
             "source_protein_id": m.source_protein_id,
             "mut_pos_0b": m.mut_pos_0b,
@@ -61,6 +65,9 @@ def build_registry_rows(mutations: list[ScoredMutation]) -> list[dict]:
                 m.mut_ranks[k] - m.wt_ranks.get(k, 0)
                 for k in m.mut_ranks
             ) if m.mut_ranks else 0.0,
+            "source_positive_count": source_positive_count,
+            "remaining_positive_count": remaining,
+            "runtime_train_eligible": remaining > 0,
         })
     return rows
 
@@ -175,7 +182,7 @@ def main():
         selected = select_top_mutations(scored, cfg.top_n_per_protein)
         total_selected += len(selected)
 
-        all_rows.extend(build_registry_rows(selected))
+        all_rows.extend(build_registry_rows(selected, source_positive_count=len(positives)))
 
         elapsed = time.time() - t_start
         avg = elapsed / (idx + 1)

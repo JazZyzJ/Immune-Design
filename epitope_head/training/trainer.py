@@ -562,6 +562,7 @@ class Trainer:
         min_k: int = 12,
         max_k: int = 25,
         context_len: int = 1022,
+        epoch_hook=None,
     ):
         self.model = model.to(device)
         self.device = torch.device(device)
@@ -578,6 +579,9 @@ class Trainer:
         self.cfg = train_cfg
         self.run_dir = Path(run_dir)
         self.registry_path = Path(registry_path) if registry_path is not None else None
+        self.epoch_hook = epoch_hook
+        self._epoch_aux_metrics: dict = {}
+        self._last_epoch_aux_metrics: dict = {}
 
         # Build optimizer (only learnable params)
         self.optimizer = build_optimizer(
@@ -715,6 +719,9 @@ class Trainer:
         epoch_metrics["epoch"] = epoch
         epoch_metrics["phase"] = "train"
         epoch_metrics["timestamp"] = time.time()
+        if self._epoch_aux_metrics:
+            epoch_metrics.update(self._epoch_aux_metrics)
+            self._last_epoch_aux_metrics = dict(self._epoch_aux_metrics)
 
         write_log_entry(self.train_log_path, epoch_metrics)
         return epoch_metrics
@@ -768,6 +775,12 @@ class Trainer:
         logger.info("Starting training for %d epochs, run_dir=%s", max_epochs, self.run_dir)
 
         for epoch in range(max_epochs):
+            # Optional epoch hook (e.g., runtime augmentation rebuilds train_loader)
+            if self.epoch_hook is not None:
+                self._epoch_aux_metrics = dict(self.epoch_hook(self, epoch) or {})
+            else:
+                self._epoch_aux_metrics = {}
+
             train_metrics = self.train_epoch(epoch)
             val_metrics = self.val_epoch(epoch)
 
@@ -842,6 +855,13 @@ class Trainer:
             "manifest_version": self.manifest_version,
             "protocol_signature": self.protocol_signature,
         }
+        aug_summary = {
+            k.removeprefix("aug_"): v
+            for k, v in self._last_epoch_aux_metrics.items()
+            if k.startswith("aug_")
+        }
+        if aug_summary:
+            summary["augmentation"] = aug_summary
 
         with open(self.run_dir / "run_summary.json", "w") as f:
             json.dump(summary, f, indent=2)

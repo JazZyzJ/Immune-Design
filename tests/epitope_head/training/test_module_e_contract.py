@@ -1491,6 +1491,35 @@ class TestSmokeRun:
                             f"key '{k}': {e1[k]} != {e2[k]}"
                         )
 
+    def test_epoch_hook_metrics_written_to_train_log_and_summary(self, tmp_path):
+        """Epoch hook auxiliary metrics are persisted as structured artifacts."""
+        trainer = self._make_trainer(tmp_path, max_epochs=1)
+
+        def epoch_hook(_trainer, epoch):
+            return {
+                "aug_epoch": epoch,
+                "aug_configured_p_aug": 0.2,
+                "aug_n_base_entries": 4,
+                "aug_n_eligible_entries": 2,
+                "aug_n_replaced": 1,
+                "aug_effective_fraction": 0.25,
+            }
+
+        trainer.epoch_hook = epoch_hook
+        trainer.fit(max_epochs=1)
+
+        with open(tmp_path / "train_log.jsonl") as f:
+            train_entry = json.loads(f.readline())
+        assert train_entry["aug_configured_p_aug"] == 0.2
+        assert train_entry["aug_n_replaced"] == 1
+        assert train_entry["aug_effective_fraction"] == 0.25
+
+        with open(tmp_path / "run_summary.json") as f:
+            summary = json.load(f)
+        assert summary["augmentation"]["configured_p_aug"] == 0.2
+        assert summary["augmentation"]["n_replaced"] == 1
+        assert summary["augmentation"]["effective_fraction"] == 0.25
+
 
 class TestBoundaryDistanceBuckets:
     """E7 chunk bias gate: boundary-distance bucket diagnostics."""

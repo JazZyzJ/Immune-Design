@@ -45,6 +45,10 @@ from epitope_head.configs import (
     load_model_config,
     load_train_config,
 )
+from epitope_head.data.netmhciipan_mutation import (
+    MutationRegistryIndex,
+    apply_runtime_augmentation,
+)
 from epitope_head.training.datamodule import (
     build_chunk_samples,
     build_dataloader,
@@ -107,7 +111,11 @@ def parse_args() -> argparse.Namespace:
 
     aug = p.add_argument_group("augmentation (Stage J)")
     aug.add_argument("--aug-train-parquet", type=str, default=None,
-                     help="Path to augmented train-only parquet (Stage J)")
+                     help="(Deprecated) Path to augmented train-only parquet (static union)")
+    aug.add_argument("--registry-path", type=str, default=None,
+                     help="Path to mutation registry parquet for runtime p_aug replacement")
+    aug.add_argument("--p-aug", type=float, default=0.20,
+                     help="Probability of replacing a train protein with a mutant (default: 0.20)")
 
     return p.parse_args()
 
@@ -209,10 +217,19 @@ def main() -> dict:
     val_entries = load_split_proteins(samples_path, val_ids_path)
     logger.info("Loaded %d train, %d val proteins", len(train_entries), len(val_entries))
 
-    # ── Stage J: optional augmented train entries ──────────────────
-    if args.aug_train_parquet:
+    # ── Stage J: runtime augmentation via registry (preferred) ─────
+    registry_idx = None
+    if args.registry_path:
+        registry_idx = MutationRegistryIndex.from_parquet(args.registry_path)
+        logger.info(
+            "Loaded mutation registry: %d eligible proteins, %d eligible mutations, p_aug=%.2f",
+            registry_idx.n_eligible_proteins, registry_idx.n_eligible_mutations, args.p_aug,
+        )
+    elif args.aug_train_parquet:
+        # Deprecated static union fallback
         aug_entries = load_augmented_proteins(args.aug_train_parquet)
-        logger.info("Loaded %d augmented train entries from %s", len(aug_entries), args.aug_train_parquet)
+        logger.info("(deprecated) Static union: %d augmented train entries from %s",
+                     len(aug_entries), args.aug_train_parquet)
         train_entries = train_entries + aug_entries
 
     # ── Smoke overrides ───────────────────────────────────────────────
@@ -354,6 +371,35 @@ def main() -> dict:
             "name": args.wandb_name or f"{variant_id}_seed{args.seed}",
         }
 
+    # ── Build epoch hook for runtime augmentation ──────────────────
+    epoch_hook = None
+    if registry_idx is not None:
+        # Closure captures: train_entries (base), registry_idx, args, ck_params, train_cfg, tokenizer
+        _base_train_entries = list(train_entries)  # snapshot base entries
+
+        def _aug_epoch_hook(trainer_obj, epoch):
+            """Rebuild train_loader with runtime-augmented entries each epoch."""
+            aug_entries, aug_stats = apply_runtime_augmentation(
+                _base_train_entries, registry_idx,
+                p_aug=args.p_aug, seed=args.seed, epoch=epoch, return_stats=True,
+            )
+            aug_chunks = build_chunk_samples(aug_entries, **ck_params)
+            trainer_obj.train_loader = build_dataloader(
+                aug_chunks, max_tokens=train_cfg["max_tokens"],
+                shuffle=True, seed=args.seed + epoch,
+                num_workers=train_cfg["num_workers"],
+                tokenize_fn=tokenizer,
+            )
+            log_stats = {}
+            for k, v in aug_stats.items():
+                if k == "effective_aug_fraction":
+                    log_stats["aug_effective_fraction"] = v
+                else:
+                    log_stats[f"aug_{k}"] = v
+            return log_stats
+
+        epoch_hook = _aug_epoch_hook
+
     # ── Train ─────────────────────────────────────────────────────────
     trainer = Trainer(
         model=model,
@@ -369,6 +415,7 @@ def main() -> dict:
         min_k=data_cfg["min_k"],
         max_k=data_cfg["max_k"],
         context_len=ck_params["context_len"],
+        epoch_hook=epoch_hook,
     )
 
     logger.info("=" * 60)
