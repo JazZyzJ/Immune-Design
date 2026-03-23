@@ -34,6 +34,7 @@ def sample_negatives(
     max_k: int = 25,
     rng: np.random.RandomState | None = None,
     strict: bool = True,
+    disrupted_spans: list[dict] | None = None,
 ) -> list[dict]:
     """Sample negative spans for one protein.
 
@@ -50,6 +51,9 @@ def sample_negatives(
         strict: if True, raise NegativeSamplingShortfall when target count
             or hard/easy ratio cannot be met. If False, backfill hard
             shortfall with easy negatives and log a warning.
+        disrupted_spans: optional list of disrupted span dicts from runtime
+            augmentation. These are guaranteed hard negatives that fill the
+            hard quota first before offset-based sampling.
 
     Returns:
         List of negative span dicts {start_0b, end_0b, pep_len}.
@@ -77,7 +81,23 @@ def sample_negatives(
     hard_negatives = []
     easy_negatives = []
 
-    # --- Hard negatives: offset from random positive ---
+    # --- Disrupted spans fill hard quota first (Stage J) ---
+    n_disrupted_used = 0
+    if disrupted_spans:
+        for ds in disrupted_spans:
+            if len(hard_negatives) >= n_hard:
+                break
+            span = (ds["start_0b"], ds["end_0b"])
+            # Must not be in current positive set (shouldn't be, but safety check)
+            if span not in positive_set:
+                hard_negatives.append({
+                    "start_0b": ds["start_0b"],
+                    "end_0b": ds["end_0b"],
+                    "pep_len": ds["pep_len"],
+                })
+                n_disrupted_used += 1
+
+    # --- Hard negatives: offset from random positive (fill remaining quota) ---
     hard_attempts = 0
     max_hard_attempts = n_hard * 20
     while len(hard_negatives) < n_hard and hard_attempts < max_hard_attempts:
@@ -171,4 +191,11 @@ def sample_negatives(
                 total_neg, len(negatives), protein_length,
             )
 
-    return negatives
+    # Attach disrupted-fill stats via subclass (preserves list interface)
+    class _NegList(list):
+        pass
+    result = _NegList(negatives)
+    result._n_disrupted_used = n_disrupted_used
+    result._n_hard_target = n_hard
+    result._n_total_target = total_neg
+    return result

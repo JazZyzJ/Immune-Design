@@ -33,6 +33,7 @@ class ProteinEntry:
     positives: list[dict]  # list of {start_0b, end_0b, pep_len, support_n}
     sequence_length: int
     chunk_plan: ChunkPlan | None = None
+    disrupted_spans: list[dict] | None = None  # Stage J: spans disrupted by runtime mutation
 
 
 @dataclass
@@ -46,6 +47,7 @@ class ChunkSample:
     chunk_idx: int
     chunk_start: int
     chunk_end: int  # exclusive, in residue coords
+    disrupted_spans: list[dict] | None = None  # Stage J: carried from ProteinEntry
 
 
 def load_split_proteins(
@@ -149,8 +151,17 @@ def build_chunk_samples(
                 f"Check context_len vs max span length."
             )
 
+        # Assign disrupted spans to chunks (same logic as positives)
+        chunk_disrupted: dict[int, list[dict]] = {j: [] for j in range(plan.n_chunks)}
+        if entry.disrupted_spans:
+            for ds in entry.disrupted_spans:
+                owner = assign_span_to_chunk(plan, ds["start_0b"], ds["end_0b"])
+                if owner >= 0:
+                    chunk_disrupted[owner].append(ds)
+
         for j in range(plan.n_chunks):
             c_start, c_end = plan.chunk_range(j)
+            ds_list = chunk_disrupted[j] if chunk_disrupted[j] else None
             samples.append(ChunkSample(
                 protein_id=entry.protein_id,
                 protein_seq=entry.protein_seq,
@@ -160,6 +171,7 @@ def build_chunk_samples(
                 chunk_idx=j,
                 chunk_start=c_start,
                 chunk_end=c_end,
+                disrupted_spans=ds_list,
             ))
 
     return samples
@@ -274,6 +286,7 @@ def make_collate_fn(
             "chunk_seqs": chunk_seqs,
             "alleles": [s.allele for s in batch],
             "positives": [s.positives for s in batch],
+            "disrupted_spans": [s.disrupted_spans for s in batch],
             "chunk_starts": torch.tensor([s.chunk_start for s in batch], dtype=torch.long),
             "chunk_ends": torch.tensor([s.chunk_end for s in batch], dtype=torch.long),
             "chunk_indices": torch.tensor([s.chunk_idx for s in batch], dtype=torch.long),

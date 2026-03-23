@@ -603,6 +603,7 @@ def apply_runtime_augmentation(
 
     result = []
     n_replaced = 0
+    total_disrupted_spans = 0
 
     for entry in entries:
         pid = entry.protein_id
@@ -650,13 +651,23 @@ def apply_runtime_augmentation(
         mut_entry = copy(entry)
         mut_entry.protein_seq = mut_seq
         mut_entry.positives = remaining_positives
+        # Attach disrupted spans for hard negative priority in sample_negatives
+        mut_entry.disrupted_spans = [
+            {"start_0b": a[0], "end_0b": a[1], "pep_len": a[2]}
+            for a in affected
+        ]
         # Keep original protein_id so cardinality doesn't change
         result.append(mut_entry)
         n_replaced += 1
+        total_disrupted_spans += len(mut_entry.disrupted_spans)
 
     logger.info(
-        "Runtime augmentation: epoch=%d, p_aug=%.2f, replaced=%d/%d proteins",
+        "Runtime augmentation: epoch=%d, p_aug=%.2f, replaced=%d/%d proteins, "
+        "disrupted_spans=%d (avg %.1f/replaced)",
         epoch, p_aug, n_replaced, len(entries),
+        total_disrupted_spans,
+        total_disrupted_spans / max(n_replaced, 1),
     )
     stats = _stats(n_replaced)
+    stats["total_disrupted_spans"] = total_disrupted_spans
     return (result, stats) if return_stats else result

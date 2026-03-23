@@ -254,6 +254,7 @@ def prepare_chunk_spans(
     neg_spans_list = []
     allele_pos_list = []
     allele_neg_list = []
+    _disrupted_stats = {"used": 0, "hard_target": 0, "total_neg": 0}
 
     for i in range(B):
         chunk_start = batch["chunk_starts"][i].item()
@@ -271,6 +272,22 @@ def prepare_chunk_spans(
                     "end_0b": e - chunk_start,
                     "pep_len": p["pep_len"],
                 })
+
+        # Convert disrupted spans to chunk-local coords for hard negative priority
+        local_disrupted = None
+        raw_disrupted = batch.get("disrupted_spans", [None] * B)[i]
+        if raw_disrupted:
+            local_disrupted = []
+            for ds in raw_disrupted:
+                s, e = ds["start_0b"], ds["end_0b"]
+                if s >= chunk_start and e <= chunk_end:
+                    local_disrupted.append({
+                        "start_0b": s - chunk_start,
+                        "end_0b": e - chunk_start,
+                        "pep_len": ds["pep_len"],
+                    })
+            if not local_disrupted:
+                local_disrupted = None
 
         if local_positives:
             pos_spans = torch.tensor(
@@ -290,7 +307,12 @@ def prepare_chunk_spans(
                 max_k=max_k,
                 rng=rng,
                 strict=False,
+                disrupted_spans=local_disrupted,
             )
+            # Accumulate disrupted-fill stats if available
+            _disrupted_stats["used"] += getattr(negs, "_n_disrupted_used", 0)
+            _disrupted_stats["hard_target"] += getattr(negs, "_n_hard_target", 0)
+            _disrupted_stats["total_neg"] += getattr(negs, "_n_total_target", 0)
             neg_spans = torch.tensor(
                 [[n["start_0b"], n["end_0b"]] for n in negs],
                 dtype=torch.long,
@@ -303,6 +325,16 @@ def prepare_chunk_spans(
         neg_spans_list.append(neg_spans)
         allele_pos_list.append(torch.zeros(pos_spans.shape[0], dtype=torch.long))
         allele_neg_list.append(torch.zeros(neg_spans.shape[0], dtype=torch.long))
+
+    # Log disrupted-fill ratio if any disrupted spans were used
+    if _disrupted_stats["used"] > 0:
+        logger.debug(
+            "  disrupted hard-neg fill: %d/%d hard quota (%.1f%%), %d/%d total neg (%.1f%%)",
+            _disrupted_stats["used"], _disrupted_stats["hard_target"],
+            100.0 * _disrupted_stats["used"] / max(_disrupted_stats["hard_target"], 1),
+            _disrupted_stats["used"], _disrupted_stats["total_neg"],
+            100.0 * _disrupted_stats["used"] / max(_disrupted_stats["total_neg"], 1),
+        )
 
     return pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list
 
@@ -688,6 +720,9 @@ class Trainer:
     def train_epoch(self, epoch: int) -> dict:
         """Run one training epoch. Returns epoch metrics dict."""
         step_metrics_list = []
+        self._epoch_disrupted_used = 0
+        self._epoch_hard_target = 0
+        self._epoch_total_neg = 0
 
         if hasattr(self.train_loader, 'batch_sampler') and \
            hasattr(self.train_loader.batch_sampler, 'set_epoch'):
