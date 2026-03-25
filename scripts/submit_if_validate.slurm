@@ -62,6 +62,7 @@ python "${PROJECT_ROOT}/scripts/validate_if_baseline.py" \
     --dplm-root "${DPLM_ROOT}" \
     --experiment-path "${EXPERIMENT_PATH}" \
     --ckpt-path "${CKPT_PATH}" \
+    --experiment "dplm/cond_dplm_650m" \
     --data-dir "${DATA_DIR}" \
     --output-dir "${EXPERIMENT_PATH}" \
     --max-iter 10 \

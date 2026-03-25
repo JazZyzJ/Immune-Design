@@ -81,6 +81,10 @@ def parse_args() -> argparse.Namespace:
         help="Sampling temperature (default: 1.0)",
     )
     p.add_argument(
+        "--experiment", default="dplm/cond_dplm_650m",
+        help="Hydra experiment config name (default: dplm/cond_dplm_650m)",
+    )
+    p.add_argument(
         "--num-gpus", type=int, default=1,
         help="Number of GPUs for evaluation",
     )
@@ -105,6 +109,9 @@ def build_test_command(args: argparse.Namespace) -> List[str]:
 
     cmd = [
         "python", test_py,
+        # Override the default experiment (config.yaml defaults to lm/dplm_150m
+        # which doesn't exist; our IF baseline uses dplm/cond_dplm_650m)
+        f"experiment={args.experiment}",
         f"experiment_path={args.experiment_path}",
         f"ckpt_path={args.ckpt_path}",
         "data_split=test",
