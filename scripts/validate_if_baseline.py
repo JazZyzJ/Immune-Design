@@ -1,8 +1,8 @@
 """K3 baseline validation: generate sequences and measure structural quality.
 
-Wraps the DPLM test pipeline (test.py) to run generation + self-consistency
-evaluation on the CATH test split, then parses outputs into a structured
-baseline_validation.json artifact.
+Wraps the DPLM test pipeline (test.py) to run generation first, then performs
+self-consistency evaluation in a separate second stage. This keeps DPLM and
+ESMFold from occupying GPU memory at the same time on smaller MIG slices.
 
 Usage:
     python -m scripts.validate_if_baseline \
@@ -13,19 +13,13 @@ Usage:
         --output-dir ./outputs/if/runs/dplm_v1_adapter/<run_id>
 
     The script:
-      1. Calls DPLM test.py with eval_sc=True to generate sequences and compute
-         recovery (AAR), scTM, scRMSD, pLDDT on the CATH test split.
-      2. Parses the output FASTA header lines for per-protein metrics.
-      3. Writes baseline_validation.json with aggregate and per-protein results.
-      4. Checks smoke gate (scTM > 0.5 for majority) and target gate (scTM > 0.8).
+      1. Calls DPLM test.py in prediction mode to generate sequences and recovery.
+      2. Loads native CATH backbones for the generated proteins.
+      3. Runs ESMFold separately to compute scTM, scRMSD, pLDDT.
+      4. Writes baseline_validation.json with aggregate and per-protein results.
+      5. Checks smoke gate (scTM > 0.5 for majority) and target gate (scTM > 0.8).
 
-Cluster example (Adroit):
-    python -m scripts.validate_if_baseline \
-        --dplm-root /scratch/network/zc1519/work/inverse_folding/dplm \
-        --experiment-path /scratch/network/zc1519/run/inverse_folding/dplm_v1_adapter/<run_id> \
-        --ckpt-path /scratch/network/zc1519/run/inverse_folding/dplm_v1_adapter/<run_id>/checkpoints/<best.ckpt> \
-        --data-dir /scratch/network/zc1519/work \
-        --output-dir /scratch/network/zc1519/run/inverse_folding/dplm_v1_adapter/<run_id>
+
 """
 
 import argparse
@@ -36,6 +30,13 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from typing import Dict, List
+
+import numpy as np
+
+
+ESMFOLD_CHUNK_SIZE = 64
+BACKBONE_ATOMS = ("N", "CA", "C", "O")
+CA_INDEX = 1
 
 
 # ── K3 gate thresholds (PLAN_IF.md §K3) ─────────────────────────────────────
@@ -100,7 +101,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_test_command(args: argparse.Namespace) -> List[str]:
+def build_test_command(
+    args: argparse.Namespace, *, eval_sc: bool = False
+) -> List[str]:
     """Build the DPLM test.py command with Hydra overrides."""
     test_py = os.path.join(args.dplm_root, "test.py")
     if not os.path.isfile(test_py):
@@ -115,9 +118,9 @@ def build_test_command(args: argparse.Namespace) -> List[str]:
         f"experiment_path={args.experiment_path}",
         f"ckpt_path={args.ckpt_path}",
         "data_split=test",
-        "mode=[test,predict]",
-        # Enable self-consistency evaluation (ESMFold + TMscore)
-        "task.generator.eval_sc=True",
+        "mode=predict",
+        # Stage 1 only generates sequences. Stage 2 runs ESMFold separately.
+        f"++task.generator.eval_sc={'true' if eval_sc else 'false'}",
         f"task.generator.max_iter={args.max_iter}",
         f"task.generator.temperature={args.temperature}",
         "task.generator.sampling_strategy=argmax",
@@ -136,6 +139,26 @@ def build_test_command(args: argparse.Namespace) -> List[str]:
         ])
 
     return cmd
+
+
+def find_output_fasta(
+    dplm_root: str,
+    experiment_path: str,
+    output_dir: str,
+    temperature: float,
+) -> str | None:
+    """Locate the FASTA produced by DPLM generation."""
+    fasta_name = f"test_tau{temperature}.fasta"
+    candidate_paths = [
+        os.path.join(dplm_root, fasta_name),
+        os.path.join(experiment_path, fasta_name),
+        os.path.join(output_dir, fasta_name),
+        os.path.join(".", fasta_name),
+    ]
+    for path in candidate_paths:
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def parse_output_fasta(fasta_path: str) -> List[Dict]:
@@ -193,6 +216,177 @@ def _parse_header(header: str) -> Dict:
                 entry[key] = value
 
     return entry
+
+
+def resolve_cath_dir(data_dir: str | None, experiment_path: str) -> str:
+    """Resolve the CATH data directory from CLI args or the saved Hydra config."""
+    if data_dir:
+        if os.path.basename(os.path.normpath(data_dir)) == "cath_4.3":
+            return data_dir
+        return os.path.join(data_dir, "cath_4.3")
+
+    config_path = os.path.join(experiment_path, ".hydra", "config.yaml")
+    if not os.path.isfile(config_path):
+        raise FileNotFoundError(
+            "Could not resolve data dir automatically; missing "
+            f"{config_path}. Please pass --data-dir explicitly."
+        )
+
+    import yaml
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    config_data_dir = config["datamodule"]["data_dir"]
+    return str(config_data_dir)
+
+
+def load_reference_backbones(
+    cath_dir: str, target_names: set[str]
+) -> Dict[str, Dict[str, np.ndarray]]:
+    """Load native backbone coordinates for the generated protein names."""
+    chain_set_path = os.path.join(cath_dir, "chain_set.jsonl")
+    if not os.path.isfile(chain_set_path):
+        raise FileNotFoundError(f"CATH chain set not found: {chain_set_path}")
+
+    references: Dict[str, Dict[str, np.ndarray]] = {}
+    with open(chain_set_path) as f:
+        for line in f:
+            entry = json.loads(line)
+            name = entry["name"]
+            if name not in target_names:
+                continue
+
+            coords = np.stack(
+                [np.asarray(entry["coords"][atom], dtype=np.float32) for atom in BACKBONE_ATOMS],
+                axis=1,
+            )
+            mask = np.isfinite(coords).all(axis=(1, 2))
+            references[name] = {
+                "coords": coords,
+                "mask": mask,
+                "native_seq": entry["seq"],
+            }
+
+            if len(references) == len(target_names):
+                break
+
+    missing = sorted(target_names.difference(references.keys()))
+    if missing:
+        raise KeyError(
+            "Missing native backbones for generated proteins: "
+            + ", ".join(missing[:10])
+        )
+
+    return references
+
+
+def calc_tm_score(
+    pos_1: np.ndarray,
+    pos_2: np.ndarray,
+    seq_1: str,
+    seq_2: str,
+    mask: np.ndarray,
+) -> tuple[float, float]:
+    """Compute TM-score on masked coordinates."""
+    from tmtools import tm_align
+
+    masked_pos_1 = pos_1[mask]
+    masked_pos_2 = pos_2[mask]
+    masked_seq_1 = seq_1[: masked_pos_1.shape[0]]
+    masked_seq_2 = seq_2[: masked_pos_1.shape[0]]
+
+    tm_results = tm_align(
+        np.float64(masked_pos_1),
+        np.float64(masked_pos_2),
+        masked_seq_1,
+        masked_seq_2,
+    )
+    return tm_results.tm_norm_chain1, tm_results.tm_norm_chain2
+
+
+def run_self_consistency(
+    results: List[Dict], data_dir: str | None, experiment_path: str
+) -> Dict[str, Dict[str, float]]:
+    """Run ESMFold after generation and compute self-consistency metrics."""
+    import esm
+    import torch
+    from openfold.utils.superimposition import superimpose
+
+    cath_dir = resolve_cath_dir(data_dir, experiment_path)
+    references = load_reference_backbones(
+        cath_dir, {r["name"] for r in results if "name" in r}
+    )
+
+    print("\nRunning stage-2 self-consistency with ESMFold...")
+    model = esm.pretrained.esmfold_v1().eval()
+    if hasattr(model, "set_chunk_size"):
+        model.set_chunk_size(ESMFOLD_CHUNK_SIZE)
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    metrics_by_name: Dict[str, Dict[str, float]] = {}
+    with torch.no_grad():
+        for idx, result in enumerate(results, start=1):
+            name = result["name"]
+            pred_seq = result["sequence"]
+            reference = references[name]
+            ref_coords = reference["coords"]
+            ref_mask = reference["mask"]
+
+            output = model.infer(sequences=[pred_seq])
+            folded_positions = output["positions"][-1][0].detach().cpu()
+            plddt = float(output["mean_plddt"][0].item())
+
+            seqlen = min(len(pred_seq), ref_coords.shape[0], folded_positions.shape[0])
+            if seqlen == 0:
+                raise ValueError(f"Empty sequence encountered for {name}")
+
+            mask = ref_mask[:seqlen]
+            ref_backbone = ref_coords[:seqlen]
+            folded_backbone = folded_positions[:seqlen, :3, :].numpy()
+            _, sc_tmscore = calc_tm_score(
+                ref_backbone[:, :3, :],
+                folded_backbone,
+                pred_seq[:seqlen],
+                pred_seq[:seqlen],
+                mask,
+            )
+            _, sc_rmsd = superimpose(
+                torch.from_numpy(ref_backbone[:, CA_INDEX, :]).float()[None],
+                folded_positions[:seqlen, CA_INDEX, :].float()[None].cpu(),
+                torch.from_numpy(mask.astype(np.float32))[None],
+            )
+
+            metrics_by_name[name] = {
+                "scTM": float(sc_tmscore),
+                "scRMSD": float(sc_rmsd[0].item()),
+                "plddt": plddt,
+            }
+            print(
+                f"  [{idx}/{len(results)}] {name}: "
+                f"scTM={sc_tmscore:.4f}, scRMSD={sc_rmsd[0].item():.4f}, pLDDT={plddt:.2f}"
+            )
+
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return metrics_by_name
+
+
+def merge_sc_metrics(
+    results: List[Dict], sc_metrics: Dict[str, Dict[str, float]]
+) -> List[Dict]:
+    """Overwrite placeholder SC metrics with stage-2 ESMFold values."""
+    merged: List[Dict] = []
+    for result in results:
+        name = result.get("name")
+        updated = dict(result)
+        if name in sc_metrics:
+            updated.update(sc_metrics[name])
+        merged.append(updated)
+    return merged
 
 
 def compute_validation_summary(
@@ -286,9 +480,9 @@ def main() -> int:
     args = parse_args()
     output_dir = args.output_dir or args.experiment_path
 
-    # ── Step 1: Run DPLM test.py ─────────────────────────────────────────
+    # ── Step 1: Run DPLM generation only ─────────────────────────────────
     if not args.skip_generation:
-        cmd = build_test_command(args)
+        cmd = build_test_command(args, eval_sc=False)
 
         print("=" * 60)
         print("K3 Baseline Validation")
@@ -313,28 +507,15 @@ def main() -> int:
     else:
         print("Skipping generation (--skip-generation).")
 
-    # ── Step 2: Parse output FASTA ────────────────────────────────────────
-    # DPLM writes to CWD: test_tau{temperature}.fasta
-    fasta_name = f"test_tau{args.temperature}.fasta"
-
-    # Search in multiple candidate locations
-    candidate_paths = [
-        os.path.join(args.dplm_root, fasta_name),
-        os.path.join(args.experiment_path, fasta_name),
-        os.path.join(output_dir, fasta_name),
-        os.path.join(".", fasta_name),
-    ]
-
-    fasta_path = None
-    for p in candidate_paths:
-        if os.path.isfile(p):
-            fasta_path = p
-            break
-
+    # ── Step 2: Parse generated FASTA ─────────────────────────────────────
+    fasta_path = find_output_fasta(
+        args.dplm_root, args.experiment_path, output_dir, args.temperature
+    )
     if fasta_path is None:
         print(f"\nERROR: Output FASTA not found. Searched:")
-        for p in candidate_paths:
-            print(f"  {p}")
+        print(f"  {args.dplm_root}")
+        print(f"  {args.experiment_path}")
+        print(f"  {output_dir}")
         print("\nHint: DPLM writes output to the CWD of test.py.")
         print("Try running with --skip-generation and check the DPLM root directory.")
         return 1
@@ -347,7 +528,11 @@ def main() -> int:
         print("ERROR: No entries parsed from output FASTA.")
         return 1
 
-    # ── Step 3: Compute validation summary ────────────────────────────────
+    # ── Step 3: Run stage-2 self-consistency ──────────────────────────────
+    sc_metrics = run_self_consistency(results, args.data_dir, args.experiment_path)
+    results = merge_sc_metrics(results, sc_metrics)
+
+    # ── Step 4: Compute validation summary ────────────────────────────────
     summary = compute_validation_summary(
         results, args.temperature, args.max_iter,
     )
@@ -356,7 +541,7 @@ def main() -> int:
     summary["checkpoint"] = os.path.abspath(args.ckpt_path)
     summary["experiment_path"] = os.path.abspath(args.experiment_path)
 
-    # ── Step 4: Write baseline_validation.json ────────────────────────────
+    # ── Step 5: Write baseline_validation.json ────────────────────────────
     os.makedirs(output_dir, exist_ok=True)
     validation_path = os.path.join(output_dir, "baseline_validation.json")
     with open(validation_path, "w") as f:
@@ -365,7 +550,7 @@ def main() -> int:
     # Also write per-protein detail CSV
     _write_per_protein_csv(results, output_dir)
 
-    # ── Step 5: Print summary ─────────────────────────────────────────────
+    # ── Step 6: Print summary ─────────────────────────────────────────────
     print("\n" + "=" * 60)
     print("K3 Validation Results")
     print("=" * 60)

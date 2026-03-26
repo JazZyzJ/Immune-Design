@@ -8,7 +8,9 @@ TDD gates from PLAN_IF.md:
 """
 
 import copy
+import importlib.util
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -340,6 +342,93 @@ class TestArtifactBundleAlignment:
         ])
         with pytest.raises(EvalSchemaError, match="protein_id"):
             validate_bundle_alignment(structural, immuno_head, immuno_nmp)
+
+
+class TestValidateIFBaselineWrapper:
+
+    @staticmethod
+    def _load_module():
+        module_path = (
+            Path(__file__).resolve().parents[2]
+            / "scripts"
+            / "validate_if_baseline.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "validate_if_baseline", module_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def test_build_test_command_uses_prediction_mode(self, tmp_path):
+        module = self._load_module()
+
+        dplm_root = tmp_path / "dplm"
+        dplm_root.mkdir()
+        (dplm_root / "test.py").write_text("# stub\n")
+
+        args = module.argparse.Namespace(
+            dplm_root=str(dplm_root),
+            experiment_path=str(tmp_path / "exp"),
+            ckpt_path=str(tmp_path / "exp" / "checkpoints" / "best.ckpt"),
+            data_dir=str(tmp_path / "data"),
+            output_dir=str(tmp_path / "exp"),
+            max_iter=10,
+            temperature=1.0,
+            experiment="dplm/cond_dplm_650m",
+            num_gpus=1,
+        )
+
+        cmd = module.build_test_command(args)
+
+        assert "mode=predict" in cmd
+
+    def test_build_test_command_disables_eval_sc_during_generation(self, tmp_path):
+        module = self._load_module()
+
+        dplm_root = tmp_path / "dplm"
+        dplm_root.mkdir()
+        (dplm_root / "test.py").write_text("# stub\n")
+
+        args = module.argparse.Namespace(
+            dplm_root=str(dplm_root),
+            experiment_path=str(tmp_path / "exp"),
+            ckpt_path=str(tmp_path / "exp" / "checkpoints" / "best.ckpt"),
+            data_dir=str(tmp_path / "data"),
+            output_dir=str(tmp_path / "exp"),
+            max_iter=10,
+            temperature=1.0,
+            experiment="dplm/cond_dplm_650m",
+            num_gpus=1,
+        )
+
+        cmd = module.build_test_command(args, eval_sc=False)
+
+        assert any(token.endswith("task.generator.eval_sc=false") for token in cmd)
+        assert "+task.generator.eval_sc=True" not in cmd
+
+    def test_merge_sc_metrics_overwrites_placeholder_scores(self):
+        module = self._load_module()
+
+        results = [{
+            "name": "protA",
+            "AAR": 0.42,
+            "scTM": 0.0,
+            "scRMSD": 0.0,
+            "plddt": 0.0,
+            "sequence": "ACDE",
+        }]
+        sc_metrics = {
+            "protA": {"scTM": 0.81, "scRMSD": 1.23, "plddt": 77.5},
+        }
+
+        merged = module.merge_sc_metrics(results, sc_metrics)
+
+        assert merged[0]["AAR"] == 0.42
+        assert merged[0]["scTM"] == 0.81
+        assert merged[0]["scRMSD"] == 1.23
+        assert merged[0]["plddt"] == 77.5
 
 
 # ── L4: compute_comparison fail-fast on missing WT data ──────────────────────

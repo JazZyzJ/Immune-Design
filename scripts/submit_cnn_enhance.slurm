@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=LC1-lite
+#SBATCH --job-name=LC1-lite-aug
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -7,15 +7,15 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/network/zc1519/logs/epitope_head/LC1_lite_%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/epitope_head/LC1_lite_%j.err
+#SBATCH --output=/scratch/network/zc1519/logs/epitope_head/LC1_lite_aug_%j.out
+#SBATCH --error=/scratch/network/zc1519/logs/epitope_head/LC1_lite_aug_%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
 DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests"
-OUTPUT_ROOT="/scratch/network/zc1519/run/epitope_head/LC1_lite"
+OUTPUT_ROOT="/scratch/network/zc1519/run/epitope_head/LC1_lite_aug"
 LOG_DIR="/scratch/network/zc1519/logs/epitope_head"
 
 # Stage J: runtime augmentation via registry
@@ -38,7 +38,7 @@ export WANDB_MODE=offline
 
 # ── Diagnostics ───────────────────────────────────────────────────────────
 echo "============================================================"
-echo "Epitope Head: LC1_lite Training (runtime p_aug)"
+echo "Epitope Head: LC1_lite_aug Training (runtime p_aug)"
 echo "  Job ID       : ${SLURM_JOB_ID}"
 echo "  Node         : ${SLURM_NODELIST}"
 echo "  GPUs         : ${SLURM_GPUS_ON_NODE:-1}"
@@ -63,7 +63,7 @@ else
     echo "  No registry found — training with base entries only"
 fi
 
-# ── Launch LC1_lite training ─────────────────────────────────────────────
+# ── Launch LC1_lite_aug training ─────────────────────────────────────────────
 python "${PROJECT_ROOT}/scripts/train_v2_ablation.py" \
     --variant-id LC1 \
     --seed 42 \
@@ -75,8 +75,8 @@ python "${PROJECT_ROOT}/scripts/train_v2_ablation.py" \
     --output-root "${OUTPUT_ROOT}" \
     "${AUG_FLAG[@]+"${AUG_FLAG[@]}"}" \
     --wandb \
-    --wandb-name "LC1_lite_p${P_AUG}_seed42" \
+    --wandb-name "LC1_lite_aug_p${P_AUG}_imp+disruptfirst_seed42" \
     --wandb-entity "chenzijie040528-zhejiang-university" \
     --wandb-project "Immune-Design"
 
-echo "LC1_lite training finished."
+echo "LC1_lite_aug_imp+disruptfirst training finished."
