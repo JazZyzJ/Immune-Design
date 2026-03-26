@@ -19,8 +19,8 @@ env/
 
 # Large datasets and generated artifacts
 data/**
-!data/README.md
-!data/README_v2.md
+data/README.md
+data/README_v2.md
 data_copy/
 outputs/
 figures/
@@ -40,3 +40,31 @@ netMHCIIpan-4.3/
 scripts/legacy_v1/
 scripts/iedb/
 scripts/atlas/
+scripts/analysis/
+scripts/add_positions.py
+scripts/collect_accessions.py
+scripts/identify_sources.py
+scripts/fetch_sequences.py
+scripts/fetch_ncbi_sequences.py
+scripts/regenerate_combined_fasta.py
+scripts/finalize_v2.py
+scripts/iedb_end_to_end.py
+scripts/update_resolution.py
+scripts/validate_consistency.py
+scripts/visualize_demo.py
+
+
+# Agents
+claude-scientific-skills/
+
+# Misc artifacts
+cols_target.txt
+cols.txt
+demo_viz_human.html
+demo_viz.html
+demo.json
+overview.txt
+doc/
+PLAN_enco_abl.md
+PLAN_epi_v1.md
+report/

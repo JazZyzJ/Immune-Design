@@ -3,8 +3,9 @@
 ## 1. Interaction Rules
 
 - **中文对话，英文代码/文档/commit。**
-- 用户会指定角色：**Thinker**（科学讨论，不要掉进实现细节）、**Coder**（精确实现，抠细节）、**Planner**（规划推敲）。没有明确指定时默认 Thinker。
+- 用户会指定角色：**Thinker**（科学讨论，不要掉进实现细节）、**Coder**（精确实现，抠细节）、**Organizer**（规划推敲）。没有明确指定时默认 Thinker。
 - 用户切换角色时立即切换行为风格。
+- 用户进行指定时可能会对不同模块进行命名，使用`/rename`进行类似于 **coder4if** 你只需要提取到其中的核心角色名称就可以自我定位，后续的内容通常是指定的一部分工作
 
 ## 2. Execution Standards
 
@@ -44,13 +45,29 @@ SLURM `--output/--error` 必须指向 `logs/`，不能混入 `run/`。
 7. `# ── Launch ──` — 执行命令
 8. 结尾 echo 完成
 
-## 4. Plan Files
+## 4. Plan & Progress Files
 
 - **核心任务驱动文件**: ``
 - **当前执行计划**: `PLAN_IF.md` (Inverse Folding v1, Module K→L→M→N)
+- **数据选择计划**: `PLAN_DATA_SEL.md` (absorbs Module L from PLAN_IF)
 - **Epitope head 计划**: `PLAN.md`
 - **变更必须同步到 `LOG.md`**（append-only, 结构化 schema）
 - 科学架构文档: `doc/Inverse_Folding_v1.md`, `doc/Immune_Design_Architecture_v2.md`
+
+### PROGRESS.md 治理规则
+
+`PROGRESS.md` 是 **可覆写的 live snapshot**，用于跨 session / 跨环境（本地 ↔ 集群）同步当前状态。
+
+| 属性 | 规则 |
+|------|------|
+| 读取时机 | **每个 session 开始时必读**，获取当前态势 |
+| 写入时机 | 完成工作后覆写对应 section；集群跑完实验后记录关键数据 |
+| 写入方式 | **覆写**（不是 append-only，与 LOG.md 不同） |
+| 关键数据 | 集群产出的核心指标（loss、AUC、scTM 分布等）必须回填 TBD 项 |
+| TBD 项 | 标记为 `TBD` 的数据需从集群 session 补全（读 SLURM log / 输出文件） |
+| 与 LOG.md 关系 | PROGRESS.md 记录"现在在哪"，LOG.md 记录"发生了什么" |
+| 与 Notion 关系 | PROGRESS.md 是 Notion Gantt Chart sync 的数据源，Paper Readiness section → SubFigure 状态 |
+| 不记录 | 代码 diff、实现细节、debug 过程（这些属于 LOG.md 或 git history） |
 
 ## 5. Key Architecture Decisions (Frozen)
 
