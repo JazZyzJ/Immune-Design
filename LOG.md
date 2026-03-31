@@ -1368,3 +1368,70 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN.md:5`
   - `PLAN.md:299`
   - `doc/Data_augmentation.md`
+
+### L0045
+- timestamp: 2026-03-26T17:45:00+08:00
+- type: CODEMAP_DIFF
+- module: L
+- trigger: Execution of PLAN_DATA_SEL.md tasks L0–L5 (data selection and evaluation pipeline).
+- change_summary: Implemented three-tier test protein schema, MMseqs2 overlap detection, tier validation scripts, Tier 2 prescreen pipeline (dual-scorer + CATH topology sampling), test set assembly with post-hoc validation, and all supporting CLI/SLURM scripts. 131 tests pass.
+- rationale: Module L provides the curated test set infrastructure that Module M (guidance sweep) and Module N (comparison baselines) depend on. All code-only tasks are complete; remaining L6/L7 require manual curation steps and cluster execution with real data.
+- artifacts:
+  - `inverse_folding/evaluation/schema.py` (added TEST_PROTEIN_COLUMNS, TIER_REQUIRED_FIELDS, validate_test_protein_entry)
+  - `inverse_folding/evaluation/overlap.py` (new: MMseqs2 overlap wrapper)
+  - `inverse_folding/evaluation/tier_validators.py` (new: Tier 1/3 candidate validators)
+  - `inverse_folding/evaluation/prescreen.py` (new: Tier 2 dual-scorer filter)
+  - `inverse_folding/evaluation/cath_topology.py` (new: CATH topology assignment + diversity sampling)
+  - `inverse_folding/evaluation/assembly.py` (new: test set assembly + validation)
+  - `scripts/run_overlap_filter.py` (new CLI)
+  - `scripts/validate_tier1.py` (new CLI)
+  - `scripts/validate_tier3.py` (new CLI)
+  - `scripts/prescreen_tier2.py` (new CLI)
+  - `scripts/assemble_if_test_set.py` (new CLI)
+  - `scripts/submit_prescreen_tier2.slurm` (new SLURM)
+  - `scripts/submit_assemble_test_set.slurm` (new SLURM)
+  - `tests/inverse_folding/test_module_l_tier_schema.py` (30 tests)
+  - `tests/inverse_folding/test_module_l_overlap.py` (10 tests)
+  - `tests/inverse_folding/test_module_l_validate_tier1.py` (12 tests)
+  - `tests/inverse_folding/test_module_l_prescreen.py` (11 tests)
+  - `tests/inverse_folding/test_module_l_validate_tier3.py` (10 tests)
+  - `tests/inverse_folding/test_module_l_assembly.py` (8 tests)
+- evidence: `python -m pytest tests/inverse_folding/test_module_l_*.py -v` → 131 passed, 0 failed.
+- impact:
+  - scope: Module L data selection pipeline, evaluation infrastructure, downstream M/N contracts.
+  - risk: low
+  - confidence: 0.95
+- status: in_progress
+- next_action: Execute manual curation steps (IEDB query for Tier 1, PDB candidate pool for Tier 2, literature search for Tier 3) then run L6 E2E verification and L7 release gates on cluster.
+- refs:
+  - `PLAN_DATA_SEL.md:§L0–L5`
+
+### L0046
+- timestamp: 2026-03-31T20:35:00-04:00
+- type: DECISION
+- module: J
+- trigger: User request to extend epitope head training to DRB1*04:01 and DRB1*15:01.
+- change_summary: Added multi-allele support via output_subdir config field; generated data manifests, augmentation configs, and SLURM scripts for DRB0401 and DRB1501.
+- rationale: Multi-allele coverage is needed for paper Figure F2 (multi-allele analysis). Reuse existing LC1_lite_aug pipeline (CNN encoder + p_aug=0.20) with per-allele data isolation via output_subdir in config.
+- artifacts:
+  - `epitope_head/data/build_dataset.py` (added _resolve_manifest_dir helper)
+  - `epitope_head/configs/data_drb0401.yaml` (new)
+  - `epitope_head/configs/data_drb1501.yaml` (new)
+  - `epitope_head/configs/augmentation_drb0401.yaml` (new)
+  - `epitope_head/configs/augmentation_drb1501.yaml` (new)
+  - `scripts/submit_aug_drb0401.slurm` (new)
+  - `scripts/submit_aug_drb1501.slurm` (new)
+  - `scripts/submit_train_drb0401.slurm` (new)
+  - `scripts/submit_train_drb1501.slurm` (new)
+  - `outputs/manifests/drb0401/` (1865 proteins: train=1490, val=186, test=189)
+  - `outputs/manifests/drb1501/` (1536 proteins: train=1236, val=153, test=147)
+- evidence: Pipeline stages A-D completed locally for both alleles. Splits verified. SCP to cluster pending (VPN required).
+- impact:
+  - scope: Epitope head multi-allele extension; no changes to existing DRB1*07:01 artifacts.
+  - risk: low
+  - confidence: 0.95
+- status: in_progress
+- next_action: SCP manifests to cluster, run augmentation (sbatch submit_aug_*.slurm), then training (sbatch submit_train_*.slurm).
+- refs:
+  - `PLAN.md:§Module J`
+  - `PROGRESS.md:§Epitope Head`

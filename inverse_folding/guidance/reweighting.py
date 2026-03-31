@@ -78,15 +78,27 @@ def select_candidate(
     rng = np.random.RandomState(seed)
     selected_index = int(rng.choice(len(risks), p=weights))
 
-    selected_seq = sequences[selected_index]
-    seq_hash = hashlib.sha256(selected_seq.encode()).hexdigest()[:12]
+    # Per-candidate sequence hashes
+    candidate_hashes = [
+        hashlib.sha256(seq.encode()).hexdigest()[:12] for seq in sequences
+    ]
+
+    # Detect duplicate groups: hash → list of indices
+    hash_to_indices: Dict[str, List[int]] = {}
+    for i, h in enumerate(candidate_hashes):
+        hash_to_indices.setdefault(h, []).append(i)
+    duplicate_groups = {
+        h: indices for h, indices in hash_to_indices.items() if len(indices) > 1
+    }
 
     return {
         "selected_index": selected_index,
         "selected_risk": float(risks[selected_index]),
-        "selected_seq_hash": seq_hash,
+        "selected_seq_hash": candidate_hashes[selected_index],
         "weights": weights.tolist(),
         "candidate_risks": risks.tolist(),
+        "candidate_seq_hashes": candidate_hashes,
+        "duplicate_groups": duplicate_groups,
     }
 
 

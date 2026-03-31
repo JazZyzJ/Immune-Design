@@ -1,0 +1,35 @@
+# Stage J: NetMHCIIpan Mutation Augmentation Config (DRB1*04:01)
+# Derived from augmentation.yaml; allele and paths differ.
+
+augmentation:
+  profile: strict
+  tool: netmhciipan
+  tool_version: "4.3"
+  tool_mode: EL
+  allele: "HLA-DRB1*04:01"
+
+  # WT verification thresholds
+  wt_rank_threshold: 0.02
+  wt_uncertain_upper: 0.05
+
+  # Disruption thresholds
+  mut_rank_threshold: 0.20
+  delta_rank_threshold: 0.18
+
+  # Registry selection
+  top_n_per_protein: 64
+
+  # Input paths (cluster; overridden by --data-root CLI)
+  inputs:
+    source_parquet: outputs/manifests/drb0401/protein_samples_strict.parquet
+    train_ids: outputs/manifests/drb0401/splits/strict/train_ids.txt
+    val_ids: outputs/manifests/drb0401/splits/strict/val_ids.txt
+    test_ids: outputs/manifests/drb0401/splits/strict/test_ids.txt
+
+  # Output paths
+  outputs:
+    pilot: outputs/augmentation/drb0401/mutation_pilot_strict.json
+    registry: outputs/augmentation/drb0401/mutation_registry_strict.parquet
+    registry_summary: outputs/augmentation/drb0401/mutation_registry_strict_summary.json
+    aug_train_samples: outputs/augmentation/drb0401/protein_samples_strict_aug_train.parquet
+    aug_train_summary: outputs/augmentation/drb0401/protein_samples_strict_aug_train_summary.json

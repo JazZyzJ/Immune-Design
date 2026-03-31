@@ -3,9 +3,12 @@
 Defines required column sets for each output table and a validator
 that rejects incomplete rows. All downstream modules (M, N) must
 produce outputs conforming to these schemas.
+
+Also defines the per-protein test set schema (PLAN_DATA_SEL §L0)
+with tier-specific nullable rules.
 """
 
-from typing import FrozenSet
+from typing import Dict, FrozenSet, Set
 
 import pandas as pd
 
@@ -55,6 +58,71 @@ COMPARISON_COLUMNS: FrozenSet[str] = frozenset({
     "mutation_count",
     "risk_per_mutation",
 })
+
+
+# ── Per-protein test set schema (PLAN_DATA_SEL §L0) ──────────────────────────
+
+TEST_PROTEIN_COLUMNS: Set[str] = {
+    "protein_id",
+    "tier",
+    "sequence",
+    "sequence_length",
+    "pdb_path",
+    "resolution",
+    "cath_overlap_flag",
+    "cath_overlap_id",
+    "head_train_overlap_flag",
+    "netmhciipan_n_strong",
+    "netmhciipan_mean_best_rank",
+    "head_global_risk",
+    "head_n_hotspot",
+    "cath_topology",
+    "experimental_epitopes_json",
+    "literature_evidence",
+    "selection_reason",
+}
+
+TIER_REQUIRED_FIELDS: Dict[int, Set[str]] = {
+    1: {"experimental_epitopes_json"},
+    2: {"cath_topology"},
+    3: {"literature_evidence"},
+}
+
+_VALID_TIERS = {1, 2, 3}
+
+
+def validate_test_protein_entry(entry: dict) -> dict:
+    """Validate a single test protein entry against the frozen schema.
+
+    Checks:
+      1. All fields in TEST_PROTEIN_COLUMNS are present.
+      2. ``tier`` is 1, 2, or 3.
+      3. Tier-specific fields are non-null for their tier.
+
+    Returns the entry unchanged if valid; raises EvalSchemaError otherwise.
+    """
+    # Universal required fields (must be present as keys)
+    missing = TEST_PROTEIN_COLUMNS - set(entry.keys())
+    if missing:
+        raise EvalSchemaError(
+            f"Missing required fields: {sorted(missing)}"
+        )
+
+    # Tier validity
+    tier = entry.get("tier")
+    if tier not in _VALID_TIERS:
+        raise EvalSchemaError(
+            f"Invalid tier={tier!r}; must be one of {sorted(_VALID_TIERS)}"
+        )
+
+    # Tier-specific non-null checks
+    for field in TIER_REQUIRED_FIELDS.get(tier, set()):
+        if entry.get(field) is None:
+            raise EvalSchemaError(
+                f"Field '{field}' must not be null for tier {tier}"
+            )
+
+    return entry
 
 
 # ── Public API ───────────────────────────────────────────────────────────────

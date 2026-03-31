@@ -42,13 +42,24 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _resolve_manifest_dir(cfg: dict) -> Path:
+    """Resolve manifest output directory from config.
+
+    If cfg contains 'output_subdir', outputs go to
+    outputs/manifests/{output_subdir}/. Otherwise, outputs/manifests/.
+    """
+    base = PROJECT_ROOT / "outputs" / "manifests"
+    subdir = cfg.get("output_subdir")
+    return base / subdir if subdir else base
+
+
 def build_stage_a(cfg: dict | None = None) -> dict:
     """Run full Stage A pipeline. Returns summary dict."""
     if cfg is None:
         cfg = load_data_config()
 
     tsv_path = PROJECT_ROOT / cfg["tsv_path"]
-    out_dir = PROJECT_ROOT / "outputs" / "manifests"
+    out_dir = _resolve_manifest_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ledger = RejectionLedger()
@@ -100,7 +111,7 @@ def build_stage_b(cfg: dict | None = None) -> dict:
     if cfg is None:
         cfg = load_data_config()
 
-    manifest_dir = PROJECT_ROOT / "outputs" / "manifests"
+    manifest_dir = _resolve_manifest_dir(cfg)
     fasta_path = PROJECT_ROOT / cfg["fasta_path"]
 
     # Build FASTA index once
@@ -136,7 +147,7 @@ def build_stage_c(cfg: dict | None = None) -> dict:
     if cfg is None:
         cfg = load_data_config()
 
-    manifest_dir = PROJECT_ROOT / "outputs" / "manifests"
+    manifest_dir = _resolve_manifest_dir(cfg)
 
     results = {}
     for profile in ["strict", "balanced"]:
@@ -178,7 +189,7 @@ def build_stage_d(cfg: dict | None = None) -> dict:
     import json
     import shutil
 
-    manifest_dir = PROJECT_ROOT / "outputs" / "manifests"
+    manifest_dir = _resolve_manifest_dir(cfg)
     splits_dir = manifest_dir / "splits"
     ratios = cfg["split_ratios"]
     seed = cfg["split_seed"]

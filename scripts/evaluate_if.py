@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
                     help="FASTA file with WT sequences for comparison")
     p.add_argument("--epitope-ckpt", required=True,
                     help="Path to frozen epitope head checkpoint")
+    p.add_argument("--epitope-config-dir", default=None,
+                    help="Directory with epitope head YAML configs "
+                         "(default: epitope_head/configs)")
+    p.add_argument("--epitope-variant", default="B0",
+                    help="Epitope head encoder variant ID (default: B0)")
     p.add_argument("--netmhciipan-bin", required=True,
                     help="Path to NetMHCIIpan binary")
     p.add_argument("--allele", default="HLA-DRB1*07:01",
@@ -239,29 +244,41 @@ def main() -> int:
     wt_hotspot_scores = {}  # {protein_id: np.array of per-residue h_i}
 
     if len(structural_df) > 0:
-        from epitope_head.inference.predictor import InferencePredictor
+        # Build predictor with correct factory (requires model + config + tokenizer)
+        from scripts.run_if_guidance_sweep import load_epitope_predictor
 
-        predictor = InferencePredictor.from_checkpoint(
-            args.epitope_ckpt, device=args.device,
+        config_dir = args.epitope_config_dir
+        if config_dir is None:
+            config_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "epitope_head", "configs",
+            )
+
+        predictor = load_epitope_predictor(
+            config_dir=config_dir,
+            checkpoint_path=args.epitope_ckpt,
+            variant_id=args.epitope_variant,
+            device=args.device,
         )
 
         # Score WT proteins first
         for protein_id, wt_seq in wt_sequences.items():
             wt_result = predictor.predict_protein(wt_seq)
             wt_head_risks[protein_id] = wt_result["global_risk"]
-            wt_hotspot_scores[protein_id] = wt_result["hotspot_scores"]
+            wt_hotspot_scores[protein_id] = wt_result["residue_hotspot"]
 
         # Score generated designs
         for _, row in structural_df.iterrows():
             result = predictor.predict_protein(row["sequence"])
+            hotspot = result["residue_hotspot"]
             immuno_head_rows.append({
                 "protein_id": row["protein_id"],
                 "design_id": row["design_id"],
                 "global_risk": result["global_risk"],
-                "mean_hotspot": float(result["hotspot_scores"].mean()),
-                "max_hotspot": float(result["hotspot_scores"].max()),
+                "mean_hotspot": float(hotspot.mean()),
+                "max_hotspot": float(hotspot.max()),
                 "n_hotspot_positions": int(
-                    (result["hotspot_scores"] > 0.5).sum()
+                    (hotspot > 0.5).sum()
                 ),
             })
 

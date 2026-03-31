@@ -100,6 +100,36 @@ class TestGuidanceConfigContract:
         from inverse_folding.guidance.config import DEFAULT_NUM_CANDIDATES
         assert DEFAULT_NUM_CANDIDATES == 8
 
+    def test_off_grid_eta_rejected_in_strict_mode(self):
+        """eta=3.7 is not in the frozen grid → rejected with enforce_frozen_grid."""
+        from inverse_folding.guidance.config import (
+            GuidanceConfig,
+            GuidanceConfigError,
+            validate_guidance_config,
+        )
+        cfg = GuidanceConfig(eta=3.7, num_candidates=8, seed=42)
+        with pytest.raises(GuidanceConfigError, match="frozen eta grid"):
+            validate_guidance_config(cfg, enforce_frozen_grid=True)
+
+    def test_on_grid_eta_accepted_in_strict_mode(self):
+        from inverse_folding.guidance.config import (
+            FROZEN_ETA_GRID,
+            GuidanceConfig,
+            validate_guidance_config,
+        )
+        for eta in FROZEN_ETA_GRID:
+            cfg = GuidanceConfig(eta=eta, num_candidates=8, seed=42)
+            validate_guidance_config(cfg, enforce_frozen_grid=True)
+
+    def test_off_grid_eta_accepted_without_strict(self):
+        """Without enforce_frozen_grid, any non-negative eta passes."""
+        from inverse_folding.guidance.config import (
+            GuidanceConfig,
+            validate_guidance_config,
+        )
+        cfg = GuidanceConfig(eta=3.7, num_candidates=8, seed=42)
+        validate_guidance_config(cfg)  # Should not raise
+
 
 class TestGuidanceProvenance:
     """M0 TDD gate: provenance per design must include required fields."""
@@ -247,6 +277,31 @@ class TestSelectCandidate:
         assert "selected_seq_hash" in result
         assert "weights" in result
         assert "candidate_risks" in result
+        # Full provenance: per-candidate hashes and duplicate groups
+        assert "candidate_seq_hashes" in result
+        assert len(result["candidate_seq_hashes"]) == 2
+        assert "duplicate_groups" in result
+
+    def test_duplicate_groups_detected(self):
+        """Duplicate sequences should be grouped in provenance."""
+        from inverse_folding.guidance.reweighting import select_candidate
+        risks = np.array([0.2, 0.3, 0.5])
+        sequences = ["SAME", "SAME", "DIFF"]
+        result = select_candidate(risks, sequences, eta=2.0, seed=42)
+        # The two "SAME" sequences share a hash → one duplicate group
+        groups = result["duplicate_groups"]
+        assert len(groups) >= 1
+        # The group should contain indices [0, 1]
+        same_hash = result["candidate_seq_hashes"][0]
+        assert same_hash == result["candidate_seq_hashes"][1]
+        assert same_hash != result["candidate_seq_hashes"][2]
+
+    def test_no_duplicates_means_empty_groups(self):
+        from inverse_folding.guidance.reweighting import select_candidate
+        risks = np.array([0.2, 0.8])
+        sequences = ["AAAA", "BBBB"]
+        result = select_candidate(risks, sequences, eta=1.0, seed=42)
+        assert result["duplicate_groups"] == {}
 
     def test_selected_risk_matches_index(self):
         from inverse_folding.guidance.reweighting import select_candidate

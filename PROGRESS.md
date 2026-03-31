@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-03-26T22:30:00-04:00
+> **Last synced**: 2026-03-31T10:00:00-04:00
 > **Branch**: dev_head
 
 ---
@@ -32,6 +32,7 @@
   | cnn_balanced_full | 0.1359 | — | —/— | 2026-03-05 |
 - **Artifacts**: `InferencePredictor` verified, `predict_protein()` API stable
 - **Open**: multi-allele extension (DRB1*15:01) — not v1 scope
+- **final_scripts**: `scripts/submit_cnn_enhance.slurm`, `scripts/submit_train_v2_cnn.slurm`, `scripts/submit_mutation_augmentation.slurm`
 
 ---
 
@@ -80,12 +81,12 @@
 
 - **Code**:
   - M0 (guidance contract): done — `inverse_folding/guidance/config.py`
-  - M1 (scoring bridge): **not found** — `inverse_folding/guidance/scoring_bridge.py` does not exist
-  - M2 (reweighting): done — `inverse_folding/guidance/reweighting.py`
-  - M3 (sweep runner): **not found** — `scripts/run_if_guidance_sweep.py` does not exist
+  - M1 (scoring bridge): done — `inverse_folding/guidance/scoring_bridge.py` (untracked, uncommitted)
+  - M2 (reweighting): done — `inverse_folding/guidance/reweighting.py` (uncommitted)
+  - M3 (sweep runner): done — `scripts/run_if_guidance_sweep.py` (untracked, uncommitted)
   - M4 (failure analysis): not started
-  - SLURM script: **not found** — `scripts/submit_if_guidance_sweep.slurm` does not exist
-  - Tests: `tests/inverse_folding/test_module_m_guidance_contract.py` only (scoring_bridge test does not exist)
+  - SLURM script: done — `scripts/submit_if_guidance_sweep.slurm` (untracked, uncommitted)
+  - Tests: `test_module_m_guidance_contract.py` + `test_module_m_scoring_bridge.py` (both uncommitted)
 - **Cluster**: not run (blocked by Module L — no test set)
 - **Key Data**: N/A (sweep not executed)
   - expected outputs per eta: scTM, delta_risk (head), delta_risk (NetMHCIIpan), mutation_count
@@ -113,7 +114,9 @@
 | Epitope head training data (strict) | `outputs/data/span_records_strict.parquet` | 23,988 rows |
 | Epitope head training data (balanced) | `outputs/data/span_records_balanced.parquet` | 54,945 rows |
 | DPLM vendor code | `inverse_folding/dplm/` | vendored, .git removed |
-| Guidance code (M0, M2) | `inverse_folding/guidance/` | config.py + reweighting.py |
+| Guidance code (M0-M3) | `inverse_folding/guidance/` | config + scoring_bridge + reweighting (uncommitted) |
+| Guidance sweep script | `scripts/run_if_guidance_sweep.py` | uncommitted |
+| Guidance SLURM | `scripts/submit_if_guidance_sweep.slurm` | uncommitted |
 
 ### Cluster (`/scratch/network/zc1519/`)
 
@@ -143,7 +146,7 @@
 | Multi-allele analysis | F2 | multi-allele head | no | blocked by v1 single-allele scope |
 | IF Benchmark | F3 | L (test set) | partial | DPLM baseline validated on CATH (scTM=0.87 median) |
 | Structure Self-Consistency | F3 | L (ESMFold wrapper) | no | |
-| Pareto Frontier | F3 | L + M sweep | no | M1/M3 code missing |
+| Pareto Frontier | F3 | L + M sweep | no | M0-M3 code ready (uncommitted), blocked by test set |
 | Local Resampling | F3 | L + M | no | |
 | Diversity ablation | F3 | L + M | no | |
 | Uricase schematic | F4 | F3 pipeline | no | future |

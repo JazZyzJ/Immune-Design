@@ -44,14 +44,28 @@ class GuidanceConfig:
 
 # ── Validation ───────────────────────────────────────────────────────────────
 
-def validate_guidance_config(cfg: GuidanceConfig) -> GuidanceConfig:
+def validate_guidance_config(
+    cfg: GuidanceConfig,
+    enforce_frozen_grid: bool = False,
+) -> GuidanceConfig:
     """Validate a guidance config against the frozen M0 contract.
+
+    Args:
+        cfg: guidance configuration to validate.
+        enforce_frozen_grid: if True, eta must be in FROZEN_ETA_GRID.
+            Use True for production sweeps; False for exploratory runs.
 
     Returns the config unchanged if valid; raises GuidanceConfigError otherwise.
     """
     if cfg.eta < 0:
         raise GuidanceConfigError(
             f"eta must be non-negative, got {cfg.eta}"
+        )
+
+    if enforce_frozen_grid and cfg.eta not in FROZEN_ETA_GRID:
+        raise GuidanceConfigError(
+            f"eta={cfg.eta} is not in the frozen eta grid {FROZEN_ETA_GRID}. "
+            f"Use enforce_frozen_grid=False for exploratory runs."
         )
 
     if cfg.num_candidates < 1:
