@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-03-31T10:00:00-04:00
+> **Last synced**: 2026-04-01T23:00:00+08:00
 > **Branch**: dev_head
 
 ---
@@ -31,7 +31,11 @@
   | LC1_lite | 0.2520 | — | —/— | 2026-03-19 |
   | cnn_balanced_full | 0.1359 | — | —/— | 2026-03-05 |
 - **Artifacts**: `InferencePredictor` verified, `predict_protein()` API stable
-- **Open**: multi-allele extension (DRB1*15:01) — not v1 scope
+- **Multi-allele extension**: **done** (training complete)
+  - DRB1*04:01: checkpoint at `run/epitope_head/drb0401/runs/LC1/seed_42/best.pt` — pp_ap=TBD, pp_auc=TBD
+  - DRB1*15:01: checkpoint at `run/epitope_head/drb1501/runs/LC1/seed_42/best.pt` — pp_ap=TBD, pp_auc=TBD
+  - manifests: `outputs/manifests/drb0401/` (1865 proteins), `outputs/manifests/drb1501/` (1536 proteins)
+- **Open**: encoder ablation (Module H, PLAN_enco_abl.md) — not started
 - **final_scripts**: `scripts/submit_cnn_enhance.slurm`, `scripts/submit_train_v2_cnn.slurm`, `scripts/submit_mutation_augmentation.slurm`
 
 ---
@@ -55,39 +59,68 @@
   - scRMSD: mean=7.15
   - structural collapse (scTM ≤ 0.5): 150 proteins (8.05%)
 - **Artifacts**: baseline_validation.json, per_protein_metrics.csv, test_tau1.0.fasta, native.fasta
-- **Note**: 集群源码未同步——验证用的是旧版代码，需要 `git pull` 后重新确认
+- **Note**: 集群源码已同步 (2026-04-01)
 - **Open**: multi-seed panel (decision pending — PLAN_IF.md §6.5)
 
 ---
 
 ## Module L → Data Selection (PLAN_DATA_SEL.md)
 
-- **Code**: plan drafted (`PLAN_DATA_SEL.md`), no implementation yet
-- **Cluster**: N/A
-- **Key Data**: N/A (no test set curated yet)
-- **Blocker**: this is the current critical path
-  - Tier 1 (gold standard): needs IEDB query + PDB cross-reference
-  - Tier 2 (computational): needs NetMHCIIpan batch screening + epitope head scoring
-  - Tier 3 (therapeutic): needs literature search
-- **Artifacts needed**:
-  - `outputs/if/test_set/test_proteins.parquet`
-  - `outputs/if/test_set/wt_hotspot_maps.parquet`
-  - per-protein PDB/FASTA files
+- **Code**: L0-L5 implemented + tested (139 tests passing), 6 code review issues fixed
+  - schema (`validate_test_protein_entry`), overlap (MMseqs2), prescreen (dual-scorer + CATH diversity), assembly, tier validators
+  - CLIs: `run_overlap_filter.py`, `validate_tier1.py`, `validate_tier3.py`, `prescreen_tier2.py`, `assemble_if_test_set.py`, `download_tier2_candidates.py`
+  - SLURM: `submit_prescreen_tier2.slurm`, `submit_assemble_test_set.slurm`, `submit_download_tier2.slurm`
+  - Key fixes: validate_tier1 now runs MMseqs2 overlap; validate_tier3 enforces NMP signal; prescreen uses correct epitope_head API; assembly generates WT artifacts; overlap CLI includes no-hit candidates; sample_diverse guarantees cross-architecture-class coverage
+- **Cluster**: Tier 2 prescreen **running**
+  - script: `submit_prescreen_tier2.slurm`
+  - data path: `/scratch/network/zc1519/work/immune-design/if_test_set/`
+  - input: `tier2_candidates_merged.fasta` (226k chains, 60MB)
+  - CATH ref: `work/immune-design/cath_4.3/`
+- **Key Data**:
+  - Tier 1: 15 candidates selected (10-50% epitope coverage, all in epitope head **test split** → zero head leakage)
+    - coverage range: 11.0% (1LI1_C) – 45.0% (6HGM_A)
+    - resolution range: 1.0–2.5 Å
+    - epitope spans: 2–60 per protein
+    - source: IEDB DRB1\*07:01, cross-referenced PDB via UniProt API
+    - artifacts: `if_test_set/tier1_candidates.json`, `if_test_set/tier1_sequences.fasta`
+    - MMseqs2 CATH overlap check: pending (run on cluster)
+    - user review: pending (select final 5-10 from 15)
+  - Tier 2: 226k PDB chains downloaded (single-chain, X-ray ≤2.5Å, 100-500AA), prescreen **running on cluster**
+    - expected output: `tier2_prescreened.parquet` (30-50 proteins)
+    - expected fields: TBD — n_passed_overlap, n_passed_dual_scorer, n_selected, topology_coverage
+    - pipeline: MMseqs2 overlap → NMP batch → head batch → median risk threshold → CATH diversity sampling
+  - Tier 3: **not started** (user literature search required)
+    - target: 5-10 therapeutic proteins (adalimumab, asparaginase, IFN-β, IL-2, streptokinase)
+    - user action: produce `tier3_candidates.json`, run NMP screen, then `validate_tier3.py --nmp-scores-json`
+- **Post-prescreen next steps**:
+  1. Collect Tier 2 prescreen results from cluster → fill TBD fields above
+  2. User finalizes Tier 1 (5-10 from 15) + Tier 3 (literature search)
+  3. Run `assemble_if_test_set.py` → `test_proteins.parquet`
+  4. L6: E2E evaluation verification (smoke test with 2-3 proteins)
+  5. L7: Release gates → test set freeze
+- **Artifacts** (post-assembly, all TBD):
+  - `work/immune-design/if_test_set/test_proteins.parquet`
+  - `work/immune-design/if_test_set/test_proteins_summary.json`
+  - `work/immune-design/if_test_set/curation_ledger.json`
+  - `work/immune-design/if_test_set/pdbs/` + `fastas/`
+  - `work/immune-design/if_test_set/wt_hotspot_maps.parquet`
+  - `work/immune-design/if_test_set/wt_netmhciipan.parquet`
 - **Feeds**: all downstream evaluation (M, N, and all F3/F4 subfigures)
+- **Critical open question**: Tier 1 蛋白是否在 CATH test split 中？若不在，M3 sweep 需要改为直接从 PDB 加载结构生成
 
 ---
 
 ## Module M: Classifier Guidance
 
-- **Code**:
-  - M0 (guidance contract): done — `inverse_folding/guidance/config.py`
-  - M1 (scoring bridge): done — `inverse_folding/guidance/scoring_bridge.py` (untracked, uncommitted)
-  - M2 (reweighting): done — `inverse_folding/guidance/reweighting.py` (uncommitted)
-  - M3 (sweep runner): done — `scripts/run_if_guidance_sweep.py` (untracked, uncommitted)
-  - M4 (failure analysis): not started
-  - SLURM script: done — `scripts/submit_if_guidance_sweep.slurm` (untracked, uncommitted)
-  - Tests: `test_module_m_guidance_contract.py` + `test_module_m_scoring_bridge.py` (both uncommitted)
-- **Cluster**: not run (blocked by Module L — no test set)
+- **Code**: M0-M3 complete, committed and synced to cluster
+  - M0 (guidance contract): `inverse_folding/guidance/config.py`
+  - M1 (scoring bridge): `inverse_folding/guidance/scoring_bridge.py`
+  - M2 (reweighting): `inverse_folding/guidance/reweighting.py`
+  - M3 (sweep runner): `scripts/run_if_guidance_sweep.py`
+  - M4 (failure analysis): skipped (non-critical-path)
+  - SLURM: `scripts/submit_if_guidance_sweep.slurm`
+  - Tests: `test_module_m_guidance_contract.py` + `test_module_m_scoring_bridge.py`
+- **Cluster**: not run — **blocked by Module L test set assembly**
 - **Key Data**: N/A (sweep not executed)
   - expected outputs per eta: scTM, delta_risk (head), delta_risk (NetMHCIIpan), mutation_count
   - eta grid: {0, 0.5, 1, 2, 5, 10}, K=8 candidates
@@ -114,9 +147,14 @@
 | Epitope head training data (strict) | `outputs/data/span_records_strict.parquet` | 23,988 rows |
 | Epitope head training data (balanced) | `outputs/data/span_records_balanced.parquet` | 54,945 rows |
 | DPLM vendor code | `inverse_folding/dplm/` | vendored, .git removed |
-| Guidance code (M0-M3) | `inverse_folding/guidance/` | config + scoring_bridge + reweighting (uncommitted) |
-| Guidance sweep script | `scripts/run_if_guidance_sweep.py` | uncommitted |
-| Guidance SLURM | `scripts/submit_if_guidance_sweep.slurm` | uncommitted |
+| Guidance code (M0-M3) | `inverse_folding/guidance/` | config + scoring_bridge + reweighting |
+| Guidance sweep script | `scripts/run_if_guidance_sweep.py` | committed |
+| Guidance SLURM | `scripts/submit_if_guidance_sweep.slurm` | committed |
+| Data selection code (L0-L5) | `inverse_folding/evaluation/` | overlap, prescreen, cath_topology, assembly, tier_validators (139 tests) |
+| Tier 1 candidates | `outputs/if/test_set/tier1_candidates.json` | 15 proteins, 10-50% epitope coverage |
+| Tier 2 candidate pool | `outputs/if/test_set/tier2_candidates_merged.fasta` | 226k seqs, transferred to cluster |
+| Tier 2 entity IDs | `outputs/if/test_set/tier2_all_entity_ids.txt` | 113k RCSB entity IDs |
+| Multi-allele manifests | `outputs/manifests/{drb0401,drb1501}/` | complete |
 
 ### Cluster (`/scratch/network/zc1519/`)
 
@@ -129,7 +167,12 @@
 | CATH dataset (4.3) | `work/immune-design/cath_4.3/` | train/val/test |
 | Augmentation registry | `work/immune-design/augmentation/mutation_registry_strict.parquet` | used by LC1_lite_aug |
 | Manifests | `work/immune-design/manifests/` | epitope head training |
-| IF test set | N/A | not curated yet |
+| Epitope head DRB0401 | `run/epitope_head/drb0401/runs/LC1/seed_42/best.pt` | trained, metrics TBD |
+| Epitope head DRB1501 | `run/epitope_head/drb1501/runs/LC1/seed_42/best.pt` | trained, metrics TBD |
+| Tier 1 candidates | `work/immune-design/if_test_set/tier1_candidates.json` | 15 candidates, user review pending |
+| Tier 2 merged FASTA | `work/immune-design/if_test_set/tier2_candidates_merged.fasta` | 226k chains, prescreen running |
+| Tier 2 prescreened | `work/immune-design/if_test_set/tier2_prescreened.parquet` | TBD (prescreen output) |
+| IF test set | `work/immune-design/if_test_set/test_proteins.parquet` | TBD (assembly pending) |
 | Guidance sweep results | N/A | not run yet |
 
 ---
@@ -143,7 +186,7 @@
 | Clinics immunogenicity plot | F1 | — | no | concept only |
 | EL Ability | F2 | NetMHCIIpan benchmark | partial | pp_ap=0.3027, comparisons pending |
 | Synthetic point mutation | F2 | — | partial | hard negative code committed |
-| Multi-allele analysis | F2 | multi-allele head | no | blocked by v1 single-allele scope |
+| Multi-allele analysis | F2 | multi-allele eval | partial | DRB0401 + DRB1501 trained, metrics TBD |
 | IF Benchmark | F3 | L (test set) | partial | DPLM baseline validated on CATH (scTM=0.87 median) |
 | Structure Self-Consistency | F3 | L (ESMFold wrapper) | no | |
 | Pareto Frontier | F3 | L + M sweep | no | M0-M3 code ready (uncommitted), blocked by test set |

@@ -1459,3 +1459,26 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - next_action: Re-run `scripts/submit_prescreen_tier2.slurm` on cluster and, once in the correct env, execute `python -m pytest tests/inverse_folding/test_module_l_overlap.py -q` for full automated confirmation.
 - refs:
   - `PLAN_DATA_SEL.md:§L0–L5`
+
+### L0048
+- timestamp: 2026-04-02T00:30:00+08:00
+- type: CODEMAP_DIFF
+- module: N
+- trigger: N1 Level 1 post-hoc filter baseline implementation.
+- change_summary: Implemented N1 (argmin-risk selection from M3 candidates) with TDD, CLI script, and SLURM submission script.
+- rationale: Level 1 filter reuses M3 eta=0 candidate pool (K=8) with argmin selection — same compute budget, different selection rule. Provides the "generate then filter" comparison arm for paper. No new model training required.
+- artifacts:
+  - `inverse_folding/baselines/__init__.py` (new)
+  - `inverse_folding/baselines/level1_filter.py` (new: parse_candidates_fasta, select_argmin_candidate, filter_protein_set)
+  - `scripts/run_if_level1_filter.py` (new CLI)
+  - `scripts/submit_if_level1_filter.slurm` (new SLURM, follows submit_cnn_enhance.slurm template)
+  - `tests/inverse_folding/test_module_n_level1_filter.py` (11 tests)
+- evidence: `python -m pytest tests/inverse_folding/ -v` → 236 passed, 0 failed.
+- impact:
+  - scope: Module N comparison baseline; reads M3 outputs, writes same format for evaluate_if.py.
+  - risk: low
+  - confidence: 0.98
+- status: done
+- next_action: Execute after M3 sweep completes on cluster (sbatch submit_if_level1_filter.slurm).
+- refs:
+  - `PLAN_IF.md:§Task N1`
