@@ -7,10 +7,10 @@ Pipeline: load candidates → MMseqs2 overlap → NMP batch → head batch
 Usage:
     python scripts/prescreen_tier2.py \
         --candidate-fasta-dir work/if/test_set/tier2_candidates/ \
-        --cath-train-fasta work/cath/cath_train_seqs.fasta \
+        --cath-train-fasta work/cath/chain_set.jsonl \
         --epitope-ckpt run/epitope_head/best.pt \
         --netmhciipan-bin /path/to/netMHCIIpan \
-        --cath-domain-list work/cath/cath-domain-list.txt \
+        --cath-domain-list work/cath/chain_set.jsonl \
         --output-dir outputs/if/test_set/ \
         [--allele HLA-DRB1*07:01] \
         [--device cuda] \
@@ -23,6 +23,7 @@ import glob
 import json
 import os
 import sys
+import time
 
 import pandas as pd
 
@@ -37,13 +38,13 @@ def parse_args() -> argparse.Namespace:
     input_group.add_argument("--candidate-merged-fasta",
                              help="Single merged FASTA with all candidates.")
     parser.add_argument("--cath-train-fasta", required=True,
-                        help="CATH training sequences FASTA.")
+                        help="CATH training sequence source: FASTA or chain_set.jsonl.")
     parser.add_argument("--epitope-ckpt", required=True,
                         help="Epitope head checkpoint path.")
     parser.add_argument("--netmhciipan-bin", required=True,
                         help="NetMHCIIpan binary path.")
     parser.add_argument("--cath-domain-list", required=True,
-                        help="CATH domain list file for topology assignment.")
+                        help="CATH topology source: CathDomainList text or chain_set.jsonl.")
     parser.add_argument("--output-dir", required=True,
                         help="Output directory.")
     parser.add_argument("--allele", default="HLA-DRB1*07:01",
@@ -62,6 +63,12 @@ def parse_args() -> argparse.Namespace:
                         help="Epitope head CNN variant ID (default: LC1).")
     parser.add_argument("--config-dir", default=None,
                         help="Epitope head config directory (default: auto-detect).")
+    parser.add_argument("--nmp-batch-size", type=int, default=32,
+                        help="Proteins per NetMHCIIpan batch call (default: 32).")
+    parser.add_argument("--head-prefilter-topk", type=int, default=5000,
+                        help="Keep top-K head-risk candidates before NMP (default: 5000).")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from prescreen checkpoint parquet files if present.")
     return parser.parse_args()
 
 
@@ -97,24 +104,75 @@ def _read_merged_fasta(fasta_path: str) -> dict:
     return sequences
 
 
+def _log(message: str) -> None:
+    print(message, flush=True)
+
+
+def _remaining_sequences(sequences: dict, existing_results: dict) -> dict:
+    """Drop proteins already present in a checkpoint result dict."""
+    done_ids = set(existing_results)
+    return {pid: seq for pid, seq in sequences.items() if pid not in done_ids}
+
+
+def _select_head_prefilter_subset(
+    sequences: dict,
+    head_results: dict,
+    topk: int | None = None,
+) -> tuple[dict, float]:
+    """Keep top-K proteins by head global risk and return full-population median."""
+    all_risks = [float(v["global_risk"]) for v in head_results.values()]
+    risk_median = float(pd.Series(all_risks).median()) if all_risks else 0.0
+
+    if topk is None or topk <= 0 or topk >= len(sequences):
+        return dict(sequences), risk_median
+
+    ranked_ids = sorted(
+        sequences,
+        key=lambda pid: float(head_results.get(pid, {}).get("global_risk", 0.0)),
+        reverse=True,
+    )
+    keep_ids = set(ranked_ids[:topk])
+    return {pid: sequences[pid] for pid in ranked_ids if pid in keep_ids}, risk_median
+
+
+def _checkpoint_path(output_dir: str, stem: str) -> str:
+    return os.path.join(output_dir, f"_{stem}.parquet")
+
+
+def _load_checkpoint_rows(path: str, key: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    df = pd.read_parquet(path)
+    rows = {}
+    for _, row in df.iterrows():
+        payload = row.to_dict()
+        rows[payload[key]] = payload
+    return rows
+
+
+def _write_checkpoint_rows(path: str, rows: dict) -> None:
+    pd.DataFrame(list(rows.values())).to_parquet(path, index=False)
+
+
 def main() -> int:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+    t0 = time.time()
 
     # ── Step 1: Load candidates ──────────────────────────────────────────
-    print("[1/5] Loading candidate sequences...")
+    _log("[1/5] Loading candidate sequences...")
     if args.candidate_merged_fasta:
         sequences = _read_merged_fasta(args.candidate_merged_fasta)
     else:
         sequences = _read_fasta_dir(args.candidate_fasta_dir)
-    print(f"  Loaded {len(sequences)} candidates.")
+    _log(f"  Loaded {len(sequences)} candidates.")
 
     if not sequences:
-        print("ERROR: No candidate sequences found.")
+        _log("ERROR: No candidate sequences found.")
         return 1
 
     # ── Step 2: MMseqs2 overlap filter ───────────────────────────────────
-    print("[2/5] Running MMseqs2 overlap filter...")
+    _log("[2/5] Running MMseqs2 overlap filter...")
     from inverse_folding.evaluation.overlap import run_mmseqs_overlap
 
     # Build or reuse merged FASTA for MMseqs2
@@ -136,37 +194,13 @@ def main() -> int:
     excluded = {qid for qid, r in overlap_results.items() if r.exclude}
     passed_overlap = {pid: seq for pid, seq in sequences.items()
                       if pid not in excluded}
-    print(f"  {len(excluded)} excluded by overlap, "
-          f"{len(passed_overlap)} remaining.")
+    _log(f"  {len(excluded)} excluded by overlap, "
+         f"{len(passed_overlap)} remaining.")
 
-    # ── Step 3: NetMHCIIpan batch screen ─────────────────────────────────
-    print("[3/5] Running NetMHCIIpan batch screening...")
-    from inverse_folding.evaluation.immunogenicity import (
-        aggregate_nmp_scores,
-        score_protein_all_lengths,
-    )
-    from epitope_head.data.netmhciipan_runner import build_runner
-
-    nmp_runner = build_runner(
-        backend="standalone",
-        binary_path=args.netmhciipan_bin,
-    )
-
-    nmp_results = {}
-    for pid, seq in passed_overlap.items():
-        scores_df = score_protein_all_lengths(
-            nmp_runner, pid, seq, args.allele,
-        )
-        agg = aggregate_nmp_scores(scores_df)
-        nmp_results[pid] = {
-            "n_strong_windows": agg["n_strong_binders"],
-            "mean_best_rank": agg["mean_best_rank"],
-        }
-    print(f"  Scored {len(nmp_results)} proteins.")
-
-    # ── Step 4: Epitope head batch screen ────────────────────────────────
-    print("[4/5] Running epitope head batch screening...")
+    # ── Step 3: Epitope head prefilter (cheap first pass) ─────────────────
+    _log("[3/5] Running epitope head prefilter...")
     from scripts.run_if_guidance_sweep import load_epitope_predictor
+    import torch
 
     config_dir = args.config_dir or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -179,12 +213,13 @@ def main() -> int:
         device=args.device,
     )
 
-    head_results = {}
-    for pid, seq in passed_overlap.items():
+    head_ckpt = _checkpoint_path(args.output_dir, "prescreen_head_results")
+    head_results = _load_checkpoint_rows(head_ckpt, "protein_id") if args.resume else {}
+    head_todo = _remaining_sequences(passed_overlap, head_results)
+    total_head = len(head_todo)
+    for idx, (pid, seq) in enumerate(head_todo.items(), start=1):
         pred = predictor.predict_protein(seq, allele_idx=0)
         h = pred["residue_hotspot"]
-        # residue_hotspot is a torch.Tensor [L]; compute n_hotspot from it
-        import torch
         if isinstance(h, torch.Tensor):
             median_h = h.median().item()
             std_h = h.std().item()
@@ -192,26 +227,75 @@ def main() -> int:
         else:
             n_hotspot = 0
         head_results[pid] = {
+            "protein_id": pid,
             "global_risk": float(pred["global_risk"]),
             "n_hotspot_positions": n_hotspot,
         }
-    print(f"  Scored {len(head_results)} proteins.")
+        if args.resume and ((idx % 200) == 0 or idx == total_head):
+            _write_checkpoint_rows(head_ckpt, head_results)
+        if (idx % 500) == 0 or idx == total_head:
+            elapsed = time.time() - t0
+            rate = idx / max(elapsed, 1e-6)
+            _log(f"  Head prefilter: {idx}/{total_head} done "
+                 f"({rate:.2f} proteins/s)")
+
+    filtered_for_nmp, risk_median = _select_head_prefilter_subset(
+        passed_overlap,
+        head_results,
+        topk=args.head_prefilter_topk,
+    )
+    _log(f"  Head prefilter kept {len(filtered_for_nmp)}/{len(passed_overlap)} "
+         f"for NMP; risk median={risk_median:.4f}")
+
+    # ── Step 4: NetMHCIIpan batch screen ─────────────────────────────────
+    _log("[4/5] Running NetMHCIIpan batch screening...")
+    from inverse_folding.evaluation.immunogenicity import (
+        aggregate_nmp_scores,
+        aggregate_nmp_batch_scores,
+    )
+    from epitope_head.data.netmhciipan_runner import build_runner
+
+    nmp_runner = build_runner(
+        backend="standalone",
+        binary_path=args.netmhciipan_bin,
+        batch_size=args.nmp_batch_size,
+    )
+
+    nmp_ckpt = _checkpoint_path(args.output_dir, "prescreen_nmp_results")
+    nmp_results = _load_checkpoint_rows(nmp_ckpt, "protein_id") if args.resume else {}
+    remaining_nmp = list(_remaining_sequences(filtered_for_nmp, nmp_results).items())
+    total_nmp = len(remaining_nmp)
+    for chunk_start in range(0, total_nmp, args.nmp_batch_size):
+        chunk = remaining_nmp[chunk_start:chunk_start + args.nmp_batch_size]
+        batch_out = aggregate_nmp_batch_scores(nmp_runner, chunk, args.allele)
+        for pid, agg in batch_out.items():
+            nmp_results[pid] = {
+                "protein_id": pid,
+                "n_strong_windows": agg["n_strong_binders"],
+                "mean_best_rank": agg["mean_best_rank"],
+                "n_weak_windows": agg["n_weak_binders"],
+                "n_windows_scored": agg["n_windows_scored"],
+            }
+        if args.resume:
+            _write_checkpoint_rows(nmp_ckpt, nmp_results)
+        done = min(chunk_start + len(chunk), total_nmp)
+        elapsed = time.time() - t0
+        rate = done / max(elapsed, 1e-6)
+        eta = (total_nmp - done) / max(rate, 1e-6)
+        _log(f"  NMP batch: {done}/{total_nmp} done "
+             f"({rate:.2f} proteins/s, ETA {eta/60:.1f} min)")
+    _log(f"  Scored {len(nmp_results)} proteins with NMP.")
 
     # ── Step 5: Apply filters + topology + diversity sampling ────────────
-    print("[5/5] Applying filters and diversity sampling...")
+    _log("[5/5] Applying filters and diversity sampling...")
     from inverse_folding.evaluation.prescreen import apply_tier2_filters
     from inverse_folding.evaluation.cath_topology import (
         assign_topology,
         sample_diverse,
     )
-    import numpy as np
-
-    # Compute median risk for threshold
-    all_risks = [h["global_risk"] for h in head_results.values()]
-    risk_median = float(np.median(all_risks)) if all_risks else 0.0
 
     rows = []
-    for pid in passed_overlap:
+    for pid in filtered_for_nmp:
         nmp = nmp_results.get(pid, {"n_strong_windows": 0, "mean_best_rank": float("nan")})
         head = head_results.get(pid, {"global_risk": 0.0, "n_hotspot_positions": 0})
 
@@ -239,7 +323,7 @@ def main() -> int:
         })
 
     if not rows:
-        print("WARNING: No candidates passed dual-scorer filter.")
+        _log("WARNING: No candidates passed dual-scorer filter.")
         return 1
 
     df = pd.DataFrame(rows)
@@ -251,7 +335,7 @@ def main() -> int:
 
     out_path = os.path.join(args.output_dir, "tier2_prescreened.parquet")
     sampled.to_parquet(out_path, index=False)
-    print(f"  Selected {len(sampled)} candidates → {out_path}")
+    _log(f"  Selected {len(sampled)} candidates → {out_path}")
 
     # Cleanup temp file (only if we created it)
     if _cleanup_merged and os.path.exists(merged_fasta):

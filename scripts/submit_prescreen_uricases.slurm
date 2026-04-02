@@ -18,10 +18,10 @@ DATA_DIR="/scratch/network/zc1519/work/immune-design/if_test_set"
 CATH_DIR="/scratch/network/zc1519/work/immune-design/cath_4.3"
 LOG_DIR="/scratch/network/zc1519/logs/if_eval"
 
-INPUT_FASTA="${PROJECT_ROOT}/data/filtered_uricases.fasta"
-CATH_TRAIN_FASTA="${CATH_DIR}/cath_train_seqs.fasta"
+INPUT_FASTA="${DATA_DIR}/uricases/filtered_uricases.fasta"
+CATH_TRAIN_SOURCE="${CATH_DIR}/chain_set.jsonl"
 EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt"
-NETMHCIIPAN_BIN="/home/zc1519/tools/netMHCIIpan-4.3/netMHCIIpan"
+NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
 OUTPUT_DIR="${DATA_DIR}/uricase_prescreen"
 
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
@@ -46,7 +46,7 @@ echo "  Node         : ${SLURM_NODELIST}"
 echo "  GPUs         : ${SLURM_GPUS_ON_NODE:-1}"
 echo "  Input FASTA  : ${INPUT_FASTA}"
 echo "  N sequences  : $(grep -c '^>' ${INPUT_FASTA})"
-echo "  CATH train   : ${CATH_TRAIN_FASTA}"
+echo "  CATH train   : ${CATH_TRAIN_SOURCE}"
 echo "  Epitope ckpt : ${EPITOPE_CKPT}"
 echo "  NMP binary   : ${NETMHCIIPAN_BIN}"
 echo "  Python       : $(python --version 2>&1)"
@@ -57,12 +57,15 @@ echo "  Timestamp    : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "============================================================"
 
 # ── Launch ────────────────────────────────────────────────────────────────
-python "${PROJECT_ROOT}/scripts/prescreen_uricases.py" \
+python -u "${PROJECT_ROOT}/scripts/prescreen_uricases.py" \
     --input-fasta "${INPUT_FASTA}" \
-    --cath-train-fasta "${CATH_TRAIN_FASTA}" \
+    --cath-train-fasta "${CATH_TRAIN_SOURCE}" \
     --epitope-ckpt "${EPITOPE_CKPT}" \
     --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
     --output-dir "${OUTPUT_DIR}" \
+    --nmp-batch-size 32 \
+    --head-prefilter-topk 3000 \
+    --resume \
     --min-strong-windows 3
 
 echo "Uricase pre-screening finished."

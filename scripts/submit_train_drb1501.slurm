@@ -20,7 +20,7 @@ LOG_DIR="/scratch/network/zc1519/logs/epitope_head"
 
 # Stage J: runtime augmentation via registry
 REGISTRY="/scratch/network/zc1519/work/immune-design/augmentation/drb1501/mutation_registry_strict.parquet"
-P_AUG=0.20
+P_AUG=0.00
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -70,7 +70,7 @@ python "${PROJECT_ROOT}/scripts/train_v2_ablation.py" \
     --device cuda \
     --profile strict \
     --config-dir "${PROJECT_ROOT}/epitope_head/configs" \
-    --override-config "${PROJECT_ROOT}/epitope_head/configs/cnn_full_aug.yaml" \
+    --override-config "${PROJECT_ROOT}/epitope_head/configs/cnn_full_aug_1501.yaml" \
     --data-dir "${DATA_DIR}" \
     --output-root "${OUTPUT_ROOT}" \
     "${AUG_FLAG[@]+"${AUG_FLAG[@]}"}" \

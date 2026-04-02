@@ -274,6 +274,51 @@ class TestPeptideScoreConversion:
         assert agg["n_windows_scored"] == 3
 
 
+class TestBatchNetMHCIIpanAggregation:
+    def test_batch_scoring_aggregates_per_protein(self):
+        from inverse_folding.evaluation.immunogenicity import aggregate_nmp_batch_scores
+        from types import SimpleNamespace
+
+        class StubRunner:
+            def __init__(self):
+                self.calls = []
+
+            def score_batch(self, entries, allele, pep_lengths):
+                self.calls.append((entries, allele, pep_lengths))
+                return {
+                    "p1": {
+                        12: [
+                            SimpleNamespace(peptide="A" * 12, el_rank=0.01, pos=0, core="A" * 9, el_score=0.9),
+                            SimpleNamespace(peptide="B" * 12, el_rank=0.05, pos=1, core="B" * 9, el_score=0.7),
+                        ],
+                        13: [
+                            SimpleNamespace(peptide="C" * 13, el_rank=0.20, pos=0, core="C" * 9, el_score=0.2),
+                        ],
+                    },
+                    "p2": {
+                        12: [
+                            SimpleNamespace(peptide="D" * 12, el_rank=0.015, pos=0, core="D" * 9, el_score=0.95),
+                        ],
+                    },
+                }
+
+        runner = StubRunner()
+        agg = aggregate_nmp_batch_scores(
+            runner,
+            [("p1", "AAAA"), ("p2", "BBBB")],
+            "HLA-DRB1*07:01",
+            pep_lengths=[12, 13],
+        )
+
+        assert len(runner.calls) == 1
+        assert agg["p1"]["n_strong_binders"] == 1
+        assert agg["p1"]["n_weak_binders"] == 2
+        assert agg["p1"]["n_windows_scored"] == 3
+        assert abs(agg["p1"]["mean_best_rank"] - ((1.0 + 5.0 + 20.0) / 3.0)) < 1e-6
+        assert agg["p2"]["n_strong_binders"] == 1
+        assert agg["p2"]["n_windows_scored"] == 1
+
+
 # ── L4: Artifact bundle alignment ───────────────────────────────────────────
 
 class TestArtifactBundleAlignment:

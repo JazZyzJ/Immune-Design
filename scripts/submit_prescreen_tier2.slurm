@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/scratch/network/zc1519/logs/if_eval/prescreen_tier2_%j.out
 #SBATCH --error=/scratch/network/zc1519/logs/if_eval/prescreen_tier2_%j.err
 
@@ -20,10 +20,10 @@ LOG_DIR="/scratch/network/zc1519/logs/if_eval"
 
 CANDIDATE_FASTA_DIR="${DATA_DIR}/tier2_candidates"
 CATH_DIR="/scratch/network/zc1519/work/immune-design/cath_4.3"
-CATH_TRAIN_FASTA="${CATH_DIR}/cath_train_seqs.fasta"
-CATH_DOMAIN_LIST="${CATH_DIR}/cath-domain-list.txt"
-EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/best.pt"
-NETMHCIIPAN_BIN="/home/zc1519/tools/netMHCIIpan-4.3/netMHCIIpan"
+CATH_TRAIN_SOURCE="${CATH_DIR}/chain_set.jsonl"
+CATH_DOMAIN_LIST="${CATH_DIR}/chain_set.jsonl"
+EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt"
+NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -47,7 +47,7 @@ echo "  Node         : ${SLURM_NODELIST}"
 echo "  GPUs         : ${SLURM_GPUS_ON_NODE:-1}"
 echo "  Project root : ${PROJECT_ROOT}"
 echo "  Candidates   : ${CANDIDATE_FASTA_DIR}"
-echo "  CATH train   : ${CATH_TRAIN_FASTA}"
+echo "  CATH train   : ${CATH_TRAIN_SOURCE}"
 echo "  Epitope ckpt : ${EPITOPE_CKPT}"
 echo "  NMP binary   : ${NETMHCIIPAN_BIN}"
 echo "  Python       : $(python --version 2>&1)"
@@ -58,13 +58,16 @@ echo "  Timestamp    : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "============================================================"
 
 # ── Launch ────────────────────────────────────────────────────────────────
-python "${PROJECT_ROOT}/scripts/prescreen_tier2.py" \
+python -u "${PROJECT_ROOT}/scripts/prescreen_tier2.py" \
     --candidate-merged-fasta "${DATA_DIR}/tier2_candidates_merged.fasta" \
-    --cath-train-fasta "${CATH_TRAIN_FASTA}" \
+    --cath-train-fasta "${CATH_TRAIN_SOURCE}" \
     --epitope-ckpt "${EPITOPE_CKPT}" \
     --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
     --cath-domain-list "${CATH_DOMAIN_LIST}" \
     --output-dir "${OUTPUT_ROOT}" \
+    --nmp-batch-size 32 \
+    --head-prefilter-topk 3000 \
+    --resume \
     --max-per-topology 2 \
     --target-total 50
 

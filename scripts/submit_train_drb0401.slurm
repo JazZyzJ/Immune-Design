@@ -70,7 +70,7 @@ python "${PROJECT_ROOT}/scripts/train_v2_ablation.py" \
     --device cuda \
     --profile strict \
     --config-dir "${PROJECT_ROOT}/epitope_head/configs" \
-    --override-config "${PROJECT_ROOT}/epitope_head/configs/cnn_full_aug.yaml" \
+    --override-config "${PROJECT_ROOT}/epitope_head/configs/cnn_full_aug_imp.yaml" \
     --data-dir "${DATA_DIR}" \
     --output-root "${OUTPUT_ROOT}" \
     "${AUG_FLAG[@]+"${AUG_FLAG[@]}"}" \

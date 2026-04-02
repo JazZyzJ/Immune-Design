@@ -9,6 +9,7 @@ Frozen parameters (PLAN_DATA_SEL §L1):
 Exclusion rule: seq identity > 30% (strictly greater).
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -37,6 +38,43 @@ class OverlapResult:
             "best_identity": self.best_identity,
             "exclude": self.exclude,
         }
+
+
+def _materialize_cath_train_fasta(
+    cath_train_source: str,
+    tmp_dir: str,
+) -> str:
+    """Return a FASTA path for MMseqs2 from either FASTA or CATH chain_set.jsonl."""
+    if cath_train_source.endswith((".fasta", ".fa", ".faa")):
+        return cath_train_source
+
+    if os.path.basename(cath_train_source) != "chain_set.jsonl":
+        return cath_train_source
+
+    splits_path = os.path.join(
+        os.path.dirname(cath_train_source), "chain_set_splits.json"
+    )
+    if not os.path.isfile(splits_path):
+        raise FileNotFoundError(
+            "CATH JSONL source requires sibling chain_set_splits.json: "
+            f"{splits_path}"
+        )
+
+    with open(splits_path) as f:
+        splits = json.load(f)
+    train_names = set(splits.get("train", []))
+
+    fasta_path = os.path.join(tmp_dir, "cath_train_from_chain_set.fasta")
+    with open(cath_train_source) as src, open(fasta_path, "w") as dst:
+        for line in src:
+            entry = json.loads(line)
+            name = entry.get("name")
+            seq = entry.get("seq")
+            if name not in train_names or not seq:
+                continue
+            dst.write(f">{name}\n{seq}\n")
+
+    return fasta_path
 
 
 def parse_mmseqs_results(
@@ -132,7 +170,9 @@ def run_mmseqs_overlap(
 
     Args:
         candidate_fasta: path to candidate protein sequences (FASTA).
-        cath_train_fasta: path to CATH training sequences (FASTA).
+        cath_train_fasta: path to CATH training sequences source. Accepts
+            FASTA directly, or `chain_set.jsonl` with sibling
+            `chain_set_splits.json` (train split only).
         mmseqs_bin: path to the mmseqs binary.
         threshold: identity threshold for exclusion (strictly greater).
         min_seq_id: mmseqs --min-seq-id parameter.
@@ -155,9 +195,13 @@ def run_mmseqs_overlap(
 
     with tempfile.TemporaryDirectory(prefix="mmseqs_overlap_") as tmp_dir:
         output_file = os.path.join(tmp_dir, "results.tsv")
+        resolved_cath_train_fasta = _materialize_cath_train_fasta(
+            cath_train_source=cath_train_fasta,
+            tmp_dir=tmp_dir,
+        )
         raw = _run_mmseqs_easy_search(
             candidate_fasta=candidate_fasta,
-            cath_train_fasta=cath_train_fasta,
+            cath_train_fasta=resolved_cath_train_fasta,
             output_file=output_file,
             tmp_dir=os.path.join(tmp_dir, "tmp"),
             mmseqs_bin=mmseqs_bin,

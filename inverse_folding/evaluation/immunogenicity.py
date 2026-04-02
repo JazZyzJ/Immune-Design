@@ -78,6 +78,37 @@ def score_protein_all_lengths(
     return peptide_scores_to_dataframe(all_scores)
 
 
+def aggregate_nmp_batch_scores(
+    runner,
+    entries: List[tuple[str, str]],
+    allele: str,
+    pep_lengths: List[int] | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Score multiple proteins in batch and aggregate per-protein NMP metrics.
+
+    Uses the runner's batch API so callers can amortize NetMHCIIpan startup
+    across multiple proteins and peptide lengths.
+    """
+    if pep_lengths is None:
+        pep_lengths = NMP_PEP_LENGTHS
+
+    filtered_entries = [(pid, seq) for pid, seq in entries if seq]
+    if not filtered_entries:
+        return {}
+
+    batch_scores = runner.score_batch(filtered_entries, allele, pep_lengths)
+    aggregated: Dict[str, Dict[str, Any]] = {}
+    for protein_id, by_len in batch_scores.items():
+        all_scores = []
+        for scores in by_len.values():
+            all_scores.extend(scores)
+        aggregated[protein_id] = aggregate_nmp_scores(
+            peptide_scores_to_dataframe(all_scores)
+        )
+
+    return aggregated
+
+
 def aggregate_nmp_scores(scores: pd.DataFrame) -> Dict[str, Any]:
     """Aggregate per-window NetMHCIIpan scores into per-design metrics.
 

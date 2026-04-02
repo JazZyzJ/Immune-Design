@@ -5,6 +5,8 @@ diverse subset maximizing topology coverage with guaranteed representation
 across CATH architecture classes.
 """
 
+import json
+import os
 from typing import Optional
 
 import pandas as pd
@@ -25,8 +27,10 @@ def assign_topology(
 ) -> Optional[str]:
     """Look up CATH topology code for a protein's PDB code.
 
-    Parses a CathDomainList file where each non-comment line has:
-      domain_name  class  arch  topology  homology  ...
+    Accepts either:
+      1. A CathDomainList file where each non-comment line has
+         `domain_name class arch topology homology ...`
+      2. A `chain_set.jsonl` file where each entry carries `name` and `CATH`.
 
     Matches on PDB code (first 4 chars of domain name, case-insensitive)
     against the first 4 chars of protein_id.
@@ -34,6 +38,16 @@ def assign_topology(
     Returns topology string (e.g., "1.10.490") or None if not found.
     """
     pdb_code = protein_id[:4].upper()
+
+    if os.path.basename(cath_domain_list_path) == "chain_set.jsonl":
+        with open(cath_domain_list_path) as f:
+            for line in f:
+                entry = json.loads(line)
+                domain_name = entry.get("name", "")
+                cath_codes = entry.get("CATH", [])
+                if domain_name[:4].upper() == pdb_code and cath_codes:
+                    return cath_codes[0]
+        return None
 
     with open(cath_domain_list_path) as f:
         for line in f:

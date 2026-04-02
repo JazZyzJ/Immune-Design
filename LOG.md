@@ -1435,3 +1435,27 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN.md:§Module J`
   - `PROGRESS.md:§Epitope Head`
+
+### L0047
+- timestamp: 2026-04-01T02:00:33-04:00
+- type: BUGFIX
+- module: L
+- trigger: Tier 2 prescreen cluster run failed because `submit_prescreen_tier2.slurm` pointed MMseqs2 to a nonexistent `cath_train_seqs.fasta` while the actual CATH 4.3 dataset on cluster is stored as `chain_set.jsonl` plus `chain_set_splits.json`.
+- change_summary: Updated Tier 2 prescreen CATH input handling to accept `chain_set.jsonl` directly for both MMseqs2 overlap filtering and topology lookup, materialize a train-only temporary FASTA for MMseqs2, and switched the SLURM launcher to pass the JSONL source path instead of nonexistent FASTA/domain-list artifacts.
+- rationale: The Tier 2 pipeline should stay split-safe and consume the canonical CATH 4.3 storage format already used elsewhere in the repo, rather than depending on separately prepared FASTA or CathDomainList artifacts that may drift or be missing on cluster.
+- artifacts:
+  - `inverse_folding/evaluation/overlap.py` (added `chain_set.jsonl` support with train-split FASTA materialization)
+  - `tests/inverse_folding/test_module_l_overlap.py` (added coverage for JSONL train-only materialization and missing-splits guard)
+  - `inverse_folding/evaluation/cath_topology.py` (added `chain_set.jsonl` topology lookup via entry `CATH`)
+  - `tests/inverse_folding/test_module_l_prescreen.py` (added topology assignment coverage for `chain_set.jsonl`)
+  - `scripts/prescreen_tier2.py` (updated CLI help text to document FASTA or JSONL source)
+  - `scripts/submit_prescreen_tier2.slurm` (now passes `${CATH_DIR}/chain_set.jsonl`)
+- evidence: Manual Python verification passed for (1) JSONL source materializes only the `train` split and flows through `run_mmseqs_overlap`, (2) missing sibling `chain_set_splits.json` fails fast with `FileNotFoundError`, and (3) topology lookup returns the first `CATH` code directly from `chain_set.jsonl`. Local `pytest` execution was not available in the current shell because `pytest` is not installed in that environment.
+- impact:
+  - scope: Module L Tier 2 prescreen overlap/topology stages and SLURM launcher compatibility with cluster CATH 4.3 data layout.
+  - risk: low
+  - confidence: 0.91
+- status: done
+- next_action: Re-run `scripts/submit_prescreen_tier2.slurm` on cluster and, once in the correct env, execute `python -m pytest tests/inverse_folding/test_module_l_overlap.py -q` for full automated confirmation.
+- refs:
+  - `PLAN_DATA_SEL.md:§L0–L5`

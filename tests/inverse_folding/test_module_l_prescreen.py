@@ -8,6 +8,8 @@ RED targets:
   5. CATH topology assignment returns code or None.
 """
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -113,6 +115,33 @@ class TestCATHTopology:
         )
         result = assign_topology("9ZZZ_X", str(cath_file))
         assert result is None
+
+    def test_chain_set_jsonl_returns_topology(self, tmp_path):
+        chain_set_jsonl = tmp_path / "chain_set.jsonl"
+        chain_set_jsonl.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "name": "1abc.A",
+                            "seq": "AAAA",
+                            "CATH": ["1.10.490"],
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "name": "2xyz.B",
+                            "seq": "CCCC",
+                            "CATH": ["2.60.40"],
+                        }
+                    ),
+                ]
+            )
+            + "\n"
+        )
+
+        result = assign_topology("1ABC_A", str(chain_set_jsonl))
+        assert result == "1.10.490"
 
 
 # ── L3-RED-3: Diversity sampling ────────────────────────────────────────────

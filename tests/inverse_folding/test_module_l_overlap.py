@@ -128,6 +128,68 @@ class TestRunMmseqsOverlap:
         assert "q1" in results
         assert results["q1"].exclude is True
 
+    def test_chain_set_jsonl_uses_train_split_only(self, tmp_path):
+        candidate_fasta = tmp_path / "candidates.fasta"
+        chain_set_jsonl = tmp_path / "chain_set.jsonl"
+        splits_json = tmp_path / "chain_set_splits.json"
+        candidate_fasta.write_text(">q1\nMKTLLI\n")
+        chain_set_jsonl.write_text(
+            "\n".join(
+                [
+                    json.dumps({"name": "train_1", "seq": "AAAAAA"}),
+                    json.dumps({"name": "val_1", "seq": "CCCCCC"}),
+                ]
+            )
+            + "\n"
+        )
+        splits_json.write_text(
+            json.dumps(
+                {
+                    "train": ["train_1"],
+                    "validation": ["val_1"],
+                }
+            )
+        )
+
+        def fake_easy_search(candidate_fasta, cath_train_fasta, **kwargs):
+            materialized = Path(cath_train_fasta).read_text()
+            assert ">train_1" in materialized
+            assert "AAAAAA" in materialized
+            assert ">val_1" not in materialized
+            return "q1\ttrain_1\t0.500\t6\t0\t0\t1\t6\t1\t6\t1e-5\t50\n"
+
+        with patch(
+            "inverse_folding.evaluation.overlap._run_mmseqs_easy_search",
+            side_effect=fake_easy_search,
+        ), patch(
+            "shutil.which",
+            return_value="/usr/bin/mmseqs",
+        ):
+            results = run_mmseqs_overlap(
+                candidate_fasta=str(candidate_fasta),
+                cath_train_fasta=str(chain_set_jsonl),
+                mmseqs_bin="mmseqs",
+                threshold=0.3,
+            )
+
+        assert results["q1"].best_target == "train_1"
+        assert results["q1"].exclude is True
+
+    def test_chain_set_jsonl_requires_splits_file(self, tmp_path):
+        candidate_fasta = tmp_path / "candidates.fasta"
+        chain_set_jsonl = tmp_path / "chain_set.jsonl"
+        candidate_fasta.write_text(">q1\nMKTLLI\n")
+        chain_set_jsonl.write_text(json.dumps({"name": "train_1", "seq": "AAAAAA"}) + "\n")
+
+        with patch("shutil.which", return_value="/usr/bin/mmseqs"):
+            with pytest.raises(FileNotFoundError, match="chain_set_splits.json"):
+                run_mmseqs_overlap(
+                    candidate_fasta=str(candidate_fasta),
+                    cath_train_fasta=str(chain_set_jsonl),
+                    mmseqs_bin="mmseqs",
+                    threshold=0.3,
+                )
+
 
 # ── L1-RED-3: OverlapResult dataclass ────────────────────────────────────────
 
