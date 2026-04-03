@@ -1,4 +1,5 @@
 from scripts.prescreen_tier2 import (
+    _allele_tag,
     _remaining_sequences,
     _select_head_prefilter_subset,
 )
@@ -40,3 +41,7 @@ def test_remaining_sequences_skips_checkpointed_proteins():
     remaining = _remaining_sequences(sequences, existing_results)
 
     assert remaining == {"p2": "BBBB"}
+
+
+def test_allele_tag_is_filename_safe():
+    assert _allele_tag("HLA-DRB1*04:01") == "HLA-DRB1_04_01"

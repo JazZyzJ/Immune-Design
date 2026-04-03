@@ -24,6 +24,7 @@ import json
 import os
 import sys
 import time
+from typing import Optional, Tuple
 
 import pandas as pd
 
@@ -108,6 +109,10 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
+def _allele_tag(allele: str) -> str:
+    return "".join(c if (c.isalnum() or c in "-.") else "_" for c in allele)
+
+
 def _remaining_sequences(sequences: dict, existing_results: dict) -> dict:
     """Drop proteins already present in a checkpoint result dict."""
     done_ids = set(existing_results)
@@ -117,8 +122,8 @@ def _remaining_sequences(sequences: dict, existing_results: dict) -> dict:
 def _select_head_prefilter_subset(
     sequences: dict,
     head_results: dict,
-    topk: int | None = None,
-) -> tuple[dict, float]:
+    topk: Optional[int] = None,
+) -> Tuple[dict, float]:
     """Keep top-K proteins by head global risk and return full-population median."""
     all_risks = [float(v["global_risk"]) for v in head_results.values()]
     risk_median = float(pd.Series(all_risks).median()) if all_risks else 0.0
@@ -135,8 +140,8 @@ def _select_head_prefilter_subset(
     return {pid: sequences[pid] for pid in ranked_ids if pid in keep_ids}, risk_median
 
 
-def _checkpoint_path(output_dir: str, stem: str) -> str:
-    return os.path.join(output_dir, f"_{stem}.parquet")
+def _checkpoint_path(output_dir: str, stem: str, allele: str) -> str:
+    return os.path.join(output_dir, f"_{stem}_{_allele_tag(allele)}.parquet")
 
 
 def _load_checkpoint_rows(path: str, key: str) -> dict:
@@ -158,6 +163,7 @@ def main() -> int:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     t0 = time.time()
+    allele_tag = _allele_tag(args.allele)
 
     # ── Step 1: Load candidates ──────────────────────────────────────────
     _log("[1/5] Loading candidate sequences...")
@@ -213,7 +219,7 @@ def main() -> int:
         device=args.device,
     )
 
-    head_ckpt = _checkpoint_path(args.output_dir, "prescreen_head_results")
+    head_ckpt = _checkpoint_path(args.output_dir, "prescreen_head_results", args.allele)
     head_results = _load_checkpoint_rows(head_ckpt, "protein_id") if args.resume else {}
     head_todo = _remaining_sequences(passed_overlap, head_results)
     total_head = len(head_todo)
@@ -261,7 +267,7 @@ def main() -> int:
         batch_size=args.nmp_batch_size,
     )
 
-    nmp_ckpt = _checkpoint_path(args.output_dir, "prescreen_nmp_results")
+    nmp_ckpt = _checkpoint_path(args.output_dir, "prescreen_nmp_results", args.allele)
     nmp_results = _load_checkpoint_rows(nmp_ckpt, "protein_id") if args.resume else {}
     remaining_nmp = list(_remaining_sequences(filtered_for_nmp, nmp_results).items())
     total_nmp = len(remaining_nmp)
@@ -333,7 +339,9 @@ def main() -> int:
         target_total=args.target_total,
     )
 
-    out_path = os.path.join(args.output_dir, "tier2_prescreened.parquet")
+    out_path = os.path.join(
+        args.output_dir, f"tier2_prescreened_{allele_tag}.parquet"
+    )
     sampled.to_parquet(out_path, index=False)
     _log(f"  Selected {len(sampled)} candidates → {out_path}")
 

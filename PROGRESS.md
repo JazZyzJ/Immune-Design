@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-04-01T23:00:00+08:00
+> **Last synced**: 2026-04-02T22:00:00-04:00
 > **Branch**: dev_head
 
 ---
@@ -32,9 +32,10 @@
   | cnn_balanced_full | 0.1359 | — | —/— | 2026-03-05 |
 - **Artifacts**: `InferencePredictor` verified, `predict_protein()` API stable
 - **Multi-allele extension**: **done** (training complete)
-  - DRB1*04:01: checkpoint at `run/epitope_head/drb0401/runs/LC1/seed_42/best.pt` — pp_ap=TBD, pp_auc=TBD
-  - DRB1*15:01: checkpoint at `run/epitope_head/drb1501/runs/LC1/seed_42/best.pt` — pp_ap=TBD, pp_auc=TBD
+  - DRB1*04:01: checkpoint at `run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt` — pp_ap=**0.2962**, pp_auc=**0.9492** (epoch 26/48, p_aug=0.20, 1490 training entries)
+  - DRB1*15:01: checkpoint at `run/epitope_head/LC1_drb1501_aug/runs/LC1/seed_42/best.pt` — pp_ap=**0.1721**, pp_auc=**0.8492** (epoch 32/18, p_aug=0.0, 1236 training entries)
   - manifests: `outputs/manifests/drb0401/` (1865 proteins), `outputs/manifests/drb1501/` (1536 proteins)
+  - Note: DRB1501 performance significantly lower — smaller training set (1236 vs 1490 vs 1056) and augmentation was off
 - **Open**: encoder ablation (Module H, PLAN_enco_abl.md) — not started
 - **final_scripts**: `scripts/submit_cnn_enhance.slurm`, `scripts/submit_train_v2_cnn.slurm`, `scripts/submit_mutation_augmentation.slurm`
 
@@ -85,11 +86,17 @@
     - artifacts: `if_test_set/tier1_candidates.json`, `if_test_set/tier1_sequences.fasta`
     - MMseqs2 CATH overlap check: pending (run on cluster)
     - user review: pending (select final 5-10 from 15)
-  - Tier 2: 226k PDB chains downloaded (single-chain, X-ray ≤2.5Å, 100-500AA), prescreen **running on cluster**
-    - expected output: `tier2_prescreened.parquet` (30-50 proteins)
-    - expected fields: TBD — n_passed_overlap, n_passed_dual_scorer, n_selected, topology_coverage
-    - pipeline: MMseqs2 overlap → NMP batch → head batch → median risk threshold → CATH diversity sampling
-  - Tier 3: **not started** (user literature search required)
+  - Tier 2: **prescreen complete** (2026-04-02, job 3066129)
+    - funnel: 225,821 candidates → 75,425 (MMseqs2 overlap) → 3,000 (head prefilter, median risk=-1.244) → 96 (NMP scored) → **5 selected**
+    - output: `tier2_prescreened.parquet` — 5 proteins
+    - selected: 2D1H_A (109aa, CATH 1.10.10), 2D1H_B (109aa, 1.10.10), 8ZNU_A (225aa, NaN), 7F2B_B (106aa, NaN), 2GEE_A (203aa, 2.60.40)
+    - ⚠ NMP timeout issue: many batches timed out at 600s, only 96/3000 successfully scored — selection pool may be narrower than expected
+  - Tier 3 (uricases): prescreen **failed** (2026-04-02, job 3066946)
+    - funnel: 6,801 uricases → 253 (CATH overlap) → 253 sent to NMP → **0 pass** (all NMP batches timed out at 600s)
+    - used DRB0401 checkpoint (`LC1_drb0401_aug`), NMP allele: DRB1*04:01
+    - ⚠ result unreliable — 0% NMP success rate due to timeout, not biological signal
+    - input: `work/immune-design/if_test_set/uricases/filtered_uricases.fasta`
+  - Tier 3 (therapeutic): **not started** (user literature search required)
     - target: 5-10 therapeutic proteins (adalimumab, asparaginase, IFN-β, IL-2, streptokinase)
     - user action: produce `tier3_candidates.json`, run NMP screen, then `validate_tier3.py --nmp-scores-json`
 - **Post-prescreen next steps**:
@@ -167,11 +174,12 @@
 | CATH dataset (4.3) | `work/immune-design/cath_4.3/` | train/val/test |
 | Augmentation registry | `work/immune-design/augmentation/mutation_registry_strict.parquet` | used by LC1_lite_aug |
 | Manifests | `work/immune-design/manifests/` | epitope head training |
-| Epitope head DRB0401 | `run/epitope_head/drb0401/runs/LC1/seed_42/best.pt` | trained, metrics TBD |
-| Epitope head DRB1501 | `run/epitope_head/drb1501/runs/LC1/seed_42/best.pt` | trained, metrics TBD |
+| Epitope head DRB0401 | `run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.2962, pp_auc=0.9492 |
+| Epitope head DRB1501 | `run/epitope_head/LC1_drb1501_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.1721, pp_auc=0.8492 |
 | Tier 1 candidates | `work/immune-design/if_test_set/tier1_candidates.json` | 15 candidates, user review pending |
 | Tier 2 merged FASTA | `work/immune-design/if_test_set/tier2_candidates_merged.fasta` | 226k chains, prescreen running |
-| Tier 2 prescreened | `work/immune-design/if_test_set/tier2_prescreened.parquet` | TBD (prescreen output) |
+| Tier 2 prescreened | `work/immune-design/if_test_set/tier2_prescreened.parquet` | 5 proteins selected (NMP timeout issue) |
+| Uricase candidates | `work/immune-design/if_test_set/uricases/filtered_uricases.fasta` | 6801 seqs, prescreen failed (NMP timeout) |
 | IF test set | `work/immune-design/if_test_set/test_proteins.parquet` | TBD (assembly pending) |
 | Guidance sweep results | N/A | not run yet |
 

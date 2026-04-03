@@ -76,6 +76,10 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
+def _allele_tag(allele: str) -> str:
+    return "".join(c if (c.isalnum() or c in "-.") else "_" for c in allele)
+
+
 def _remaining_sequences(sequences: dict, existing_results: dict) -> dict:
     """Drop proteins already present in a checkpoint result dict."""
     done_ids = set(existing_results)
@@ -103,8 +107,8 @@ def _select_head_prefilter_subset(
     return {pid: sequences[pid] for pid in ranked_ids if pid in keep_ids}, risk_median
 
 
-def _checkpoint_path(output_dir: str, stem: str) -> str:
-    return os.path.join(output_dir, f"_{stem}.parquet")
+def _checkpoint_path(output_dir: str, stem: str, allele: str) -> str:
+    return os.path.join(output_dir, f"_{stem}_{_allele_tag(allele)}.parquet")
 
 
 def _load_checkpoint_rows(path: str, key: str) -> dict:
@@ -126,6 +130,7 @@ def main() -> int:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     t0 = time.time()
+    allele_tag = _allele_tag(args.allele)
 
     # ── Step 1: Load sequences ───────────────────────────────────────────
     _log("[1/4] Loading uricase sequences...")
@@ -161,7 +166,7 @@ def main() -> int:
         device=args.device,
     )
 
-    head_ckpt = _checkpoint_path(args.output_dir, "uricase_head_results")
+    head_ckpt = _checkpoint_path(args.output_dir, "uricase_head_results", args.allele)
     head_results = _load_checkpoint_rows(head_ckpt, "protein_id") if args.resume else {}
     head_todo = _remaining_sequences(passed, head_results)
     total_head = len(head_todo)
@@ -208,7 +213,7 @@ def main() -> int:
         batch_size=args.nmp_batch_size,
     )
 
-    nmp_ckpt = _checkpoint_path(args.output_dir, "uricase_nmp_results")
+    nmp_ckpt = _checkpoint_path(args.output_dir, "uricase_nmp_results", args.allele)
     nmp_results = _load_checkpoint_rows(nmp_ckpt, "protein_id") if args.resume else {}
     remaining_nmp = list(_remaining_sequences(filtered_for_nmp, nmp_results).items())
     total_nmp = len(remaining_nmp)
@@ -267,10 +272,14 @@ def main() -> int:
     _log(f"  Dual-scorer pass: {len(dual_pass)}/{len(df)}")
 
     # ── Write outputs ────────────────────────────────────────────────────
-    all_path = os.path.join(args.output_dir, "uricase_nmp_passed.parquet")
+    all_path = os.path.join(
+        args.output_dir, f"uricase_nmp_passed_{allele_tag}.parquet"
+    )
     df.to_parquet(all_path, index=False)
 
-    dual_path = os.path.join(args.output_dir, "uricase_dual_pass.parquet")
+    dual_path = os.path.join(
+        args.output_dir, f"uricase_dual_pass_{allele_tag}.parquet"
+    )
     dual_pass.to_parquet(dual_path, index=False)
 
     # Summary
@@ -284,7 +293,9 @@ def main() -> int:
         "nmp_threshold": args.min_strong_windows,
         "head_prefilter_topk": args.head_prefilter_topk,
     }
-    summary_path = os.path.join(args.output_dir, "uricase_prescreen_summary.json")
+    summary_path = os.path.join(
+        args.output_dir, f"uricase_prescreen_summary_{allele_tag}.json"
+    )
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
