@@ -66,6 +66,7 @@ python -u "${PROJECT_ROOT}/scripts/prescreen_uricases.py" \
     --nmp-batch-size 8 \
     --nmp-timeout 600 \
     --nmp-max-lengths-per-call 4 \
+    --nmp-workers 8 \
     --head-prefilter-topk 3000 \
     --resume \
     --min-strong-windows 3

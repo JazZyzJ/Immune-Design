@@ -15,6 +15,7 @@ import signal
 import subprocess
 import tempfile
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,11 +75,13 @@ class StandaloneRunner(NetMHCIIpanRunner):
         batch_size: int = 30,
         subprocess_timeout: int = 600,
         max_lengths_per_call: int = 4,
+        n_workers: int = 1,
     ):
         self.binary_path = Path(binary_path)
         self.batch_size = batch_size
         self.subprocess_timeout = subprocess_timeout
         self.max_lengths_per_call = max_lengths_per_call
+        self.n_workers = max(1, n_workers)
         if not self.binary_path.exists():
             raise FileNotFoundError(f"NetMHCIIpan binary not found: {self.binary_path}")
 
@@ -198,20 +201,47 @@ class StandaloneRunner(NetMHCIIpanRunner):
         entries: list[tuple[str, str]],
         allele_fmt: str,
         length_group: list[int],
+        executor: ThreadPoolExecutor | None = None,
     ) -> dict[str, dict[int, list[PeptideScore]]]:
-        """Retry failed chunk one protein at a time."""
+        """Retry failed chunk one protein at a time, optionally in parallel."""
         results: dict[str, dict[int, list[PeptideScore]]] = {}
+
+        if executor is None:
+            # Sequential fallback
+            for pid, seq in entries:
+                try:
+                    single = self._run_chunk_lengths(
+                        [(pid, seq)], allele_fmt, length_group, chunk_offset=0,
+                    )
+                    for orig_id, by_len in single.items():
+                        results.setdefault(orig_id, {}).update(by_len)
+                except (subprocess.TimeoutExpired, StandaloneRunner.ChunkFailedError) as e:
+                    logger.warning(
+                        "NMP fallback failed for %s (len=%d, lengths=%s): %s",
+                        pid, len(seq),
+                        ",".join(str(pl) for pl in length_group),
+                        type(e).__name__,
+                    )
+            return results
+
+        # Parallel fallback
+        futures = {}
         for pid, seq in entries:
+            fut = executor.submit(
+                self._run_chunk_lengths,
+                [(pid, seq)], allele_fmt, length_group, 0,
+            )
+            futures[fut] = (pid, seq)
+
+        for fut in as_completed(futures):
+            pid, seq = futures[fut]
             try:
-                single = self._run_chunk_lengths(
-                    [(pid, seq)], allele_fmt, length_group, chunk_offset=0,
-                )
+                single = fut.result()
                 for orig_id, by_len in single.items():
                     results.setdefault(orig_id, {}).update(by_len)
             except (subprocess.TimeoutExpired, StandaloneRunner.ChunkFailedError) as e:
                 logger.warning(
-                    "NetMHCIIpan single-protein fallback failed for %s "
-                    "(len=%d, lengths=%s): %s",
+                    "NMP fallback failed for %s (len=%d, lengths=%s): %s",
                     pid, len(seq),
                     ",".join(str(pl) for pl in length_group),
                     type(e).__name__,
@@ -230,8 +260,11 @@ class StandaloneRunner(NetMHCIIpanRunner):
           1. Split pep_lengths into groups of max_lengths_per_call (default 4)
              to reduce per-subprocess workload ~3-4x.
           2. Chunk proteins by batch_size as before.
-          3. On chunk timeout, fall back to single-protein retry so only
-             truly problematic proteins are skipped (not entire chunks).
+          3. Within each chunk, run all length groups in parallel via
+             ThreadPoolExecutor(n_workers). Each thread spawns one
+             NetMHCIIpan subprocess — the GIL is irrelevant since threads
+             only wait on subprocesses.
+          4. On chunk failure, fall back to per-protein parallel retry.
 
         Uses short FASTA IDs (S000000, S000001, ...) to avoid NetMHCIIpan's
         ~15-char Identity truncation, then remaps back to original IDs.
@@ -253,48 +286,66 @@ class StandaloneRunner(NetMHCIIpanRunner):
         n_timeout_chunks = 0
         n_fallback_recovered = 0
 
-        for chunk_idx, chunk_start in enumerate(
-            range(0, len(entries), self.batch_size)
-        ):
-            chunk = entries[chunk_start:chunk_start + self.batch_size]
+        with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+            for chunk_idx, chunk_start in enumerate(
+                range(0, len(entries), self.batch_size)
+            ):
+                chunk = entries[chunk_start:chunk_start + self.batch_size]
 
-            for lg_idx, length_group in enumerate(length_groups):
-                try:
-                    chunk_results = self._run_chunk_lengths(
-                        chunk, allele_fmt, length_group, chunk_offset=chunk_start,
+                # Submit all length groups for this chunk in parallel
+                futures = {}
+                for lg_idx, length_group in enumerate(length_groups):
+                    fut = executor.submit(
+                        self._run_chunk_lengths,
+                        chunk, allele_fmt, length_group,
+                        chunk_offset=chunk_start,
                     )
-                    for orig_id, by_len in chunk_results.items():
-                        all_results.setdefault(orig_id, {}).update(by_len)
-                except (
-                    subprocess.TimeoutExpired,
-                    StandaloneRunner.ChunkFailedError,
-                ) as e:
-                    n_timeout_chunks += 1
-                    logger.warning(
-                        "NetMHCIIpan chunk %d/%d (length group %d/%d) failed: %s "
-                        "(%d seqs, lengths=%s). Retrying per-protein...",
-                        chunk_idx + 1, n_chunks, lg_idx + 1, len(length_groups),
-                        type(e).__name__, len(chunk),
-                        ",".join(str(pl) for pl in length_group),
-                    )
+                    futures[fut] = (lg_idx, length_group)
+
+                # Collect results; track which length groups failed
+                failed_groups: list[tuple[int, list[int]]] = []
+                for fut in as_completed(futures):
+                    lg_idx, length_group = futures[fut]
+                    try:
+                        chunk_results = fut.result()
+                        for orig_id, by_len in chunk_results.items():
+                            all_results.setdefault(orig_id, {}).update(by_len)
+                    except (
+                        subprocess.TimeoutExpired,
+                        StandaloneRunner.ChunkFailedError,
+                    ) as e:
+                        n_timeout_chunks += 1
+                        logger.warning(
+                            "NMP chunk %d/%d (lg %d/%d) failed: %s "
+                            "(%d seqs, lengths=%s). Will retry per-protein.",
+                            chunk_idx + 1, n_chunks,
+                            lg_idx + 1, len(length_groups),
+                            type(e).__name__, len(chunk),
+                            ",".join(str(pl) for pl in length_group),
+                        )
+                        failed_groups.append((lg_idx, length_group))
+
+                # Parallel per-protein fallback for failed length groups
+                for lg_idx, length_group in failed_groups:
                     fallback = self._fallback_single_protein(
                         chunk, allele_fmt, length_group,
+                        executor=executor,
                     )
                     for orig_id, by_len in fallback.items():
                         all_results.setdefault(orig_id, {}).update(by_len)
                     n_fallback_recovered += len(fallback)
 
-            if (chunk_idx + 1) % 5 == 0 or (chunk_idx + 1) == n_chunks:
-                logger.debug(
-                    "  score_batch: chunk %d/%d done (%d entries so far, "
-                    "%d timeouts, %d recovered)",
-                    chunk_idx + 1, n_chunks, len(all_results),
-                    n_timeout_chunks, n_fallback_recovered,
-                )
+                if (chunk_idx + 1) % 5 == 0 or (chunk_idx + 1) == n_chunks:
+                    logger.debug(
+                        "  score_batch: chunk %d/%d done (%d entries so far, "
+                        "%d failures, %d recovered)",
+                        chunk_idx + 1, n_chunks, len(all_results),
+                        n_timeout_chunks, n_fallback_recovered,
+                    )
 
         if n_timeout_chunks > 0:
             logger.warning(
-                "  score_batch complete: %d total timeouts, %d proteins "
+                "  score_batch complete: %d total failures, %d proteins "
                 "recovered via fallback",
                 n_timeout_chunks, n_fallback_recovered,
             )
@@ -490,6 +541,7 @@ def build_runner(
     batch_size: int = 30,
     subprocess_timeout: int = 600,
     max_lengths_per_call: int = 4,
+    n_workers: int = 1,
 ) -> NetMHCIIpanRunner:
     """Factory for NetMHCIIpan runners."""
     if backend == "standalone":
@@ -499,6 +551,7 @@ def build_runner(
             binary_path, batch_size=batch_size,
             subprocess_timeout=subprocess_timeout,
             max_lengths_per_call=max_lengths_per_call,
+            n_workers=n_workers,
         )
     elif backend == "mock":
         return MockRunner(seed=seed)

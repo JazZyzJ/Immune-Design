@@ -71,6 +71,9 @@ def parse_args() -> argparse.Namespace:
                         help="Timeout per NMP subprocess call in seconds (default: 600).")
     parser.add_argument("--nmp-max-lengths-per-call", type=int, default=4,
                         help="Max peptide lengths per NMP call (default: 4, total 14 split into groups).")
+    parser.add_argument("--nmp-workers", type=int, default=1,
+                        help="Parallel NMP subprocess workers (default: 1). "
+                             "Set to number of CPU cores for full utilization.")
     parser.add_argument("--head-prefilter-topk", type=int, default=5000,
                         help="Keep top-K head-risk candidates before NMP (default: 5000).")
     parser.add_argument("--resume", action="store_true",
@@ -281,7 +284,8 @@ def main() -> int:
     # ── Step 4: NetMHCIIpan batch screen ─────────────────────────────────
     _log("[4/5] Running NetMHCIIpan batch screening...")
     _log(f"  Config: batch_size={args.nmp_batch_size}, timeout={args.nmp_timeout}s, "
-         f"max_lengths_per_call={args.nmp_max_lengths_per_call}")
+         f"max_lengths_per_call={args.nmp_max_lengths_per_call}, "
+         f"workers={args.nmp_workers}")
     from inverse_folding.evaluation.immunogenicity import (
         aggregate_nmp_scores,
         aggregate_nmp_batch_scores,
@@ -294,6 +298,7 @@ def main() -> int:
         batch_size=args.nmp_batch_size,
         subprocess_timeout=args.nmp_timeout,
         max_lengths_per_call=args.nmp_max_lengths_per_call,
+        n_workers=args.nmp_workers,
     )
 
     nmp_ckpt = _checkpoint_path(args.output_dir, "prescreen_nmp_results", args.allele)
