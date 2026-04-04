@@ -65,7 +65,9 @@ python -u "${PROJECT_ROOT}/scripts/prescreen_tier2.py" \
     --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
     --cath-domain-list "${CATH_DOMAIN_LIST}" \
     --output-dir "${OUTPUT_ROOT}" \
-    --nmp-batch-size 32 \
+    --nmp-batch-size 8 \
+    --nmp-timeout 600 \
+    --nmp-max-lengths-per-call 4 \
     --head-prefilter-topk 3000 \
     --resume \
     --max-per-topology 2 \

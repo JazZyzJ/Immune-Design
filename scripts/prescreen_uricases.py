@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -44,8 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mmseqs-bin", default="mmseqs")
     parser.add_argument("--variant-id", default="LC1")
     parser.add_argument("--config-dir", default=None)
-    parser.add_argument("--nmp-batch-size", type=int, default=32,
-                        help="Proteins per NetMHCIIpan batch call (default: 32).")
+    parser.add_argument("--nmp-batch-size", type=int, default=8,
+                        help="Proteins per NetMHCIIpan batch call (default: 8).")
+    parser.add_argument("--nmp-timeout", type=int, default=600,
+                        help="Timeout per NMP subprocess call in seconds (default: 600).")
+    parser.add_argument("--nmp-max-lengths-per-call", type=int, default=4,
+                        help="Max peptide lengths per NMP call (default: 4).")
     parser.add_argument("--head-prefilter-topk", type=int, default=5000,
                         help="Keep top-K head-risk sequences before NMP (default: 5000).")
     parser.add_argument("--resume", action="store_true",
@@ -80,9 +85,20 @@ def _allele_tag(allele: str) -> str:
     return "".join(c if (c.isalnum() or c in "-.") else "_" for c in allele)
 
 
-def _remaining_sequences(sequences: dict, existing_results: dict) -> dict:
-    """Drop proteins already present in a checkpoint result dict."""
-    done_ids = set(existing_results)
+def _remaining_sequences(sequences: dict, existing_results: dict,
+                         skip_only_complete: bool = False) -> dict:
+    """Drop proteins already present in a checkpoint result dict.
+
+    If skip_only_complete=True, only skip proteins with nmp_status=="complete";
+    proteins with "partial"/"timeout" status are retried.
+    """
+    if skip_only_complete:
+        done_ids = {
+            pid for pid, v in existing_results.items()
+            if v.get("nmp_status") == "complete"
+        }
+    else:
+        done_ids = set(existing_results)
     return {pid: seq for pid, seq in sequences.items() if pid not in done_ids}
 
 
@@ -129,6 +145,14 @@ def _write_checkpoint_rows(path: str, rows: dict) -> None:
 def main() -> int:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stdout,
+    )
+
     t0 = time.time()
     allele_tag = _allele_tag(args.allele)
 
@@ -202,6 +226,8 @@ def main() -> int:
 
     # ── Step 4: NetMHCIIpan batch screen ─────────────────────────────────
     _log("[4/4] Running NetMHCIIpan batch screening...")
+    _log(f"  Config: batch_size={args.nmp_batch_size}, timeout={args.nmp_timeout}s, "
+         f"max_lengths_per_call={args.nmp_max_lengths_per_call}")
     from epitope_head.data.netmhciipan_runner import build_runner
     from inverse_folding.evaluation.immunogenicity import (
         aggregate_nmp_batch_scores,
@@ -211,38 +237,87 @@ def main() -> int:
         backend="standalone",
         binary_path=args.netmhciipan_bin,
         batch_size=args.nmp_batch_size,
+        subprocess_timeout=args.nmp_timeout,
+        max_lengths_per_call=args.nmp_max_lengths_per_call,
     )
 
     nmp_ckpt = _checkpoint_path(args.output_dir, "uricase_nmp_results", args.allele)
     nmp_results = _load_checkpoint_rows(nmp_ckpt, "protein_id") if args.resume else {}
-    remaining_nmp = list(_remaining_sequences(filtered_for_nmp, nmp_results).items())
+    remaining_nmp = list(_remaining_sequences(
+        filtered_for_nmp, nmp_results, skip_only_complete=True,
+    ).items())
+    n_prev_complete = sum(
+        1 for v in nmp_results.values() if v.get("nmp_status") == "complete"
+    )
     total_nmp = len(remaining_nmp)
+    n_prev_retry = sum(
+        1 for v in nmp_results.values() if v.get("nmp_status") in ("partial", "timeout")
+    )
+    _log(f"  NMP: {total_nmp} to process ({n_prev_complete} already complete, "
+         f"{n_prev_retry} retrying from partial/timeout)")
+    n_complete_this_run = 0
+    n_partial_this_run = 0
+    n_timeout_this_run = 0
+    t_nmp_start = time.time()
     for chunk_start in range(0, total_nmp, args.nmp_batch_size):
         chunk = remaining_nmp[chunk_start:chunk_start + args.nmp_batch_size]
+        t_chunk = time.time()
         batch_out = aggregate_nmp_batch_scores(nmp_runner, chunk, args.allele)
+        chunk_elapsed = time.time() - t_chunk
+        chunk_c, chunk_p, chunk_t = 0, 0, 0
         for pid, agg in batch_out.items():
+            status = agg["nmp_status"]
             nmp_results[pid] = {
                 "protein_id": pid,
                 "n_strong_windows": agg["n_strong_binders"],
                 "mean_best_rank": agg["mean_best_rank"],
                 "n_weak_windows": agg["n_weak_binders"],
                 "n_windows_scored": agg["n_windows_scored"],
+                "nmp_status": status,
+                "scored_lengths": json.dumps(agg["scored_lengths"]),
+                "requested_lengths": json.dumps(agg["requested_lengths"]),
             }
+            if status == "complete":
+                chunk_c += 1
+            elif status == "partial":
+                chunk_p += 1
+            else:
+                chunk_t += 1
+        n_complete_this_run += chunk_c
+        n_partial_this_run += chunk_p
+        n_timeout_this_run += chunk_t
         if args.resume:
             _write_checkpoint_rows(nmp_ckpt, nmp_results)
         done = min(chunk_start + len(chunk), total_nmp)
-        elapsed = time.time() - t0
-        rate = done / max(elapsed, 1e-6)
+        nmp_elapsed = time.time() - t_nmp_start
+        rate = done / max(nmp_elapsed, 1e-6)
         eta = (total_nmp - done) / max(rate, 1e-6)
-        _log(f"  NMP batch: {done}/{total_nmp} done "
-             f"({rate:.2f} proteins/s, ETA {eta/60:.1f} min)")
+        _log(f"  NMP [{done}/{total_nmp}] "
+             f"+{chunk_c}ok +{chunk_p}partial +{chunk_t}timeout | "
+             f"chunk {chunk_elapsed:.1f}s | "
+             f"run total: {n_complete_this_run}ok {n_partial_this_run}partial "
+             f"{n_timeout_this_run}timeout | "
+             f"rate {rate:.2f}/s, ETA {eta/60:.1f}min")
+    n_all_complete = sum(
+        1 for v in nmp_results.values() if v.get("nmp_status") == "complete"
+    )
+    n_all_partial = sum(
+        1 for v in nmp_results.values() if v.get("nmp_status") == "partial"
+    )
+    n_all_timeout = sum(
+        1 for v in nmp_results.values() if v.get("nmp_status") == "timeout"
+    )
+    _log(f"  NMP done: {n_all_complete} complete, "
+         f"{n_all_partial} partial (excluded), "
+         f"{n_all_timeout} timeout (excluded)")
 
+    n_skipped_incomplete = 0
     rows = []
     for pid in filtered_for_nmp:
-        nmp = nmp_results.get(
-            pid,
-            {"n_strong_windows": 0, "mean_best_rank": float("nan")},
-        )
+        nmp = nmp_results.get(pid)
+        if nmp is None or nmp.get("nmp_status") != "complete":
+            n_skipped_incomplete += 1
+            continue
         head = head_results.get(
             pid,
             {"global_risk": 0.0, "n_hotspot_positions": 0},
@@ -260,6 +335,7 @@ def main() -> int:
             "cath_overlap_flag": False,
         })
 
+    _log(f"  Skipped {n_skipped_incomplete} proteins with incomplete NMP data")
     if not rows:
         _log("WARNING: No uricases pass NMP filter.")
         return 1

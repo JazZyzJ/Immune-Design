@@ -73,10 +73,12 @@ class StandaloneRunner(NetMHCIIpanRunner):
         binary_path: str | Path,
         batch_size: int = 30,
         subprocess_timeout: int = 600,
+        max_lengths_per_call: int = 4,
     ):
         self.binary_path = Path(binary_path)
         self.batch_size = batch_size
         self.subprocess_timeout = subprocess_timeout
+        self.max_lengths_per_call = max_lengths_per_call
         if not self.binary_path.exists():
             raise FileNotFoundError(f"NetMHCIIpan binary not found: {self.binary_path}")
 
@@ -137,6 +139,85 @@ class StandaloneRunner(NetMHCIIpanRunner):
         finally:
             Path(fasta_path).unlink(missing_ok=True)
 
+    class ChunkFailedError(Exception):
+        """Raised when a NetMHCIIpan chunk returns non-zero exit code."""
+
+    def _run_chunk_lengths(
+        self,
+        chunk: list[tuple[str, str]],
+        allele_fmt: str,
+        length_group: list[int],
+        chunk_offset: int,
+    ) -> dict[str, dict[int, list[PeptideScore]]]:
+        """Run one chunk × one length group. Returns {orig_id: {len: [scores]}}.
+
+        Raises:
+            subprocess.TimeoutExpired: if the subprocess times out.
+            ChunkFailedError: if the subprocess returns non-zero exit code.
+        """
+        short_to_orig: dict[str, str] = {}
+        length_str = ",".join(str(pl) for pl in sorted(length_group))
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".fasta", delete=False
+        ) as f:
+            for i, (pid, seq) in enumerate(chunk):
+                short_id = f"S{chunk_offset + i:06d}"
+                short_to_orig[short_id] = pid
+                f.write(f">{short_id}\n{seq}\n")
+            fasta_path = f.name
+
+        cmd = [
+            str(self.binary_path),
+            "-f", fasta_path,
+            "-a", allele_fmt,
+            "-length", length_str,
+            "-context",
+        ]
+
+        try:
+            result = self._run_netmhciipan(cmd)
+            if result.returncode != 0:
+                raise StandaloneRunner.ChunkFailedError(
+                    f"rc={result.returncode}, stderr={result.stderr[:300]}"
+                )
+            chunk_results = self._parse_batch_output(result.stdout)
+            # Remap short IDs → original IDs
+            remapped: dict[str, dict[int, list[PeptideScore]]] = {}
+            for short_id, by_len in chunk_results.items():
+                orig_id = short_to_orig.get(short_id, short_id)
+                remapped[orig_id] = by_len
+            return remapped
+        except subprocess.TimeoutExpired:
+            raise
+        finally:
+            Path(fasta_path).unlink(missing_ok=True)
+
+    def _fallback_single_protein(
+        self,
+        entries: list[tuple[str, str]],
+        allele_fmt: str,
+        length_group: list[int],
+    ) -> dict[str, dict[int, list[PeptideScore]]]:
+        """Retry failed chunk one protein at a time."""
+        results: dict[str, dict[int, list[PeptideScore]]] = {}
+        for pid, seq in entries:
+            try:
+                single = self._run_chunk_lengths(
+                    [(pid, seq)], allele_fmt, length_group, chunk_offset=0,
+                )
+                for orig_id, by_len in single.items():
+                    results.setdefault(orig_id, {}).update(by_len)
+            except (subprocess.TimeoutExpired, StandaloneRunner.ChunkFailedError) as e:
+                logger.warning(
+                    "NetMHCIIpan single-protein fallback failed for %s "
+                    "(len=%d, lengths=%s): %s",
+                    pid, len(seq),
+                    ",".join(str(pl) for pl in length_group),
+                    type(e).__name__,
+                )
+        return results
+
     def score_batch(
         self,
         entries: list[tuple[str, str]],
@@ -144,6 +225,13 @@ class StandaloneRunner(NetMHCIIpanRunner):
         pep_lengths: list[int],
     ) -> dict[str, dict[int, list[PeptideScore]]]:
         """Score multiple proteins × multiple lengths, chunked to avoid timeout.
+
+        Strategy to minimize data loss:
+          1. Split pep_lengths into groups of max_lengths_per_call (default 4)
+             to reduce per-subprocess workload ~3-4x.
+          2. Chunk proteins by batch_size as before.
+          3. On chunk timeout, fall back to single-protein retry so only
+             truly problematic proteins are skipped (not entire chunks).
 
         Uses short FASTA IDs (S000000, S000001, ...) to avoid NetMHCIIpan's
         ~15-char Identity truncation, then remaps back to original IDs.
@@ -153,64 +241,63 @@ class StandaloneRunner(NetMHCIIpanRunner):
             return {}
 
         allele_fmt = allele.replace("HLA-", "").replace("*", "_").replace(":", "")
-        length_str = ",".join(str(pl) for pl in sorted(pep_lengths))
         all_results: dict[str, dict[int, list[PeptideScore]]] = {}
+
+        # Split lengths into smaller groups to reduce per-call compute
+        sorted_lengths = sorted(pep_lengths)
+        length_groups: list[list[int]] = []
+        for i in range(0, len(sorted_lengths), self.max_lengths_per_call):
+            length_groups.append(sorted_lengths[i:i + self.max_lengths_per_call])
+
         n_chunks = (len(entries) + self.batch_size - 1) // self.batch_size
+        n_timeout_chunks = 0
+        n_fallback_recovered = 0
 
         for chunk_idx, chunk_start in enumerate(
             range(0, len(entries), self.batch_size)
         ):
             chunk = entries[chunk_start:chunk_start + self.batch_size]
-            short_to_orig: dict[str, str] = {}
 
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".fasta", delete=False
-            ) as f:
-                for i, (pid, seq) in enumerate(chunk):
-                    short_id = f"S{chunk_start + i:06d}"
-                    short_to_orig[short_id] = pid
-                    f.write(f">{short_id}\n{seq}\n")
-                fasta_path = f.name
-
-            cmd = [
-                str(self.binary_path),
-                "-f", fasta_path,
-                "-a", allele_fmt,
-                "-length", length_str,
-                "-context",
-            ]
-
-            try:
-                result = self._run_netmhciipan(cmd)
-                if result.returncode != 0:
-                    logger.warning(
-                        "NetMHCIIpan batch chunk %d/%d failed (rc=%d): %s",
-                        chunk_idx + 1, n_chunks, result.returncode,
-                        result.stderr[:300],
+            for lg_idx, length_group in enumerate(length_groups):
+                try:
+                    chunk_results = self._run_chunk_lengths(
+                        chunk, allele_fmt, length_group, chunk_offset=chunk_start,
                     )
-                    continue
-                chunk_results = self._parse_batch_output(result.stdout)
-                for short_id, by_len in chunk_results.items():
-                    orig_id = short_to_orig.get(short_id, short_id)
-                    if orig_id not in all_results:
-                        all_results[orig_id] = {}
-                    for pl, scores in by_len.items():
-                        all_results[orig_id][pl] = scores
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    "NetMHCIIpan batch chunk %d/%d timed out after %ds "
-                    "(%d seqs, lengths=%s). Skipping chunk.",
-                    chunk_idx + 1, n_chunks, self.subprocess_timeout,
-                    len(chunk), length_str,
-                )
-            finally:
-                Path(fasta_path).unlink(missing_ok=True)
+                    for orig_id, by_len in chunk_results.items():
+                        all_results.setdefault(orig_id, {}).update(by_len)
+                except (
+                    subprocess.TimeoutExpired,
+                    StandaloneRunner.ChunkFailedError,
+                ) as e:
+                    n_timeout_chunks += 1
+                    logger.warning(
+                        "NetMHCIIpan chunk %d/%d (length group %d/%d) failed: %s "
+                        "(%d seqs, lengths=%s). Retrying per-protein...",
+                        chunk_idx + 1, n_chunks, lg_idx + 1, len(length_groups),
+                        type(e).__name__, len(chunk),
+                        ",".join(str(pl) for pl in length_group),
+                    )
+                    fallback = self._fallback_single_protein(
+                        chunk, allele_fmt, length_group,
+                    )
+                    for orig_id, by_len in fallback.items():
+                        all_results.setdefault(orig_id, {}).update(by_len)
+                    n_fallback_recovered += len(fallback)
 
             if (chunk_idx + 1) % 5 == 0 or (chunk_idx + 1) == n_chunks:
-                logger.info(
-                    "  score_batch: chunk %d/%d done (%d entries so far)",
+                logger.debug(
+                    "  score_batch: chunk %d/%d done (%d entries so far, "
+                    "%d timeouts, %d recovered)",
                     chunk_idx + 1, n_chunks, len(all_results),
+                    n_timeout_chunks, n_fallback_recovered,
                 )
+
+        if n_timeout_chunks > 0:
+            logger.warning(
+                "  score_batch complete: %d total timeouts, %d proteins "
+                "recovered via fallback",
+                n_timeout_chunks, n_fallback_recovered,
+            )
 
         return all_results
 
@@ -402,6 +489,7 @@ def build_runner(
     seed: int = 42,
     batch_size: int = 30,
     subprocess_timeout: int = 600,
+    max_lengths_per_call: int = 4,
 ) -> NetMHCIIpanRunner:
     """Factory for NetMHCIIpan runners."""
     if backend == "standalone":
@@ -410,6 +498,7 @@ def build_runner(
         return StandaloneRunner(
             binary_path, batch_size=batch_size,
             subprocess_timeout=subprocess_timeout,
+            max_lengths_per_call=max_lengths_per_call,
         )
     elif backend == "mock":
         return MockRunner(seed=seed)

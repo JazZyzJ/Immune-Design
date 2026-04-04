@@ -88,6 +88,13 @@ def aggregate_nmp_batch_scores(
 
     Uses the runner's batch API so callers can amortize NetMHCIIpan startup
     across multiple proteins and peptide lengths.
+
+    Each result dict includes:
+      - Standard aggregation fields (n_strong_binders, etc.)
+      - scored_lengths: list of peptide lengths that returned results
+      - requested_lengths: list of all requested peptide lengths
+      - nmp_status: "complete" if all applicable lengths scored,
+                    "partial" if some missing, "timeout" if none scored
     """
     if pep_lengths is None:
         pep_lengths = NMP_PEP_LENGTHS
@@ -98,13 +105,47 @@ def aggregate_nmp_batch_scores(
 
     batch_scores = runner.score_batch(filtered_entries, allele, pep_lengths)
     aggregated: Dict[str, Dict[str, Any]] = {}
+
+    # Build per-protein set of applicable lengths (skip lengths > seq length)
+    seq_by_id = {pid: seq for pid, seq in filtered_entries}
+
     for protein_id, by_len in batch_scores.items():
         all_scores = []
         for scores in by_len.values():
             all_scores.extend(scores)
-        aggregated[protein_id] = aggregate_nmp_scores(
-            peptide_scores_to_dataframe(all_scores)
-        )
+
+        seq_len = len(seq_by_id.get(protein_id, ""))
+        applicable = sorted(pl for pl in pep_lengths if pl <= seq_len)
+        scored = sorted(by_len.keys())
+
+        if not applicable:
+            status = "complete"
+        elif scored == applicable:
+            status = "complete"
+        elif not scored:
+            status = "timeout"
+        else:
+            status = "partial"
+
+        agg = aggregate_nmp_scores(peptide_scores_to_dataframe(all_scores))
+        agg["scored_lengths"] = scored
+        agg["requested_lengths"] = applicable
+        agg["nmp_status"] = status
+        aggregated[protein_id] = agg
+
+    # Mark proteins that got zero results (not even in batch_scores)
+    for pid, seq in filtered_entries:
+        if pid not in aggregated:
+            applicable = sorted(pl for pl in pep_lengths if pl <= len(seq))
+            aggregated[pid] = {
+                "n_strong_binders": 0,
+                "n_weak_binders": 0,
+                "mean_best_rank": float("nan"),
+                "n_windows_scored": 0,
+                "scored_lengths": [],
+                "requested_lengths": applicable,
+                "nmp_status": "timeout",
+            }
 
     return aggregated
 
