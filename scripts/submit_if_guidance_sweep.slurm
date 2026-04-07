@@ -25,6 +25,13 @@ DPLM_CKPT="${DPLM_EXPERIMENT_PATH}/checkpoints/<FILL_IN_BEST_CKPT>"
 EPITOPE_CKPT="<FILL_IN: path to epitope head best.pt>"
 TEST_PDB_DIR="<FILL_IN: path to test PDB directory>"
 
+# ── Test set sampling ────────────────────────────────────────────────────
+# Assembled parquet from L5 (tier-aware sampling for efficiency)
+TEST_SET_PARQUET="${DATA_DIR}/if_test_set/test_proteins_HLA-DRB1_07_01.parquet"
+TIER2_SAMPLE=40          # random sample from ~3000 tier 2 proteins
+TIER3_SAMPLE=15          # random sample from ~126 tier 3 proteins
+# Tier 1 (15 gold standard) always included in full
+
 GUIDANCE_OUTPUT="${OUTPUT_ROOT}/guidance/sweep_seed42"
 
 mkdir -p "${GUIDANCE_OUTPUT}" "${LOG_DIR}"
@@ -54,6 +61,9 @@ echo "  Project root : ${PROJECT_ROOT}"
 echo "  DPLM ckpt    : ${DPLM_CKPT}"
 echo "  Epitope ckpt : ${EPITOPE_CKPT}"
 echo "  Test PDBs    : ${TEST_PDB_DIR}"
+echo "  Test parquet : ${TEST_SET_PARQUET}"
+echo "  Tier2 sample : ${TIER2_SAMPLE}"
+echo "  Tier3 sample : ${TIER3_SAMPLE}"
 echo "  Output       : ${GUIDANCE_OUTPUT}"
 echo "  Python       : $(python --version 2>&1)"
 echo "  PyTorch      : $(python -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'not found')"
@@ -73,6 +83,9 @@ python "${PROJECT_ROOT}/scripts/run_if_guidance_sweep.py" \
     --epitope-ckpt "${EPITOPE_CKPT}" \
     --epitope-variant B0 \
     --test-pdb-dir "${TEST_PDB_DIR}" \
+    --test-set-parquet "${TEST_SET_PARQUET}" \
+    --tier2-sample "${TIER2_SAMPLE}" \
+    --tier3-sample "${TIER3_SAMPLE}" \
     --output-dir "${GUIDANCE_OUTPUT}" \
     --num-candidates 8 \
     --seed 42 \

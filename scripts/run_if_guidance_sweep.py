@@ -79,12 +79,21 @@ def parse_args() -> argparse.Namespace:
 
     # ── Test set source ──
     # Generation source is always the DPLM datamodule (CATH test split).
-    # Use --protein-ids to restrict to specific proteins (e.g., the curated
-    # test set from PLAN_DATA_SEL.md). Without --protein-ids, all proteins
-    # in the CATH test split are used.
+    # Option A: --protein-ids to pass explicit IDs.
+    # Option B: --test-set-parquet with tier-aware sampling.
+    # These are mutually exclusive.
     p.add_argument("--protein-ids", nargs="+", default=None,
                     help="Restrict to these protein IDs from the CATH test split. "
-                         "If omitted, all test proteins are used.")
+                         "Mutually exclusive with --test-set-parquet.")
+    p.add_argument("--test-set-parquet", default=None,
+                    help="Path to assembled test set parquet (from L5 assembly). "
+                         "Enables tier-aware sampling. Mutually exclusive with --protein-ids.")
+    p.add_argument("--tier2-sample", type=int, default=None,
+                    help="Number of tier 2 proteins to randomly sample. "
+                         "Requires --test-set-parquet. Default: all tier 2.")
+    p.add_argument("--tier3-sample", type=int, default=None,
+                    help="Number of tier 3 proteins to randomly sample. "
+                         "Requires --test-set-parquet. Default: all tier 3.")
 
     # ── Guidance params ──
     p.add_argument("--eta-grid", nargs="+", type=float, default=None,
@@ -109,7 +118,61 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true",
                     help="Print config and exit without running")
 
-    return p.parse_args()
+    args = p.parse_args()
+
+    # Mutual exclusion: --protein-ids vs --test-set-parquet
+    if args.protein_ids and args.test_set_parquet:
+        p.error("--protein-ids and --test-set-parquet are mutually exclusive")
+    if (args.tier2_sample or args.tier3_sample) and not args.test_set_parquet:
+        p.error("--tier2-sample / --tier3-sample require --test-set-parquet")
+
+    return args
+
+
+def sample_from_test_set_parquet(
+    parquet_path: str,
+    tier2_sample: int | None,
+    tier3_sample: int | None,
+    seed: int,
+) -> List[str]:
+    """Read assembled test set parquet and sample protein IDs per tier.
+
+    Tier 1 is always kept in full. Tier 2 and Tier 3 are optionally
+    sub-sampled for computational efficiency.
+
+    Returns a sorted list of selected protein IDs.
+    """
+    import pandas as pd
+
+    df = pd.read_parquet(parquet_path)
+    if "tier" not in df.columns or "protein_id" not in df.columns:
+        raise ValueError(
+            f"Parquet must contain 'tier' and 'protein_id' columns, "
+            f"got {list(df.columns)}"
+        )
+
+    rng = np.random.default_rng(seed)
+    selected = []
+
+    for tier_val in sorted(df["tier"].unique()):
+        tier_df = df[df["tier"] == tier_val]
+        ids = tier_df["protein_id"].unique().tolist()
+
+        if tier_val == 1:
+            # Tier 1 gold standard: always keep all
+            sampled = ids
+        elif tier_val == 2 and tier2_sample is not None:
+            n = min(tier2_sample, len(ids))
+            sampled = rng.choice(ids, size=n, replace=False).tolist()
+        elif tier_val == 3 and tier3_sample is not None:
+            n = min(tier3_sample, len(ids))
+            sampled = rng.choice(ids, size=n, replace=False).tolist()
+        else:
+            sampled = ids
+
+        selected.extend(sampled)
+
+    return sorted(selected)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -340,6 +403,26 @@ def main() -> int:
         cfg = GuidanceConfig(eta=eta, num_candidates=K, seed=args.seed)
         validate_guidance_config(cfg, enforce_frozen_grid=enforce_grid)
 
+    # ── Resolve protein ID filter (tier-aware sampling or explicit list) ──
+    tier_counts = {}
+    if args.test_set_parquet:
+        import pandas as pd
+        sampled_ids = sample_from_test_set_parquet(
+            args.test_set_parquet,
+            tier2_sample=args.tier2_sample,
+            tier3_sample=args.tier3_sample,
+            seed=args.seed,
+        )
+        protein_id_filter = set(sampled_ids)
+        # Read tier breakdown for diagnostics
+        df = pd.read_parquet(args.test_set_parquet)
+        sampled_df = df[df["protein_id"].isin(protein_id_filter)]
+        tier_counts = sampled_df.groupby("tier")["protein_id"].nunique().to_dict()
+    elif args.protein_ids:
+        protein_id_filter = set(args.protein_ids)
+    else:
+        protein_id_filter = None
+
     # Create output directory and save sweep config
     os.makedirs(args.output_dir, exist_ok=True)
     sweep_config = {
@@ -354,6 +437,11 @@ def main() -> int:
         "max_iter": args.max_iter,
         "temperature": args.temperature,
         "sampling_strategy": args.sampling_strategy,
+        "test_set_parquet": os.path.abspath(args.test_set_parquet) if args.test_set_parquet else None,
+        "tier2_sample": args.tier2_sample,
+        "tier3_sample": args.tier3_sample,
+        "n_proteins": len(protein_id_filter) if protein_id_filter else "all (CATH test)",
+        "tier_breakdown": tier_counts if tier_counts else None,
     }
     with open(os.path.join(args.output_dir, "guidance_config.yaml"), "w") as f:
         import yaml
@@ -361,10 +449,25 @@ def main() -> int:
 
     print("=" * 60)
     print("M3: Classifier Guidance Eta Sweep")
-    print(f"  Eta grid:     {list(eta_grid)}")
-    print(f"  K candidates: {K}")
-    print(f"  Seed:         {args.seed}")
-    print(f"  Output:       {args.output_dir}")
+    print(f"  Eta grid       : {list(eta_grid)}")
+    print(f"  K candidates   : {K}")
+    print(f"  Seed           : {args.seed}")
+    print(f"  Max iter       : {args.max_iter}")
+    print(f"  Temperature    : {args.temperature}")
+    print(f"  Sampling       : {args.sampling_strategy}")
+    print(f"  Epitope variant: {args.epitope_variant}")
+    if args.test_set_parquet:
+        print(f"  Test parquet   : {args.test_set_parquet}")
+        print(f"  Tier2 sample   : {args.tier2_sample or 'all'}")
+        print(f"  Tier3 sample   : {args.tier3_sample or 'all'}")
+        for tier_val, cnt in sorted(tier_counts.items()):
+            print(f"    Tier {tier_val}: {cnt} proteins")
+        print(f"  Total proteins : {len(protein_id_filter)}")
+    elif protein_id_filter:
+        print(f"  Protein IDs    : {len(protein_id_filter)} (explicit list)")
+    else:
+        print(f"  Protein source : all CATH test split")
+    print(f"  Output         : {args.output_dir}")
     print("=" * 60)
 
     if args.dry_run:
@@ -390,13 +493,9 @@ def main() -> int:
     )
 
     # ── Generate candidates from CATH test split ────────────────────────
-    # Generation source is the DPLM datamodule (CATH test split).
-    # --protein-ids restricts which proteins are processed.
-    protein_id_filter = set(args.protein_ids) if args.protein_ids else None
-
     print(f"\n[3/4] Generating K={K} candidates per protein from CATH test split...")
     if protein_id_filter:
-        print(f"  Filtering to {len(protein_id_filter)} specific protein(s)")
+        print(f"  Filtering to {len(protein_id_filter)} protein(s)")
 
     all_candidates: Dict[str, List[str]] = {}   # protein_id → [seq, ...]
     all_risks: Dict[str, np.ndarray] = {}       # protein_id → risk array
