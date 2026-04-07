@@ -1544,3 +1544,25 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - next_action: Re-run `scripts/submit_assemble_test_set.slurm` and verify the reconstructed Tier 2 rows now pass phase `4/5` schema validation while keeping ordinary Tier 2 topology checks intact.
 - refs:
   - `PLAN_DATA_SEL.md:§L0–L5`
+
+### L0052
+- timestamp: 2026-04-04T16:00:00-04:00
+- type: DECISION
+- module: N
+- trigger: Strategic pivot — core focus shifted to position-dependent reference flow; Level 3 comparison deemed unnecessary engineering overhead.
+- change_summary: Level 3 (DRAKES/DPO) dropped from v1 scope. Only Level 1 post-hoc filter (N1) retained as comparison baseline.
+- rationale: (1) Core contribution is position-dependent reference flow, not beating RL methods. (2) DRAKES adaptation to DPLM v1 requires ~weeks of engineering with no contribution to the paper's scientific novelty. (3) Post-hoc filter + Tier 0/1 ablation (sampling-only vs full training) provides sufficient comparison structure. (4) DRAKES code available in `DRAKES/` for reviewer response if requested. (5) Paper comparison simplified to: Level 1 post-hoc filter vs sampling-only position-dependent (Tier 0 ablation) vs full reference flow (Tier 1+2).
+- artifacts:
+  - `PROGRESS.md` (Module N section updated)
+  - `PLAN_IF.md` (Module N rewritten, §6.7 frozen, §7 execution order updated, risk #6 updated)
+  - `doc/Inverse_Folding_v1.md` (§0 obj 4 dropped, §4 dropped, §7 v1.2/v1.3 rewritten)
+- evidence: N/A (strategic decision, no code change)
+- impact:
+  - scope: Module N scope reduction; frees engineering bandwidth for reference flow implementation.
+  - risk: low
+  - confidence: 0.95
+- status: done
+- next_action: Begin Tier 0 implementation — modify DPLM sampling loop for position-dependent unmasking rates.
+- refs:
+  - `PLAN_IF.md:§Task N2 (DROPPED)`
+  - `doc/Reference_Flow_Derivation.md:§4.3 (sampling algorithm)`

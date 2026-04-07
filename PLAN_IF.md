@@ -4,7 +4,7 @@
 
 **Goal:** Build the v1 inverse-folding stage around a trainable DPLM v1 + GVP adapter baseline, a shared evaluation pipeline, and an inference-time epitope-guidance validation loop, while preserving a clean upgrade path to the later property-aware Immune-Design formulation.
 
-**Architecture:** Treat v1 as a staged validation program, not the final scientific contribution. First establish unconditional structure -> sequence generation and a reusable structural/immunogenicity evaluation stack; only then run Level 2 classifier guidance with the frozen epitope head, while keeping NetMHCIIpan as an independent external evaluator. Level 3 comparison baselines remain a separate lower-priority module so their implementation complexity does not contaminate the core v1 validation path.
+**Architecture:** v1 establishes infrastructure (K: baseline, L: test set, M: guidance validation) as a foundation for the core contribution: position-dependent reference flow for immunogenicity-aware inverse folding. Level 1 post-hoc filter (N1) serves as the comparison baseline. Level 3 (DRAKES/DPO) dropped from scope (2026-04-04) — focus is entirely on making the reference flow work.
 
 **Tech Stack:** Python, PyTorch, byprot/DPLM, ESM-2 650M, GVP, Hydra, ESMFold, TM-align, NetMHCIIpan 4.3, pytest, JSON/CSV/FASTA/PDB artifacts.
 
@@ -458,104 +458,65 @@
 **Acceptance**
 - Module M yields a decision-ready answer to "is inference-time classifier-guided epitope steering worth pursuing further?"
 
-## Module N: Comparison Baselines (Level 1 Mandatory, Level 3 Conditional)
+## Module N: Comparison Baselines (Level 1 Only)
+
+> **Scope change (2026-04-04)**: Level 3 (DRAKES/DPO) dropped. Focus shifted to core reference flow contribution. Only Level 1 post-hoc filter retained as baseline. Level 3 can be added as reviewer response if requested.
 
 **Objective**
-- Build the comparison arms needed to interpret Module M results without diluting the primary v1 path.
+- Provide the minimal comparison arm needed to interpret reference flow results.
 
 **Inputs**
 - Module L fixed test set and evaluator
-- same structural backbones used in Module M
-- off-the-shelf ProteinMPNN or another frozen baseline once compatibility is confirmed
+- Module K released checkpoint (same as used by reference flow)
 
 **Outputs**
 - `outputs/if/baselines/level1_filter/<run_id>/...`
-- `outputs/if/baselines/level3/<run_id>/...`
 - `outputs/if/baselines/comparison_report.md`
 
 **Scope Boundaries**
-1. Module N starts only after Module M establishes the shared baseline and evaluation loop.
-2. Level 1 post-hoc filter baseline is mandatory because it anchors the "generate then filter" comparison.
-3. Level 3 learned baseline is conditional on a method-model pairing being frozen explicitly.
-4. Every baseline must use the same test proteins, candidate budget, and evaluation schema as Module M.
+1. Level 1 post-hoc filter is the only mandatory baseline.
+2. Every baseline must use the same test proteins, candidate budget, and evaluation schema.
+3. Sampling-only position-dependent schedule (Tier 0 ablation) is part of the reference flow module, not Module N.
 
 **Planned File Touchpoints**
-- Create: `inverse_folding/baselines/level1_filter.py`
-- Create: `inverse_folding/baselines/preference_data.py`
-- Create: `scripts/run_if_level1_filter.py`
-- Create: `scripts/train_if_level3_baseline.py`
-- Create: `tests/inverse_folding/test_module_n_baseline_contract.py`
+- Done: `inverse_folding/baselines/level1_filter.py`
+- Done: `scripts/run_if_level1_filter.py`
+- Done: `scripts/submit_if_level1_filter.slurm`
 
-### Task N0: Freeze Baseline Contract and Method-Model Compatibility
+### Task N1: Implement the Level 1 Post-Hoc Filter Baseline — DONE (2026-04-02)
 
-**Goal**
-- Prevent an invalid or unfair baseline from entering the comparison set.
+**Status**: implemented, 11 tests passing.
 
 **Actions**
-1. Freeze Level 1 as `generate -> score -> filter` with the same candidate budget used for guidance.
-2. Freeze the first executable Level 3 route before implementation starts:
-   - recommended: `ProteinMPNN + DPO` if a stable preference-training recipe is available
-   - defer or replace: `DRAKES` unless the base model is diffusion-native and the method-model fit is explicit
-3. Freeze comparison metrics and candidate budgets so baseline quality is not inflated by extra search.
-
-**TDD Gate**
-1. RED: baseline config accepts mismatched candidate budgets or an undefined Level 3 route.
-2. GREEN: config validator enforces comparable budgets and one explicit Level 3 method-model pairing.
+1. Sample K candidates from the unconditional IF baseline.
+2. Score candidates with head + NetMHCIIpan evaluation stack.
+3. Select argmin global_risk candidate.
 
 **Acceptance**
-- Module N starts from a fair and executable comparison contract.
+- There is a valid Level 1 comparator. ✓
 
-### Task N1: Implement the Level 1 Post-Hoc Filter Baseline
+### Task N2: Level 3 Learned Baseline — DROPPED
 
-**Goal**
-- Produce the simplest strong baseline: generate first, filter later.
+**Decision (2026-04-04)**: Level 3 (DRAKES/DPO) explicitly dropped from v1 scope.
 
-**Actions**
-1. Sample a fixed number of candidates from the chosen unconditional IF baseline.
-2. Score candidates with the same head + NetMHCIIpan evaluation stack.
-3. Keep top candidates under the same reporting rules used for guided generation.
-
-**TDD Gate**
-1. RED: Level 1 outputs cannot be evaluated through the same Module L pipeline.
-2. GREEN: Level 1 artifacts match the expected evaluator input contract and candidate-budget accounting.
-
-**Acceptance**
-- There is a valid Level 1 comparator for Module M.
-
-### Task N2: Implement the Level 3 Learned Baseline (Conditional)
-
-**Goal**
-- Add a learned optimization baseline only if the chosen method-model pairing is executable and fair.
-
-**Actions**
-1. Build preference or reward data consistent with the frozen Level 3 route.
-2. Train or fine-tune the baseline under a reproducible harness.
-3. Evaluate with the same Module L pipeline and candidate budget accounting.
-4. If the route proves operationally unsound, document deferral explicitly rather than silently dropping it.
-
-**TDD Gate**
-1. RED: preference/reward dataset schema is ambiguous or run metadata is incomplete.
-2. GREEN: Level 3 training artifacts and evaluation outputs follow a fixed schema even if the baseline is later deferred.
-
-**Acceptance**
-- Level 3 is either executable and fairly evaluated, or explicitly deferred with evidence.
+**Rationale**:
+1. Core contribution is position-dependent reference flow, not beating RL methods.
+2. Implementation effort (~weeks) is better spent on making the core method work.
+3. The ablation structure (post-hoc filter vs sampling-only vs full reference flow) is sufficient for paper.
+4. Can be added as reviewer response if requested — DRAKES code is available in `DRAKES/`.
 
 ### Task N3: Assemble the Comparison Report
 
 **Goal**
-- Compare Level 1, Level 2, and optional Level 3 on a shared substrate.
+- Compare Level 1 post-hoc filter vs our method on a shared substrate.
 
 **Actions**
-1. Report structural quality, external immunogenicity change, and mutation burden for each arm.
-2. Highlight whether Level 2 guidance offers a better tradeoff than Level 1 filtering.
-3. If Level 3 exists, report whether learned alignment outperforms or underperforms Level 2 under the same evaluation policy.
-
-**TDD Gate**
-1. RED: comparison report mixes test sets, candidate budgets, or metric definitions across arms.
-2. GREEN: assembler refuses mismatched runs and only compares schema-compatible experiments.
+1. Report structural quality (scTM), immunogenicity change (head + NetMHCIIpan), and mutation burden.
+2. Include Tier 0 (sampling-only) ablation as intermediate point.
+3. Highlight the Pareto front advantage of position-dependent training.
 
 **Acceptance**
-- Module N produces a scientifically interpretable comparison panel for v1.
+- Module N produces a scientifically interpretable comparison for the paper.
 
 ## 6. Current Open Decisions (Must Be Frozen Before/At Module Start)
 
@@ -571,8 +532,8 @@
    - whether Module K report stage should remain single-seed after smoke validation or expand to a small multi-seed panel
 6. Open:
    - exact size of the fixed PDB evaluation set for the first reportable v1 pass
-7. Open:
-   - Level 3 executable route for Module N: `ProteinMPNN + DPO` is the current recommendation, but it is not frozen yet
+7. Frozen (2026-04-04):
+   - Level 3 dropped from v1 scope. DRAKES code available in `DRAKES/` for potential reviewer response.
 
 ## 7. Risk Register (Execution-Level)
 
@@ -587,7 +548,7 @@
 5. Circularity risk:
    - if internal head scores are treated as the only success metric, guidance results become self-confirming rather than externally validated
 6. Baseline comparability risk:
-   - Level 3 comparisons can become misleading if candidate budget or optimization budget is not held constant
+   - Level 3 comparisons dropped from v1 scope (2026-04-04). Level 1 post-hoc filter is the only comparison arm.
 
 ## 8. Codemap Annotation Policy (When Issues Appear)
 

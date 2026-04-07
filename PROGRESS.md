@@ -122,13 +122,20 @@
 
 ---
 
-## Module N: Comparison Baselines
+## Module N: Comparison Baselines (Simplified)
 
-- **Code**: not started
-- **Cluster**: N/A
-- **Key Data**: N/A
-- **Blocked by**: Module M (need shared eval substrate first)
-- **Priority**: lowest in v1
+- **Scope change (2026-04-04)**: Level 3 (DRAKES/DPO) **dropped** — focus shifted entirely to core reference flow contribution. Only Level 1 post-hoc filter retained as baseline.
+- **N1 (Level 1 post-hoc filter)**: implemented (2026-04-02)
+  - Code: `inverse_folding/baselines/level1_filter.py`
+  - CLI: `scripts/run_if_level1_filter.py`
+  - SLURM: `scripts/submit_if_level1_filter.slurm`
+  - Reads M3 eta=0 candidates, picks argmin global_risk
+- **N2 (Level 3 DRAKES)**: **dropped** — not needed for paper; can be added as reviewer response if requested
+- **Blocked by**: Module M (eta=0 candidate pool)
+- **Comparison structure for paper**:
+  1. Level 1 post-hoc filter (N1)
+  2. Sampling-only position-dependent schedule (Tier 0 ablation)
+  3. Full position-dependent reference flow (our method)
 
 ---
 
