@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-04-02T22:00:00-04:00
+> **Last synced**: 2026-04-07T22:00:00-04:00
 > **Branch**: dev_head
 
 ---
@@ -72,48 +72,35 @@
   - CLIs: `run_overlap_filter.py`, `validate_tier1.py`, `validate_tier3.py`, `prescreen_tier2.py`, `assemble_if_test_set.py`, `download_tier2_candidates.py`
   - SLURM: `submit_prescreen_tier2.slurm`, `submit_assemble_test_set.slurm`, `submit_download_tier2.slurm`
   - Key fixes: validate_tier1 now runs MMseqs2 overlap; validate_tier3 enforces NMP signal; prescreen uses correct epitope_head API; assembly generates WT artifacts; overlap CLI includes no-hit candidates; sample_diverse guarantees cross-architecture-class coverage
-- **Cluster**: Tier 2 prescreen **running**
-  - script: `submit_prescreen_tier2.slurm`
-  - data path: `/scratch/network/zc1519/work/immune-design/if_test_set/`
-  - input: `tier2_candidates_merged.fasta` (226k chains, 60MB)
-  - CATH ref: `work/immune-design/cath_4.3/`
+- **Cluster**: test sets **assembled** for two alleles
 - **Key Data**:
-  - Tier 1: 15 candidates selected (10-50% epitope coverage, all in epitope head **test split** → zero head leakage)
-    - coverage range: 11.0% (1LI1_C) – 45.0% (6HGM_A)
-    - resolution range: 1.0–2.5 Å
-    - epitope spans: 2–60 per protein
-    - source: IEDB DRB1\*07:01, cross-referenced PDB via UniProt API
-    - artifacts: `if_test_set/tier1_candidates.json`, `if_test_set/tier1_sequences.fasta`
-    - MMseqs2 CATH overlap check: pending (run on cluster)
-    - user review: pending (select final 5-10 from 15)
-  - Tier 2: **prescreen complete** (2026-04-02, job 3066129)
-    - funnel: 225,821 candidates → 75,425 (MMseqs2 overlap) → 3,000 (head prefilter, median risk=-1.244) → 96 (NMP scored) → **5 selected**
-    - output: `tier2_prescreened.parquet` — 5 proteins
-    - selected: 2D1H_A (109aa, CATH 1.10.10), 2D1H_B (109aa, 1.10.10), 8ZNU_A (225aa, NaN), 7F2B_B (106aa, NaN), 2GEE_A (203aa, 2.60.40)
-    - ⚠ NMP timeout issue: many batches timed out at 600s, only 96/3000 successfully scored — selection pool may be narrower than expected
-  - Tier 3 (uricases): prescreen **failed** (2026-04-02, job 3066946)
-    - funnel: 6,801 uricases → 253 (CATH overlap) → 253 sent to NMP → **0 pass** (all NMP batches timed out at 600s)
-    - used DRB0401 checkpoint (`LC1_drb0401_aug`), NMP allele: DRB1*04:01
-    - ⚠ result unreliable — 0% NMP success rate due to timeout, not biological signal
-    - input: `work/immune-design/if_test_set/uricases/filtered_uricases.fasta`
-  - Tier 3 (therapeutic): **not started** (user literature search required)
-    - target: 5-10 therapeutic proteins (adalimumab, asparaginase, IFN-β, IL-2, streptokinase)
-    - user action: produce `tier3_candidates.json`, run NMP screen, then `validate_tier3.py --nmp-scores-json`
-- **Post-prescreen next steps**:
-  1. Collect Tier 2 prescreen results from cluster → fill TBD fields above
-  2. User finalizes Tier 1 (5-10 from 15) + Tier 3 (literature search)
-  3. Run `assemble_if_test_set.py` → `test_proteins.parquet`
-  4. L6: E2E evaluation verification (smoke test with 2-3 proteins)
-  5. L7: Release gates → test set freeze
-- **Artifacts** (post-assembly, all TBD):
-  - `work/immune-design/if_test_set/test_proteins.parquet`
-  - `work/immune-design/if_test_set/test_proteins_summary.json`
-  - `work/immune-design/if_test_set/curation_ledger.json`
-  - `work/immune-design/if_test_set/pdbs/` + `fastas/`
-  - `work/immune-design/if_test_set/wt_hotspot_maps.parquet`
-  - `work/immune-design/if_test_set/wt_netmhciipan.parquet`
+  - **HLA-DRB1\*07:01 test set** — `test_proteins_HLA-DRB1_07_01.parquet` — **3,141 proteins**
+    | Tier | Count | mean_len | mean_risk | mean_nmp_strong |
+    |------|-------|----------|-----------|-----------------|
+    | 1 | 15 | 267.5 | -0.433 | 64.5 |
+    | 2 | 3,000 | 250.3 | 3.649 | 85.1 |
+    | 3 | 126 | 282.9 | 0.452 | 64.5 |
+  - **HLA-DRB1\*04:01 test set** — `test_proteins_HLA-DRB1_04_01.parquet` — **3,140 proteins**
+    | Tier | Count | mean_len | mean_risk | mean_nmp_strong |
+    |------|-------|----------|-----------|-----------------|
+    | 1 | 15 | 267.5 | -4.207 | 49.9 |
+    | 2 | 2,998 | 207.9 | 3.128 | 113.4 |
+    | 3 | 127 | 281.0 | -2.719 | 80.2 |
+  - Prescreen pipeline (Tier 2): 225,821 → 75,425 (MMseqs2 CATH overlap) → 3,000 (head prefilter) → dual predictor filter (head + NMP) → assembly
+  - NMP scoring: 3,000/3,000 complete (both alleles), no timeout
+  - CATH topology filter: **frozen** (舍弃) — 最后一步只做 dual predictor (head + NMP) 筛选，不再做 CATH topology diversity sampling
+- **Artifacts**:
+  - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` — 3,141 rows, 17 columns
+  - `work/immune-design/if_test_set/test_proteins_summary_HLA-DRB1_07_01.json`
+  - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` — 3,140 rows, 17 columns
+  - `work/immune-design/if_test_set/test_proteins_summary_HLA-DRB1_04_01.json`
+  - `work/immune-design/if_test_set/fastas/` — 6,166 FASTA files
+  - `work/immune-design/if_test_set/pdbs/` — **empty** (PDB structures not downloaded yet)
+  - intermediate: `_prescreen_{head,nmp}_results*.parquet`, `tier2_prescreened*.parquet`
 - **Feeds**: all downstream evaluation (M, N, and all F3/F4 subfigures)
-- **Critical open question**: Tier 1 蛋白是否在 CATH test split 中？若不在，M3 sweep 需要改为直接从 PDB 加载结构生成
+- **Open**:
+  - PDB structure files not yet downloaded (`pdbs/` empty) — needed for inverse folding input
+  - L6 E2E verification + L7 release gates not yet run
 
 ---
 
@@ -127,7 +114,7 @@
   - M4 (failure analysis): skipped (non-critical-path)
   - SLURM: `scripts/submit_if_guidance_sweep.slurm`
   - Tests: `test_module_m_guidance_contract.py` + `test_module_m_scoring_bridge.py`
-- **Cluster**: not run — **blocked by Module L test set assembly**
+- **Cluster**: not run — test set assembled, **blocked by PDB download + sweep execution**
 - **Key Data**: N/A (sweep not executed)
   - expected outputs per eta: scTM, delta_risk (head), delta_risk (NetMHCIIpan), mutation_count
   - eta grid: {0, 0.5, 1, 2, 5, 10}, K=8 candidates
@@ -177,10 +164,11 @@
 | Epitope head DRB0401 | `run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.2962, pp_auc=0.9492 |
 | Epitope head DRB1501 | `run/epitope_head/LC1_drb1501_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.1721, pp_auc=0.8492 |
 | Tier 1 candidates | `work/immune-design/if_test_set/tier1_candidates.json` | 15 candidates, user review pending |
-| Tier 2 merged FASTA | `work/immune-design/if_test_set/tier2_candidates_merged.fasta` | 226k chains, prescreen running |
-| Tier 2 prescreened | `work/immune-design/if_test_set/tier2_prescreened.parquet` | 5 proteins selected (NMP timeout issue) |
-| Uricase candidates | `work/immune-design/if_test_set/uricases/filtered_uricases.fasta` | 6801 seqs, prescreen failed (NMP timeout) |
-| IF test set | `work/immune-design/if_test_set/test_proteins.parquet` | TBD (assembly pending) |
+| Tier 2 merged FASTA | `work/immune-design/if_test_set/tier2_candidates_merged.fasta` | 226k chains |
+| IF test set (0701) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` | 3,141 proteins (T1:15 T2:3000 T3:126) |
+| IF test set (0401) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` | 3,140 proteins (T1:15 T2:2998 T3:127) |
+| IF test set FASTAs | `work/immune-design/if_test_set/fastas/` | 6,166 files |
+| IF test set PDBs | `work/immune-design/if_test_set/pdbs/` | **empty** — not downloaded yet |
 | Guidance sweep results | N/A | not run yet |
 
 ---

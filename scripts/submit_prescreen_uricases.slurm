@@ -20,9 +20,12 @@ LOG_DIR="/scratch/network/zc1519/logs/if_eval"
 
 INPUT_FASTA="${DATA_DIR}/uricases/filtered_uricases.fasta"
 CATH_TRAIN_SOURCE="${CATH_DIR}/chain_set.jsonl"
-EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt"
+EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
 NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
 OUTPUT_DIR="${DATA_DIR}/uricase_prescreen"
+
+ALLELE="HLA-DRB1*04:01"
+ALLELE_TAG="${ALLELE//[^[:alnum:].-]/_}"
 
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
@@ -47,6 +50,8 @@ echo "  GPUs         : ${SLURM_GPUS_ON_NODE:-1}"
 echo "  Input FASTA  : ${INPUT_FASTA}"
 echo "  N sequences  : $(grep -c '^>' ${INPUT_FASTA})"
 echo "  CATH train   : ${CATH_TRAIN_SOURCE}"
+echo "  Allele       : ${ALLELE}"
+echo "  Allele tag   : ${ALLELE_TAG}"
 echo "  Epitope ckpt : ${EPITOPE_CKPT}"
 echo "  NMP binary   : ${NETMHCIIPAN_BIN}"
 echo "  Python       : $(python --version 2>&1)"
@@ -69,6 +74,7 @@ python -u "${PROJECT_ROOT}/scripts/prescreen_uricases.py" \
     --nmp-workers 8 \
     --head-prefilter-topk 3000 \
     --resume \
-    --min-strong-windows 3
+    --min-strong-windows 3 \
+    --allele "${ALLELE}"
 
 echo "Uricase pre-screening finished."

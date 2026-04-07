@@ -22,8 +22,9 @@ CANDIDATE_FASTA_DIR="${DATA_DIR}/tier2_candidates"
 CATH_DIR="/scratch/network/zc1519/work/immune-design/cath_4.3"
 CATH_TRAIN_SOURCE="${CATH_DIR}/chain_set.jsonl"
 CATH_DOMAIN_LIST="${CATH_DIR}/chain_set.jsonl"
-EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt"
+EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
 NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
+ALLELE="HLA-DRB1*04:01"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -46,6 +47,7 @@ echo "  Job ID       : ${SLURM_JOB_ID}"
 echo "  Node         : ${SLURM_NODELIST}"
 echo "  GPUs         : ${SLURM_GPUS_ON_NODE:-1}"
 echo "  Project root : ${PROJECT_ROOT}"
+echo "  Allele       : ${ALLELE}"
 echo "  Candidates   : ${CANDIDATE_FASTA_DIR}"
 echo "  CATH train   : ${CATH_TRAIN_SOURCE}"
 echo "  Epitope ckpt : ${EPITOPE_CKPT}"
@@ -71,7 +73,8 @@ python -u "${PROJECT_ROOT}/scripts/prescreen_tier2.py" \
     --nmp-workers 8 \
     --head-prefilter-topk 3000 \
     --resume \
+    --skip-cath-diversity \
     --max-per-topology 2 \
-    --target-total 50
-
+    --target-total 50 \
+    --allele "${ALLELE}"
 echo "Tier 2 pre-screening finished."

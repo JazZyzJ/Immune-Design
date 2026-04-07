@@ -17,13 +17,17 @@ PROJECT_ROOT="/home/zc1519/src/Immune-Design"
 DATA_DIR="/scratch/network/zc1519/work/immune-design/if_test_set"
 OUTPUT_ROOT="/scratch/network/zc1519/work/immune-design/if_test_set"
 LOG_DIR="/scratch/network/zc1519/logs/if_eval"
+ALLELE="HLA-DRB1*07:01"
+ALLELE_TAG="${ALLELE//[^[:alnum:].-]/_}"
 
 TIER1_JSON="${OUTPUT_ROOT}/tier1_candidates.json"
-TIER2_PARQUET="${OUTPUT_ROOT}/tier2_prescreened.parquet"
-TIER3_JSON="${OUTPUT_ROOT}/tier3_candidates.json"
+TIER2_CANDIDATE_FASTA="${DATA_DIR}/tier2_candidates_merged.fasta"
+TIER2_HEAD_CKPT="${OUTPUT_ROOT}/_prescreen_head_results_${ALLELE_TAG}.parquet"
+TIER2_NMP_CKPT="${OUTPUT_ROOT}/_prescreen_nmp_results_${ALLELE_TAG}.parquet"
+TIER3_INPUT="${OUTPUT_ROOT}/uricase_prescreen/uricase_dual_pass_${ALLELE_TAG}.parquet"
 PDB_DIR="${OUTPUT_ROOT}/pdbs"
-EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/best.pt"
-NETMHCIIPAN_BIN="/home/zc1519/tools/netMHCIIpan-4.3/netMHCIIpan"
+EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt"
+NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}" "${PDB_DIR}"
 
@@ -47,8 +51,11 @@ echo "  Node         : ${SLURM_NODELIST}"
 echo "  GPUs         : ${SLURM_GPUS_ON_NODE:-1}"
 echo "  Project root : ${PROJECT_ROOT}"
 echo "  Tier 1       : ${TIER1_JSON}"
-echo "  Tier 2       : ${TIER2_PARQUET}"
-echo "  Tier 3       : ${TIER3_JSON}"
+echo "  Tier 2 FASTA : ${TIER2_CANDIDATE_FASTA}"
+echo "  Tier 2 head  : ${TIER2_HEAD_CKPT}"
+echo "  Tier 2 NMP   : ${TIER2_NMP_CKPT}"
+echo "  Tier 3       : ${TIER3_INPUT}"
+echo "  Allele       : ${ALLELE}"
 echo "  Epitope ckpt : ${EPITOPE_CKPT}"
 echo "  Python       : $(python --version 2>&1)"
 echo "  PyTorch      : $(python -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'not found')"
@@ -60,11 +67,15 @@ echo "============================================================"
 # ── Launch ────────────────────────────────────────────────────────────────
 python "${PROJECT_ROOT}/scripts/assemble_if_test_set.py" \
     --tier1-json "${TIER1_JSON}" \
-    --tier2-parquet "${TIER2_PARQUET}" \
-    --tier3-json "${TIER3_JSON}" \
+    --tier2-candidate-merged-fasta "${TIER2_CANDIDATE_FASTA}" \
+    --tier2-head-ckpt-parquet "${TIER2_HEAD_CKPT}" \
+    --tier2-nmp-ckpt-parquet "${TIER2_NMP_CKPT}" \
+    --tier2-min-strong-windows 5 \
+    --tier3-json "${TIER3_INPUT}" \
     --pdb-dir "${PDB_DIR}" \
     --epitope-ckpt "${EPITOPE_CKPT}" \
     --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
-    --output-dir "${OUTPUT_ROOT}"
+    --output-dir "${OUTPUT_ROOT}" \
+    --allele "${ALLELE}"
 
 echo "Test set assembly finished."

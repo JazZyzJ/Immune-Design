@@ -1,5 +1,6 @@
 from scripts.prescreen_tier2 import (
     _allele_tag,
+    _finalize_tier2_output,
     _remaining_sequences,
     _select_head_prefilter_subset,
 )
@@ -45,3 +46,20 @@ def test_remaining_sequences_skips_checkpointed_proteins():
 
 def test_allele_tag_is_filename_safe():
     assert _allele_tag("HLA-DRB1*04:01") == "HLA-DRB1_04_01"
+
+
+def test_finalize_tier2_output_skips_diversity_sampling():
+    rows = [
+        {"protein_id": "p1", "cath_topology": None, "netmhciipan_n_strong": 8},
+        {"protein_id": "p2", "cath_topology": None, "netmhciipan_n_strong": 7},
+    ]
+
+    result = _finalize_tier2_output(
+        rows=rows,
+        skip_cath_diversity=True,
+        max_per_topology=2,
+        target_total=50,
+    )
+
+    assert len(result) == 2
+    assert list(result["protein_id"]) == ["p1", "p2"]

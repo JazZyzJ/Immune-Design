@@ -2,7 +2,7 @@
 """CLI: Batch pre-screen PDB candidates for Tier 2 test set selection.
 
 Pipeline: load candidates → MMseqs2 overlap → NMP batch → head batch
-  → CATH topology → diversity sampling → write tier2_prescreened.parquet
+  → optional CATH topology/diversity sampling → write tier2_prescreened.parquet
 
 Usage:
     python scripts/prescreen_tier2.py \
@@ -78,6 +78,9 @@ def parse_args() -> argparse.Namespace:
                         help="Keep top-K head-risk candidates before NMP (default: 5000).")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from prescreen checkpoint parquet files if present.")
+    parser.add_argument("--skip-cath-diversity", action="store_true",
+                        help="Skip CATH topology assignment and diversity sampling; "
+                             "write dual-filtered rows directly for assembly.")
     return parser.parse_args()
 
 
@@ -176,6 +179,25 @@ def _load_checkpoint_rows(path: str, key: str) -> dict:
 
 def _write_checkpoint_rows(path: str, rows: dict) -> None:
     pd.DataFrame(list(rows.values())).to_parquet(path, index=False)
+
+
+def _finalize_tier2_output(
+    rows: list,
+    skip_cath_diversity: bool,
+    max_per_topology: int,
+    target_total: int,
+):
+    df = pd.DataFrame(rows)
+    if skip_cath_diversity:
+        return df
+
+    from inverse_folding.evaluation.cath_topology import sample_diverse
+
+    return sample_diverse(
+        df,
+        max_per_topology=max_per_topology,
+        target_total=target_total,
+    )
 
 
 def main() -> int:
@@ -372,13 +394,14 @@ def main() -> int:
          f"{n_all_partial} partial (excluded), "
          f"{n_all_timeout} timeout (excluded)")
 
-    # ── Step 5: Apply filters + topology + diversity sampling ────────────
-    _log("[5/5] Applying filters and diversity sampling...")
+    # ── Step 5: Apply filters + optional topology/diversity ──────────────
+    if args.skip_cath_diversity:
+        _log("[5/5] Applying filters (skip CATH topology/diversity)...")
+    else:
+        _log("[5/5] Applying filters and diversity sampling...")
     from inverse_folding.evaluation.prescreen import apply_tier2_filters
-    from inverse_folding.evaluation.cath_topology import (
-        assign_topology,
-        sample_diverse,
-    )
+    if not args.skip_cath_diversity:
+        from inverse_folding.evaluation.cath_topology import assign_topology
 
     rows = []
     n_skipped_incomplete = 0
@@ -399,7 +422,9 @@ def main() -> int:
         if not result.passed:
             continue
 
-        topo = assign_topology(pid, args.cath_domain_list)
+        topo = None
+        if not args.skip_cath_diversity:
+            topo = assign_topology(pid, args.cath_domain_list)
         rows.append({
             "protein_id": pid,
             "sequence": passed_overlap[pid],
@@ -411,6 +436,11 @@ def main() -> int:
             "cath_topology": topo,
             "cath_overlap_flag": False,
             "head_train_overlap_flag": False,
+            "selection_reason": (
+                "pre-screened-no-diversity"
+                if args.skip_cath_diversity
+                else "pre-screened"
+            ),
         })
 
     _log(f"  Skipped {n_skipped_incomplete} proteins with incomplete NMP data")
@@ -418,9 +448,9 @@ def main() -> int:
         _log("WARNING: No candidates passed dual-scorer filter.")
         return 1
 
-    df = pd.DataFrame(rows)
-    sampled = sample_diverse(
-        df,
+    sampled = _finalize_tier2_output(
+        rows=rows,
+        skip_cath_diversity=args.skip_cath_diversity,
         max_per_topology=args.max_per_topology,
         target_total=args.target_total,
     )

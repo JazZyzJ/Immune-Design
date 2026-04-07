@@ -132,6 +132,20 @@ class TestAssemblyOutput:
         for _, row in df.iterrows():
             validate_test_protein_entry(row.to_dict())
 
+    def test_accepts_tier2_without_topology_when_skip_diversity(self):
+        entries = [
+            _make_tier1_entry("A"),
+            _make_tier2_entry("B"),
+            _make_tier3_entry("C"),
+        ]
+        entries[1]["cath_topology"] = None
+        entries[1]["selection_reason"] = "pre-screened-no-diversity"
+
+        df = assemble_test_set(entries)
+
+        assert len(df) == 3
+        validate_test_protein_entry(df.loc[df["protein_id"] == "B"].iloc[0].to_dict())
+
     def test_tier_counts_in_summary(self):
         entries = [
             _make_tier1_entry("A"),

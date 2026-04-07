@@ -102,6 +102,14 @@ class TestTierSpecificNullable:
         with pytest.raises(EvalSchemaError, match="cath_topology"):
             validate_test_protein_entry(entry)
 
+    def test_tier2_skip_diversity_allows_null_cath_topology(self):
+        entry = _make_entry(
+            tier=2,
+            cath_topology=None,
+            selection_reason="pre-screened-no-diversity",
+        )
+        validate_test_protein_entry(entry)  # should NOT raise
+
     def test_tier3_requires_literature_evidence(self):
         entry = _make_entry(tier=3, literature_evidence=None)
         with pytest.raises(EvalSchemaError, match="literature_evidence"):

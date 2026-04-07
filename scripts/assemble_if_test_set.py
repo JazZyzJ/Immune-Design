@@ -37,7 +37,15 @@ def parse_args() -> argparse.Namespace:
         description="Assemble final IF test set from all three tiers."
     )
     parser.add_argument("--tier1-json", required=True)
-    parser.add_argument("--tier2-parquet", required=True)
+    parser.add_argument("--tier2-parquet", default=None)
+    parser.add_argument("--tier2-candidate-merged-fasta", default=None,
+                        help="Merged Tier 2 FASTA used to reconstruct entries from prescreen checkpoints.")
+    parser.add_argument("--tier2-head-ckpt-parquet", default=None,
+                        help="Prescreen head checkpoint parquet for Tier 2 reconstruction.")
+    parser.add_argument("--tier2-nmp-ckpt-parquet", default=None,
+                        help="Prescreen NMP checkpoint parquet for Tier 2 reconstruction.")
+    parser.add_argument("--tier2-min-strong-windows", type=int, default=5,
+                        help="Tier 2 NMP threshold used when reconstructing from checkpoints.")
     parser.add_argument("--tier3-json", required=True)
     parser.add_argument("--pdb-dir", required=True,
                         help="Directory containing PDB files for WT extraction.")
@@ -66,6 +74,37 @@ def _extract_sequence_from_pdb(pdb_path: str) -> str:
     return "".join(seq1(r.get_resname()) for r in residues)
 
 
+def _read_merged_fasta(path: str) -> dict:
+    sequences = {}
+    current_id = None
+    current_seq = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith(">"):
+                if current_id and current_seq:
+                    sequences[current_id] = "".join(current_seq)
+                current_id = line[1:].split()[0]
+                current_seq = []
+            else:
+                current_seq.append(line)
+    if current_id and current_seq:
+        sequences[current_id] = "".join(current_seq)
+    return sequences
+
+
+def _safe_file_id(protein_id: str) -> str:
+    """Make a filesystem-safe artifact id while preserving raw protein_id metadata."""
+    return "".join(
+        c if (c.isalnum() or c in ("-", "_", ".")) else "_"
+        for c in protein_id
+    )
+
+
+def _allele_tag(allele: str) -> str:
+    return "".join(c if (c.isalnum() or c in ("-", ".")) else "_" for c in allele)
+
+
 def _load_tier1(path: str, pdb_dir: str) -> list:
     """Load Tier 1 candidates, extracting WT sequences from PDBs."""
     with open(path) as f:
@@ -88,7 +127,7 @@ def _load_tier1(path: str, pdb_dir: str) -> list:
             "tier": 1,
             "sequence": seq,
             "sequence_length": len(seq),
-            "pdb_path": f"pdbs/{pid}.pdb",
+            "pdb_path": f"pdbs/{_safe_file_id(pid)}.pdb",
             "resolution": c.get("resolution"),
             "cath_overlap_flag": False,
             "cath_overlap_id": None,
@@ -120,7 +159,7 @@ def _load_tier2(path: str) -> list:
             "tier": 2,
             "sequence": seq,
             "sequence_length": int(row.get("sequence_length", len(seq))),
-            "pdb_path": f"pdbs/{row['protein_id']}.pdb",
+            "pdb_path": f"pdbs/{_safe_file_id(row['protein_id'])}.pdb",
             "resolution": row.get("resolution"),
             "cath_overlap_flag": bool(row.get("cath_overlap_flag", False)),
             "cath_overlap_id": row.get("cath_overlap_id"),
@@ -137,8 +176,99 @@ def _load_tier2(path: str) -> list:
     return entries
 
 
+def _load_tier2_from_checkpoints(
+    candidate_fasta_path: str,
+    head_ckpt_path: str,
+    nmp_ckpt_path: str,
+    min_strong_windows: int,
+) -> list:
+    """Reconstruct Tier 2 entries from prescreen checkpoints without diversity sampling."""
+    sequences = _read_merged_fasta(candidate_fasta_path)
+    head_df = pd.read_parquet(head_ckpt_path)
+    nmp_df = pd.read_parquet(nmp_ckpt_path)
+
+    head_rows = {
+        row["protein_id"]: row.to_dict()
+        for _, row in head_df.iterrows()
+    }
+    risk_values = [float(row["global_risk"]) for row in head_rows.values()]
+    risk_median = float(pd.Series(risk_values).median()) if risk_values else 0.0
+
+    entries = []
+    for _, row in nmp_df.iterrows():
+        payload = row.to_dict()
+        protein_id = payload["protein_id"]
+        status = payload.get("nmp_status", "complete")
+        if status != "complete":
+            continue
+        if int(payload.get("n_strong_windows", 0)) < min_strong_windows:
+            continue
+
+        head = head_rows.get(protein_id)
+        if head is None:
+            continue
+        if float(head.get("global_risk", 0.0)) < risk_median:
+            continue
+
+        seq = sequences.get(protein_id, "")
+        if not seq:
+            print(f"  ERROR: Missing sequence for reconstructed Tier 2 protein {protein_id}")
+            sys.exit(1)
+
+        entries.append({
+            "protein_id": protein_id,
+            "tier": 2,
+            "sequence": seq,
+            "sequence_length": len(seq),
+            "pdb_path": f"pdbs/{_safe_file_id(protein_id)}.pdb",
+            "resolution": None,
+            "cath_overlap_flag": False,
+            "cath_overlap_id": None,
+            "head_train_overlap_flag": False,
+            "netmhciipan_n_strong": int(payload.get("n_strong_windows", 0)),
+            "netmhciipan_mean_best_rank": float(payload.get("mean_best_rank", 0.0)),
+            "head_global_risk": float(head.get("global_risk", 0.0)),
+            "head_n_hotspot": int(head.get("n_hotspot_positions", 0)),
+            "cath_topology": None,
+            "experimental_epitopes_json": None,
+            "literature_evidence": None,
+            "selection_reason": "pre-screened-no-diversity",
+        })
+
+    return entries
+
+
 def _load_tier3(path: str, pdb_dir: str) -> list:
-    """Load Tier 3 candidates, extracting WT sequences from PDBs."""
+    """Load Tier 3 candidates from JSON candidate list or uricase prescreen parquet."""
+    if path.endswith(".parquet"):
+        df = pd.read_parquet(path)
+        entries = []
+        for _, row in df.iterrows():
+            seq = row.get("sequence", "")
+            if not seq:
+                print(f"  ERROR: Empty sequence for Tier 3 protein {row['protein_id']}")
+                sys.exit(1)
+            entries.append({
+                "protein_id": row["protein_id"],
+                "tier": 3,
+                "sequence": seq,
+                "sequence_length": int(row.get("sequence_length", len(seq))),
+                "pdb_path": f"pdbs/{_safe_file_id(row['protein_id'])}.pdb",
+                "resolution": row.get("resolution"),
+                "cath_overlap_flag": False,
+                "cath_overlap_id": None,
+                "head_train_overlap_flag": bool(row.get("head_train_overlap_flag", False)),
+                "netmhciipan_n_strong": int(row.get("netmhciipan_n_strong", 0)),
+                "netmhciipan_mean_best_rank": float(row.get("netmhciipan_mean_best_rank", 0.0)),
+                "head_global_risk": float(row.get("head_global_risk", 0.0)),
+                "head_n_hotspot": int(row.get("head_n_hotspot", 0)),
+                "cath_topology": None,
+                "experimental_epitopes_json": None,
+                "literature_evidence": row.get("literature_evidence", ""),
+                "selection_reason": row.get("selection_reason", "uricase-prescreen"),
+            })
+        return entries
+
     with open(path) as f:
         candidates = json.load(f)
     entries = []
@@ -158,7 +288,7 @@ def _load_tier3(path: str, pdb_dir: str) -> list:
             "tier": 3,
             "sequence": seq,
             "sequence_length": len(seq),
-            "pdb_path": f"pdbs/{pid}.pdb",
+            "pdb_path": f"pdbs/{_safe_file_id(pid)}.pdb",
             "resolution": c.get("resolution"),
             "cath_overlap_flag": False,
             "cath_overlap_id": None,
@@ -250,11 +380,34 @@ def _generate_wt_artifacts(entries: list, args) -> list:
 def main() -> int:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+    allele_tag = _allele_tag(args.allele)
+
+    if args.tier2_parquet is None:
+        required = [
+            args.tier2_candidate_merged_fasta,
+            args.tier2_head_ckpt_parquet,
+            args.tier2_nmp_ckpt_parquet,
+        ]
+        if not all(required):
+            print(
+                "ERROR: Provide either --tier2-parquet or all of "
+                "--tier2-candidate-merged-fasta, --tier2-head-ckpt-parquet, "
+                "--tier2-nmp-ckpt-parquet."
+            )
+            return 1
 
     # ── Load all tiers ───────────────────────────────────────────────────
     print("[1/5] Loading tier entries...")
     tier1 = _load_tier1(args.tier1_json, args.pdb_dir)
-    tier2 = _load_tier2(args.tier2_parquet)
+    if args.tier2_parquet is not None:
+        tier2 = _load_tier2(args.tier2_parquet)
+    else:
+        tier2 = _load_tier2_from_checkpoints(
+            candidate_fasta_path=args.tier2_candidate_merged_fasta,
+            head_ckpt_path=args.tier2_head_ckpt_parquet,
+            nmp_ckpt_path=args.tier2_nmp_ckpt_parquet,
+            min_strong_windows=args.tier2_min_strong_windows,
+        )
     tier3 = _load_tier3(args.tier3_json, args.pdb_dir)
     print(f"  Tier 1: {len(tier1)}, Tier 2: {len(tier2)}, Tier 3: {len(tier3)}")
 
@@ -269,7 +422,9 @@ def main() -> int:
     fasta_dir = os.path.join(args.output_dir, "fastas")
     os.makedirs(fasta_dir, exist_ok=True)
     for e in all_entries:
-        fasta_path = os.path.join(fasta_dir, f"{e['protein_id']}.fasta")
+        fasta_path = os.path.join(
+            fasta_dir, f"{_safe_file_id(e['protein_id'])}.fasta"
+        )
         with open(fasta_path, "w") as f:
             f.write(f">{e['protein_id']}\n{e['sequence']}\n")
 
@@ -277,11 +432,15 @@ def main() -> int:
     print("[4/5] Assembling test set...")
     df = assemble_test_set(all_entries)
 
-    parquet_path = os.path.join(args.output_dir, "test_proteins.parquet")
+    parquet_path = os.path.join(
+        args.output_dir, f"test_proteins_{allele_tag}.parquet"
+    )
     df.to_parquet(parquet_path, index=False)
 
     summary = compute_assembly_summary(df)
-    summary_path = os.path.join(args.output_dir, "test_proteins_summary.json")
+    summary_path = os.path.join(
+        args.output_dir, f"test_proteins_summary_{allele_tag}.json"
+    )
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
