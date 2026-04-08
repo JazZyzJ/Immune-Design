@@ -104,21 +104,11 @@
 
 ---
 
-## Module M: Classifier Guidance
+## Module M: Classifier Guidance — SUPERSEDED (2026-04-07)
 
-- **Code**: M0-M3 complete, committed and synced to cluster
-  - M0 (guidance contract): `inverse_folding/guidance/config.py`
-  - M1 (scoring bridge): `inverse_folding/guidance/scoring_bridge.py`
-  - M2 (reweighting): `inverse_folding/guidance/reweighting.py`
-  - M3 (sweep runner): `scripts/run_if_guidance_sweep.py`
-  - M4 (failure analysis): skipped (non-critical-path)
-  - SLURM: `scripts/submit_if_guidance_sweep.slurm`
-  - Tests: `test_module_m_guidance_contract.py` + `test_module_m_scoring_bridge.py`
-- **Cluster**: not run — test set assembled, **blocked by PDB download + sweep execution**
-- **Key Data**: N/A (sweep not executed)
-  - expected outputs per eta: scTM, delta_risk (head), delta_risk (NetMHCIIpan), mutation_count
-  - eta grid: {0, 0.5, 1, 2, 5, 10}, K=8 candidates
-- **Artifacts needed**: per-eta FASTA + eval CSV + pareto_summary.json
+- **Status**: **SUPERSEDED**. Resampling-based "guidance" is post-hoc selection, not generation-time steering. Replaced by Phase C (reference flow).
+- **Code**: M0-M3 preserved in `inverse_folding/guidance/`. Scoring bridge may be reusable for Phase C.
+- **Cluster**: never run. No data produced.
 
 ---
 
@@ -131,11 +121,29 @@
   - SLURM: `scripts/submit_if_level1_filter.slurm`
   - Reads M3 eta=0 candidates, picks argmin global_risk
 - **N2 (Level 3 DRAKES)**: **dropped** — not needed for paper; can be added as reviewer response if requested
-- **Blocked by**: Module M (eta=0 candidate pool)
+- **Blocked by**: Phase C (need unguided baseline candidate pool from C0)
 - **Comparison structure for paper**:
-  1. Level 1 post-hoc filter (N1)
-  2. Sampling-only position-dependent schedule (Tier 0 ablation)
-  3. Full position-dependent reference flow (our method)
+  1. Level 1 post-hoc filter (N1) — from C0 candidates
+  2. Sampling-only position-dependent schedule (C1 / Tier 0 ablation)
+  3. Full position-dependent reference flow (C2-C3 / our method)
+
+---
+
+## Phase B: Experiment Preparation (NEW, 2026-04-07)
+
+- **B1 (PDB download)**: not started — `work/immune-design/if_test_set/pdbs/` is empty
+- **B2 (h_i maps for test set)**: not started
+- **B3 (h_i maps for CATH training set)**: not started — needed for Phase C Tier 1
+- **B4 (eval pipeline integration)**: not started — need end-to-end: generate → ESMFold → TM-align → head → NMP
+
+---
+
+## Phase C: Core Contribution — Reference Flow (NEW, 2026-04-07)
+
+- **Status**: not started. Implementation details under discussion (Thinker track).
+- **Math foundation**: `doc/Reference_Flow_Derivation.md` — Tasks 0, A, C complete; Task B framework complete
+- **Planned tiers**: C0 (unguided baseline) → C1 (sampling-only) → C2 (retrain) → C3 (FiLM+CFG)
+- **Blocked by**: Phase B completion
 
 ---
 
@@ -192,9 +200,9 @@
 | Multi-allele analysis | F2 | multi-allele eval | partial | DRB0401 + DRB1501 trained, metrics TBD |
 | IF Benchmark | F3 | L (test set) | partial | DPLM baseline validated on CATH (scTM=0.87 median) |
 | Structure Self-Consistency | F3 | L (ESMFold wrapper) | no | |
-| Pareto Frontier | F3 | L + M sweep | no | M0-M3 code ready (uncommitted), blocked by test set |
-| Local Resampling | F3 | L + M | no | |
-| Diversity ablation | F3 | L + M | no | |
+| Pareto Frontier | F3 | Phase C | no | reference flow vs post-hoc: scTM vs Δrisk |
+| Emergent Ordering | F3 | Phase C | no | unmasking order correlates with h_i (core claim) |
+| Ablation (Tier 0 vs 1) | F3 | Phase C | no | sampling-only vs full training |
 | Uricase schematic | F4 | F3 pipeline | no | future |
 | Phylogenetic Tree | F4 | uricase data | no | future |
 | T cell assay | F4 | wet lab | no | future |

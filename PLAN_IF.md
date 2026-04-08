@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED WORKFLOWS: use `superpowers:writing-plans` for planning updates and `superpowers:test-driven-development` for key module/function/pipeline checks.
 
-**Goal:** Build the v1 inverse-folding stage around a trainable DPLM v1 + GVP adapter baseline, a shared evaluation pipeline, and an inference-time epitope-guidance validation loop, while preserving a clean upgrade path to the later property-aware Immune-Design formulation.
+**Goal:** Build an immunogenicity-aware inverse folding model whose core mechanism is position-dependent reference flow (emergent ordering). Infrastructure modules (K/L) provide the baseline and test set. The core contribution is implemented in Phase B (preparation) and Phase C (reference flow experiments).
 
-**Architecture:** v1 establishes infrastructure (K: baseline, L: test set, M: guidance validation) as a foundation for the core contribution: position-dependent reference flow for immunogenicity-aware inverse folding. Level 1 post-hoc filter (N1) serves as the comparison baseline. Level 3 (DRAKES/DPO) dropped from scope (2026-04-04) — focus is entirely on making the reference flow work.
+**Architecture (restructured 2026-04-07):** Modules K and L are complete infrastructure. Module M is **superseded** (post-hoc resampling, not true generation-time steering). Module N is simplified to Level 1 post-hoc filter only. New Phase B (experiment preparation) and Phase C (core contribution: position-dependent DFM) are the active workstreams. See `doc/Reference_Flow_Derivation.md` for mathematical foundation.
 
 **Tech Stack:** Python, PyTorch, byprot/DPLM, ESM-2 650M, GVP, Hydra, ESMFold, TM-align, NetMHCIIpan 4.3, pytest, JSON/CSV/FASTA/PDB artifacts.
 
@@ -50,19 +50,30 @@
   - shared evaluation pipeline runs end-to-end: PDB -> generate -> ESMFold/TM-align -> epitope head -> NetMHCIIpan
   - all later IF comparisons use the same test set and metric schema
 
-### Milestone M3: Guidance Validation Green
+### ~~Milestone M3: Guidance Validation Green~~ — SUPERSEDED (2026-04-07)
+
+> Module M superseded. Resampling-based "guidance" is post-hoc selection, not generation-time steering. Replaced by Phase C core experiments.
+
+### Milestone M4: Comparison Green — SIMPLIFIED (2026-04-07)
 
 - Outcome:
-  - inference-time classifier guidance is integrated into DPLM sampling
-  - `eta` sweep is reproducible
-  - Pareto tradeoff between structural quality and de-immunization is measurable
+  - Level 1 post-hoc baseline available (N1, done)
+  - Core method (Phase C) evaluated on same test set
+  - Comparison report: post-hoc filter vs reference flow (+ ablation tiers)
 
-### Milestone M4: Comparison Green
+### Milestone M5: Experiment Preparation Green (NEW, 2026-04-07)
 
 - Outcome:
-  - Level 1 post-hoc baseline is available
-  - Level 3 learned baseline path is either executed or explicitly deferred with rationale
-  - final v1 report can compare Level 1 vs Level 2, and optionally Level 3, on a shared substrate
+  - PDB structures downloaded for test set proteins
+  - h_i maps pre-computed for test set (both alleles) and CATH training set
+  - End-to-end eval pipeline verified: generate → ESMFold → TM-align → head → NMP
+
+### Milestone M6: Core Contribution Green (NEW, 2026-04-07)
+
+- Outcome:
+  - Position-dependent reference flow implemented and experimentally validated
+  - Ablation structure: unguided baseline vs Tier 0 (sampling-only) vs full method
+  - Paper-ready comparison data
 
 ## 4. Audit Conclusions (Frozen Into This Plan)
 
@@ -333,9 +344,11 @@
 **Acceptance**
 - Module L provides the shared measurement substrate for the entire inverse-folding stage.
 
-## Module M: Classifier Guidance Validation (Level 2)
+## Module M: Classifier Guidance Validation (Level 2) — SUPERSEDED (2026-04-07)
 
-**Objective**
+> **Status**: SUPERSEDED. The implemented "guidance" (M0-M3) is candidate resampling at the output level — post-hoc filtering with soft weights, not generation-time steering. Replaced by Phase C (position-dependent reference flow). Code preserved in `inverse_folding/guidance/`; scoring bridge may be reusable.
+
+**Objective** *(original, preserved for LOG traceability)*
 - Validate whether inference-time epitope-aware steering can reduce immunogenicity without retraining the inverse-folding model.
 
 **Inputs**
@@ -518,20 +531,73 @@
 **Acceptance**
 - Module N produces a scientifically interpretable comparison for the paper.
 
+## Phase B: Experiment Preparation (NEW, 2026-04-07)
+
+**Objective**: Bridge from infrastructure (K/L done) to core experiments (Phase C). All tasks are mechanical batch jobs.
+
+**Inputs**: Module K checkpoint, Module L test set parquets, frozen epitope head checkpoints, CATH training data.
+
+### Task B1: Download PDB Structures for Test Set
+
+- Download PDB files for all test set proteins into `work/immune-design/if_test_set/pdbs/`
+- Source: PDB IDs from test_proteins parquets
+- Validation: count matches test set size, files parse without error
+
+### Task B2: Pre-compute h_i Maps for Test Set
+
+- Run frozen epitope head on all test set proteins (both alleles)
+- Output: per-protein `residue_hotspot` arrays → `wt_hotspot_maps.parquet`
+- These h_i maps are used as conditioning signal and for evaluation
+
+### Task B3: Pre-compute h_i Maps for CATH Training Set
+
+- Run frozen epitope head on ~16k CATH training proteins
+- Output: `cath_hotspot_maps.parquet` (protein_id, residue_idx, h_i)
+- Required for Phase C Tier 1 (position-dependent training)
+- Can run in parallel with B1/B2
+
+### Task B4: End-to-End Eval Pipeline Integration
+
+- Integrate existing evaluation code into one CLI: generate → ESMFold → TM-align → head → NMP
+- Reuse relevant pieces from Module L evaluation wrappers
+- Verify on 2-3 test proteins before full-scale runs
+
+**Acceptance**: all B tasks complete → Phase C can begin experiments.
+
+---
+
+## Phase C: Core Contribution — Position-Dependent Reference Flow (NEW, 2026-04-07)
+
+> **This section is intentionally left as a stub.** Implementation details (g(h_i) form, training recipe, architecture modifications) are under active discussion in the Thinker track. Mathematical foundation is in `doc/Reference_Flow_Derivation.md`.
+
+**Objective**: Implement and validate position-dependent discrete flow matching as an immunogenicity-aware generative mechanism.
+
+**Planned experiment tiers** (details TBD):
+- **C0**: Unguided DPLM baseline inference on test set (control arm)
+- **C1 (Tier 0)**: Sampling-only position-dependent schedule — no retraining
+- **C2 (Tier 1)**: Retrain DPLM with position-dependent forward process
+- **C3 (Tier 2)**: Explicit h_i conditioning (architecture TBD)
+
+**Comparison structure**: post-hoc filter (N1) vs C0 vs C1 vs C2/C3
+
+**Key references**: `doc/Reference_Flow_Derivation.md`, `doc/Immune_Design_Architecture_v2.md`
+
+---
+
 ## 6. Current Open Decisions (Must Be Frozen Before/At Module Start)
 
 1. Frozen:
-   - v1 execution order is `K -> L -> M`, with `N` intentionally lower priority
+   - v1 execution order: K → L → Phase B → Phase C. Module M superseded (2026-04-07).
 2. Frozen:
    - NetMHCIIpan remains an external evaluator, not the guidance signal
-3. Frozen:
-   - Level 2 guidance uses risk-weighted candidate resampling, not weighted-logit averaging
+3. Frozen (superseded 2026-04-07):
+   - ~~Level 2 guidance uses risk-weighted candidate resampling~~ — Module M superseded; no longer relevant
 4. Frozen:
    - Module K baseline is adapter-only training on top of frozen DPLM sequence priors
-5. Open:
-   - whether Module K report stage should remain single-seed after smoke validation or expand to a small multi-seed panel
+5. Frozen (2026-04-07):
+   - Test set size: ~3,141 proteins (0701) / ~3,140 proteins (0401), assembled on cluster
 6. Open:
-   - exact size of the fixed PDB evaluation set for the first reportable v1 pass
+   - Phase C implementation details (reference flow architecture, g(h_i) form, training recipe) — to be determined
 7. Frozen (2026-04-04):
    - Level 3 dropped from v1 scope. DRAKES code available in `DRAKES/` for potential reviewer response.
 
@@ -572,7 +638,7 @@ Each entry must include:
 1. `log_id`: monotonic ID, format `L0001`, `L0002`, ...
 2. `timestamp`: ISO-8601 with timezone
 3. `type`: one of `PLAN_UPDATE`, `DECISION`, `RISK`, `VERIFICATION`, `CODEMAP_DIFF`
-4. `module`: one of `GLOBAL`, `K`, `L`, `M`, `N` for IF-stage events, while older A-J modules remain valid for epitope-head stage events
+4. `module`: one of `GLOBAL`, `K`, `L`, `M` (superseded), `N`, `PHASE_B`, `PHASE_C` for IF-stage events, while older A-J modules remain valid for epitope-head stage events
 5. `trigger`: why this entry was created
 6. `change_summary`: one-line factual change
 7. `rationale`: explicit reasoning or hypothesis
