@@ -1566,3 +1566,24 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN_IF.md:§Task N2 (DROPPED)`
   - `doc/Reference_Flow_Derivation.md:§4.3 (sampling algorithm)`
+
+### L0053
+- timestamp: 2026-04-07T22:30:00-04:00
+- type: PLAN_UPDATE
+- module: GLOBAL
+- trigger: Plan restructuring — Modules M/N misaligned with actual goal (reference flow). Module M is post-hoc resampling, not generation-time steering. Need to refocus plan on core contribution.
+- change_summary: Module M superseded; PLAN_IF.md restructured to add Phase B (experiment preparation) and Phase C (core contribution stub). Milestones M3 superseded, M5/M6 added.
+- rationale: (1) Module M "classifier guidance" is candidate resampling at output level — scientifically equivalent to post-hoc filtering (N1), provides no paper value. (2) Original K→L→M→N pipeline was infrastructure-only with core contribution deferred as "Phase 2-3 stubs." (3) With K and L done, the plan must now center on the actual core contribution. (4) Phase B bridges infrastructure to experiments (PDB download, h_i precompute, eval integration). (5) Phase C is the core reference flow work — left as stub pending Thinker-track discussion. (6) Existing code and LOG references preserved; no deletions, only supersession banners.
+- artifacts:
+  - `PLAN_IF.md` (Goal/Architecture reworded, Milestone M3 superseded, M5/M6 added, Module M banner added, Phase B/C sections appended, §6 decisions updated, §9 module list updated)
+  - `PROGRESS.md` (Module M marked superseded, Module N blocker updated, Phase B/C sections added, Paper Readiness F3 rows updated)
+- evidence: N/A (planning restructure, no code change)
+- impact:
+  - scope: PLAN_IF.md structure; PROGRESS.md active sections. No code, no LOG history, no Module K/L content affected.
+  - risk: low
+  - confidence: 0.95
+- status: done
+- next_action: Begin Phase B tasks (B1 PDB download, B2/B3 h_i precompute) on cluster.
+- refs:
+  - `PLAN_IF.md:§Phase B, §Phase C`
+  - `doc/Reference_Flow_Derivation.md`

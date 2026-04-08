@@ -18,6 +18,7 @@ Network access required — run from login node, not compute node.
 
 import argparse
 import os
+import re
 import shutil
 import sys
 import time
@@ -31,6 +32,10 @@ import pandas as pd
 
 RCSB_PDB_URL = "https://files.rcsb.org/download/{}.pdb"
 RCSB_CIF_URL = "https://files.rcsb.org/download/{}.cif"
+
+# PDB chain ID pattern: 4 alphanumeric (first char digit) + _ + 1-3 char chain
+# e.g., 1ABC_A, 7H9K_A, 6T8S_AAA
+_PDB_ID_RE = re.compile(r"^[0-9][A-Za-z0-9]{3}_[A-Za-z0-9]{1,3}$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +75,11 @@ def parse_args() -> argparse.Namespace:
         help="Print download plan without downloading.",
     )
     return p.parse_args()
+
+
+def is_pdb_chain_id(protein_id: str) -> bool:
+    """Check if protein_id is PDB chain format (e.g., '1ABC_A', '6T8S_AAA')."""
+    return bool(_PDB_ID_RE.match(protein_id))
 
 
 def extract_pdb_code(protein_id: str) -> str:
@@ -124,12 +134,17 @@ def main() -> int:
         print(f"ERROR: parquet missing 'protein_id' column")
         return 1
 
-    protein_ids = df["protein_id"].unique().tolist()
-    pdb_codes = sorted(set(extract_pdb_code(pid) for pid in protein_ids))
+    all_protein_ids = df["protein_id"].unique().tolist()
+
+    # Separate PDB-format IDs from non-PDB (e.g., UniProt accessions for Tier 3)
+    pdb_protein_ids = [pid for pid in all_protein_ids if is_pdb_chain_id(pid)]
+    non_pdb_ids = [pid for pid in all_protein_ids if not is_pdb_chain_id(pid)]
+
+    pdb_codes = sorted(set(extract_pdb_code(pid) for pid in pdb_protein_ids))
 
     # Map PDB code → list of protein_ids that need it
     code_to_pids: dict[str, list[str]] = {}
-    for pid in protein_ids:
+    for pid in pdb_protein_ids:
         code = extract_pdb_code(pid)
         code_to_pids.setdefault(code, []).append(pid)
 
@@ -141,23 +156,28 @@ def main() -> int:
 
     if args.skip_existing:
         already_done = set()
-        for pid in protein_ids:
+        for pid in pdb_protein_ids:
             dest = os.path.join(args.output_dir, f"{pid}.{fmt}")
             if os.path.isfile(dest) and os.path.getsize(dest) > 0:
                 already_done.add(pid)
-        remaining_pids = [p for p in protein_ids if p not in already_done]
+        remaining_pids = [p for p in pdb_protein_ids if p not in already_done]
         remaining_codes = sorted(set(
             extract_pdb_code(pid) for pid in remaining_pids
         ))
     else:
         already_done = set()
-        remaining_pids = protein_ids
+        remaining_pids = pdb_protein_ids
         remaining_codes = pdb_codes
 
     # ── Tier breakdown for diagnostics ───────────────────────────────────
     tier_counts = {}
     if "tier" in df.columns:
         tier_counts = df.groupby("tier")["protein_id"].nunique().to_dict()
+    # Count non-PDB per tier
+    non_pdb_tier_counts = {}
+    if "tier" in df.columns and non_pdb_ids:
+        non_pdb_df = df[df["protein_id"].isin(non_pdb_ids)]
+        non_pdb_tier_counts = non_pdb_df.groupby("tier")["protein_id"].nunique().to_dict()
 
     # ── Print diagnostics ────────────────────────────────────────────────
     print("=" * 60)
@@ -168,14 +188,27 @@ def main() -> int:
     print(f"  Workers        : {args.workers}")
     print(f"  Max retries    : {args.max_retries}")
     print(f"  Skip existing  : {args.skip_existing}")
-    print(f"  Total proteins : {len(protein_ids)}")
+    print(f"  Total proteins : {len(all_protein_ids)}")
+    print(f"  PDB-format IDs : {len(pdb_protein_ids)}")
+    print(f"  Non-PDB IDs    : {len(non_pdb_ids)} (skipped — no RCSB structure)")
+    if non_pdb_tier_counts:
+        for tier_val, cnt in sorted(non_pdb_tier_counts.items()):
+            print(f"    Tier {tier_val}: {cnt} non-PDB proteins")
     print(f"  Unique PDB codes: {len(pdb_codes)}")
     for tier_val, cnt in sorted(tier_counts.items()):
-        print(f"    Tier {tier_val}: {cnt} proteins")
+        print(f"    Tier {tier_val}: {cnt} proteins (total)")
     print(f"  Already done   : {len(already_done)}")
     print(f"  To download    : {len(remaining_codes)} PDB codes "
           f"→ {len(remaining_pids)} protein files")
     print("=" * 60)
+
+    # Write non-PDB ID list for reference
+    if non_pdb_ids:
+        non_pdb_path = os.path.join(args.output_dir, "non_pdb_proteins.txt")
+        with open(non_pdb_path, "w") as f:
+            for pid in sorted(non_pdb_ids):
+                f.write(f"{pid}\n")
+        print(f"\n  Non-PDB protein list: {non_pdb_path}")
 
     if args.dry_run:
         print("\n[dry-run] Would download:")
@@ -268,6 +301,9 @@ def main() -> int:
     elif failures:
         print(f"\nWARNING: {len(failures)} PDB codes failed — "
               f"see download_failures.txt")
+    if non_pdb_ids:
+        print(f"\nNOTE: {len(non_pdb_ids)} non-PDB proteins (UniProt IDs) skipped. "
+              f"These need predicted structures (AlphaFold/ESMFold) if used for IF.")
     return 0
 
 
