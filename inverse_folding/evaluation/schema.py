@@ -91,6 +91,14 @@ TIER_REQUIRED_FIELDS: Dict[int, Set[str]] = {
 _VALID_TIERS = {1, 2, 3}
 
 
+def _allows_null_cath_topology(entry: dict) -> bool:
+    """Tier 2 rows rebuilt without CATH diversity may omit topology."""
+    return (
+        entry.get("tier") == 2
+        and entry.get("selection_reason") == "pre-screened-no-diversity"
+    )
+
+
 def validate_test_protein_entry(entry: dict) -> dict:
     """Validate a single test protein entry against the frozen schema.
 
@@ -117,6 +125,8 @@ def validate_test_protein_entry(entry: dict) -> dict:
 
     # Tier-specific non-null checks
     for field in TIER_REQUIRED_FIELDS.get(tier, set()):
+        if field == "cath_topology" and _allows_null_cath_topology(entry):
+            continue
         if entry.get(field) is None:
             raise EvalSchemaError(
                 f"Field '{field}' must not be null for tier {tier}"
