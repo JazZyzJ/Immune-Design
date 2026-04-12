@@ -1,22 +1,22 @@
 #!/bin/bash
 #SBATCH --job-name=flank-ablation
-#SBATCH --partition=gpu
+#SBATCH --qos=gpu-short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=12:00:00
-#SBATCH --output=/scratch/network/zc1519/run/flank-ablation-%j.out
-#SBATCH --error=/scratch/network/zc1519/run/flank-ablation-%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/run/flank-ablation-%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/run/flank-ablation-%j.err
 
 set -uo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests"
-RUN_ROOT="/scratch/network/zc1519/run"
-CHECKPOINT="/scratch/network/zc1519/run/ablation/cnn_enhance_v2/runs/B0/seed_42/best.pt"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests"
+RUN_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/run"
+CHECKPOINT="/scratch/gpfs/KAIYIJIANG/zijie/run/ablation/cnn_enhance_v2/runs/B0/seed_42/best.pt"
 OUTPUT_JSON="${RUN_ROOT}/ablation/flank_ablation_${SLURM_JOB_ID}.json"
 
 mkdir -p "${RUN_ROOT}/ablation"
@@ -30,7 +30,7 @@ export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 export WANDB_MODE=offline
 
 echo "============================================================"

@@ -18,7 +18,7 @@
 
 ## 3. Cluster Convention
 
-**集群**: Princeton Adroit, base = `/scratch/network/zc1519/`
+**集群**: Princeton Della, base = `/scratch/gpfs/KAIYIJIANG/zijie/`
 **环境**: `immune-design` conda env (Python 3.12, PyTorch 2.5.1)
 **源码**: `/home/zc1519/src/Immune-Design`
 

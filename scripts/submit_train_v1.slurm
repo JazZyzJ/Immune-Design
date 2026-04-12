@@ -1,21 +1,21 @@
 #!/bin/bash
 #SBATCH --job-name=epitope-train
-#SBATCH --partition=gpu
+#SBATCH --qos=gpu-short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/network/zc1519/run/slurm-%j.out
-#SBATCH --error=/scratch/network/zc1519/run/slurm-%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/run/slurm-%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/run/slurm-%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests"
-RUN_DIR="/scratch/network/zc1519/run"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests"
+RUN_DIR="/scratch/gpfs/KAIYIJIANG/zijie/run"
 
 mkdir -p "${RUN_DIR}"
 
@@ -28,7 +28,7 @@ export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 export WANDB_MODE=offline
 
 # ── Diagnostics ───────────────────────────────────────────────────────────

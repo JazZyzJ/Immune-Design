@@ -1,21 +1,21 @@
 #!/bin/bash
 #SBATCH --job-name=cnn-strict
-#SBATCH --partition=gpu
+#SBATCH --qos=gpu-short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/network/zc1519/run/epitope_head/cnn-train-%j.out
-#SBATCH --error=/scratch/network/zc1519/run/epitope_head/cnn-train-%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn-train-%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn-train-%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests"
-OUTPUT_ROOT="/scratch/network/zc1519/run/epitope_head/cnn_strict_full"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests"
+OUTPUT_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_strict_full"
 
 mkdir -p "${OUTPUT_ROOT}"
 
@@ -28,7 +28,7 @@ export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 export WANDB_MODE=offline
 
 # ── Diagnostics ───────────────────────────────────────────────────────────

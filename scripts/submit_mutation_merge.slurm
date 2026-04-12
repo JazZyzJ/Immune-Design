@@ -6,17 +6,17 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --time=00:30:00
-#SBATCH --output=/scratch/network/zc1519/logs/augmentation/merge_%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/augmentation/merge_%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation/merge_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation/merge_%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests"
-AUG_OUTPUT="/scratch/network/zc1519/work/immune-design/augmentation"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests"
+AUG_OUTPUT="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/augmentation"
 
-mkdir -p /scratch/network/zc1519/logs/augmentation
+mkdir -p /scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation
 
 # ── Environment ───────────────────────────────────────────────────────────
 module purge

@@ -1,23 +1,23 @@
 #!/bin/bash
 #SBATCH --job-name=if-v1-train
-#SBATCH --partition=gpu
+#SBATCH --qos=gpu-medium
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:2
 #SBATCH --time=48:00:00
-#SBATCH --output=/scratch/network/zc1519/logs/inverse_folding/if-train-%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/inverse_folding/if-train-%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/inverse_folding/if-train-%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/inverse_folding/if-train-%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
 DPLM_ROOT="${PROJECT_ROOT}/inverse_folding/dplm"
-DATA_DIR="/scratch/network/zc1519/work/immune-design"
-OUTPUT_ROOT="/scratch/network/zc1519/run/inverse_folding"
-LOG_DIR="/scratch/network/zc1519/logs/inverse_folding"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design"
+OUTPUT_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding"
+LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/inverse_folding"
 
 mkdir -p "${OUTPUT_ROOT}"
 mkdir -p "${LOG_DIR}"
@@ -30,8 +30,8 @@ conda activate immune-design
 export PYTHONHASHSEED=42
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
-export HF_HOME="/scratch/network/zc1519/model_cache/huggingface"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
+export HF_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/huggingface"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export WANDB_MODE=offline

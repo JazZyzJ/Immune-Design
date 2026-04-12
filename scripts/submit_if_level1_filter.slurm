@@ -6,15 +6,15 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=01:00:00
-#SBATCH --output=/scratch/network/zc1519/logs/inverse_folding/N1_filter_%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/inverse_folding/N1_filter_%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/inverse_folding/N1_filter_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/inverse_folding/N1_filter_%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-OUTPUT_ROOT="/scratch/network/zc1519/run/inverse_folding"
-LOG_DIR="/scratch/network/zc1519/logs/inverse_folding"
+OUTPUT_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding"
+LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/inverse_folding"
 
 # M3 sweep output (source for Level 1 re-selection)
 M3_OUTPUT="${OUTPUT_ROOT}/guidance/sweep_seed42"

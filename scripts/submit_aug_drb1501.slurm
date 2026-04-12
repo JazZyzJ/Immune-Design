@@ -7,16 +7,16 @@
 #SBATCH --mem=32G
 #SBATCH --time=6:00:00
 #SBATCH --array=0-19
-#SBATCH --output=/scratch/network/zc1519/logs/augmentation/drb1501_shard_%a_%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/augmentation/drb1501_shard_%a_%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation/drb1501_shard_%a_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation/drb1501_shard_%a_%j.err
 
 set -uo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests/drb1501"
-AUG_OUTPUT="/scratch/network/zc1519/work/immune-design/augmentation/drb1501"
-LOG_DIR="/scratch/network/zc1519/logs/augmentation"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests/drb1501"
+AUG_OUTPUT="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/augmentation/drb1501"
+LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation"
 NETMHCIIPAN_BIN="${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan"
 
 N_SHARDS=20

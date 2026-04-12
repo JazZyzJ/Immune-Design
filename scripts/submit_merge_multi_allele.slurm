@@ -6,15 +6,15 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --time=00:30:00
-#SBATCH --output=/scratch/network/zc1519/logs/augmentation/merge_multi_allele_%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/augmentation/merge_multi_allele_%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation/merge_multi_allele_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation/merge_multi_allele_%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-AUG_BASE="/scratch/network/zc1519/work/immune-design/augmentation"
-LOG_DIR="/scratch/network/zc1519/logs/augmentation"
+AUG_BASE="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/augmentation"
+LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/augmentation"
 
 ALLELES=("drb0401" "drb1501")
 

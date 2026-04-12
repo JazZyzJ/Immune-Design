@@ -330,7 +330,7 @@ cached on the login node before submitting jobs.
 
 ```bash
 # 1. ESM-IF1 weights (torch.hub)
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 python -c "
 import esm
 model, alphabet = esm.pretrained.esm_if1_gvp4_t16_142M_UR50()
@@ -338,7 +338,7 @@ print('ESM-IF1 cached at:', '$TORCH_HOME/hub/checkpoints/')
 "
 
 # 2. DPLM-650m weights (HuggingFace)
-export HF_HOME="/scratch/network/zc1519/model_cache/huggingface"
+export HF_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/huggingface"
 python -c "
 from transformers import AutoConfig, AutoModel
 from huggingface_hub import hf_hub_download
@@ -363,8 +363,8 @@ The training script (`scripts/submit_if_train.slurm`) must export:
 
 ```bash
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
-export HF_HOME="/scratch/network/zc1519/model_cache/huggingface"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
+export HF_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/huggingface"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export WANDB_MODE=offline

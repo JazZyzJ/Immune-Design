@@ -1,25 +1,25 @@
 #!/bin/bash
 #SBATCH --job-name=LC1-drb1501
-#SBATCH --partition=gpu
+#SBATCH --qos=gpu-short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/network/zc1519/logs/epitope_head/LC1_drb1501_%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/epitope_head/LC1_drb1501_%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/epitope_head/LC1_drb1501_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/epitope_head/LC1_drb1501_%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests/drb1501"
-OUTPUT_ROOT="/scratch/network/zc1519/run/epitope_head/LC1_drb1501_aug"
-LOG_DIR="/scratch/network/zc1519/logs/epitope_head"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests/drb1501"
+OUTPUT_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb1501_aug"
+LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/epitope_head"
 
 # Stage J: runtime augmentation via registry
-REGISTRY="/scratch/network/zc1519/work/immune-design/augmentation/drb1501/mutation_registry_strict.parquet"
+REGISTRY="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/augmentation/drb1501/mutation_registry_strict.parquet"
 P_AUG=0.00
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
@@ -33,7 +33,7 @@ export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 export WANDB_MODE=offline
 
 # ── Diagnostics ───────────────────────────────────────────────────────────

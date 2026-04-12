@@ -1587,3 +1587,26 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN_IF.md:§Phase B, §Phase C`
   - `doc/Reference_Flow_Derivation.md`
+
+### L0054
+- timestamp: 2026-04-12T12:00:00-04:00
+- type: DECISION
+- module: GLOBAL
+- trigger: Migration from Princeton Adroit to Princeton Della cluster.
+- change_summary: Migrated all project infrastructure from Adroit (`/scratch/network/zc1519/`) to Della (`/scratch/gpfs/KAIYIJIANG/zijie/`); updated 28 files (146 path occurrences); converted SLURM scripts from `--partition=gpu` to QOS-based scheduling (`gpu-short`/`gpu-medium`).
+- rationale: Adroit is a small test cluster; Della provides A100 80GB GPUs and GPFS parallel filesystem with significantly better I/O and compute capacity. Della uses sponsor-based scratch directories and QOS-based job scheduling instead of direct partition specification.
+- artifacts:
+  - `env.sh` (4 path replacements)
+  - `CLAUDE.md` (cluster convention updated: Adroit → Della)
+  - `PROGRESS.md` (4 path replacements)
+  - `scripts/*.slurm` (22 files: path replacement + partition→QOS migration)
+  - `scripts/run_if_level1_filter.py`, `scripts/run_diagnose_e1.sh`, `docs/install_esmfold.md` (path replacements)
+- evidence: GPU verified on Della — `torch.cuda.get_device_name(0)` → NVIDIA A100 80GB PCIe (node della-l02g13). Conda environment binary-compatible, no rebuild needed.
+- impact:
+  - scope: All SLURM scripts, env.sh, CLAUDE.md, PROGRESS.md, 2 helper scripts, 1 doc. No Python module code changed.
+  - risk: low
+  - confidence: 0.95
+- status: done
+- refs:
+  - QOS available: `gpu-short` (1d), `gpu-medium` (3d), `gpu-long` (6d), `gpu-test`, `short`, `medium`, `vlong`, `test`
+  - Della scratch base: `/scratch/gpfs/KAIYIJIANG/zijie/`

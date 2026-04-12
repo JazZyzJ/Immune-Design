@@ -13,12 +13,12 @@ export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 export WANDB_MODE=offline
 
-export IMD_DATA_DIR="/scratch/network/zc1519/work/immune-design/manifests"
-export IMD_RUN_DIR="/scratch/network/zc1519/run"
-export IMD_ABLATION_ROOT="/scratch/network/zc1519/run/ablation/encoder_v2"
+export IMD_DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests"
+export IMD_RUN_DIR="/scratch/gpfs/KAIYIJIANG/zijie/run"
+export IMD_ABLATION_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/run/ablation/encoder_v2"
 
 cd "${PROJECT_ROOT}"
 echo "Immune-Design env ready.  PROJECT_ROOT=${PROJECT_ROOT}"

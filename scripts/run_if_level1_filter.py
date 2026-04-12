@@ -6,8 +6,8 @@ so it can be evaluated through the same evaluate_if.py pipeline.
 
 Usage (cluster):
     python ${PROJECT_ROOT}/scripts/run_if_level1_filter.py \
-        --m3-output-dir /scratch/network/zc1519/run/inverse_folding/guidance/sweep_seed42 \
-        --output-dir /scratch/network/zc1519/run/inverse_folding/baselines/level1_filter/sweep_seed42
+        --m3-output-dir /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/guidance/sweep_seed42 \
+        --output-dir /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/baselines/level1_filter/sweep_seed42
 
 See scripts/submit_if_level1_filter.slurm for SLURM submission.
 """

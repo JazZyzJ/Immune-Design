@@ -13,8 +13,8 @@
 - **Code**: complete
 - **Cluster**: trained, checkpoint frozen
   - best run: `LC1_lite_aug` (runtime mutation augmentation, p_aug=0.20)
-  - checkpoint: `/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt`
-  - config: `/scratch/network/zc1519/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/resolved_config.yaml`
+  - checkpoint: `/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt`
+  - config: `/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/resolved_config.yaml`
   - allele: HLA-DRB1*07:01 (single allele, v1 scope)
 - **Key Data** (LC1_lite_aug, best epoch 21 / 36 total, early-stopped):
   - held-out pp_ap (PR-AUC): **0.3027**
@@ -45,7 +45,7 @@
 
 - **Code**: complete (adapter training pipeline, config schema, launcher)
 - **Cluster**: trained + validated
-  - experiment: `/scratch/network/zc1519/run/inverse_folding/dplm_v1_adapter/seed42_20260319_094244`
+  - experiment: `/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/dplm_v1_adapter/seed42_20260319_094244`
   - checkpoint: `checkpoints/best.ckpt` → `step_10383.0-ppl_1.67-acc_median_55.74.ckpt`
   - config: `resolved_config.yaml`
   - training: 46 epochs (0–45), 2× GPU, ~21h wall time (2026-03-19 05:42 → 2026-03-20 02:45)
@@ -165,7 +165,7 @@
 | Tier 2 entity IDs | `outputs/if/test_set/tier2_all_entity_ids.txt` | 113k RCSB entity IDs |
 | Multi-allele manifests | `outputs/manifests/{drb0401,drb1501}/` | complete |
 
-### Cluster (`/scratch/network/zc1519/`)
+### Cluster (`/scratch/gpfs/KAIYIJIANG/zijie/`)
 
 | Artifact | Path | Status |
 |----------|------|--------|

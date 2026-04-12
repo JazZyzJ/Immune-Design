@@ -1,28 +1,28 @@
 #!/bin/bash
 #SBATCH --job-name=L3-prescreen-tier2
-#SBATCH --partition=gpu
+#SBATCH --qos=gpu-short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/network/zc1519/logs/if_eval/prescreen_tier2_%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/if_eval/prescreen_tier2_%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval/prescreen_tier2_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval/prescreen_tier2_%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-DATA_DIR="/scratch/network/zc1519/work/immune-design/if_test_set"
-OUTPUT_ROOT="/scratch/network/zc1519/work/immune-design/if_test_set"
-LOG_DIR="/scratch/network/zc1519/logs/if_eval"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set"
+OUTPUT_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set"
+LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval"
 
 CANDIDATE_FASTA_DIR="${DATA_DIR}/tier2_candidates"
-CATH_DIR="/scratch/network/zc1519/work/immune-design/cath_4.3"
+CATH_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/cath_4.3"
 CATH_TRAIN_SOURCE="${CATH_DIR}/chain_set.jsonl"
 CATH_DOMAIN_LIST="${CATH_DIR}/chain_set.jsonl"
-EPITOPE_CKPT="/scratch/network/zc1519/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
+EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
 NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
 ALLELE="HLA-DRB1*04:01"
 
@@ -37,7 +37,7 @@ export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
-export TORCH_HOME="/scratch/network/zc1519/model_cache/torch"
+export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 export WANDB_MODE=offline
 
 # ── Diagnostics ───────────────────────────────────────────────────────────

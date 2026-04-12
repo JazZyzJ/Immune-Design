@@ -6,15 +6,15 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=2:00:00
-#SBATCH --output=/scratch/network/zc1519/logs/if_eval/download_tier2_%j.out
-#SBATCH --error=/scratch/network/zc1519/logs/if_eval/download_tier2_%j.err
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval/download_tier2_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval/download_tier2_%j.err
 
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-DATA_DIR="/scratch/network/zc1519/work/immune-design/if_test_set"
-LOG_DIR="/scratch/network/zc1519/logs/if_eval"
+DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set"
+LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval"
 
 ENTITY_IDS="${PROJECT_ROOT}/outputs/if/test_set/tier2_all_entity_ids.txt"
 OUTPUT_DIR="${DATA_DIR}/tier2_candidates"

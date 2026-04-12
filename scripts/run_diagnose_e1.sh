@@ -3,7 +3,7 @@
 #
 # Usage (example):
 #   bash scripts/run_diagnose_e1.sh \
-#     --checkpoint /scratch/network/zc1519/run/ablation/encoder_v2/runs/E1/seed_42/best.pt \
+#     --checkpoint /scratch/gpfs/KAIYIJIANG/zijie/run/ablation/encoder_v2/runs/E1/seed_42/best.pt \
 #     --encoder-id E1 \
 #     --device cpu
 #
@@ -18,7 +18,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${PROJECT_ROOT}/env.sh"
 
 # Ensure data dir is passed (defaults to IMD_DATA_DIR if set)
-DATA_DIR="${IMD_DATA_DIR:-/scratch/network/zc1519/work/immune-design/manifests}"
+DATA_DIR="${IMD_DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests}"
 
 cd "${PROJECT_ROOT}"
 python scripts/analysis/diagnose_e1.py \
