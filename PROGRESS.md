@@ -183,7 +183,7 @@
 | IF test set (0701) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` | 3,141 proteins (T1:15 T2:3000 T3:126) |
 | IF test set (0401) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` | 3,140 proteins (T1:15 T2:2998 T3:127) |
 | IF test set FASTAs | `work/immune-design/if_test_set/fastas/` | 6,166 files |
-| IF test set PDBs | `work/immune-design/if_test_set/pdbs/` | **empty** — not downloaded yet |
+| IF test set PDBs | `work/immune-design/if_test_set/pdbs/` |  |
 | Guidance sweep results | N/A | not run yet |
 
 ---

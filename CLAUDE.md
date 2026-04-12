@@ -69,7 +69,13 @@ SLURM `--output/--error` 必须指向 `logs/`，不能混入 `run/`。
 | 与 Notion 关系 | PROGRESS.md 是 Notion Gantt Chart sync 的数据源，Paper Readiness section → SubFigure 状态 |
 | 不记录 | 代码 diff、实现细节、debug 过程（这些属于 LOG.md 或 git history） |
 
-## 5. Key Architecture Decisions (Frozen)
+## 5. Code Reuse Protocol
+
+- **Reuse-First Gate**: Before creating any new script or SLURM file, read `doc/SCRIPTS.md` to check for existing scripts that can be parameterized or extended. Default to **adding arguments** over **adding files**.
+- **Registration Gate**: Every new script must be registered in `doc/SCRIPTS.md` under the correct module section; unregistered scripts make the task incomplete.
+- Full reuse standards (parameterization rules, SLURM consolidation guide): `scripts/CLAUDE.md`.
+
+## 6. Key Architecture Decisions (Frozen)
 
 - **Base model**: DPLM v1 (ESM-2 650M) + GVP adapter, checkpoint `airkingbd/dplm_650m`
 - **训练**: 只训练 adapter，backbone 和 GVP encoder 冻结
