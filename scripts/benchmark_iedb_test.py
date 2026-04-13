@@ -77,9 +77,6 @@ def parse_args() -> argparse.Namespace:
                    help="Maximum peptide length (default: 25).")
     p.add_argument("--recall-ks", type=int, nargs="+", default=[50, 100],
                    help="Recall@K values (default: 50 100).")
-    p.add_argument("--context-len", type=int, default=1022,
-                   help="Skip proteins longer than this (default: 1022, "
-                        "matches training-time eval).")
     # Accelerated-mode overrides (ignored in original mode)
     p.add_argument("--nmp-batch-size", type=int, default=8)
     p.add_argument("--nmp-max-lengths-per-call", type=int, default=4)
@@ -92,12 +89,12 @@ def _log(msg: str) -> None:
 
 
 def _load_test_entries(
-    parquet_path: str, test_ids_path: str, allele: str, context_len: int,
-) -> tuple[list[dict], int]:
-    """Load test protein entries for the given allele.
+    parquet_path: str, test_ids_path: str, allele: str,
+) -> list[dict]:
+    """Load test protein entries for the given allele (no length filtering).
 
-    Returns (entries, n_too_long) where entries have protein_id, protein_seq,
-    positives and n_too_long counts proteins skipped for being > context_len.
+    The CNN encoder handles arbitrary lengths and `InferencePredictor`
+    provides chunking for ESM variants, so no length cap is applied.
     """
     with open(test_ids_path) as f:
         test_ids = {line.strip() for line in f if line.strip()}
@@ -106,18 +103,13 @@ def _load_test_entries(
     df = df[(df["protein_id"].isin(test_ids)) & (df["allele"] == allele)]
 
     entries: list[dict] = []
-    n_too_long = 0
     for _, row in df.iterrows():
-        seq = row["protein_seq"]
-        if len(seq) > context_len:
-            n_too_long += 1
-            continue
         entries.append({
             "protein_id": row["protein_id"],
-            "protein_seq": seq,
+            "protein_seq": row["protein_seq"],
             "positives": json.loads(row["positives_json"]),
         })
-    return entries, n_too_long
+    return entries
 
 
 def main() -> int:
@@ -146,7 +138,6 @@ def main() -> int:
     _log(f"  Variant ID         : {args.variant_id}")
     _log(f"  k range            : [{args.min_k}, {args.max_k}]")
     _log(f"  Recall@K           : {args.recall_ks}")
-    _log(f"  Context len        : {args.context_len}")
     if args.nmp_mode == "accelerated":
         _log(f"  NMP batch size     : {args.nmp_batch_size}")
         _log(f"  NMP lengths/call   : {args.nmp_max_lengths_per_call}")
@@ -157,13 +148,15 @@ def main() -> int:
 
     # ── Step 1: Load test entries ──────────────────────────────────────
     _log("\n[1/4] Loading test entries...")
-    entries, n_too_long = _load_test_entries(
+    entries = _load_test_entries(
         args.protein_samples_parquet, args.test_ids, args.allele,
-        args.context_len,
     )
-    _log(f"  Loaded {len(entries)} test proteins for allele {args.allele} "
-         f"(skipped {n_too_long} with len > {args.context_len}).")
-    if not entries:
+    if entries:
+        lengths = [len(e["protein_seq"]) for e in entries]
+        _log(f"  Loaded {len(entries)} test proteins for allele {args.allele} "
+             f"(len: min={min(lengths)}, median={sorted(lengths)[len(lengths) // 2]}, "
+             f"max={max(lengths)}).")
+    else:
         _log("ERROR: No test proteins found.")
         return 1
 
@@ -260,10 +253,72 @@ def main() -> int:
     _log(f"  NMP scoring complete ({t_nmp_elapsed:.1f}s total, "
          f"{t_nmp_elapsed / max(len(entries), 1):.2f}s/protein mean)")
 
-    # ── Step 4: Build labels and compute metrics ──────────────────────
+    # ── Step 4: Build labels and compute three-tiered metrics ──────────
+    # Q1 PRIMARY   : head uses real scores; NMP missing windows imputed with
+    #                worst-case el_rank=1.0 (inverted -1.0, i.e. "definitely
+    #                not a binder"). Both evaluated on the full ground-truth
+    #                label set. This is the head-to-head benchmark answer.
+    # Q2 CONDITIONAL: each predictor only on windows it actually scored.
+    #                Tells us who's better WHEN THEY SUCCEED.
+    # Q3 COVERAGE  : per-predictor coverage stats (scored/total windows,
+    #                full-coverage protein count, partial/missing NMP).
     _log("\n[4/4] Computing metrics vs IEDB ground truth...")
     per_protein: list[dict] = []
-    n_skipped = 0
+    n_skipped_no_windows = 0
+
+    # NMP missing windows get imputed to el_rank = 1.0 (100% rank, i.e.
+    # NetMHCIIpan's own convention for "not a binder"); inverted to -1.0 to
+    # match our higher-is-more-immunogenic convention.
+    NMP_FILL_SCORE = -1.0
+    RECALL_KS = tuple(args.recall_ks)
+
+    def _extract_scored(
+        wins: dict[tuple[int, int], float],
+        spans: torch.Tensor,
+        invert: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Pull scores for windows in `wins`, in canonical span order."""
+        score_list: list[float] = []
+        mask_list: list[bool] = []
+        for i in range(spans.shape[0]):
+            s = int(spans[i, 0].item())
+            k = int(spans[i, 1].item()) - s
+            if (s, k) in wins:
+                v = wins[(s, k)]
+                score_list.append(-v if invert else v)
+                mask_list.append(True)
+            else:
+                mask_list.append(False)
+        return (
+            torch.tensor(score_list, dtype=torch.float32),
+            torch.tensor(mask_list, dtype=torch.bool),
+        )
+
+    def _compute_metric_bundle(
+        scores_t: torch.Tensor, labels: torch.Tensor,
+    ) -> Optional[dict]:
+        """AUC + AP + Recall@K, or None if not evaluable."""
+        if scores_t.numel() == 0:
+            return None
+        n_pos = int(labels.sum().item())
+        n_neg = int((labels == 0).sum().item())
+        if n_pos == 0 or n_neg == 0:
+            return None
+        out = {
+            "auc": compute_auc(scores_t, labels),
+            "ap": compute_ap(scores_t, labels),
+        }
+        for rk in RECALL_KS:
+            out[f"recall_{rk}"] = compute_recall_at_k(scores_t, labels, rk)
+        return out
+
+    def _impute_full(
+        scored: torch.Tensor, mask: torch.Tensor, fill: float, n_total: int,
+    ) -> torch.Tensor:
+        """Embed `scored` into a length-n_total tensor, filling gaps with `fill`."""
+        full = torch.full((n_total,), fill, dtype=torch.float32)
+        full[mask] = scored
+        return full
 
     for entry in entries:
         pid = entry["protein_id"]
@@ -271,93 +326,137 @@ def main() -> int:
         positives = entry["positives"]
         L = len(seq)
 
-        # Canonical span enumeration (same order as training eval).
         spans = enumerate_candidate_windows(L, args.min_k, args.max_k)
         if spans.shape[0] == 0:
-            n_skipped += 1
+            n_skipped_no_windows += 1
             continue
 
         labels_full = build_window_labels(spans, positives)
+        n_total_win = int(spans.shape[0])
+        n_pos_total = int(labels_full.sum().item())
 
         head_wins = head_wins_by_pid.get(pid, {})
         nmp_wins = nmp_wins_by_pid.get(pid, {})
 
-        # Pull scores in canonical span order; mask out any window missing
-        # from either predictor.
-        head_scores: list[float] = []
-        nmp_scores: list[float] = []
-        valid_mask: list[bool] = []
-        for i in range(spans.shape[0]):
-            s = int(spans[i, 0].item())
-            e = int(spans[i, 1].item())
-            k = e - s
-            if (s, k) in head_wins and (s, k) in nmp_wins:
-                head_scores.append(head_wins[(s, k)])
-                # Invert NMP rank so higher = more immunogenic (consistent with head z).
-                nmp_scores.append(-nmp_wins[(s, k)])
-                valid_mask.append(True)
-            else:
-                valid_mask.append(False)
+        head_scored, head_mask = _extract_scored(head_wins, spans, invert=False)
+        nmp_scored, nmp_mask = _extract_scored(nmp_wins, spans, invert=True)
+        head_n_scored = int(head_mask.sum().item())
+        nmp_n_scored = int(nmp_mask.sum().item())
 
-        n_aligned = sum(valid_mask)
-        if n_aligned < 10:
-            n_skipped += 1
-            continue
+        # Head primary imputation: head is unbounded-logit; fill with
+        # min-observed - 1 so missing windows rank strictly below any real
+        # head prediction. Head should cover 100% in practice; this is
+        # defensive for bug-detection only.
+        if head_n_scored > 0:
+            head_fill = float(head_scored.min().item()) - 1.0
+        else:
+            head_fill = -1e9
 
-        mask_t = torch.tensor(valid_mask, dtype=torch.bool)
-        labels = labels_full[mask_t]
-        head_t = torch.tensor(head_scores, dtype=torch.float32)
-        nmp_t = torch.tensor(nmp_scores, dtype=torch.float32)
+        head_full = _impute_full(head_scored, head_mask, head_fill, n_total_win)
+        nmp_full = _impute_full(
+            nmp_scored, nmp_mask, NMP_FILL_SCORE, n_total_win,
+        )
 
-        n_pos = int(labels.sum().item())
-        n_neg = int((labels == 0).sum().item())
+        # Primary metrics (Q1): full window set, with imputation.
+        # Even 0-coverage predictors stay in the primary benchmark via their
+        # all-imputed score vector so complete failures are penalized.
+        head_primary = _compute_metric_bundle(head_full, labels_full)
+        nmp_primary = _compute_metric_bundle(nmp_full, labels_full)
 
-        result: dict = {
+        # Conditional metrics (Q2): scored subset only.
+        head_cond = None
+        if head_n_scored >= 10:
+            head_cond = _compute_metric_bundle(
+                head_scored, labels_full[head_mask],
+            )
+        nmp_cond = None
+        if nmp_n_scored >= 10:
+            nmp_cond = _compute_metric_bundle(
+                nmp_scored, labels_full[nmp_mask],
+            )
+
+        # Coverage status (Q3).
+        if nmp_n_scored == 0:
+            nmp_status = "missing"
+        elif nmp_n_scored == n_total_win:
+            nmp_status = "complete"
+        else:
+            nmp_status = "partial"
+        head_status = (
+            "complete" if head_n_scored == n_total_win
+            else ("missing" if head_n_scored == 0 else "partial")
+        )
+
+        per_protein.append({
             "protein_id": pid,
             "sequence_length": L,
             "n_positives_total": len(positives),
-            "n_windows_total": int(spans.shape[0]),
-            "n_aligned_windows": n_aligned,
-            "n_positives_in_aligned": n_pos,
-        }
-
-        if n_pos == 0 or n_neg == 0:
-            result["evaluable"] = False
-            for name in ("head", "nmp"):
-                result[f"{name}_auc"] = None
-                result[f"{name}_ap"] = None
-                for rk in args.recall_ks:
-                    result[f"{name}_recall_{rk}"] = None
-        else:
-            result["evaluable"] = True
-            for name, scores_t in (("head", head_t), ("nmp", nmp_t)):
-                result[f"{name}_auc"] = compute_auc(scores_t, labels)
-                result[f"{name}_ap"] = compute_ap(scores_t, labels)
-                for rk in args.recall_ks:
-                    result[f"{name}_recall_{rk}"] = compute_recall_at_k(
-                        scores_t, labels, rk,
-                    )
-
-        per_protein.append(result)
+            "n_windows_total": n_total_win,
+            "n_positives_in_windows": n_pos_total,
+            "head_n_scored": head_n_scored,
+            "nmp_n_scored": nmp_n_scored,
+            "head_coverage": head_n_scored / n_total_win,
+            "nmp_coverage": nmp_n_scored / n_total_win,
+            "head_status": head_status,
+            "nmp_status": nmp_status,
+            "metrics": {
+                "head_primary": head_primary,
+                "nmp_primary": nmp_primary,
+                "head_conditional": head_cond,
+                "nmp_conditional": nmp_cond,
+            },
+        })
 
     # ── Macro averages ─────────────────────────────────────────────────
-    evaluable = [r for r in per_protein if r.get("evaluable")]
+    # Each (predictor, mode) averaged over its own evaluable proteins.
 
-    def _macro(key: str) -> Optional[float]:
-        vals = [r[key] for r in evaluable if r.get(key) is not None]
+    def _macro_value(predictor: str, mode: str, metric_key: str) -> Optional[float]:
+        vals = []
+        for r in per_protein:
+            bundle = r["metrics"].get(f"{predictor}_{mode}")
+            if bundle is not None and bundle.get(metric_key) is not None:
+                vals.append(bundle[metric_key])
         return sum(vals) / len(vals) if vals else None
 
-    macro: dict = {
-        "n_evaluated": len(evaluable),
-        "n_skipped": n_skipped,
-        "n_total": len(entries),
-        "n_too_long_dropped": n_too_long,
+    def _count_evaluable(predictor: str, mode: str) -> int:
+        return sum(
+            1 for r in per_protein
+            if r["metrics"].get(f"{predictor}_{mode}") is not None
+        )
+
+    def _build_mode_macro(mode: str) -> dict:
+        block: dict = {
+            "n_head_evaluable": _count_evaluable("head", mode),
+            "n_nmp_evaluable": _count_evaluable("nmp", mode),
+        }
+        for name in ("head", "nmp"):
+            keys = ["auc", "ap"] + [f"recall_{rk}" for rk in RECALL_KS]
+            block[name] = {
+                f"pp_{k}": _macro_value(name, mode, k) for k in keys
+            }
+        return block
+
+    n_pp = max(len(per_protein), 1)
+    head_cov_vals = [r["head_coverage"] for r in per_protein]
+    nmp_cov_vals = [r["nmp_coverage"] for r in per_protein]
+    coverage_block = {
+        "head_mean_coverage": sum(head_cov_vals) / n_pp if head_cov_vals else None,
+        "nmp_mean_coverage": sum(nmp_cov_vals) / n_pp if nmp_cov_vals else None,
+        "n_head_complete": sum(1 for r in per_protein if r["head_status"] == "complete"),
+        "n_head_partial": sum(1 for r in per_protein if r["head_status"] == "partial"),
+        "n_head_missing": sum(1 for r in per_protein if r["head_status"] == "missing"),
+        "n_nmp_complete": sum(1 for r in per_protein if r["nmp_status"] == "complete"),
+        "n_nmp_partial": sum(1 for r in per_protein if r["nmp_status"] == "partial"),
+        "n_nmp_missing": sum(1 for r in per_protein if r["nmp_status"] == "missing"),
     }
-    for name in ("head", "nmp"):
-        macro[f"pp_{name}_auc"] = _macro(f"{name}_auc")
-        macro[f"pp_{name}_ap"] = _macro(f"{name}_ap")
-        for rk in args.recall_ks:
-            macro[f"pp_{name}_recall_{rk}"] = _macro(f"{name}_recall_{rk}")
+
+    macro: dict = {
+        "n_total": len(entries),
+        "n_skipped_no_windows": n_skipped_no_windows,
+        "primary": _build_mode_macro("primary"),
+        "conditional": _build_mode_macro("conditional"),
+        "coverage": coverage_block,
+    }
 
     total_elapsed = time.time() - t0
 
@@ -372,7 +471,6 @@ def main() -> int:
             "min_k": args.min_k,
             "max_k": args.max_k,
             "recall_ks": args.recall_ks,
-            "context_len": args.context_len,
             "nmp_batch_size": batch_size,
             "nmp_max_lengths_per_call": max_lengths_per_call,
             "nmp_workers": n_workers,
@@ -395,23 +493,44 @@ def main() -> int:
 
     # ── Summary ─────────────────────────────────────────────────────────
     _log(f"\n{'=' * 60}")
-    _log("Results (macro-averaged, per-protein):")
-    for name in ("head", "nmp"):
-        _log(f"  [{name.upper()}]")
-        for key, label in [(f"pp_{name}_auc", "pp_auc"),
-                           (f"pp_{name}_ap", "pp_ap")]:
-            v = macro.get(key)
-            if v is not None:
-                _log(f"    {label:<10} = {v:.4f}")
-            else:
-                _log(f"    {label:<10} = N/A")
-        for rk in args.recall_ks:
-            v = macro.get(f"pp_{name}_recall_{rk}")
-            if v is not None:
-                _log(f"    recall_{rk:<4} = {v:.4f}")
-            else:
-                _log(f"    recall_{rk:<4} = N/A")
-    _log(f"  n_evaluated     = {macro['n_evaluated']}/{macro['n_total']}")
+    _log("Results (macro-averaged per protein):")
+    _log(f"  n_total                  = {macro['n_total']}")
+    _log(f"  n_skipped_no_windows     = {macro['n_skipped_no_windows']}")
+
+    _log("\n  [Coverage — Q3: who is more stable/complete?]")
+    cov = macro["coverage"]
+    if cov["head_mean_coverage"] is not None:
+        _log(f"    head mean coverage    = {cov['head_mean_coverage']:.4f}")
+    if cov["nmp_mean_coverage"] is not None:
+        _log(f"    nmp  mean coverage    = {cov['nmp_mean_coverage']:.4f}")
+    _log(f"    head complete/partial/missing = "
+         f"{cov['n_head_complete']}/{cov['n_head_partial']}/{cov['n_head_missing']}")
+    _log(f"    nmp  complete/partial/missing = "
+         f"{cov['n_nmp_complete']}/{cov['n_nmp_partial']}/{cov['n_nmp_missing']}")
+
+    for mode, heading in (
+        ("primary",
+         "[Primary — Q1: who wins on the same real test set? "
+         "NMP missing=worst]"),
+        ("conditional",
+         "[Conditional — Q2: who wins when they successfully score?]"),
+    ):
+        _log(f"\n  {heading}")
+        block = macro[mode]
+        for name in ("head", "nmp"):
+            n_eval = block[f"n_{name}_evaluable"]
+            _log(f"    [{name.upper()}] evaluable = {n_eval}/{macro['n_total']}")
+            metric_keys = ["pp_auc", "pp_ap"] + [
+                f"pp_recall_{rk}" for rk in args.recall_ks
+            ]
+            for key in metric_keys:
+                v = block[name].get(key)
+                if v is not None:
+                    _log(f"      {key:<14} = {v:.4f}")
+                else:
+                    _log(f"      {key:<14} = N/A")
+
+    _log("")
     _log(f"  Head wall time  = {t_head_elapsed:.1f}s")
     _log(f"  NMP  wall time  = {t_nmp_elapsed:.1f}s "
          f"({t_nmp_elapsed / 60:.1f}min, "

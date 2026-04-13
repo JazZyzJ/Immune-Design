@@ -198,6 +198,7 @@
 | EL Ability | F2 | NetMHCIIpan benchmark | partial | pp_ap=0.3027, comparisons pending |
 | Synthetic point mutation | F2 | — | partial | hard negative code committed |
 | Multi-allele analysis | F2 | multi-allele eval | partial | DRB0401 + DRB1501 trained, metrics TBD |
+| Structural metrics on epitope | F2 | Tier 1 PDBs + h_i maps | no | 4 analyses: RSA vs h_i, SS distribution, B-factor, contact number |
 | IF Benchmark | F3 | L (test set) | partial | DPLM baseline validated on CATH (scTM=0.87 median) |
 | Structure Self-Consistency | F3 | L (ESMFold wrapper) | no | |
 | Pareto Frontier | F3 | Phase C | no | reference flow vs post-hoc: scTM vs Δrisk |
