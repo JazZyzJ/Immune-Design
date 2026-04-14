@@ -77,6 +77,13 @@ def parse_args() -> argparse.Namespace:
                    help="Maximum peptide length (default: 25).")
     p.add_argument("--recall-ks", type=int, nargs="+", default=[50, 100],
                    help="Recall@K values (default: 50 100).")
+    p.add_argument("--precision-ks", type=int, nargs="+",
+                   default=[10, 25, 50, 100, 200],
+                   help="Precision@K values (default: 10 25 50 100 200).")
+    p.add_argument("--precision-recall-targets", type=float, nargs="+",
+                   default=[0.3, 0.5, 0.7],
+                   help="Target recall values for precision-at-recall "
+                        "(default: 0.3 0.5 0.7).")
     # Accelerated-mode overrides (ignored in original mode)
     p.add_argument("--nmp-batch-size", type=int, default=8)
     p.add_argument("--nmp-max-lengths-per-call", type=int, default=4)
@@ -86,6 +93,44 @@ def parse_args() -> argparse.Namespace:
 
 def _log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def _recall_target_key(target: float) -> str:
+    """Stable key suffix for recall targets like 0.3 -> '30'."""
+    return str(int(round(target * 100)))
+
+
+def _compute_precision_at_k(
+    scores: torch.Tensor, labels: torch.Tensor, k: int,
+) -> float | None:
+    """Precision@K on descending-ranked windows."""
+    if scores.numel() == 0:
+        return None
+    sorted_indices = torch.argsort(scores, descending=True)
+    top_k = min(k, len(sorted_indices))
+    if top_k == 0:
+        return None
+    top_k_labels = labels[sorted_indices[:top_k]]
+    return float(top_k_labels.sum().item() / top_k)
+
+
+def _compute_precision_at_target_recall(
+    scores: torch.Tensor, labels: torch.Tensor, target_recall: float,
+) -> float | None:
+    """Precision at the shortest prefix achieving recall >= target_recall."""
+    n_pos = int(labels.sum().item())
+    if n_pos == 0:
+        return None
+    sorted_indices = torch.argsort(scores, descending=True)
+    sorted_labels = labels[sorted_indices].float()
+    tp_cumsum = torch.cumsum(sorted_labels, dim=0)
+    recalls = tp_cumsum / n_pos
+    hits = torch.nonzero(recalls >= target_recall, as_tuple=False)
+    if hits.numel() == 0:
+        return None
+    idx = int(hits[0].item())
+    tp = float(tp_cumsum[idx].item())
+    return tp / float(idx + 1)
 
 
 def _load_test_entries(
@@ -138,6 +183,8 @@ def main() -> int:
     _log(f"  Variant ID         : {args.variant_id}")
     _log(f"  k range            : [{args.min_k}, {args.max_k}]")
     _log(f"  Recall@K           : {args.recall_ks}")
+    _log(f"  Precision@K        : {args.precision_ks}")
+    _log(f"  Precision@Recall   : {args.precision_recall_targets}")
     if args.nmp_mode == "accelerated":
         _log(f"  NMP batch size     : {args.nmp_batch_size}")
         _log(f"  NMP lengths/call   : {args.nmp_max_lengths_per_call}")
@@ -271,6 +318,8 @@ def main() -> int:
     # match our higher-is-more-immunogenic convention.
     NMP_FILL_SCORE = -1.0
     RECALL_KS = tuple(args.recall_ks)
+    PRECISION_KS = tuple(args.precision_ks)
+    PRECISION_RECALL_TARGETS = tuple(args.precision_recall_targets)
 
     def _extract_scored(
         wins: dict[tuple[int, int], float],
@@ -297,7 +346,7 @@ def main() -> int:
     def _compute_metric_bundle(
         scores_t: torch.Tensor, labels: torch.Tensor,
     ) -> Optional[dict]:
-        """AUC + AP + Recall@K, or None if not evaluable."""
+        """AUC + AP + Recall@K + Precision views, or None if not evaluable."""
         if scores_t.numel() == 0:
             return None
         n_pos = int(labels.sum().item())
@@ -310,6 +359,13 @@ def main() -> int:
         }
         for rk in RECALL_KS:
             out[f"recall_{rk}"] = compute_recall_at_k(scores_t, labels, rk)
+        for pk in PRECISION_KS:
+            out[f"precision_{pk}"] = _compute_precision_at_k(scores_t, labels, pk)
+        for target in PRECISION_RECALL_TARGETS:
+            target_key = _recall_target_key(target)
+            out[f"precision_at_recall_{target_key}"] = (
+                _compute_precision_at_target_recall(scores_t, labels, target)
+            )
         return out
 
     def _impute_full(
@@ -319,6 +375,19 @@ def main() -> int:
         full = torch.full((n_total,), fill, dtype=torch.float32)
         full[mask] = scored
         return full
+
+    def _serialize_score_distribution(
+        scores_t: torch.Tensor, labels: torch.Tensor,
+    ) -> dict:
+        """Store per-label score samples for downstream histogram plotting."""
+        pos_scores = scores_t[labels == 1].tolist()
+        neg_scores = scores_t[labels == 0].tolist()
+        return {
+            "n_pos": len(pos_scores),
+            "n_neg": len(neg_scores),
+            "pos_scores": [float(x) for x in pos_scores],
+            "neg_scores": [float(x) for x in neg_scores],
+        }
 
     for entry in entries:
         pid = entry["protein_id"]
@@ -405,6 +474,20 @@ def main() -> int:
                 "head_conditional": head_cond,
                 "nmp_conditional": nmp_cond,
             },
+            "score_distributions": {
+                "head_primary": _serialize_score_distribution(
+                    head_full, labels_full,
+                ),
+                "nmp_primary": _serialize_score_distribution(
+                    nmp_full, labels_full,
+                ),
+                "head_conditional": _serialize_score_distribution(
+                    head_scored, labels_full[head_mask],
+                ),
+                "nmp_conditional": _serialize_score_distribution(
+                    nmp_scored, labels_full[nmp_mask],
+                ),
+            },
         })
 
     # ── Macro averages ─────────────────────────────────────────────────
@@ -430,7 +513,15 @@ def main() -> int:
             "n_nmp_evaluable": _count_evaluable("nmp", mode),
         }
         for name in ("head", "nmp"):
-            keys = ["auc", "ap"] + [f"recall_{rk}" for rk in RECALL_KS]
+            keys = (
+                ["auc", "ap"]
+                + [f"recall_{rk}" for rk in RECALL_KS]
+                + [f"precision_{pk}" for pk in PRECISION_KS]
+                + [
+                    f"precision_at_recall_{_recall_target_key(target)}"
+                    for target in PRECISION_RECALL_TARGETS
+                ]
+            )
             block[name] = {
                 f"pp_{k}": _macro_value(name, mode, k) for k in keys
             }
@@ -471,6 +562,8 @@ def main() -> int:
             "min_k": args.min_k,
             "max_k": args.max_k,
             "recall_ks": args.recall_ks,
+            "precision_ks": args.precision_ks,
+            "precision_recall_targets": args.precision_recall_targets,
             "nmp_batch_size": batch_size,
             "nmp_max_lengths_per_call": max_lengths_per_call,
             "nmp_workers": n_workers,
@@ -520,9 +613,15 @@ def main() -> int:
         for name in ("head", "nmp"):
             n_eval = block[f"n_{name}_evaluable"]
             _log(f"    [{name.upper()}] evaluable = {n_eval}/{macro['n_total']}")
-            metric_keys = ["pp_auc", "pp_ap"] + [
-                f"pp_recall_{rk}" for rk in args.recall_ks
-            ]
+            metric_keys = (
+                ["pp_auc", "pp_ap"]
+                + [f"pp_recall_{rk}" for rk in args.recall_ks]
+                + [f"pp_precision_{pk}" for pk in args.precision_ks]
+                + [
+                    f"pp_precision_at_recall_{_recall_target_key(target)}"
+                    for target in args.precision_recall_targets
+                ]
+            )
             for key in metric_keys:
                 v = block[name].get(key)
                 if v is not None:

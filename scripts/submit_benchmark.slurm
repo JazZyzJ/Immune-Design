@@ -122,13 +122,15 @@ elif [ "${MODE}" = "iedb" ]; then
     fi
     echo "  NMP timeout        : ${NMP_TIMEOUT}s"
 
+    RESULT_JSON="${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}.json"
+
     python -u "${PROJECT_ROOT}/scripts/benchmark_iedb_test.py" \
         --protein-samples-parquet "${PROTEIN_SAMPLES_PARQUET}" \
         --test-ids "${TEST_IDS}" \
         --epitope-ckpt "${EPITOPE_CKPT}" \
         --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
         --allele "${ALLELE}" \
-        --output-json "${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}.json" \
+        --output-json "${RESULT_JSON}" \
         --nmp-mode "${NMP_MODE_ARG}" \
         --device "${DEVICE}" \
         --variant-id "${VARIANT_ID}" \
@@ -136,6 +138,9 @@ elif [ "${MODE}" = "iedb" ]; then
         --nmp-max-lengths-per-call "${NMP_MAX_LENGTHS_PER_CALL}" \
         --nmp-workers "${NMP_WORKERS}" \
         --nmp-timeout "${NMP_TIMEOUT}"
+
+    python -u "${PROJECT_ROOT}/scripts/plot_benchmark_score_histograms.py" \
+        --input-json "${RESULT_JSON}"
 
 else
     echo "ERROR: unknown MODE='${MODE}' (expected: fasta | iedb)"
