@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-04-07T22:00:00-04:00
+> **Last synced**: 2026-04-16T19:00:00+08:00
 > **Branch**: dev_head
 
 ---
@@ -95,11 +95,12 @@
   - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` — 3,140 rows, 17 columns
   - `work/immune-design/if_test_set/test_proteins_summary_HLA-DRB1_04_01.json`
   - `work/immune-design/if_test_set/fastas/` — 6,166 FASTA files
-  - `work/immune-design/if_test_set/pdbs/` — **empty** (PDB structures not downloaded yet)
+  - `work/immune-design/if_test_set/pdbs/0401/` — **2,920 PDB files** (97.0% of T1+T2 = 3,013; 53 PDB IDs 404'd in `download_failures.txt`; 127 Tier 3 uricases listed in `non_pdb_proteins.txt`, no PDB expected)
+  - `work/immune-design/if_test_set/pdbs/0701/` — **2,874 PDB files** (95.3% of T1+T2 = 3,015; 104 PDB IDs 404'd in `download_failures.txt`; 126 Tier 3 uricases listed in `non_pdb_proteins.txt`, no PDB expected)
   - intermediate: `_prescreen_{head,nmp}_results*.parquet`, `tier2_prescreened*.parquet`
 - **Feeds**: all downstream evaluation (M, N, and all F3/F4 subfigures)
 - **Open**:
-  - PDB structure files not yet downloaded (`pdbs/` empty) — needed for inverse folding input
+  - PDB download partial — 53 (0401) / 104 (0701) PDB IDs failed from RCSB (all 404 Not Found); decide whether to retry with alternate source (AlphaFold DB) or drop the affected chains
   - L6 E2E verification + L7 release gates not yet run
 
 ---
@@ -131,7 +132,7 @@
 
 ## Phase B: Experiment Preparation (NEW, 2026-04-07)
 
-- **B1 (PDB download)**: not started — `work/immune-design/if_test_set/pdbs/` is empty
+- **B1 (PDB download)**: **partial** — `pdbs/0401/` 2,920 files, `pdbs/0701/` 2,874 files; 53 (0401) / 104 (0701) PDB IDs returned 404 on RCSB, logged in `download_failures.txt`; Tier 3 uricases (127 / 126) expected-missing, logged in `non_pdb_proteins.txt`
 - **B2 (h_i maps for test set)**: not started
 - **B3 (h_i maps for CATH training set)**: not started — needed for Phase C Tier 1
 - **B4 (eval pipeline integration)**: not started — need end-to-end: generate → ESMFold → TM-align → head → NMP
@@ -183,7 +184,7 @@
 | IF test set (0701) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` | 3,141 proteins (T1:15 T2:3000 T3:126) |
 | IF test set (0401) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` | 3,140 proteins (T1:15 T2:2998 T3:127) |
 | IF test set FASTAs | `work/immune-design/if_test_set/fastas/` | 6,166 files |
-| IF test set PDBs | `work/immune-design/if_test_set/pdbs/` |  |
+| IF test set PDBs | `work/immune-design/if_test_set/pdbs/{0401,0701}/` | partial — 2,920 / 2,874 PDB files; 53 / 104 RCSB 404s; 127 / 126 Tier 3 uricases expected-missing |
 | Guidance sweep results | N/A | not run yet |
 
 ---

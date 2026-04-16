@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from inverse_folding.analysis.structural_features import (  # noqa: E402
     AlignmentError,
+    DSSPError,
     SpanSanityError,
     build_residue_table,
     cliffs_delta,
@@ -98,7 +99,7 @@ def compute_per_protein_stats(df: pd.DataFrame) -> Dict[str, object]:
     """Per-protein effect sizes, given a single-protein per-residue frame."""
     out: Dict[str, object] = {}
     for metric in CONTINUOUS_METRICS:
-        vals = df[metric].astype(float).to_numpy()
+        vals = pd.to_numeric(df[metric], errors="coerce").to_numpy(dtype=float)
         pos = vals[(df["is_epitope"] == 1).to_numpy()]
         neg = vals[(df["is_epitope"] == 0).to_numpy()]
         delta = cliffs_delta(pos, neg)
@@ -284,8 +285,14 @@ def main() -> int:
                 contact_cutoff_ang=args.contact_cutoff,
                 contact_seq_excl=args.contact_seq_excl,
             )
-        except (AlignmentError, SpanSanityError) as e:
+        except (AlignmentError, SpanSanityError, DSSPError) as e:
             logger.error("[%s] strict check failed: %s", pid, e)
+            if args.strict_abort:
+                raise
+            skipped.append({"protein_id": pid, "reason": f"{type(e).__name__}: {e}"})
+            continue
+        except Exception as e:
+            logger.exception("[%s] unexpected per-protein failure: %s", pid, e)
             if args.strict_abort:
                 raise
             skipped.append({"protein_id": pid, "reason": f"{type(e).__name__}: {e}"})

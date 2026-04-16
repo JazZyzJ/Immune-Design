@@ -22,7 +22,10 @@ import numpy as np
 import pytest
 
 from inverse_folding.analysis.structural_features import (
+    AlignmentError,
+    AtomResidue,
     SpanSanityError,
+    align_atom_to_fasta,
     build_is_epitope,
 )
 
@@ -150,3 +153,69 @@ def test_build_is_epitope_tier1_half_open_invariant(_tier1_entries):
     assert not bad, (
         f"{len(bad)} spans break the half-open invariant; first few: {bad[:3]}"
     )
+
+
+def _make_atom_residues(seq: str, start_resnum: int = 1):
+    residues = []
+    for i, aa in enumerate(seq):
+        residues.append(
+            AtomResidue(
+                author_resnum=start_resnum + i,
+                ins_code=" ",
+                aa1=aa,
+                ca_coord=np.array([float(i), 0.0, 0.0], dtype=np.float64),
+                ca_bfactor=10.0 + i,
+            )
+        )
+    return residues
+
+
+def test_align_atom_to_fasta_accepts_contiguous_offset_fallback():
+    fasta = "SVSIGYLLVKHSQ"
+    atom_residues = _make_atom_residues("GYLLVKHSQ", start_resnum=5)
+
+    seq_to_author, seq_to_atom = align_atom_to_fasta(
+        atom_residues, fasta_seq=fasta, chain_range_start=1485
+    )
+
+    assert seq_to_author[:4] == [None, None, None, None]
+    assert seq_to_author[4:] == list(range(5, 14))
+    assert [r.aa1 if r is not None else None for r in seq_to_atom] == [
+        None, None, None, None, "G", "Y", "L", "L", "V", "K", "H", "S", "Q"
+    ]
+
+
+def test_align_atom_to_fasta_accepts_high_identity_alignment_fallback():
+    fasta = "RPPLPNQQFGVSLQHLQEKN"
+    atom_residues = _make_atom_residues("PLPNQQFGVSLQHLQEKN", start_resnum=39)
+
+    seq_to_author, seq_to_atom = align_atom_to_fasta(
+        atom_residues, fasta_seq=fasta, chain_range_start=234
+    )
+
+    assert seq_to_author[0] is None
+    assert seq_to_author[1] is None
+    assert seq_to_author[2:] == list(range(39, 57))
+    assert [r.aa1 if r is not None else None for r in seq_to_atom[:4]] == [
+        None, None, "P", "L"
+    ]
+
+
+def test_align_atom_to_fasta_rejects_ambiguous_fallback_alignment():
+    fasta = "ACDEFGACDEFG"
+    atom_residues = _make_atom_residues("ACDEFG", start_resnum=10)
+
+    with pytest.raises(AlignmentError, match="ambiguous"):
+        align_atom_to_fasta(atom_residues, fasta_seq=fasta, chain_range_start=100)
+
+
+def test_align_atom_to_fasta_accepts_fasta_as_unique_substring_of_atom_sequence():
+    fasta = "VIRVYIASSSGSTAIKKKQ"
+    atom_residues = _make_atom_residues("VIRVYIASSSGSTAIKKKQHHHHHH", start_resnum=1)
+
+    seq_to_author, seq_to_atom = align_atom_to_fasta(
+        atom_residues, fasta_seq=fasta, chain_range_start=500
+    )
+
+    assert seq_to_author == list(range(1, 20))
+    assert "".join(r.aa1 for r in seq_to_atom if r is not None) == fasta

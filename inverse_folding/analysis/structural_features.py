@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -76,6 +77,10 @@ class AlignmentError(ValueError):
 
 class SpanSanityError(ValueError):
     """Raised when an IEDB span's peptide string does not match the sequence slice."""
+
+
+class DSSPError(RuntimeError):
+    """Raised when DSSP execution/parsing fails for a structure file."""
 
 
 @dataclass(frozen=True)
@@ -147,18 +152,11 @@ def parse_pdb_chain(
 # Strict alignment
 # ─────────────────────────────────────────────────────────────────────────
 
-def align_atom_to_fasta(
+def _strict_align_atom_to_fasta(
     atom_residues: Sequence[AtomResidue],
     fasta_seq: str,
     chain_range_start: int,
 ) -> Tuple[List[Optional[int]], List[Optional[AtomResidue]]]:
-    """Map each FASTA seq_idx → (author_resnum, AtomResidue) or None.
-
-    Policy: author_resnum = chain_range_start + seq_idx. Any residue whose
-    aa1 disagrees with fasta_seq[seq_idx], falls outside the chain range,
-    or collides with an already-mapped position, is collected into an error
-    report and raised as `AlignmentError`. No silent recovery.
-    """
     seq_len = len(fasta_seq)
     seq_to_atom: List[Optional[AtomResidue]] = [None] * seq_len
     seq_to_author: List[Optional[int]] = [None] * seq_len
@@ -218,6 +216,186 @@ def align_atom_to_fasta(
         )
 
     return seq_to_author, seq_to_atom
+
+
+def _map_contiguous_match(
+    atom_residues: Sequence[AtomResidue],
+    fasta_seq: str,
+) -> Optional[Tuple[List[Optional[int]], List[Optional[AtomResidue]], dict]]:
+    atom_seq = "".join(r.aa1 for r in atom_residues)
+    if not atom_seq:
+        return None
+
+    seq_to_atom: List[Optional[AtomResidue]] = [None] * len(fasta_seq)
+    seq_to_author: List[Optional[int]] = [None] * len(fasta_seq)
+
+    atom_in_fasta: List[int] = []
+    start = fasta_seq.find(atom_seq)
+    while start != -1:
+        atom_in_fasta.append(start)
+        start = fasta_seq.find(atom_seq, start + 1)
+
+    if atom_in_fasta:
+        if len(atom_in_fasta) > 1:
+            raise AlignmentError(
+                "Fallback ATOM→FASTA alignment is ambiguous: atom-derived sequence "
+                f"matches FASTA at multiple offsets {atom_in_fasta[:5]}"
+            )
+        start_idx = atom_in_fasta[0]
+        for i, r in enumerate(atom_residues):
+            seq_idx = start_idx + i
+            seq_to_atom[seq_idx] = r
+            seq_to_author[seq_idx] = r.author_resnum
+        return seq_to_author, seq_to_atom, {
+            "mode": "atom_in_fasta",
+            "start_idx": start_idx,
+            "aligned_len": len(atom_residues),
+        }
+
+    fasta_in_atom: List[int] = []
+    start = atom_seq.find(fasta_seq)
+    while start != -1:
+        fasta_in_atom.append(start)
+        start = atom_seq.find(fasta_seq, start + 1)
+
+    if not fasta_in_atom:
+        return None
+    if len(fasta_in_atom) > 1:
+        raise AlignmentError(
+            "Fallback ATOM→FASTA alignment is ambiguous: FASTA matches atom-derived "
+            f"sequence at multiple offsets {fasta_in_atom[:5]}"
+        )
+    start_idx = fasta_in_atom[0]
+    for seq_idx, r in enumerate(atom_residues[start_idx:start_idx + len(fasta_seq)]):
+        seq_to_atom[seq_idx] = r
+        seq_to_author[seq_idx] = r.author_resnum
+    return seq_to_author, seq_to_atom, {
+        "mode": "fasta_in_atom",
+        "start_idx": start_idx,
+        "aligned_len": len(fasta_seq),
+    }
+
+
+def _map_via_pairwise_alignment(
+    atom_residues: Sequence[AtomResidue],
+    fasta_seq: str,
+) -> Tuple[List[Optional[int]], List[Optional[AtomResidue]], dict]:
+    from Bio import Align
+
+    atom_seq = "".join(r.aa1 for r in atom_residues)
+    if not atom_seq:
+        raise AlignmentError("Cannot run fallback alignment on an empty ATOM sequence")
+
+    aligner = Align.PairwiseAligner(mode="global")
+    aligner.match_score = 2.0
+    aligner.mismatch_score = -1.0
+    aligner.open_gap_score = -2.0
+    aligner.extend_gap_score = -0.5
+
+    alignments = aligner.align(fasta_seq, atom_seq)
+    if len(alignments) == 0:
+        raise AlignmentError("Fallback pairwise alignment found no candidate mapping")
+
+    top = alignments[0]
+    top_blocks = [(tuple(t), tuple(q)) for t, q in zip(top.aligned[0], top.aligned[1])]
+    if len(alignments) > 1:
+        second = alignments[1]
+        second_blocks = [(tuple(t), tuple(q)) for t, q in zip(second.aligned[0], second.aligned[1])]
+        if second.score == top.score and second_blocks != top_blocks:
+            raise AlignmentError(
+                "Fallback ATOM→FASTA alignment is ambiguous: multiple highest-scoring "
+                "sequence alignments exist"
+            )
+
+    seq_to_atom: List[Optional[AtomResidue]] = [None] * len(fasta_seq)
+    seq_to_author: List[Optional[int]] = [None] * len(fasta_seq)
+    aligned_pairs = 0
+    matches = 0
+    mismatches = 0
+    for (target_start, target_end), (query_start, query_end) in top_blocks:
+        span = target_end - target_start
+        if span != (query_end - query_start):
+            raise AlignmentError("Fallback alignment produced unequal block lengths")
+        for delta in range(span):
+            seq_idx = target_start + delta
+            atom_idx = query_start + delta
+            r = atom_residues[atom_idx]
+            seq_to_atom[seq_idx] = r
+            seq_to_author[seq_idx] = r.author_resnum
+            aligned_pairs += 1
+            if fasta_seq[seq_idx] == r.aa1:
+                matches += 1
+            else:
+                mismatches += 1
+
+    atom_coverage = aligned_pairs / len(atom_seq)
+    fasta_coverage = aligned_pairs / len(fasta_seq) if fasta_seq else 0.0
+    identity = matches / aligned_pairs if aligned_pairs else 0.0
+    stats = {
+        "aligned_pairs": aligned_pairs,
+        "matches": matches,
+        "mismatches": mismatches,
+        "identity": identity,
+        "atom_coverage": atom_coverage,
+        "fasta_coverage": fasta_coverage,
+        "score": float(top.score),
+    }
+    if atom_coverage < 0.95 or identity < 0.97 or fasta_coverage < 0.85:
+        raise AlignmentError(
+            "Fallback ATOM→FASTA alignment quality too low: "
+            f"identity={identity:.3f}, atom_coverage={atom_coverage:.3f}, "
+            f"fasta_coverage={fasta_coverage:.3f}, mismatches={mismatches}"
+        )
+    return seq_to_author, seq_to_atom, stats
+
+
+def align_atom_to_fasta(
+    atom_residues: Sequence[AtomResidue],
+    fasta_seq: str,
+    chain_range_start: int,
+) -> Tuple[List[Optional[int]], List[Optional[AtomResidue]]]:
+    """Map each FASTA seq_idx → (author_resnum, AtomResidue) or None.
+
+    Preferred policy is the original strict contract:
+    `author_resnum = chain_range_start + seq_idx`.
+
+    Fallback policy (used only if strict mapping fails) is deliberately narrow:
+    1. unique exact contiguous ATOM-sequence match within FASTA
+    2. otherwise, a unique high-identity global sequence alignment
+
+    The fallback is intended for structures whose residue numbering and/or
+    termini differ from the candidate FASTA while preserving a reliable residue
+    correspondence. Low-quality or ambiguous alignments still fail loudly.
+    """
+    try:
+        return _strict_align_atom_to_fasta(atom_residues, fasta_seq, chain_range_start)
+    except AlignmentError as strict_err:
+        contiguous = _map_contiguous_match(atom_residues, fasta_seq)
+        if contiguous is not None:
+            seq_to_author, seq_to_atom, info = contiguous
+            logger.warning(
+                "Strict ATOM→FASTA mapping failed; accepted contiguous-sequence fallback "
+                "(mode=%s, start=%d, aligned_len=%d, atom_len=%d, chain_range_start=%d): %s",
+                info["mode"],
+                info["start_idx"],
+                info["aligned_len"],
+                len(atom_residues),
+                chain_range_start,
+                strict_err,
+            )
+            return seq_to_author, seq_to_atom
+
+        seq_to_author, seq_to_atom, stats = _map_via_pairwise_alignment(atom_residues, fasta_seq)
+        logger.warning(
+            "Strict ATOM→FASTA mapping failed; accepted pairwise-sequence fallback "
+            "(identity=%.3f, atom_coverage=%.3f, fasta_coverage=%.3f, mismatches=%d): %s",
+            stats["identity"],
+            stats["atom_coverage"],
+            stats["fasta_coverage"],
+            stats["mismatches"],
+            strict_err,
+        )
+        return seq_to_author, seq_to_atom
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -312,7 +490,7 @@ def compute_rsa_ss_via_dssp(
     wrapper (already normalized to [0, ~1]). Missing values come back as NaN.
     `ss8` uses raw DSSP codes; ' '/'-' are preserved for SS8_TO_SS3 to collapse.
     """
-    from Bio.PDB import PDBParser
+    from Bio.PDB import PDBIO, PDBParser
     from Bio.PDB.DSSP import DSSP
 
     parser = PDBParser(QUIET=True)
@@ -325,7 +503,18 @@ def compute_rsa_ss_via_dssp(
     model = models[model_idx]
 
     dssp_bin = dssp_bin or _find_dssp_binary()
-    dssp = DSSP(model, str(pdb_path), dssp=dssp_bin)
+    try:
+        # Re-serialize to a minimal temporary PDB before invoking DSSP. Some RCSB
+        # downloads contain header records that mkdssp rejects even though the
+        # coordinate section itself parses fine.
+        with tempfile.TemporaryDirectory(prefix="dssp_") as tmpdir:
+            tmp_pdb = Path(tmpdir) / f"{pdb_path.stem}.pdb"
+            io = PDBIO()
+            io.set_structure(structure)
+            io.save(str(tmp_pdb))
+            dssp = DSSP(model, str(tmp_pdb), dssp=dssp_bin)
+    except Exception as e:
+        raise DSSPError(f"{pdb_path}: DSSP failed via '{dssp_bin}': {e}") from e
 
     out: Dict[Tuple[int, str], Tuple[float, str]] = {}
     for key in dssp.keys():
