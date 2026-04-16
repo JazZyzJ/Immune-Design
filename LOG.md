@@ -1610,3 +1610,72 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - QOS available: `gpu-short` (1d), `gpu-medium` (3d), `gpu-long` (6d), `gpu-test`, `short`, `medium`, `vlong`, `test`
   - Della scratch base: `/scratch/gpfs/KAIYIJIANG/zijie/`
+
+### L0055
+- timestamp: 2026-04-16T10:30:00+08:00
+- type: PLAN_UPDATE
+- module: GLOBAL
+- trigger: User (Thinker+Organizer) requested a dedicated document listing structural metrics for analyzing MHC-II epitope distribution on 3D structure, named "uricase analysis", to support the "Present structural metrics on epitope" SubFigure (F2). User further corrected the initial draft: analysis must be anchored on **IEDB ground-truth spans**, not on epitope-head predicted $h_i$ — using a model's own output as the reference is circular and measures model-internal bias rather than biology.
+- change_summary: Created `doc/uricase_analysis.md` documenting 4 structural metrics (RSA, secondary-structure distribution, B-factor, contact number). The doc uses **IEDB experimental epitope spans** (from `tier1_candidates.json:experimental_epitopes`) as the primary reference, with per-residue `is_epitope` labels from the union of spans. Epitope head $h_i$ is a **secondary** model-validation analysis asking whether $h_i$ recovers the same structural signature that IEDB epitopes show. Also added matching row to PROGRESS.md Paper Readiness table.
+- rationale: IEDB spans are the authoritative biological ground truth for Tier 1 (15 proteins, 261 spans, 11–45% coverage). Using $h_i$ as the reference would conflate "biology" with "what the model learned". Anchoring on IEDB cleanly separates two questions: (1) what is the structural signature of MHC-II epitopes? (biology, answered with IEDB), (2) does the epitope head recover this signature? (model validation). The uricase extension accepts a different regime — no per-residue IEDB labels, so $h_i$ + literature + structure drive de-immunization candidate selection.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/doc/uricase_analysis.md`
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md` (Paper Readiness: added "Structural metrics on epitope" row under F2)
+  - Notion SubFigure page `3308d0d0b9368056aeddcc9ee1a86350` ("Present structural metrics on epitope")
+- evidence: Confirmed IEDB labels exist via inspection of `outputs/if/test_set/tier1_candidates.json` — each of 15 proteins has `experimental_epitopes: list[{start_0b, end_0b, peptide, assay_type, iedb_ref}]`.
+- impact:
+  - scope: F2 analysis methodology; Phase C reference-flow motivation; epitope-head validation narrative.
+  - risk: low
+  - confidence: 0.97
+- status: done
+- next_action: When ready, implement per-residue IEDB label extraction + 4-metric computation on Tier 1 proteins; produce primary (IEDB) analysis first, secondary ($h_i$ agreement) after.
+- refs:
+  - `doc/uricase_analysis.md`
+  - `outputs/if/test_set/tier1_candidates.json`
+  - Notion: `https://www.notion.so/Present-structural-metrics-on-epitope-3308d0d0b9368056aeddcc9ee1a86350`
+
+### L0056
+- timestamp: 2026-04-16T18:13:40+08:00
+- type: CODEMAP_DIFF
+- module: L
+- trigger: User (Coder) reviewed the Tier 1 structural analysis proposal in `doc/uricase_analysis.md` (originally L0055), accepted the plan with four amendments — (1) strict ATOM→FASTA residue mapping with zero tolerance for aa mismatch; (2) DSSP-only tooling for both RSA and SS (drop FreeSASA as primary); (3) remove the "Extension to Uricase" section since rasburicase has no in-hand structure + no per-residue IEDB labels; (4) add `--allele` as a CLI hyperparameter and point outputs at cluster `work/` and repo `figures/` — and authorized implementation without TDD (user will self-review).
+- change_summary: Revised `doc/uricase_analysis.md` to fix the EL-only caveat (pure EL data → no experimentally-negative residues; non-epitope = "not observed"; analysis is conservative), spell out the strict residue-mapping protocol (`author_resnum = chain_range_start + seq_idx`, peptide-string sanity check, abort on any mismatch), pick DSSP as the single RSA+SS source, replace χ² with per-protein log-OR + DerSimonian-Laird random-effects meta for categorical SS pooling, add allele hyperparameter, declare output paths (cluster `work/immune-design/tier1_structural_analysis/<allele_tag>/` + repo `figures/F2_supplementary/`), and trim the uricase section to a short "Future Work" note. Implemented: `inverse_folding/analysis/structural_features.py` (PDB parse, strict alignment with `AlignmentError` / `SpanSanityError`, DSSP RSA+SS, Cα contact numbers with author_resnum-based sequence exclusion, Cliff's δ, Mann–Whitney U, log-OR with Haldane-Anscombe correction, DerSimonian-Laird random-effects meta) and `scripts/analysis/tier1_structural_analysis.py` (CLI driver iterating tier1 candidates, per-protein stats, cross-protein pooling, optional PDF panels + SS-coil forest plot, hyperparameter echo per feedback memory). Registered the new script in `doc/SCRIPTS.md` under Analysis §8.
+- rationale: IEDB Tier 1 spans are EL-only, so "non-epitope" cannot claim experimental negativity — this was mis-worded in the original draft and the user flagged it explicitly. Strict alignment is required because a silent off-by-one between PDB author numbering and FASTA indexing would invalidate every downstream panel; the implementation raises with every offending position listed rather than best-effort matching. DSSP provides both RSA and SS from one geometry pass, avoiding cross-tool inconsistency. Pooling categorical SS via log-OR + DerSimonian-Laird is the correct generalization of the continuous z-score pooling — χ² is per-protein-only.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/doc/uricase_analysis.md`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/analysis/__init__.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/analysis/structural_features.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/analysis/tier1_structural_analysis.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+- evidence: Module AST-parses clean. Pure-python helpers smoke-tested (`cliffs_delta` on toy arrays ≈ 0.833; `random_effects_meta` returns finite pooled+τ²+I²; `log_or_coil` returns a well-defined (log_or, se, counts) on a 8-residue fixture). CLI `--help` renders. BioPython/DSSP-dependent paths not executed locally — `biopython` is in `requirements.txt` (1.86) but not installed in this dev checkout; will be exercised on Della (which has `immune-design` env + DSSP).
+- impact:
+  - scope: New analysis module + CLI. No existing pipeline touched. Blocks on B1 PDB download for execution.
+  - risk: low
+  - confidence: 0.93
+- status: done
+- next_action: (1) Download Tier 1 PDBs via `scripts/download_test_set_pdbs.py` (B1 prerequisite); (2) Run `scripts/analysis/tier1_structural_analysis.py` on Della for each allele to emit `per_residue.csv` / `per_protein_stats.json` / `meta_analysis.json`, then sync F2 supplementary figures back to the repo; (3) User reviews the first run's strict-alignment output — any AlignmentError / SpanSanityError surfaces a real PDB indexing issue rather than a tolerated one.
+- refs:
+  - `doc/uricase_analysis.md`
+  - PROGRESS.md §Phase B (B1)
+
+### L0057
+- timestamp: 2026-04-16T18:30:00+08:00
+- type: DECISION
+- module: L
+- trigger: User (Coder) reported that `build_is_epitope` in L0056 treated `end_0b` as inclusive and failed every real Tier 1 span with `SpanSanityError`, which would have caused `tier1_structural_analysis.py` to skip all 15 proteins and produce no artifacts. User required the contract to be half-open with a real peptide fixture locking it.
+- change_summary: Fixed two coupled coordinate bugs in `inverse_folding/analysis/structural_features.py::build_is_epitope`: (1) `[start_0b, end_0b)` is now treated as half-open (`end_0b - start_0b == len(peptide)`), and (2) the absolute-to-seq_idx offset uses `chain_range_start - 1` because `chain_range` is 1-based author numbering while `start_0b` is 0-based absolute — verified empirically on all 261 Tier 1 spans (261/261 pass with the fix; 261/261 fail under the original off-by-one + inclusive-end code). Updated the residue-mapping block in `doc/uricase_analysis.md` to spell out both coordinate systems explicitly. Added `tests/inverse_folding/test_analysis_structural_features.py` with 6 tests covering: synthetic half-open labelling, rejection of inclusive-end spans, the `end == len(fasta)` boundary, real 1LI1_C two-span fixture, sweep over every tier1_candidates.json span, and an independent half-open-invariant check.
+- rationale: The original draft inferred the coordinate convention from the `_0b` suffix without cross-checking against the shipped JSON. The user correctly flagged the half-open semantics, and while preparing the fixture I also discovered the companion off-by-one: the chain's first FASTA residue is author residue `chain_range_start` (1-based), so the 0-based-absolute `start_0b=1560` for 1LI1_C maps to seq_idx `1560 - (1485-1) = 76`, not `1560 - 1485 = 75`. Both invariants now live in one docstring block and are anchored by real-data tests so they cannot silently regress.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/analysis/structural_features.py` (build_is_epitope rewrite)
+  - `/Users/jerry/Project/MHC-IF/doc/uricase_analysis.md` (residue-mapping block)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_analysis_structural_features.py` (new)
+- evidence: `pytest tests/inverse_folding/test_analysis_structural_features.py -v` → 6 passed in 0.83s (covers synthetic boundary cases, 1LI1_C real fixture, and full sweep over all 261 spans across 15 proteins).
+- impact:
+  - scope: Only the new analysis module. No other pipeline touched.
+  - risk: low (tests anchor the contract to shipped data; any future edit that breaks half-open or the -1 offset flips the whole tier1 sweep red).
+  - confidence: 0.98
+- status: done
+- next_action: Proceed with cluster B1 PDB download + first real run of `tier1_structural_analysis.py`. If any entry raises `AlignmentError`, inspect ATOM numbering — the test already guarantees all 261 spans pass the sequence-side sanity.
+- refs:
+  - L0056
+  - `outputs/if/test_set/tier1_candidates.json` (shipped data used as fixture)
