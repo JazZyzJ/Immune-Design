@@ -13,10 +13,16 @@ Usage:
         --output-dir /path/to/if_test_set/pdbs \
         --workers 8
 
+    python scripts/download_test_set_pdbs.py \
+        --input-json /path/to/tier1_candidates.json \
+        --output-dir /path/to/if_test_set/pdbs \
+        --workers 8
+
 Network access required — run from login node, not compute node.
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -42,13 +48,34 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="B1: Download PDB structures for IF test set",
     )
-    p.add_argument(
-        "--test-set-parquet", required=True,
+    input_group = p.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "--test-set-parquet",
         help="Path to assembled test set parquet (from L5 assembly).",
+    )
+    input_group.add_argument(
+        "--input-json",
+        help="Path to JSON file containing structure candidates.",
     )
     p.add_argument(
         "--output-dir", required=True,
         help="Output directory for PDB files (one per protein_id).",
+    )
+    p.add_argument(
+        "--json-records-key",
+        help="Optional top-level JSON key containing the record list.",
+    )
+    p.add_argument(
+        "--json-protein-id-field", default="protein_id",
+        help="JSON field containing the PDB-chain identifier (default: protein_id).",
+    )
+    p.add_argument(
+        "--json-pdb-id-field", default="pdb_id",
+        help="JSON field containing the 4-char PDB code (default: pdb_id).",
+    )
+    p.add_argument(
+        "--json-chain-field", default="chain",
+        help="JSON field containing the chain ID (default: chain).",
     )
     p.add_argument(
         "--format", choices=["pdb", "cif"], default="pdb",
@@ -85,6 +112,65 @@ def is_pdb_chain_id(protein_id: str) -> bool:
 def extract_pdb_code(protein_id: str) -> str:
     """Extract 4-char PDB code from protein_id (e.g., '1ABC_A' → '1ABC')."""
     return protein_id.split("_")[0].upper()
+
+
+def _normalize_json_records(payload: object, records_key: str | None) -> list[dict]:
+    """Extract a list of JSON records from the loaded payload."""
+    if records_key is not None:
+        if not isinstance(payload, dict):
+            raise ValueError(
+                "--json-records-key requires the top-level JSON object to be a dict"
+            )
+        if records_key not in payload:
+            raise ValueError(f"JSON key '{records_key}' not found in input payload")
+        payload = payload[records_key]
+
+    if not isinstance(payload, list):
+        raise ValueError(
+            "JSON input must be a list of records or use --json-records-key "
+            "to select a list-valued field"
+        )
+    if not all(isinstance(record, dict) for record in payload):
+        raise ValueError("JSON record list must contain only objects")
+    return payload
+
+
+def load_input_table(args: argparse.Namespace) -> tuple[pd.DataFrame, str]:
+    """Load parquet or JSON input and normalize to a DataFrame with protein_id."""
+    if args.test_set_parquet:
+        return pd.read_parquet(args.test_set_parquet), args.test_set_parquet
+
+    with open(args.input_json) as f:
+        payload = json.load(f)
+    records = _normalize_json_records(payload, args.json_records_key)
+    df = pd.DataFrame(records)
+    protein_id_field = args.json_protein_id_field
+    pdb_id_field = args.json_pdb_id_field
+    chain_field = args.json_chain_field
+
+    if protein_id_field in df.columns:
+        df["protein_id"] = df[protein_id_field].astype(str).str.strip()
+    else:
+        missing_fields = [
+            field for field in (pdb_id_field, chain_field)
+            if field not in df.columns
+        ]
+        if missing_fields:
+            raise ValueError(
+                "JSON input is missing required field(s): "
+                + ", ".join(missing_fields)
+            )
+        df["protein_id"] = (
+            df[pdb_id_field].astype(str).str.strip().str.upper()
+            + "_"
+            + df[chain_field].astype(str).str.strip()
+        )
+
+    df["protein_id"] = df["protein_id"].astype(str).str.strip()
+    if (df["protein_id"] == "").any():
+        raise ValueError("JSON input produced empty protein_id values")
+
+    return df, args.input_json
 
 
 def download_one_pdb(
@@ -128,10 +214,14 @@ def download_one_pdb(
 def main() -> int:
     args = parse_args()
 
-    # ── Read parquet ─────────────────────────────────────────────────────
-    df = pd.read_parquet(args.test_set_parquet)
+    # ── Read parquet / JSON input ────────────────────────────────────────
+    try:
+        df, input_path = load_input_table(args)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"ERROR: failed to load input: {exc}")
+        return 1
     if "protein_id" not in df.columns:
-        print(f"ERROR: parquet missing 'protein_id' column")
+        print("ERROR: input data missing normalized 'protein_id' column")
         return 1
 
     all_protein_ids = df["protein_id"].unique().tolist()
@@ -182,7 +272,7 @@ def main() -> int:
     # ── Print diagnostics ────────────────────────────────────────────────
     print("=" * 60)
     print("B1: Download PDB Structures for IF Test Set")
-    print(f"  Parquet        : {args.test_set_parquet}")
+    print(f"  Input          : {input_path}")
     print(f"  Format         : {fmt}")
     print(f"  Output dir     : {args.output_dir}")
     print(f"  Workers        : {args.workers}")

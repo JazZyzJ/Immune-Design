@@ -296,16 +296,40 @@ def _map_via_pairwise_alignment(
     if len(alignments) == 0:
         raise AlignmentError("Fallback pairwise alignment found no candidate mapping")
 
-    top = alignments[0]
+    def _blocks(aln) -> Tuple[Tuple[Tuple[int, int], ...], Tuple[Tuple[int, int], ...]]:
+        return (
+            tuple((int(s), int(e)) for s, e in aln.aligned[0]),
+            tuple((int(s), int(e)) for s, e in aln.aligned[1]),
+        )
+
+    def _tiebreak_key(aln) -> tuple:
+        target_blocks, query_blocks = _blocks(aln)
+        block_lengths = tuple(end - start for start, end in target_blocks)
+        max_block = max(block_lengths) if block_lengths else 0
+        # Deterministic, conservative preference among equal-score alignments:
+        # fewer aligned blocks, longer longest block, then more N-terminal block
+        # placement in target/query coordinates.
+        return (
+            len(target_blocks),
+            -max_block,
+            target_blocks,
+            query_blocks,
+        )
+
+    top_score = alignments[0].score
+    top_alignments = []
+    for aln in alignments:
+        if aln.score != top_score:
+            break
+        top_alignments.append(aln)
+
+    ranked = sorted(top_alignments, key=_tiebreak_key)
+    top = ranked[0]
     top_blocks = [(tuple(t), tuple(q)) for t, q in zip(top.aligned[0], top.aligned[1])]
-    if len(alignments) > 1:
-        second = alignments[1]
-        second_blocks = [(tuple(t), tuple(q)) for t, q in zip(second.aligned[0], second.aligned[1])]
-        if second.score == top.score and second_blocks != top_blocks:
-            raise AlignmentError(
-                "Fallback ATOM→FASTA alignment is ambiguous: multiple highest-scoring "
-                "sequence alignments exist"
-            )
+    if len(ranked) > 1 and _tiebreak_key(ranked[0]) == _tiebreak_key(ranked[1]):
+        raise AlignmentError(
+            "Fallback ATOM→FASTA alignment is ambiguous after deterministic tie-break"
+        )
 
     seq_to_atom: List[Optional[AtomResidue]] = [None] * len(fasta_seq)
     seq_to_author: List[Optional[int]] = [None] * len(fasta_seq)
@@ -339,6 +363,7 @@ def _map_via_pairwise_alignment(
         "atom_coverage": atom_coverage,
         "fasta_coverage": fasta_coverage,
         "score": float(top.score),
+        "n_tied": len(top_alignments),
     }
     if atom_coverage < 0.95 or identity < 0.97 or fasta_coverage < 0.85:
         raise AlignmentError(

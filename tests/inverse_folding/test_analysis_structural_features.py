@@ -219,3 +219,17 @@ def test_align_atom_to_fasta_accepts_fasta_as_unique_substring_of_atom_sequence(
 
     assert seq_to_author == list(range(1, 20))
     assert "".join(r.aa1 for r in seq_to_atom if r is not None) == fasta
+
+
+def test_align_atom_to_fasta_uses_deterministic_tiebreak_for_equal_score_pairwise_alignments():
+    fasta = "ABCCDEFG"
+    atom_residues = _make_atom_residues("ABCDEFG", start_resnum=10)
+
+    seq_to_author, seq_to_atom = align_atom_to_fasta(
+        atom_residues, fasta_seq=fasta, chain_range_start=500
+    )
+
+    assert seq_to_author == [10, 11, None, 12, 13, 14, 15, 16]
+    assert [r.aa1 if r is not None else None for r in seq_to_atom] == [
+        "A", "B", None, "C", "D", "E", "F", "G"
+    ]
