@@ -20,5 +20,11 @@ export IMD_DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests
 export IMD_RUN_DIR="/scratch/gpfs/KAIYIJIANG/zijie/run"
 export IMD_ABLATION_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/run/ablation/encoder_v2"
 
+# DSSP lives in a dedicated conda env (`dssp-tool`) because it cannot coexist
+# with `immune-design`. Scripts that use DSSP (e.g. scripts/analysis/tier1_structural_analysis.py)
+# accept --dssp-bin; export IMD_DSSP_BIN here and pass --dssp-bin "$IMD_DSSP_BIN".
+# Uncomment + set the absolute path on first use:
+# export IMD_DSSP_BIN="$(conda run -n dssp-tool which mkdssp 2>/dev/null)"
+
 cd "${PROJECT_ROOT}"
 echo "Immune-Design env ready.  PROJECT_ROOT=${PROJECT_ROOT}"

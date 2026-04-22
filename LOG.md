@@ -1679,3 +1679,135 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - L0056
   - `outputs/if/test_set/tier1_candidates.json` (shipped data used as fixture)
+
+### L0058
+- timestamp: 2026-04-17T09:40:00+08:00
+- type: CODEMAP_DIFF
+- module: L
+- trigger: User (Coder) asked for a Tier 1 candidate JSON for HLA-DRB1*04:01, parallel to the shipped 0701 set. Investigation showed (a) task #10 "Automate Tier 1 candidate selection from epitope head test split" had been marked done but no script was ever committed — original selection was evidently done interactively and not persisted — and (b) the 0701 UniProt set cannot be reused for 0401 because only 1/15 of the 0701 Tier 1 UniProts is present in the DRB1*04:01 epitope-head test split.
+- change_summary: Reverse-engineered the original selection logic by verifying that all 261 shipped 0701 spans across 15 entries reproduce bit-for-bit from `data/mhc_if_v2.tsv` for the matching (uniprot, allele, chain_range) tuples. Built the pipeline as a proper library + CLI: `inverse_folding/evaluation/tier1_builder.py` (`load_iedb_spans`, `extract_spans_for_chain`, PDBe SIFTS REST client with JSON cache, `build_candidate_entry`, `build_tier1_candidates` top-level) and `scripts/build_tier1_candidates.py` (CLI with `--allele`, `--manifest-dir`, `--mhc-if-v2`, `--uniprot-fasta`, `--output`, `--validate-against`, filter/rank knobs). Added `tests/inverse_folding/test_tier1_builder.py` with 8 tests: span-range filtering, peptide-mismatch rejection, end=chain-end boundary, 3 rejection-reason unit tests (non-X-ray / high-resolution / too-few-spans), a full-entry round-trip against 1LI1_C, and a sweep that round-trips every shipped 0701 entry. Ran the 0401 build end-to-end: 189 test UniProts → 168 with spans → 110 with SIFTS chains → 46 candidates passing filters → 15 selected by `epitope_coverage` descending. Wrote `outputs/if/test_set/tier1_candidates_DRB1_04_01.json` (15 entries, 489 spans, coverage range 17.4%-87.9%). All 489 spans peptide-verified; all 15 entries pass `validate_tier1_candidate`. Registered the script under `doc/SCRIPTS.md §Module L / Test Set Curation`.
+- rationale: The shipped 0701 JSON is authoritative for downstream parquet (`test_proteins_HLA-DRB1_07_01.parquet` uses these 15); we must not overwrite it. A clean, reproducible algorithm for 0401 (and future alleles / future re-runs) is more valuable than trying to exactly reproduce a bespoke curation whose spec is lost. Reproducibility validation on 0701 came in at 7/15 protein_id and 9/15 UniProt overlap — the gap is mostly because our algorithm ranks candidates by coverage descending (a defensible, explicit criterion) while the original 0701 set spans 11%-45% coverage (suggesting either a smaller PDB candidate pool at selection time or a non-recorded stratification rule). 0701 is left untouched; the 0401 output uses the new, specified algorithm. Library + tests ensure the coordinate contract (IEDB 1-based inclusive → 0-based half-open) is regression-locked.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/evaluation/tier1_builder.py` (new)
+  - `/Users/jerry/Project/MHC-IF/scripts/build_tier1_candidates.py` (new)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_tier1_builder.py` (new)
+  - `/Users/jerry/Project/MHC-IF/outputs/if/test_set/tier1_candidates_DRB1_04_01.json` (new; 15 entries, 489 spans)
+  - `/Users/jerry/Project/MHC-IF/outputs/.cache/sifts/*.json` (PDBe SIFTS cache; not versioned)
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md` (registered `build_tier1_candidates.py` under Module L)
+- evidence: `pytest tests/inverse_folding/test_tier1_builder.py -v` → 8 passed. Every shipped 0701 entry round-trips through `build_candidate_entry` (sweep test). 0401 output: 0/489 spans fail peptide vs sequence-slice sanity; 15/15 pass `tier_validators.validate_tier1_candidate`. Dry-run on 0701 reported 7/15 protein_id and 9/15 UniProt overlap with shipped set (documented gap).
+- impact:
+  - scope: New library + CLI + tests + one downstream JSON artifact (0401 Tier 1). Shipped 0701 JSON and its downstream parquet are unchanged.
+  - risk: low (0401 pipeline is additive; peptide verification + validator gate catch any coordinate regressions).
+  - confidence: 0.95
+- status: done
+- next_action: (1) When B1 PDB download runs, include the new 0401 PDB IDs (`6S8V, 3ZFM, 6JD8, 5BN8, 4MZV, 7F4X, 4HAF, 3UBW, 6J64, 5W5M, 4ACP, 3POW, 1W7B, 6UGW, 9H1F`) alongside the 0701 set. (2) Re-run `scripts/analysis/tier1_structural_analysis.py` with `--allele "HLA-DRB1*04:01"` and the new JSON to produce the 0401 F2-supplementary analysis.
+- refs:
+  - L0055, L0056, L0057 (uricase_analysis.md + structural_features)
+  - `doc/SCRIPTS.md` §Module L
+  - `data/mhc_if_v2.tsv` (span source)
+  - PDBe SIFTS API: `https://www.ebi.ac.uk/pdbe/api/mappings/best_structures/{uniprot}`
+
+### L0059
+- timestamp: 2026-04-17T09:50:00+08:00
+- type: DECISION
+- module: L
+- trigger: User recalled the missing 0701 selection criterion: **epitope coverage density must be 10–50%** on top of (X-ray ≤ 2.5 Å, chain length 100–500 AA, ≥ 2 positive EL spans). The L0058 run omitted this and ended up picking high-coverage outliers (e.g. 0401 `9H1F_A` at 87.9%). Adding the coverage filter also raised 0701 dry-run reproducibility meaningfully.
+- change_summary: Added `min_coverage` / `max_coverage` (defaults 0.10 / 0.50) to `FilterParams` and the CLI (`--min-coverage`, `--max-coverage`); `build_candidate_entry` now rejects chains whose coverage falls outside the range. Regenerated `outputs/if/test_set/tier1_candidates_DRB1_04_01.json` under the new filter: 189 test UniProts → 168 with spans → 115 with SIFTS chains → 32 passing all filters → 15 selected by coverage-desc ranking (vs 46 / 15 before; the new set has coverage range **17.9%–49.4%**, all inside the 10–50% band, totalling 366 spans; all peptide-verified; all pass `validate_tier1_candidate`). Added `test_build_candidate_entry_rejects_coverage_out_of_range` — 9 tests total, all green.
+- rationale: With the coverage filter the 0701 dry-run's UniProt overlap with the shipped 15 rose from **9/15 to 13/15**, and protein_id overlap stayed at 7/15 (chain picks within a UniProt still vary by SIFTS `best_structures` rank order, which is not under our control). The remaining 2 UniProt diffs (P08572 1LI1_C and Q07812 4ZIE_A from the shipped set) stem from the highest-ranked SIFTS chain for those UniProts not passing length/resolution — i.e. the original curation picked a lower-ranked chain. We do not silently change SIFTS-rank semantics to chase exact reproduction; a tested, specified algorithm beats a zero-documentation curation round. The shipped 0701 JSON remains untouched.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/evaluation/tier1_builder.py` (FilterParams + coverage check)
+  - `/Users/jerry/Project/MHC-IF/scripts/build_tier1_candidates.py` (CLI flags)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_tier1_builder.py` (9 tests, +1 coverage-range test)
+  - `/Users/jerry/Project/MHC-IF/outputs/if/test_set/tier1_candidates_DRB1_04_01.json` (regenerated; 15 entries, 366 spans, coverage 17.9%–49.4%)
+- evidence: `pytest tests/inverse_folding/test_tier1_builder.py -v` → 9 passed in 0.76s. 0401 output: 0 peptide-mismatch failures; 15/15 pass `validate_tier1_candidate`; all 15 coverages ∈ [0.10, 0.50]. 0701 dry-run overlap: 13/15 UniProt (was 9/15 without filter).
+- impact:
+  - scope: Library + CLI + tests + 0401 JSON (overwritten atomically, same schema).
+  - risk: low.
+  - confidence: 0.96
+- status: done
+- next_action: Use `outputs/if/test_set/tier1_candidates_DRB1_04_01.json` for B1 PDB download (new 15 PDB IDs: `3DZ8 3ZFM 3S35 6JD8 5BN8 4MZV 7F4X 4HAF 3UBW 6J64 5W5M 4ACP 3POW 1W7B 6UGW`) and the matching allele run of `scripts/analysis/tier1_structural_analysis.py`.
+- refs:
+  - L0058
+
+### L0060
+- timestamp: 2026-04-22T15:45:00+08:00
+- type: PLAN_UPDATE
+- module: PHASE_B
+- trigger: User (Coder-track) requested a concrete, implementation-ready spec for B2 (test-set h_i precompute) and B3 (CATH training-set h_i precompute), grounded in the hypotheses of `doc/Reference_Flow_Derivation.md §6`. The original `PLAN_IF.md` Phase B section had B2/B3 as two-line stubs with no schema, no CLI contract, no failure policy, and no mapping from `h_i` storage to downstream hypotheses.
+- change_summary: Expanded `PLAN_IF.md` Tasks B2 and B3 from stub bullets to implementation-ready specs (goal, frozen design principle, inputs, outputs, parquet schema, sidecar JSON schema, CLI contract, SLURM convention, failure handling, TDD gate, acceptance criteria) and appended a "What Phase C inherits" mapping that pins each stored field to the specific hypothesis it supports (H1–H5). Froze the storage–policy decoupling principle: persist `h_raw` (uncentered log-mean-exp logit) and `h_processed` (per-protein median-centered, `clamp=none`) as the neutral physical quantities; defer every downstream transform — `g(h)` form, corpus-level normalization, hotspot binarization threshold, multi-allele aggregation — to Phase C read-time. Froze allele scope: B2 emits 0701 + 0401; B3 emits 0701 (priority 1) + 0401 (priority 2); 1501 skipped.
+- rationale: (1) B2/B3 encoder forward passes are the expensive step (~20k proteins × ESM-2 650M); downstream policies are cheap ndarray transforms. Locking a specific normalization at compute time would force recompute whenever Phase C revises `g(h)` or ablates corpus-level vs per-protein normalization. Storing both neutral forms (~1 MB / 1000 proteins overhead) is the right trade. (2) Each of H1–H5 demands a slightly different view of `h` (continuous for sampling / training, binarized for stratification, permuted for shuffle control, corpus-normalized for cross-protein comparability). A single neutral storage supports all five without bias. (3) Deferred items are surfaced explicitly so they are not silently re-introduced during Phase C. (4) Scope limited to 0701 + 0401 because Module L test sets exist only for these two alleles; 1501 cannot be paired with an evaluation cohort for H4.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_IF.md` (Task B2 rewritten, Task B3 rewritten, new "What Phase C inherits" subsection)
+- evidence: N/A (planning update, no code change). Design verified against existing interfaces: `epitope_head/inference/predictor.py::InferencePredictor.predict_protein` returns `residue_hotspot` (= our `h_processed`) and `debug.h_raw`, matching the proposed schema; `epitope_head/configs/inference.yaml` defaults (`center_method=median`, `clamp=none`, `min_k=12`, `max_k=25`, chunking enabled with context_len=1022) map one-to-one to the "frozen inference config preset" referenced in the plan.
+- impact:
+  - scope: Phase B specification only. No code changed. No downstream module touched. Future CLI `scripts/precompute_h_maps.py`, SLURM scripts, and loader `inverse_folding/evaluation/h_maps.py` will implement against this spec.
+  - risk: low (all deferred choices documented; storage is a safe superset).
+  - confidence: 0.94
+- status: done
+- next_action: Implement `scripts/precompute_h_maps.py` + `inverse_folding/evaluation/h_maps.py` + SLURM launchers per the spec; register under `doc/SCRIPTS.md §Phase B`; run B2 0701 + 0401 on Della, then B3 0701 + 0401.
+- refs:
+  - `PLAN_IF.md:§Phase B / Task B2, Task B3`
+  - `doc/Reference_Flow_Derivation.md:§4.3, §6 (H1–H5), §7.1, §7.3`
+  - `epitope_head/inference/predictor.py::InferencePredictor.predict_protein`
+  - `epitope_head/configs/inference.yaml`
+
+### L0061
+- timestamp: 2026-04-22T21:45:00+08:00
+- type: VERIFICATION
+- module: PHASE_B
+- trigger: User asked to review the detailed Phase B plan in `PLAN_IF.md` and implement it if there were no blocking concerns.
+- change_summary: Implemented Phase B B2/B3 h-map precompute infrastructure: shared CLI, h-map loader/schema validator, focused contract tests, parameterized SLURM launchers, and script registry updates.
+- rationale: The B2/B3 plan is scientifically and operationally sound because it stores neutral per-residue quantities (`h_raw` and median-centered `h_processed`) while deferring all Phase C policy choices. Implementation keeps expensive epitope-head forward passes reusable across sampling, retraining, shuffle controls, and hotspot analyses.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/evaluation/h_maps.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/precompute_h_maps.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_precompute_h_test.slurm`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_precompute_h_cath.slurm`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_h_maps_contract.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md`
+- evidence: |
+    `pytest -q tests/inverse_folding/test_h_maps_contract.py` => 5 passed.
+    `python -m py_compile scripts/precompute_h_maps.py inverse_folding/evaluation/h_maps.py` => passed.
+    `bash -n scripts/submit_precompute_h_test.slurm` => passed.
+    `bash -n scripts/submit_precompute_h_cath.slurm` => passed.
+    `python scripts/precompute_h_maps.py --help` => argparse/import smoke passed.
+- impact:
+  - scope: Phase B h-map precompute only; no existing generation, evaluation, or epitope-head training behavior changed.
+  - risk: low
+  - confidence: 0.94
+- status: done
+- next_action: Submit B2 on Della for `HLA-DRB1*07:01` and `HLA-DRB1*04:01`, then validate row counts and sidecar failure ledgers before launching B3 CATH train runs.
+- refs:
+  - `PLAN_IF.md:Task B2`
+  - `PLAN_IF.md:Task B3`
+  - `LOG.md:L0060`
+
+### L0062
+- timestamp: 2026-04-23T00:10:00+08:00
+- type: VERIFICATION
+- module: PHASE_B
+- trigger: User code review identified three trust-boundary gaps before Della resume usage: resume accepted stale/mismatched parquets, `load_h_maps` lacked metadata/dataframe cross-field validation, and the CLI test exercised only the `predict_protein` fallback instead of the real `encode_sequence -> enumerate_and_score -> aggregate_hotspot_and_risk` branch.
+- change_summary: Hardened h-map artifact validation and resume semantics: `load_h_maps` now validates dataframe allele vs metadata allele, accounting fields, failure-ledger length, optional required CATH corpus stats, and corpus-stat values; `precompute_h_maps.py` now requires a resume sidecar and fail-fast checks allele, checkpoint path, checkpoint metadata, inference config, source dataset, rowcount, protein-id membership, and current sequence length before reusing rows; partial checkpoints now write matching metadata sidecars.
+- rationale: Phase C treats B2/B3 h-maps as a trusted substrate. A stale 0701 partial, old checkpoint/config, or sequence-length drift would silently poison sampling/retraining signals, so resume must be conservative and loader validation must be cross-field rather than column-local only.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/evaluation/h_maps.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/precompute_h_maps.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_h_maps_contract.py`
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md`
+- evidence: |
+    `pytest -q tests/inverse_folding/test_h_maps_contract.py` => 13 passed.
+    `pytest -q tests/inverse_folding/test_module_l_eval_contract.py` => 33 passed.
+    `python -m py_compile scripts/precompute_h_maps.py inverse_folding/evaluation/h_maps.py` => passed.
+    `bash -n scripts/submit_precompute_h_test.slurm` => passed.
+    `bash -n scripts/submit_precompute_h_cath.slurm` => passed.
+- impact:
+  - scope: Phase B h-map validation/resume behavior only; no scoring math changed.
+  - risk: low
+  - confidence: 0.96
+- status: done
+- next_action: Use the guarded resume path for B2 Della runs; if an existing old partial lacks `.meta.json`, discard it and restart rather than forcing reuse.
+- refs:
+  - `LOG.md:L0061`
+  - `PLAN_IF.md:Task B2`
+  - `PLAN_IF.md:Task B3`

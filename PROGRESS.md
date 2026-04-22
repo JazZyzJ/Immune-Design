@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-04-22T00:00:00+08:00
+> **Last synced**: 2026-04-23T00:10:00+08:00
 > **Branch**: dev_head
 
 ---
@@ -138,8 +138,8 @@
 ## Phase B: Experiment Preparation (NEW, 2026-04-07)
 
 - **B1 (PDB download)**: **near-complete** — 0401: 2,943 .pdb + 192 .cif (AF rescue + RCSB cif + AFDB); 0701: 2,874 .pdb + 244 .cif. All RCSB 404s rescued via .cif tracks (`pdb_final_failures.txt` = 0 on both). Residual **41 UniProts** (18 on 0401 / 23 on 0701) have no AFDB prediction — listed in `pdbs/{0401,0701}/uniprot_final_failures.txt`; will be filled by **AF3 local prediction**
-- **B2 (h_i maps for test set)**: not started
-- **B3 (h_i maps for CATH training set)**: not started — needed for Phase C Tier 1
+- **B2 (h_i maps for test set)**: **code ready, cluster not run** — shared CLI `scripts/precompute_h_maps.py`, loader/validator `inverse_folding/evaluation/h_maps.py`, test-set SLURM `scripts/submit_precompute_h_test.slurm`; emits `h_raw`, `h_processed`, `global_risk`, `n_windows` + sidecar metadata for 0701/0401. Resume is guarded by sidecar metadata, allele/checkpoint/config/source matching, and sequence-length checks.
+- **B3 (h_i maps for CATH training set)**: **code ready, cluster not run** — same CLI with JSONL split filtering, CATH-specific sequence policy, guarded resume support, and required corpus-level `h_raw` stats; SLURM `scripts/submit_precompute_h_cath.slurm`
 - **B4 (eval pipeline integration)**: not started — need end-to-end: generate → ESMFold → TM-align → head → NMP
 
 ---
@@ -166,6 +166,7 @@
 | Guidance sweep script | `scripts/run_if_guidance_sweep.py` | committed |
 | Guidance SLURM | `scripts/submit_if_guidance_sweep.slurm` | committed |
 | Data selection code (L0-L5) | `inverse_folding/evaluation/` | overlap, prescreen, cath_topology, assembly, tier_validators (139 tests) |
+| Phase B h-map precompute | `scripts/precompute_h_maps.py`, `inverse_folding/evaluation/h_maps.py` | code ready; cluster B2/B3 runs pending |
 | Tier 1 candidates | `outputs/if/test_set/tier1_candidates.json` | 15 proteins, 10-50% epitope coverage |
 | Tier 2 candidate pool | `outputs/if/test_set/tier2_candidates_merged.fasta` | 226k seqs, transferred to cluster |
 | Tier 2 entity IDs | `outputs/if/test_set/tier2_all_entity_ids.txt` | 113k RCSB entity IDs |

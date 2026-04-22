@@ -64,9 +64,9 @@ demo_viz_human.html
 demo_viz.html
 demo.json
 overview.txt
-doc/
 report/
 
+!scripts/analysis/tier1_structural_analysis.py
 
 # Others
 DRAKES/

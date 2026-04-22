@@ -545,16 +545,165 @@
 
 ### Task B2: Pre-compute h_i Maps for Test Set
 
-- Run frozen epitope head on all test set proteins (both alleles)
-- Output: per-protein `residue_hotspot` arrays → `wt_hotspot_maps.parquet`
-- These h_i maps are used as conditioning signal and for evaluation
+**Goal**
+- Emit per-residue epitope-head signal `h_i` for every WT test protein (both alleles) so Phase C can feed `g(h_i)` into the sampling-time schedule (`doc/Reference_Flow_Derivation.md §4.3`) and into H1/H3/H5 analyses (`doc/Reference_Flow_Derivation.md §6`).
+
+**Design principle (frozen here, 2026-04-22)**
+1. **Storage–policy decoupling.** Persist the neutral physical quantity (log-mean-exp logits per residue) in two forms — uncentered and per-protein median-centered — with `clamp=none`. Every downstream policy (`g(h)` form, corpus-level normalization, binarization threshold for hotspot/non-hotspot, shuffle control) is deferred to Phase C read-time. Re-computing ~20k encoder forward passes is far more expensive than re-applying a policy to the stored arrays.
+2. **One row per (protein, allele)**, wide layout (array columns) — sampling/training both consume full h maps per protein.
+
+**Inputs**
+- Test set parquets:
+  - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` (3,141 rows)
+  - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` (3,140 rows)
+- Sequence source: in-row `sequence` column.
+- Epitope head checkpoints (frozen):
+  - 0701: `run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt`
+  - 0401: `run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt`
+- Inference config preset: `epitope_head/configs/inference.yaml` — locked at `center_method=median`, `clamp=none`, `min_k=12`, `max_k=25`, `chunking.enabled=true` (context_len=1022, stride=512, margin=32, stitch_mode=per_residue_stitch, enable_reliability=true).
+
+**Outputs** (per allele: one parquet + one sidecar JSON)
+- `work/immune-design/if_test_set/h_maps/h_maps_DRB1_07_01.parquet`
+- `work/immune-design/if_test_set/h_maps/h_maps_DRB1_07_01.meta.json`
+- `work/immune-design/if_test_set/h_maps/h_maps_DRB1_04_01.parquet`
+- `work/immune-design/if_test_set/h_maps/h_maps_DRB1_04_01.meta.json`
+
+**Parquet schema (wide, one row per protein)**
+
+| Column | Type | Semantics |
+|--------|------|-----------|
+| `protein_id` | str | primary key; matches `protein_id` in source test_proteins parquet |
+| `allele` | str | canonical header form, e.g. `"HLA-DRB1*07:01"` |
+| `sequence_length` | int32 | `L = len(sequence)` |
+| `h_raw` | list[float32] (length `L`) | log-mean-exp of covering-window logits, uncentered, unclamped (== `debug.h_raw` from `InferencePredictor.predict_protein`) |
+| `h_processed` | list[float32] (length `L`) | per-protein median-centered `h_raw`, `clamp=none` (== `residue_hotspot` from `predict_protein` under the frozen inference config) |
+| `global_risk` | float32 | log-mean-exp over all windows (== `global_risk` from `predict_protein`) |
+| `n_windows` | int32 | number of (start, k) windows scored |
+
+**Sidecar metadata JSON** (one per parquet)
+```
+run_id                      # h_maps_{allele_tag}_{YYYYMMDD_HHMMSS}
+allele
+head_checkpoint_path        # absolute cluster path
+head_checkpoint_metadata    # {manifest_version, config_hash, diff_ids_applied}
+inference_cfg               # resolved dict actually used
+source_dataset              # absolute path to test_proteins parquet
+source_dataset_rowcount     # int
+git_commit                  # git rev-parse HEAD
+timestamp                   # ISO-8601 with offset
+n_proteins_total            # == source_dataset_rowcount
+n_proteins_completed        # int
+n_proteins_failed           # int
+failures                    # list[{protein_id, reason}]
+device                      # "cuda" | "cpu"
+wall_clock_seconds          # float
+```
+
+**Planned File Touchpoints**
+- Create: `scripts/precompute_h_maps.py` (shared CLI for B2 + B3)
+- Create: `scripts/submit_precompute_h_test.slurm`
+- Create: `inverse_folding/evaluation/h_maps.py` (load + schema validator used by Phase C and by TDD fixtures)
+- Create: `tests/inverse_folding/test_h_maps_contract.py`
+- Modify: `doc/SCRIPTS.md` (register new script + SLURM under Phase B)
+
+**CLI contract**
+- Required args: `--head-checkpoint`, `--inference-config`, `--source parquet|jsonl`, `--input <path>`, `--id-column`, `--sequence-column`, `--allele <header-form>`, `--output-parquet`, `--output-meta`.
+- Optional: `--device cuda|cpu` (default cuda), `--window-batch-size` (default 4096, passed to `enumerate_and_score`), `--fail-pct-threshold` (default 0.05), `--checkpoint-every` (periodic parquet snapshot; default 500 proteins), `--resume-from` (path to a prior partial parquet).
+- Must print every resolved hyperparameter to stdout at job start (per `feedback_print_hyperparams`).
+
+**SLURM**
+- `scripts/submit_precompute_h_test.slurm` follows `scripts/submit_cnn_enhance.slurm` template: QOS `gpu-short` (2 passes, one per allele), `--output`/`--error` route to `logs/`, `HF_HUB_OFFLINE=1`, openfold `PYTHONPATH` per `feedback_slurm_convention`.
+
+**Failure handling**
+1. Sequence contains non-canonical AA (outside the 20 + pad) → skip protein, append `{protein_id, reason: "non_canonical_aa"}` to `failures`.
+2. Empty sequence → skip, log.
+3. GPU OOM on one protein → retry that protein on CPU once; on second failure, log and continue.
+4. Cumulative failure rate > `--fail-pct-threshold` → abort job with exit code 2 before overwriting the final parquet; partial parquet kept under `.partial/` for inspection.
+
+**TDD Gate**
+1. RED: output parquet is accepted when `len(h_raw) != sequence_length`, when `h_processed - median(h_raw) != h_raw` (within float tol), or when sidecar metadata is missing any required key.
+2. GREEN: a 2-protein WT fixture round-trips through CLI → parquet → `inverse_folding/evaluation/h_maps.py` loader, where (a) each row satisfies `len(h_raw) == len(h_processed) == sequence_length`, (b) `global_risk` matches a direct `InferencePredictor.predict_protein(seq)` call within 1e-5, and (c) sidecar JSON contains every required key with non-empty `head_checkpoint_metadata`.
+
+**Acceptance**
+- Both allele parquets materialize under `h_maps/` with row count matching the source parquet minus logged failures.
+- `n_proteins_completed / n_proteins_total >= 0.95` for each allele.
+- Downstream loader `load_h_maps(path)` asserts schema + `len(h_raw) == sequence_length` for every row.
+
+---
 
 ### Task B3: Pre-compute h_i Maps for CATH Training Set
 
-- Run frozen epitope head on ~16k CATH training proteins
-- Output: `cath_hotspot_maps.parquet` (protein_id, residue_idx, h_i)
-- Required for Phase C Tier 1 (position-dependent training)
-- Can run in parallel with B1/B2
+**Goal**
+- Extend B2 to the CATH training split so Phase C Tier 1 (C2, retrain with position-dependent forward process) has the same `h_i` signal available during training.
+
+**Scope decision (frozen here, 2026-04-22)**
+- **Alleles**: 0701 first, 0401 second. 1501 skipped (no test set exists; multi-allele H4 pairing requires matching test set coverage).
+- **Split**: train split only. Val/test splits of CATH are internal DPLM validation; `h_i` for them is not required by Phase C (which evaluates on Module L test set, not CATH test).
+
+**Inputs**
+- CATH training data: `work/immune-design/cath_4.3/chain_set.jsonl`
+- Split selection: `work/immune-design/cath_4.3/chain_set_splits.json["train"]` (16,631 chain ids)
+- Sequence source: `seq` field in each JSONL record
+- Chain id: `CATH` field (canonical primary key)
+- Epitope head checkpoints: same as B2.
+- Inference config: same as B2.
+
+**Outputs**
+- `work/immune-design/cath_4.3/h_maps/h_maps_cath_DRB1_07_01.parquet` (+ `.meta.json`)
+- `work/immune-design/cath_4.3/h_maps/h_maps_cath_DRB1_04_01.parquet` (+ `.meta.json`)
+
+**Parquet schema**: identical to B2 (`protein_id` column holds the CATH chain id).
+
+**Sidecar metadata JSON**: identical keys, **plus** corpus-level stats (computed after the full run):
+```
+corpus_h_raw_mean           # float — mean of all per-residue h_raw, pooled across proteins
+corpus_h_raw_std            # float — std, same pooling
+corpus_h_raw_n_residues     # int  — total residue count used in stats
+```
+These are candidates for Phase C optional corpus-level normalization. Not applied to the stored arrays.
+
+**Planned File Touchpoints**
+- Reuse: `scripts/precompute_h_maps.py` with `--source jsonl --splits-json <path> --split train --id-field CATH --sequence-field seq`.
+- Create: `scripts/submit_precompute_h_cath.slurm`
+- Modify: `doc/SCRIPTS.md` (register SLURM under Phase B).
+
+**SLURM**
+- Walltime estimate: 16,631 × ~0.5–2 s/protein on A100 ≈ 2–9 h per allele (encoder forward dominates; varies with protein length).
+- QOS: `gpu-medium` (3d) for safety margin.
+- **Resumability required**: `--checkpoint-every 500` must write an intermediate parquet so preemption does not waste >500 proteins of work.
+
+**Failure handling**
+- Identical to B2, with `--fail-pct-threshold=0.02` (stricter; CATH is cleaner than Tier-2-sourced test set).
+- Non-standard residues in `seq` field (CATH uses `-` / `X`): treat `-` as hard fail (record with no sequence is malformed); treat `X` as skip if count > 5% of chain length, else substitute with `X` token and proceed (chunker + tokenizer handle `X`).
+
+**TDD Gate**
+1. RED: corpus stats (`corpus_h_raw_mean`, `corpus_h_raw_std`) are written before the parquet is complete, or are computed over fewer residues than `sum(sequence_length)`.
+2. GREEN: on a 3-protein CATH fixture, corpus stats match `np.concatenate([row.h_raw for row in parquet]).mean() / .std()` within 1e-6, and resume-from-checkpoint produces the same final parquet bit-for-bit as a single-shot run.
+
+**Acceptance**
+- Both allele parquets materialize, each with ≈16,631 rows.
+- `n_proteins_completed / n_proteins_total >= 0.98` per allele.
+- Corpus stats written in sidecar JSON.
+
+---
+
+### What Phase C inherits from B2/B3 — explicit mapping to hypotheses
+
+See `doc/Reference_Flow_Derivation.md §6`.
+
+| Hypothesis | Artifact consumed | How |
+|---|---|---|
+| H1 edit localization | Test set `h_processed` + analysis-time threshold | stratify edit counts at hotspot vs non-hotspot |
+| H2 Pareto dominance | Test set `h_raw`/`h_processed` → `g(h_i)` | feeds sampling loop (§4.3) |
+| H3 shuffle control | Test set `h_*` arrays | analysis-time permutation `π` |
+| H4a/H4b retrain vs sample-only | CATH `h_*` for training + test set `h_*` for sampling | C2 training schedule uses CATH h; C1 sample-only uses test h only |
+| H5 hotspot entropy | Test set `h_*` + analysis-time threshold | stratify per-position `H(p_θ(x_1^i \| x_t))` |
+
+**Deliberately deferred (not frozen in Phase B)**:
+- `g(h)` functional form (linear clamp / sigmoid / power — `doc/Reference_Flow_Derivation.md §7.1`): Phase C hyperparameter sweep.
+- Corpus-level normalization `(μ_corpus, σ_corpus)`: may be applied at Phase C read-time using sidecar stats from B3; decision belongs to C1/C2 ablation.
+- Binarization threshold for H1/H5 stratification: analysis-time, not at storage time.
+- Multi-allele aggregation (§7.3 Q3): out of v1 scope.
 
 ### Task B4: End-to-End Eval Pipeline Integration
 
