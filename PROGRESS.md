@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-04-23T00:10:00+08:00
+> **Last synced**: 2026-04-24T15:30:00+08:00
 > **Branch**: dev_head
 
 ---
@@ -146,10 +146,69 @@
 
 ## Phase C: Core Contribution — Reference Flow (NEW, 2026-04-07)
 
-- **Status**: not started. Implementation details under discussion (Thinker track).
+- **Status**: C0/C1 **code ready, cluster not run**. C2/C3 still stubbed.
 - **Math foundation**: `doc/Reference_Flow_Derivation.md` — Tasks 0, A, C complete; Task B framework complete
 - **Planned tiers**: C0 (unguided baseline) → C1 (sampling-only) → C2 (retrain) → C3 (FiLM+CFG)
-- **Blocked by**: Phase B completion
+- **Implemented now**:
+  - `inverse_folding/reference_flow/` package: YAML-validated config schema, base schedules + derivatives, amplification forms (`constant_one`, `linear_clamp`, `sigmoid`, `power`), per-protein h-shuffle control, and denoiser-agnostic `PositionDependentDFMSampler`
+  - preset YAML scaffolds: `c1_null`, `c1_linclamp`, `c1_sigmoid`, `c1_power`, `c1_shuffle`
+  - C0/C1 drivers: `scripts/run_if_phase_c0.py`, `scripts/run_if_phase_c1.py`
+  - shared Phase C SLURM: `scripts/submit_if_phase_c.slurm` (`MODE=native|reference_flow`)
+  - tests: schedule / amplification / sampler / config + C0 artifact contract (**16 passing**)
+- **Acceptance status**:
+  - TDD gates for C0/C1 contract layer: **pass**
+  - Existing Phase B + Module L contract suites: still green after Phase C changes (**46 passing**)
+  - End-to-end allele run on Della: **pending**
+- **Operational note**:
+  - C0 can run immediately on the assembled IF test set + B1 structures.
+  - C1 actual experiment runs still depend on B2 test-set h-maps being materialized for the target allele; `h_normalized_corpus` arms additionally need B3 corpus stats sidecar.
+
+### Experimental results (TBD — fill per run after cluster completes)
+
+> Evaluation pipeline reference: `doc/Reference_Flow_Derivation.md §6` for hypothesis framing; Module L §L0 for metric schema. Δrisk and Δn_strong are computed against WT (the input test protein), not against C0. One row per `run_id`; append rows as sweeps grow.
+
+**C0 baseline** (DPLM native sampler on frozen Module K checkpoint)
+
+| allele | run_id | n_proteins | n_designs | scTM mean | scTM median | % scTM > 0.5 | % scTM > 0.8 | recovery mean | pLDDT mean | head Δrisk vs WT | NMP Δn_strong vs WT | mean mutation_count |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| HLA-DRB1*07:01 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| HLA-DRB1*04:01 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+
+**C1 sampling-only** (position-dependent DFM; one row per `run_id`; record the full resolved config fields so future-you can trace what was run)
+
+| allele | config preset | form | c | mu | kappa / p | base schedule | n_steps | h_source | shuffle? | seed | run_id | scTM mean | % scTM > 0.5 | recovery mean | head Δrisk | NMP Δn_strong | mean mutation_count | edit ratio ρ (H1) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| TBD | c1_null | constant_one | — | — | — | TBD | TBD | h_processed | no | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | n/a |
+| TBD | c1_linclamp | linear_clamp | TBD | 0.0 | — | TBD | TBD | TBD | no | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| TBD | c1_sigmoid | sigmoid | TBD | 0.0 | κ=TBD | TBD | TBD | TBD | no | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| TBD | c1_power | power | TBD | 0.0 | p=TBD | TBD | TBD | TBD | no | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| TBD | c1_shuffle | linear_clamp | TBD | 0.0 | — | TBD | TBD | TBD | yes | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+
+**N1 post-hoc filter baseline** (consumes C0 candidate pool; required for H2 Pareto)
+
+| allele | source C0 run_id | K candidates | n_proteins | scTM mean | head Δrisk vs WT | NMP Δn_strong vs WT | mean mutation_count |
+|---|---|---|---|---|---|---|---|
+| HLA-DRB1*07:01 | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| HLA-DRB1*04:01 | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+
+### Hypothesis readout (TBD — fill after sweep)
+
+> `doc/Reference_Flow_Derivation.md §6`. Each hypothesis needs a direction (pass / fail / inconclusive) and one quantitative anchor. Blocked rows stay blocked until C2 exists.
+
+| Hypothesis | Measurement | Arms compared | Quantitative anchor | Status |
+|---|---|---|---|---|
+| H1 edit localization | ρ = (edits@hotspot / N_hotspot) / (edits@non-hotspot / N_non-hotspot), stratified by `c` | c1_null vs c1_linclamp / c1_sigmoid / c1_power at matched scTM | TBD (expect ρ > 1, increasing in c) | pending |
+| H2 Pareto dominance | (scTM, head Δrisk) and (scTM, NMP Δn_strong) Pareto fronts | N1 post-hoc filter vs each c1 arm | TBD (non-trivial region of dominance) | pending |
+| H3 shuffle control | Targeted-advantage gap between real and shuffled h on (scTM, Δrisk, ρ) | c1_linclamp vs c1_shuffle (matched c) | TBD (expect targeted advantage collapses toward shuffle baseline) | pending |
+| H4a / H4b retrain vs sample-only | same pipeline on c1 vs C2 retrained checkpoint | c1 arms vs C2 | — | blocked on C2 |
+| H5 hotspot entropy gap | mean `H(p_θ(x_1^i \| x_t))` at hotspot − non-hotspot, matched (t, x_t) | c1 denoiser vs C2 denoiser | — | blocked on C2 |
+
+### Failure / anomaly log (fill as encountered)
+
+- NaN designs (protein_id, design_idx, step, t): TBD
+- Structural collapse (scTM ≤ 0.5) proteins: TBD
+- OOM-retried-on-CPU: TBD
+- `g_max_cap` triggered (protein_id, max g_i): TBD
 
 ---
 
@@ -191,7 +250,11 @@
 | IF test set (0401) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` | 3,140 proteins (T1:15 T2:2998 T3:127) |
 | IF test set FASTAs | `work/immune-design/if_test_set/fastas/` | 6,166 files |
 | IF test set structures | `work/immune-design/if_test_set/pdbs/{0401,0701}/` | 0401: 2,943 .pdb + 192 .cif; 0701: 2,874 .pdb + 244 .cif. RCSB 404s fully rescued. 18 / 23 UniProts still missing (no AFDB) — `uniprot_final_failures.txt`; AF3 planned |
-| Guidance sweep results | N/A | not run yet |
+| IF test set h-maps (B2) | `work/immune-design/if_test_set/h_maps/h_maps_DRB1_{07_01,04_01}.parquet` + `.meta.json` | TBD — cluster run pending |
+| CATH training h-maps (B3) | `work/immune-design/cath_4.3/h_maps/h_maps_cath_DRB1_{07_01,04_01}.parquet` + `.meta.json` | TBD — cluster run pending |
+| Phase C0 outputs | `work/immune-design/if_phase_c/c0/<allele_tag>/<run_id>/{generated.{parquet,fasta},run_config.yaml,manifest.json}` | TBD — cluster run pending |
+| Phase C1 outputs | `work/immune-design/if_phase_c/c1/<allele_tag>/<run_id>/{generated.{parquet,fasta},run_config.yaml,manifest.json,trajectories/*.parquet}` | TBD — cluster run pending |
+| Guidance sweep results | N/A | superseded by Phase C (Module M superseded 2026-04-07) |
 
 ---
 

@@ -1,0 +1,331 @@
+"""Runtime helpers shared by Phase C scripts."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import torch
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BYPROT_SRC = PROJECT_ROOT / "inverse_folding" / "dplm" / "src"
+if str(BYPROT_SRC) not in sys.path:
+    sys.path.insert(0, str(BYPROT_SRC))
+
+from dataclasses import dataclass
+
+
+_BYPROT_IMPORTS: dict[str, Any] | None = None
+CANONICAL_AA = frozenset("ACDEFGHIKLMNPQRSTVWY")
+
+
+@dataclass(frozen=True)
+class PreparedBackbone:
+    batch: dict[str, Any]
+    structure_path: Path
+    sequence_length: int
+
+
+@dataclass(frozen=True)
+class DPLMDenoiserContext:
+    task: Any
+    encoder_out: dict[str, Any]
+    template_prev_tokens: torch.Tensor
+    residue_mask: torch.Tensor
+    tokens_template: torch.Tensor
+    sequence_length: int
+
+
+def safe_allele_tag(allele: str) -> str:
+    return "".join(c if (c.isalnum() or c in ("-", ".")) else "_" for c in allele)
+
+
+def safe_file_id(protein_id: str) -> str:
+    return "".join(c if (c.isalnum() or c in ("-", "_", ".")) else "_" for c in protein_id)
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def git_sha(root: Path | None = None) -> str:
+    repo_root = root or PROJECT_ROOT
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_root,
+                text=True,
+            )
+            .strip()
+        )
+    except Exception:  # noqa: BLE001
+        return "UNKNOWN"
+
+
+def checkpoint_digest(path: Path | str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_if_task(checkpoint_path: str | Path, device: str) -> Any:
+    imports = _load_byprot_imports()
+    checkpoint_path = Path(checkpoint_path).resolve()
+    experiment_dir = checkpoint_path.parent.parent
+    task, _ = imports["load_from_experiment"](str(experiment_dir), ckpt=checkpoint_path.name)
+    task = task.eval()
+    task = task.to(torch.device(device))
+    return task
+
+
+def load_test_entries(test_set_parquet: str | Path) -> pd.DataFrame:
+    df = pd.read_parquet(test_set_parquet).copy()
+    required = {"protein_id", "sequence", "sequence_length", "pdb_path"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"test-set parquet missing required columns: {sorted(missing)}")
+    if df["protein_id"].duplicated().any():
+        raise ValueError("test-set parquet contains duplicate protein_id values")
+    return df
+
+
+def resolve_structure_path(entry: pd.Series | dict[str, Any], pdb_root: str | Path) -> Path:
+    row = dict(entry)
+    root = Path(pdb_root)
+    protein_id = str(row["protein_id"])
+    pdb_path = str(row.get("pdb_path") or "")
+    safe_id = safe_file_id(protein_id)
+
+    candidates: list[Path] = []
+    raw_path = Path(pdb_path) if pdb_path else None
+    if raw_path:
+        if raw_path.is_absolute():
+            candidates.append(raw_path)
+        else:
+            candidates.append(root / raw_path)
+            candidates.append(root / raw_path.name)
+            stem = raw_path.stem
+            candidates.append(root / f"{stem}.pdb")
+            candidates.append(root / f"{stem}.cif")
+
+    candidates.extend(
+        [
+            root / f"{protein_id}.pdb",
+            root / f"{protein_id}.cif",
+            root / f"{safe_id}.pdb",
+            root / f"{safe_id}.cif",
+        ]
+    )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists():
+            return candidate
+
+    raise FileNotFoundError(
+        f"could not resolve structure for protein_id={protein_id} under pdb_root={root}"
+    )
+
+
+def prepare_backbone(
+    *,
+    task: Any,
+    entry: pd.Series | dict[str, Any],
+    pdb_root: str | Path,
+    device: str,
+) -> PreparedBackbone:
+    row = dict(entry)
+    protein_id = str(row["protein_id"])
+    sequence = str(row["sequence"]).upper()
+    sequence_length = int(row["sequence_length"])
+    if len(sequence) != sequence_length:
+        raise ValueError(
+            f"{protein_id}: len(sequence)={len(sequence)} != sequence_length={sequence_length}"
+        )
+
+    structure_path = resolve_structure_path(row, pdb_root)
+    chain_id = infer_chain_id(protein_id)
+    imports = _load_byprot_imports()
+    coords, structure_sequence = imports["load_coords"](str(structure_path), chain=chain_id)
+    if len(structure_sequence) != sequence_length:
+        raise ValueError(
+            f"{protein_id}: structure length {len(structure_sequence)} != sequence_length {sequence_length}"
+        )
+
+    featurizer = task.alphabet.featurizer
+    batch = featurizer([{"name": protein_id, "seq": sequence, "coords": coords}])
+    for key, value in list(batch.items()):
+        if torch.is_tensor(value):
+            batch[key] = value.to(device)
+
+    return PreparedBackbone(
+        batch=batch,
+        structure_path=structure_path,
+        sequence_length=sequence_length,
+    )
+
+
+def generate_native_sequence(
+    *,
+    task: Any,
+    prepared: PreparedBackbone,
+    max_iter: int,
+    temperature: float,
+    seed: int,
+) -> str:
+    _seed_all(seed)
+    batch = clone_batch(prepared.batch)
+    tokens = batch["tokens"]
+    coord_mask = batch["coord_mask"]
+    prev_tokens, prev_token_mask = task.inject_noise(tokens, coord_mask, noise="full_mask")
+    batch["prev_tokens"] = prev_tokens
+    batch["prev_token_mask"] = prev_token_mask
+
+    output_tokens, _ = task.model.generate(
+        batch=batch,
+        max_iter=max_iter,
+        sampling_strategy="argmax",
+        temperature=temperature,
+        use_draft_seq=bool(task.hparams.generator.use_draft_seq),
+    )
+    special_sym_mask = (
+        tokens.eq(task.alphabet.padding_idx)
+        | tokens.eq(task.alphabet.cls_idx)
+        | tokens.eq(task.alphabet.eos_idx)
+    )
+    output_tokens.masked_scatter_(special_sym_mask, tokens[special_sym_mask])
+    residue_mask = coord_mask & ~special_sym_mask
+    return decode_residue_tokens(task, output_tokens[0, residue_mask[0]].cpu())
+
+
+def build_dplm_denoiser_context(
+    *,
+    task: Any,
+    prepared: PreparedBackbone,
+) -> DPLMDenoiserContext:
+    batch = clone_batch(prepared.batch)
+    tokens = batch["tokens"]
+    coord_mask = batch["coord_mask"]
+    prev_tokens, prev_token_mask = task.inject_noise(tokens, coord_mask, noise="full_mask")
+    batch["prev_tokens"] = prev_tokens
+    batch["prev_token_mask"] = prev_token_mask
+    encoder_out = task.model.forward_encoder(
+        batch,
+        use_draft_seq=bool(task.hparams.generator.use_draft_seq),
+    )
+    special_sym_mask = (
+        tokens.eq(task.alphabet.padding_idx)
+        | tokens.eq(task.alphabet.cls_idx)
+        | tokens.eq(task.alphabet.eos_idx)
+    )
+    residue_mask = coord_mask & ~special_sym_mask
+    sequence_length = int(residue_mask.sum().item())
+    return DPLMDenoiserContext(
+        task=task,
+        encoder_out=encoder_out,
+        template_prev_tokens=prev_tokens[0].clone(),
+        residue_mask=residue_mask[0].clone(),
+        tokens_template=tokens[0].clone(),
+        sequence_length=sequence_length,
+    )
+
+
+def make_dplm_denoiser(context: DPLMDenoiserContext):
+    """Wrap the frozen DPLM decoder as ``denoiser(x_t, t, struct)``."""
+
+    residue_positions = torch.nonzero(context.residue_mask, as_tuple=False).flatten()
+
+    def _denoiser(x_t: torch.Tensor, t: float, struct: Any = None) -> torch.Tensor:
+        del t, struct
+        if x_t.shape != (context.sequence_length,):
+            raise ValueError(
+                f"expected x_t shape ({context.sequence_length},), got {tuple(x_t.shape)}"
+            )
+        prev_tokens = context.template_prev_tokens.clone()
+        prev_tokens[residue_positions] = x_t.to(prev_tokens.device)
+        esm_out = context.task.model.decoder(
+            batch={"prev_tokens": prev_tokens.unsqueeze(0)},
+            encoder_out=context.encoder_out,
+            need_head_weights=False,
+        )
+        logits = esm_out["logits"][0, residue_positions].detach()
+        logits[..., context.task.alphabet.mask_idx] = -torch.inf
+        logits[..., context.task.alphabet.unk_idx] = -torch.inf
+        logits[..., context.task.alphabet.padding_idx] = -torch.inf
+        logits[..., context.task.alphabet.cls_idx] = -torch.inf
+        logits[..., context.task.alphabet.eos_idx] = -torch.inf
+        x_id = getattr(context.task.model, "x_id", None)
+        if x_id is not None:
+            logits[..., int(x_id)] = -torch.inf
+        return logits.cpu()
+
+    return _denoiser
+
+
+def decode_residue_tokens(task: Any, residue_tokens: torch.Tensor) -> str:
+    tokens = [task.alphabet.get_tok(int(tok)) for tok in residue_tokens]
+    invalid = sorted({tok for tok in tokens if tok not in CANONICAL_AA})
+    if invalid:
+        raise RuntimeError(
+            "decoded non-canonical residue tokens from sampler output: "
+            f"{invalid}"
+        )
+    return "".join(tokens)
+
+
+def clone_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    cloned: dict[str, Any] = {}
+    for key, value in batch.items():
+        if torch.is_tensor(value):
+            cloned[key] = value.clone()
+        else:
+            cloned[key] = copy.deepcopy(value)
+    return cloned
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def infer_chain_id(protein_id: str) -> str | None:
+    parts = protein_id.split("_", maxsplit=1)
+    if len(parts) == 2 and len(parts[0]) == 4 and parts[0][0].isdigit():
+        return parts[1]
+    return None
+
+
+def _seed_all(seed: int) -> None:
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _load_byprot_imports() -> dict[str, Any]:
+    global _BYPROT_IMPORTS
+    if _BYPROT_IMPORTS is None:
+        from byprot.utils import load_from_experiment
+        from byprot.utils.io import load_coords
+
+        _BYPROT_IMPORTS = {
+            "load_coords": load_coords,
+            "load_from_experiment": load_from_experiment,
+        }
+    return _BYPROT_IMPORTS

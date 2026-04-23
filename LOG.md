@@ -1752,6 +1752,27 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `epitope_head/configs/inference.yaml`
 
 ### L0061
+- timestamp: 2026-04-23T17:10:00+08:00
+- type: PLAN_UPDATE
+- module: PHASE_C
+- trigger: User (Coder-track) redirected scope: experimental-design decisions (which arms to run, which `c` values to sweep, whether to add an explicit DFM-uniform control) belong to the experimenter, not to the code spec. The prior Phase C stub left `g(h)` form, step count, schedule choice, and arm selection as "open for Thinker discussion", blocking code work. User asked for a code contract + hyperparameter schema that exposes every tunable knob as YAML so arm selection is config, not code.
+- change_summary: Expanded `PLAN_IF.md` §Phase C from a stub to an implementation-ready spec for Tasks C0 (DPLM native-sampler baseline driver) and C1 (sampling-only position-dependent DFM sampler). Froze (a) the §4.3 sampling algorithm as the C1 reference pseudocode, (b) a YAML hyperparameter schema covering sampler (`n_steps`, `seed`, `temperature`, `n_designs_per_protein`), schedule (`base_form ∈ {linear, cosine, cubic}`), amplification (`form ∈ {constant_one, linear_clamp, sigmoid, power}`, `c`, `mu`, `kappa`, `p`, `h_source ∈ {h_raw, h_processed, h_normalized_corpus}`, `g_max_cap`), CFG (`enabled`, `w`), and H3 h-shuffle (`enabled`, `seed`), (c) a denoiser-agnostic sampler API (`denoiser(x_t, t, struct) → logits[L, V]`) so C2/C3 can reuse the module, (d) a 5-config preset scaffold (`c1_null/c1_linclamp/c1_sigmoid/c1_power/c1_shuffle`) whose names are examples, not experimental claims, (e) full CLI + SLURM + failure-handling + TDD contracts, and (f) numerical guards (`log κ_base` floor, `g_max_cap`, final-step force-unmask, NaN abort). C2 (retrain) and C3 (FiLM + CFG) remain stubs. Also updated §6 Open Decisions item 6 to reflect that C1's code contract is frozen while experimental values remain experimenter-controlled.
+- rationale: (1) Separating code contract (what the module accepts as input and what it guarantees) from experimental policy (which values to run) is the correct Coder/Experimenter split; baking specific `c` values or arm choices into code forces refactors every time the experimenter adjusts the sweep. (2) The `constant_one` amplification form collapses C1 to a DFM-sampler uniform-schedule run without adding a separate arm or code path — the experimenter can exercise that control (or any position-dependent arm, or the H3 shuffle control) purely by swapping YAML. (3) Denoiser-as-callable keeps the sampler module reusable for C2 (retrained denoiser) and C3 (FiLM-conditioned denoiser) without rewriting the loop. (4) Preset YAMLs are scaffolds, not frozen experimental choices — they live in `configs/` but the plan is explicit that the experimenter edits/sweeps them. (5) Numerical guards are derived from §2.2 / §4.2 of the derivation (divergence behavior near `t=1`, well-posedness of `κ_i'(t)` near `t=0`) and from the tail behavior of log-mean-exp h values observed in the existing epitope head output.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_IF.md` (§Phase C rewritten: Tasks C0 + C1 expanded, C2 + C3 kept as stubs; §6 item 6 updated)
+- evidence: N/A (planning update, no code change). Algorithm pseudocode verified against `doc/Reference_Flow_Derivation.md §4.3`; hyperparameter schema covers all choices flagged in §7.1 (amplification forms) and §7.2 (base schedule) of the derivation; preset configs map one-to-one to the arm variants needed to test hypotheses H1–H5 without encoding any experimental claim in code.
+- impact:
+  - scope: Phase C task-C0 and task-C1 specifications only. No code changed. C2/C3 still stubs. B2/B3 spec (L0060) untouched.
+  - risk: low (spec is a superset of all discussed configurations; numerical guards cover known edge cases; denoiser-agnostic boundary keeps the sampler reusable).
+  - confidence: 0.93
+- status: done
+- next_action: Implement `inverse_folding/reference_flow/{schedule,amplification,sampler,config}.py` + preset YAMLs + `scripts/run_if_phase_c{0,1}.py` + SLURM launchers + tests per the TDD gate; register all under `doc/SCRIPTS.md §Phase C`; gate full-test-set runs on `c1_null.yaml` passing the smoke run.
+- refs:
+  - `PLAN_IF.md:§Phase C / Task C0, Task C1`
+  - `doc/Reference_Flow_Derivation.md:§4.3 (sampling algorithm), §2.2 (rate regularity), §4.2 (step-size constraint), §7.1 (g forms), §7.2 (base schedules)`
+  - L0060 (B2/B3 feed h_maps to C1)
+
+### L0061
 - timestamp: 2026-04-22T21:45:00+08:00
 - type: VERIFICATION
 - module: PHASE_B
@@ -1811,3 +1832,48 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `LOG.md:L0061`
   - `PLAN_IF.md:Task B2`
   - `PLAN_IF.md:Task B3`
+
+### L0063
+- timestamp: 2026-04-23T01:45:00+08:00
+- type: IMPLEMENTATION
+- module: PHASE_C
+- trigger: User asked to review Phase C0/C1 in `PLAN_IF.md` and implement if there were no blocking concerns.
+- change_summary: Implemented the Phase C0/C1 code path: added the `inverse_folding/reference_flow` package (schedule, amplification, YAML config validator, denoiser-agnostic sampler, DPLM runtime helpers), five preset YAML scaffolds, the C0 native-sampler driver, the C1 sampling-only reference-flow driver, and parameterized SLURM launchers. Registered both drivers in `doc/SCRIPTS.md` and advanced `PROGRESS.md` to reflect that C0/C1 are code-ready.
+- rationale: The C0/C1 plan is internally coherent. C0 only needs a reproducible native-sampler wrapper over the frozen Module K checkpoint, while C1 needs the mathematically frozen §4.3 sampler with all experiment knobs lifted into YAML so future arm selection stays in config rather than code. The implementation keeps sampler math independent of DPLM internals and confines checkpoint/backbone wiring to the CLI/runtime layer.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/__init__.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/schedule.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/amplification.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/config.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/sampler.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/runtime.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/c1_null.yaml`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/c1_linclamp.yaml`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/c1_sigmoid.yaml`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/c1_power.yaml`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/c1_shuffle.yaml`
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_phase_c0.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_phase_c1.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_phase_c0.slurm`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_phase_c1.slurm`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md`
+- evidence: |
+    `pytest -q tests/inverse_folding/test_reference_flow_schedule.py tests/inverse_folding/test_reference_flow_amplification.py tests/inverse_folding/test_reference_flow_config.py tests/inverse_folding/test_reference_flow_sampler.py tests/scripts/test_run_if_phase_c0_script.py` => 16 passed.
+    `pytest -q tests/inverse_folding/test_h_maps_contract.py tests/inverse_folding/test_module_l_eval_contract.py` => 46 passed.
+    `python -m py_compile scripts/run_if_phase_c0.py scripts/run_if_phase_c1.py inverse_folding/reference_flow/*.py` => passed.
+    `python scripts/run_if_phase_c0.py --help` => argparse/import smoke passed.
+    `python scripts/run_if_phase_c1.py --help` => argparse/import smoke passed.
+    `python -c "from inverse_folding.reference_flow.runtime import safe_allele_tag; print(...)"` => runtime import smoke passed after moving DPLM imports to lazy loading.
+    `bash -n scripts/submit_if_phase_c0.slurm` => passed.
+    `bash -n scripts/submit_if_phase_c1.slurm` => passed.
+- impact:
+  - scope: Phase C0/C1 generation code only; existing Phase B h-map and Module L evaluation contracts remain unchanged.
+  - risk: medium
+  - confidence: 0.89
+- status: done
+- next_action: Run `submit_if_phase_c0.slurm` for one allele as the unguided baseline, then launch `submit_if_phase_c1.slurm` with `c1_null.yaml` once the matching B2 h-maps exist; reserve `h_normalized_corpus` arms until B3 corpus stats are materialized.
+- refs:
+  - `PLAN_IF.md:Task C0`
+  - `PLAN_IF.md:Task C1`
+  - `LOG.md:L0062`
