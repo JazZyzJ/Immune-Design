@@ -7,8 +7,9 @@ This file governs how scripts and SLURM submission files are written in this pro
 Before writing any new script:
 
 1. Read `doc/SCRIPTS.md` and identify the target module section.
-2. If an existing script covers ≥60% of the intended functionality, **extend it with CLI arguments** rather than creating a new file.
-3. If a new script is genuinely needed, register it in `doc/SCRIPTS.md` before marking the task as complete.
+2. Read the guidance file `DELLA_USAGE.md` to fully understand the cluster usage if you think the job need specific resources settings.
+3. If an existing script covers ≥60% of the intended functionality, **extend it with CLI arguments** rather than creating a new file.
+4. If a new script is genuinely needed, register it in `doc/SCRIPTS.md` before marking the task as complete.
 
 ## 2. Parameterize over Duplicate
 
@@ -84,3 +85,17 @@ Note: since SBATCH directives are static, dynamic resource selection requires `s
 The authoritative index is `doc/SCRIPTS.md`. Consult it before any script work.
 
 Note: The current codebase has legacy duplication in SLURM scripts that predates this protocol. New scripts must follow these rules; legacy scripts will be consolidated in a future cleanup pass.
+
+## 6. Test on Cluster w/o submitting
+
+On the cluster, you can test on login node via:
+
+- First load environment:
+
+```bash
+module purge
+module load anaconda3/2025.12
+conda activate immune-design
+```
+
+- Then test the script with local python

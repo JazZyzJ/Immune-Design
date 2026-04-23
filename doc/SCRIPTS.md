@@ -1,0 +1,242 @@
+# Scripts Overview
+
+This file lists all scripts and SLURM submission files, organized by project module.
+
+---
+
+## Dataset Pipeline (V2)
+
+Scripts that build the `data/mhc_if_v2.tsv` dataset from raw IEDB exports.
+
+### End-to-End
+
+1. `scripts/iedb_end_to_end.py` — Runs the full IEDB-only V2 pipeline from raw export to `data/mhc_if_v2.tsv`.
+
+### IEDB Cleaning
+
+1. `scripts/iedb/filter_mhc_ligand.py` — Filters raw IEDB export to Class II, MS, ligand presentation, human host. Output: `data/iedb_ligand_rows_filtered.tsv`.
+2. `scripts/iedb/filter_mhc_allele.py` — Keeps only valid allele rows and normalizes allele names. Output: `data/iedb_ligand_with_allele.tsv`.
+3. `scripts/iedb/build_iedb_clean.py` — Builds high-resolution IEDB clean schema. Output: `data/iedb_clean_v1.tsv`.
+4. `scripts/iedb/extract_low_reso_alleles.py` — Extracts low-resolution allele rows. Output: `data/iedb_low_reso.tsv`.
+5. `scripts/iedb/build_iedb_low_reso_clean.py` — Builds low-resolution clean schema with `resolution`. Output: `data/iedb_low_reso_clean.tsv`.
+
+### V2 Assembly Utilities
+
+1. `scripts/add_positions.py` — Adds `peptide_position_info` to IEDB clean files using raw export coordinates.
+2. `scripts/collect_accessions.py` — Collects protein accessions for sequence download. Outputs: `data/uniprot_accessions.txt` and related lists.
+3. `scripts/identify_sources.py` — Maps accessions to source databases from raw export. Output: `data/accessions_sources.csv`.
+4. `scripts/fetch_sequences.py` — Downloads UniProt FASTA sequences. Output: `data/uniprot_sequences.fasta`.
+5. `scripts/fetch_ncbi_sequences.py` — Downloads NCBI FASTA sequences. Output: `data/ncbi_sequences.fasta`.
+6. `scripts/regenerate_combined_fasta.py` — Merges UniProt + NCBI into `data/all_sequences.fasta`.
+7. `scripts/finalize_v2.py` — Verifies positions, fixes shifts, and adds flanks. Use `--iedb-only` for IEDB-only V2. Output: `data/mhc_if_v2.tsv`.
+8. `scripts/update_resolution.py` — Recomputes the `resolution` column for `data/mhc_if_v2.tsv`.
+9. `scripts/validate_consistency.py` — Validates peptide vs protein slices and removes mismatches in-place.
+
+---
+
+## Epitope Head
+
+Scripts for training, inference, ablation, and visualization of the Epitope Head model.
+
+### Training
+
+1. `scripts/train_v1.py` — Train Epitope Head v1 scorer (wires Modules A-G into executable training pipeline).
+2. `scripts/train_v2_ablation.py` — Train Epitope Head v2 with encoder ablation for a single (encoder_id, seed) combination.
+
+### Inference & Visualization
+
+1. `scripts/infer_v1.py` — Run Epitope Head inference with CNN encoder on single or batched sequences; export canonical JSON payloads.
+2. `scripts/visualize_demo.py` — Visualize protein residue immunogenicity risk as a heatmap HTML.
+
+### Ablation & Diagnostics
+
+1. `scripts/flank_ablation_test.py` — Compare original vs flank-ablated pp_AUC in ablation experiment.
+2. `scripts/eval_encoder_ablation.py` — Collect metrics from completed encoder ablation runs and produce summary artifacts (ranking, mutation sensitivity, convergence, latency).
+
+### Benchmark
+
+1. `scripts/benchmark_head_vs_nmp.py` — Window-level comparison of epitope head vs NetMHCIIpan on a FASTA (no ground truth). Aligns predictions by (position, peptide_length), uses NMP strong-binder as label, computes per-protein AUC/AP/Recall@K/Spearman. Accelerated NMP. Outputs JSON.
+2. `scripts/benchmark_iedb_test.py` — IEDB test-set benchmark: evaluates **both** head and NMP against IEDB ground-truth EL-positive spans (from `protein_samples_*.parquet` + `test_ids.txt`). Default NMP mode is "original" (batch_size=1, max_lengths_per_call=14, n_workers=1) for a clean baseline wall-time. Outputs JSON with per-protein + macro metrics and detailed timing.
+
+### SLURM
+
+1. `scripts/submit_train_v1.slurm` — Epitope Head v1 training (24hr, 1 GPU, 64GB).
+2. `scripts/submit_train_v1_balanced.slurm` — Balanced Epitope Head v1 training (24hr, 1 GPU, 64GB).
+3. `scripts/submit_train_v2_cnn.slurm` — Epitope Head v2 CNN training (24hr, 1 GPU, 64GB).
+4. `scripts/submit_cnn_enhance.slurm` — CNN Lite augmentation training (24hr, 1 GPU, 64GB).
+5. `scripts/submit_encoder_ablation.slurm` — Encoder ablation evaluation (24hr, 1 GPU, 64GB).
+6. `scripts/submit_flank_ablation.slurm` — Flank ablation experiment (12hr, 1 GPU, 64GB).
+7. `scripts/submit_benchmark.slurm` — Head vs NMP benchmark (24hr, 1 GPU, 16 CPUs). `MODE=fasta` (default) runs `benchmark_head_vs_nmp.py`; `MODE=iedb` runs `benchmark_iedb_test.py` against IEDB ground truth. Shared overrides: `EPITOPE_CKPT`, `ALLELE`, `VARIANT_ID`, `DEVICE`. FASTA-mode: `INPUT_FASTA`, `NMP_WORKERS`, `NMP_BATCH_SIZE`. IEDB-mode: `PROFILE`, `ALLELE_SUBDIR`, `PROTEIN_SAMPLES_PARQUET`, `TEST_IDS`, `NMP_MODE`, `NMP_WORKERS`, `NMP_BATCH_SIZE`, `NMP_MAX_LENGTHS_PER_CALL`, `NMP_TIMEOUT`.
+
+---
+
+## Data Augmentation (PLAN.md)
+
+Mutation-based augmentation pipeline for Epitope Head training data.
+
+1. `scripts/build_mutation_registry.py` — Build full mutation registry for strict-train proteins with WT verification, mutation enumeration, scoring, and top-N selection.
+2. `scripts/run_mutation_pilot.py` — Pilot feasibility run for NetMHCIIpan mutation augmentation with stratified subset validation.
+3. `scripts/materialize_augmented_train_set.py` — Materialize augmented train-only `ProteinSample` artifacts from mutation registry and source parquet.
+
+### SLURM
+
+1. `scripts/submit_mutation_augmentation.slurm` — Mutation augmentation sharding (6hr, CPU, 32GB, array job).
+2. `scripts/submit_mutation_merge.slurm` — Mutation registry merge (30min, CPU, 16GB).
+
+---
+
+## Inverse Folding — Module K: DPLM Baseline
+
+Infrastructure and unconditional IF baseline (DPLM v1 + GVP adapter).
+
+1. `scripts/train_if_v1.py` — CLI entry point for DPLM v1 adapter training with local smoke test and cluster support.
+2. `scripts/validate_if_baseline.py` — Generate sequences and measure structural quality (scTM, scRMSD, pLDDT) for K3 baseline validation.
+
+### SLURM
+
+1. `scripts/submit_if_train.slurm` — DPLM v1 adapter training (48hr, 2 GPUs, 64GB).
+2. `scripts/submit_if_validate.slurm` — K3 baseline validation (12hr, 1 GPU, 64GB).
+
+---
+
+## Inverse Folding — Module L: Data Selection & Evaluation (PLAN_DATA_SEL.md)
+
+Test set curation (three-tier) and shared evaluation pipeline.
+
+### Test Set Curation
+
+1. `scripts/run_overlap_filter.py` — Run MMseqs2 overlap filter against CATH training sequences (L1).
+2. `scripts/validate_tier1.py` — Validate Tier 1 (gold standard) candidate JSON for the IF test set (L2).
+2a. `scripts/build_tier1_candidates.py` — Build a Tier 1 candidate JSON for one allele (L2 source-of-truth). Reads per-allele epitope-head test split, extracts matching EL spans from `data/mhc_if_v2.tsv`, queries PDBe SIFTS `/mappings/best_structures/{uniprot}` (endpoint: `https://www.ebi.ac.uk/pdbe/api/mappings/best_structures/{uniprot}`) for X-ray chains, applies the Tier 1 selection band (coverage 10-50%, resolution ≤ 2.5 Å, chain 100-500 AA, ≥ 2 EL spans), ranks by `epitope_coverage` (configurable), emits a validated JSON. SIFTS responses cached under `outputs/.cache/sifts/{uniprot}.json` (lazy, per-UniProt); delete a cache file to force refetch when PDB entries update. Network 404 cached as `{}` to avoid retry storms. Backed by `inverse_folding/evaluation/tier1_builder.py`.
+3. `scripts/prescreen_tier2.py` — Batch pre-screen PDB candidates for Tier 2 via MMseqs2 overlap, epitope head, and CATH diversity sampling (L3).
+4. `scripts/validate_tier3.py` — Validate Tier 3 (therapeutic) candidate JSON for the IF test set (L4).
+5. `scripts/assemble_if_test_set.py` — Assemble final `test_proteins.parquet` from three tiers.
+6. `scripts/download_tier2_candidates.py` — Download and filter RCSB PDB sequence database for Tier 2 candidate pool (single-chain X-ray, 100-500 AA, ≤ 2.5 Å).
+7. `scripts/download_test_set_pdbs.py` — Download PDB structure files for assembled IF test set proteins.
+8. `scripts/prescreen_uricases.py` — Pre-screen uricase sequences for Tier 3 via MMseqs2 overlap, epitope head prefilter, and batched NetMHCIIpan.
+
+### Evaluation
+
+1. `scripts/evaluate_if.py` — Run full IF evaluation pipeline: PDB + generated FASTA → ESMFold → TM-align → epitope head → NetMHCIIpan.
+
+### SLURM
+
+1. `scripts/submit_assemble_test_set.slurm` — Assemble final IF test set (8hr, 1 GPU, 64GB).
+2. `scripts/submit_prescreen_tier2.slurm` — Tier 2 prescreening pipeline (batch submission).
+3. `scripts/submit_download_tier2.slurm` — Download Tier 2 PDB candidate sequences (2hr, CPU, 16GB).
+4. `scripts/submit_prescreen_uricases.slurm` — Uricase pre-screening for Tier 3 (24hr, 1 GPU, 64GB). Parameterized: `ALLELE`, `EPITOPE_CKPT`.
+
+## Inverse Folding — Phase B: Experiment Preparation (PLAN_IF.md)
+
+Mechanical preparation jobs that bridge the fixed IF test set and Phase C reference-flow experiments.
+
+### h-map Precompute
+
+1. `scripts/precompute_h_maps.py` — Shared B2/B3 CLI that computes wide per-protein h-map parquets from epitope-head `debug.h_raw` and `residue_hotspot`, with metadata sidecars, resume support, failure ledgers, and CATH corpus stats for JSONL training inputs.
+
+### SLURM
+
+1. `scripts/submit_precompute_h_test.slurm` — B2 test-set h-map precompute (24hr, 1 GPU, 64GB). Parameterized: `ALLELE`, `EPITOPE_CKPT`, `INPUT_PARQUET`, `OUTPUT_PARQUET`, `OUTPUT_META`, `WINDOW_BATCH_SIZE`, `RESUME_FROM`.
+2. `scripts/submit_precompute_h_cath.slurm` — B3 CATH train h-map precompute (72hr, 1 GPU, 64GB). Parameterized: `ALLELE`, `EPITOPE_CKPT`, `CHAIN_SET`, `SPLITS_JSON`, `SPLIT`, `OUTPUT_PARQUET`, `OUTPUT_META`, `WINDOW_BATCH_SIZE`, `RESUME_FROM`.
+
+---
+
+## Inverse Folding — Phase C: Reference Flow (PLAN_IF.md)
+
+Sampling-only and native-sampler generation drivers for the Phase C contribution.
+
+### Drivers
+
+1. `scripts/run_if_phase_c0.py` — C0 native DPLM sampler baseline on the assembled IF test set. Writes `generated.parquet`, `generated.fasta`, `run_config.yaml`, and `manifest.json` under `output_root/<allele_tag>/<run_id>/`.
+2. `scripts/run_if_phase_c1.py` — C1 sampling-only position-dependent DFM driver. Consumes B2 h-maps plus a validated YAML config, supports optional trajectory dumps, guarded resume from prior partial/final runs, partial checkpoint writes, and CPU retry on per-design GPU OOM.
+
+### SLURM
+
+1. `scripts/submit_if_phase_c.slurm` — Shared Phase C launcher (24hr, 1 GPU, 64GB). `MODE=native` runs `run_if_phase_c0.py`; `MODE=reference_flow` runs `run_if_phase_c1.py`. Shared overrides: `ALLELE`, `CHECKPOINT`, `TEST_SET_PARQUET`, `PDB_ROOT`, `OUTPUT_ROOT`, `DEVICE`. Native-mode overrides: `N_DESIGNS_PER_PROTEIN`, `SEED`, `MAX_ITER`, `TEMPERATURE`. Reference-flow overrides: `H_MAPS_PARQUET`, `CONFIG_PATH`, `FAIL_PCT_THRESHOLD`, `SAVE_TRAJECTORIES`, `H_CORPUS_STATS`, `RESUME_FROM`, `N_DESIGNS_PER_PROTEIN`, `SEED`, `N_STEPS`.
+
+---
+
+## Inverse Folding — Module M: Classifier Guidance (PLAN_IF.md)
+
+Inference-time epitope-aware steering with eta sweep.
+
+1. `scripts/run_if_guidance_sweep.py` — Run classifier guidance eta sweep on fixed test set with DPLM IF generation, epitope head scoring, and risk-weighted resampling.
+
+### SLURM
+
+1. `scripts/submit_if_guidance_sweep.slurm` — M3 guidance eta sweep (24hr, 1 GPU, 64GB).
+
+---
+
+## Inverse Folding — Module N: Comparison Baselines
+
+Post-hoc filter baselines for IF evaluation.
+
+1. `scripts/run_if_level1_filter.py` — N1 level-1 post-hoc filter: reads M3 eta=0 candidates, selects argmin-global-risk per protein.
+
+### SLURM
+
+1. `scripts/submit_if_level1_filter.slurm` — N1 level-1 filter baseline (1hr, CPU, 16GB).
+
+---
+
+## Legacy SLURM Duplicates (Pre-Consolidation)
+
+> These scripts predate the parameterization protocol in `scripts/CLAUDE.md`.
+> They are allele-specific copies that should eventually be merged into their parent scripts.
+> **Do not add new files in this pattern** — use env-var overrides instead.
+
+| Script | Duplicates | Should use |
+|--------|-----------|------------|
+| `submit_aug_drb0401.slurm` / `submit_aug_drb1501.slurm` | `submit_mutation_augmentation.slurm` | `ALLELE=... sbatch submit_mutation_augmentation.slurm` |
+| `submit_train_drb0401.slurm` / `submit_train_drb1501.slurm` | `submit_cnn_enhance.slurm` | Parameterize with `ALLELE`, `DATA_DIR`, `REGISTRY` |
+| `submit_prescreen_uricases_0401.slurm` | `submit_prescreen_uricases.slurm` | `ALLELE=... sbatch submit_prescreen_uricases.slurm` |
+| `submit_epi_benchmark.slurm` | `submit_benchmark.slurm` | Already parameterized, use `submit_benchmark.slurm` |
+
+---
+
+## Analysis (Optional)
+
+1. `scripts/analysis/statistics_v2.py` — Full dataset statistics for `data/mhc_if_v2.tsv`.
+2. `scripts/analysis/analyze_overlap.py` — Overlap analysis across sources in V2.
+3. `scripts/analysis/analyze_hla_distribution.py` — HLA distribution analysis for V2 (plots + stats).
+4. `scripts/analysis/analyze_clean_pids.py` — Protein accession statistics for IEDB clean files.
+5. `scripts/analysis/check_alleles.py` — Spot-check allele JSON formatting.
+6. `scripts/analysis/diagnose_e1.py` — Post-hoc diagnostics for E1 (Dilated CNN) ablation: per-protein AUC distribution and first-layer conv kernel visualization.
+7. `scripts/analysis/window_boundary_bias.py` — Analyze window-level boundary bias to check if distance to chunk boundaries systematically biases window selection.
+8. `scripts/analysis/tier1_structural_analysis.py` — Tier 1 IEDB structural analysis. Reads `tier1_candidates.json` + per-chain PDBs, computes per-residue (RSA, SS-3state, Cα B-factor z, contact number) via DSSP + BioPython, runs per-protein effect sizes (Cliff's δ, Mann–Whitney U) and pooled SS-coil log-OR via DerSimonian-Laird random-effects meta-analysis. Emits `per_residue.csv`, `per_protein_stats.json`, `meta_analysis.json`, and optional F2 supplementary PDF panels. Backed by `inverse_folding/analysis/structural_features.py`.
+
+---
+
+## Notebooks
+
+1. `notebooks/uricase_q00511_structural_profile.ipynb` — Head-free per-residue structural profile of *A. flavus* uricase (Q00511 / PDB 1R4U). Downloads 1R4U, aligns ATOM sequence to UniProt Q00511 (warns on numbering shift — observed `+1`), computes RSA via FreeSASA (Tien 2013 maxASA), DSSP 3-state SS (gracefully skips if mkdssp missing), Cα B-factor, contact number (8 Å cutoff), NetMHCIIpan 4.3 %Rank_EL for DRB1*07:01 + DRB1*04:01 (auto-detects bundled binary), and a stub loader for Kaiyi's `conservation_scores.tsv`. Annotates the 9 published catalytic residues as a positive control; surfaces residue-identity mismatches. Outputs `notebooks/outputs/q00511_profile.{parquet,csv}` plus two figures under `notebooks/outputs/figures/`. Reuses `inverse_folding.analysis.structural_features.compute_contact_number_from_coords` and `MAX_ASA_TIEN`.
+
+---
+
+## Atlas (Optional / Not Used)
+
+1. `scripts/atlas/atlas_find_positions.py` — Substring search for Atlas peptide positions in UniProt sequences.
+2. `scripts/atlas/analyze_atlas_stats.py` — Atlas-only stats for multi-hit positions.
+
+---
+
+## Legacy V1 (Deprecated)
+
+1. `scripts/legacy_v1/build_atlas_clean_v1.py` — Atlas clean build (V1).
+2. `scripts/legacy_v1/build_detailed_hla_table.py` — Atlas donor/allele table construction (V1).
+3. `scripts/legacy_v1/build_combined_json.py` — Atlas+IEDB JSON export (V1).
+4. `scripts/legacy_v1/process_hla_aggregated.py` — Atlas HLA aggregated processing (V1).
+5. `scripts/legacy_v1/process_alleles_tissues.py` — Atlas allele/tissue cleanup (V1).
+6. `scripts/legacy_v1/unify_clean_format.py` — Align Atlas clean format with IEDB (V1).
+7. `scripts/legacy_v1/collect_atlas_accessions.py` — Atlas accessions collection (V1).
+8. `scripts/legacy_v1/overlap_v1.py` — Legacy overlap analysis between Atlas and IEDB (V1).
+9. `scripts/legacy_v1/analyze_dr_dp_dq_ratio.py` — DR/DP/DQ ratio analysis (V1).
+10. `scripts/legacy_v1/inspect_headers.py` — Header inspection helper (V1/diagnostic).
+11. `scripts/legacy_v1/add_flanks.py` — Legacy flanking extractor (superseded by `finalize_v2.py`).
+
+---
+
+## Standard Raw Input
+
+- `data/iedb_raw.tsv` — Current standard filename for the IEDB raw export. Some scripts fall back to the legacy name if present.

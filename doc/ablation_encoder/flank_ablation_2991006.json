@@ -1,0 +1,1043 @@
+{
+  "summary": {
+    "profile": "strict",
+    "split": "val",
+    "n_proteins_total": 126,
+    "n_proteins_with_valid_pp_auc": 126,
+    "original": {
+      "n": 126,
+      "mean": 0.9572260009627493,
+      "median": 0.9976175725460052,
+      "std": 0.1122504722016862
+    },
+    "ablated": {
+      "n": 126,
+      "mean": 0.9339198330565105,
+      "median": 0.992834210395813,
+      "std": 0.14702634466197745
+    },
+    "delta_ablated_minus_original": {
+      "n": 126,
+      "mean": -0.02330616790623892,
+      "median": -0.0027523934841156006,
+      "std": 0.08196035969197861
+    },
+    "n_drop_gt_0.01": 33,
+    "n_drop_gt_0.02": 27,
+    "elapsed_sec": 44.68675708770752,
+    "samples_path": "/scratch/network/zc1519/work/immune-design/manifests/protein_samples_strict.parquet",
+    "split_ids_path": "/scratch/network/zc1519/work/immune-design/manifests/splits/strict/val_ids.txt",
+    "checkpoint": "/scratch/network/zc1519/run/ablation/cnn_enhance_v2/runs/B0/seed_42/best.pt",
+    "variant_id": "B0"
+  },
+  "per_protein": [
+    {
+      "protein_id": "F1KPF2",
+      "len": 6467,
+      "n_pos": 2,
+      "pp_auc_original": 0.9328781366348267,
+      "pp_auc_ablated": 0.7841257452964783,
+      "delta_ablated_minus_original": -0.1487523913383484
+    },
+    {
+      "protein_id": "F1KPM2",
+      "len": 3141,
+      "n_pos": 7,
+      "pp_auc_original": 0.8248315453529358,
+      "pp_auc_ablated": 0.7698674201965332,
+      "delta_ablated_minus_original": -0.05496412515640259
+    },
+    {
+      "protein_id": "F1KPY0",
+      "len": 2012,
+      "n_pos": 5,
+      "pp_auc_original": 0.8036607503890991,
+      "pp_auc_ablated": 0.71159827709198,
+      "delta_ablated_minus_original": -0.09206247329711914
+    },
+    {
+      "protein_id": "F1KQ47",
+      "len": 956,
+      "n_pos": 1,
+      "pp_auc_original": 0.17643477022647858,
+      "pp_auc_ablated": 0.4903333783149719,
+      "delta_ablated_minus_original": 0.31389860808849335
+    },
+    {
+      "protein_id": "F1KQJ9",
+      "len": 365,
+      "n_pos": 1,
+      "pp_auc_original": 0.7329358458518982,
+      "pp_auc_ablated": 0.3291529715061188,
+      "delta_ablated_minus_original": -0.4037828743457794
+    },
+    {
+      "protein_id": "F1KQK4",
+      "len": 1764,
+      "n_pos": 7,
+      "pp_auc_original": 0.7882798910140991,
+      "pp_auc_ablated": 0.8185590505599976,
+      "delta_ablated_minus_original": 0.030279159545898438
+    },
+    {
+      "protein_id": "F1KS82",
+      "len": 987,
+      "n_pos": 1,
+      "pp_auc_original": 0.9773062467575073,
+      "pp_auc_ablated": 0.9697907567024231,
+      "delta_ablated_minus_original": -0.0075154900550842285
+    },
+    {
+      "protein_id": "F1L0R7",
+      "len": 534,
+      "n_pos": 2,
+      "pp_auc_original": 0.9120901823043823,
+      "pp_auc_ablated": 0.9369899034500122,
+      "delta_ablated_minus_original": 0.024899721145629883
+    },
+    {
+      "protein_id": "F1L2I5",
+      "len": 373,
+      "n_pos": 4,
+      "pp_auc_original": 0.8000704050064087,
+      "pp_auc_ablated": 0.6932938098907471,
+      "delta_ablated_minus_original": -0.10677659511566162
+    },
+    {
+      "protein_id": "F1L3I0",
+      "len": 353,
+      "n_pos": 1,
+      "pp_auc_original": 0.9386712312698364,
+      "pp_auc_ablated": 0.9540033936500549,
+      "delta_ablated_minus_original": 0.015332162380218506
+    },
+    {
+      "protein_id": "F1L8I9",
+      "len": 397,
+      "n_pos": 1,
+      "pp_auc_original": 0.9994352459907532,
+      "pp_auc_ablated": 0.9994352459907532,
+      "delta_ablated_minus_original": 0.0
+    },
+    {
+      "protein_id": "F1LD64",
+      "len": 250,
+      "n_pos": 1,
+      "pp_auc_original": 0.9179471135139465,
+      "pp_auc_ablated": 0.8869084119796753,
+      "delta_ablated_minus_original": -0.03103870153427124
+    },
+    {
+      "protein_id": "F1LGC3",
+      "len": 196,
+      "n_pos": 1,
+      "pp_auc_original": 0.9171336889266968,
+      "pp_auc_ablated": 0.9759807586669922,
+      "delta_ablated_minus_original": 0.05884706974029541
+    },
+    {
+      "protein_id": "O00116",
+      "len": 658,
+      "n_pos": 1,
+      "pp_auc_original": 0.9988846778869629,
+      "pp_auc_ablated": 0.992304265499115,
+      "delta_ablated_minus_original": -0.0065804123878479
+    },
+    {
+      "protein_id": "O00468",
+      "len": 2068,
+      "n_pos": 2,
+      "pp_auc_original": 0.9975265860557556,
+      "pp_auc_ablated": 0.996342122554779,
+      "delta_ablated_minus_original": -0.0011844635009765625
+    },
+    {
+      "protein_id": "O00481",
+      "len": 513,
+      "n_pos": 3,
+      "pp_auc_original": 0.9988462924957275,
+      "pp_auc_ablated": 0.9970195293426514,
+      "delta_ablated_minus_original": -0.0018267631530761719
+    },
+    {
+      "protein_id": "O00560",
+      "len": 298,
+      "n_pos": 5,
+      "pp_auc_original": 0.8370729088783264,
+      "pp_auc_ablated": 0.792809784412384,
+      "delta_ablated_minus_original": -0.04426312446594238
+    },
+    {
+      "protein_id": "O00602",
+      "len": 326,
+      "n_pos": 1,
+      "pp_auc_original": 0.9997684359550476,
+      "pp_auc_ablated": 0.9942103028297424,
+      "delta_ablated_minus_original": -0.005558133125305176
+    },
+    {
+      "protein_id": "O14672",
+      "len": 748,
+      "n_pos": 1,
+      "pp_auc_original": 0.9993154406547546,
+      "pp_auc_ablated": 0.9971640706062317,
+      "delta_ablated_minus_original": -0.0021513700485229492
+    },
+    {
+      "protein_id": "O43570",
+      "len": 354,
+      "n_pos": 1,
+      "pp_auc_original": 0.881104052066803,
+      "pp_auc_ablated": 0.7004246115684509,
+      "delta_ablated_minus_original": -0.18067944049835205
+    },
+    {
+      "protein_id": "O60462",
+      "len": 931,
+      "n_pos": 8,
+      "pp_auc_original": 0.9783956408500671,
+      "pp_auc_ablated": 0.972341775894165,
+      "delta_ablated_minus_original": -0.0060538649559021
+    },
+    {
+      "protein_id": "O60784",
+      "len": 492,
+      "n_pos": 1,
+      "pp_auc_original": 0.9996988773345947,
+      "pp_auc_ablated": 0.9906654357910156,
+      "delta_ablated_minus_original": -0.009033441543579102
+    },
+    {
+      "protein_id": "O75339",
+      "len": 1184,
+      "n_pos": 3,
+      "pp_auc_original": 0.9947329759597778,
+      "pp_auc_ablated": 0.9899763464927673,
+      "delta_ablated_minus_original": -0.004756629467010498
+    },
+    {
+      "protein_id": "O75356",
+      "len": 428,
+      "n_pos": 1,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 1.0,
+      "delta_ablated_minus_original": 0.0
+    },
+    {
+      "protein_id": "O94886",
+      "len": 807,
+      "n_pos": 1,
+      "pp_auc_original": 0.999909520149231,
+      "pp_auc_ablated": 0.999909520149231,
+      "delta_ablated_minus_original": 0.0
+    },
+    {
+      "protein_id": "O95070",
+      "len": 293,
+      "n_pos": 1,
+      "pp_auc_original": 0.8407676219940186,
+      "pp_auc_ablated": 0.44579875469207764,
+      "delta_ablated_minus_original": -0.3949688673019409
+    },
+    {
+      "protein_id": "O95185",
+      "len": 931,
+      "n_pos": 1,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 0.9996089935302734,
+      "delta_ablated_minus_original": -0.0003910064697265625
+    },
+    {
+      "protein_id": "O95359",
+      "len": 2948,
+      "n_pos": 1,
+      "pp_auc_original": 0.9999756217002869,
+      "pp_auc_ablated": 0.9999512434005737,
+      "delta_ablated_minus_original": -2.4378299713134766e-05
+    },
+    {
+      "protein_id": "O95373",
+      "len": 1038,
+      "n_pos": 1,
+      "pp_auc_original": 0.9989500045776367,
+      "pp_auc_ablated": 0.9983900189399719,
+      "delta_ablated_minus_original": -0.0005599856376647949
+    },
+    {
+      "protein_id": "O95450",
+      "len": 1211,
+      "n_pos": 6,
+      "pp_auc_original": 0.9981639981269836,
+      "pp_auc_ablated": 0.9993813633918762,
+      "delta_ablated_minus_original": 0.0012173652648925781
+    },
+    {
+      "protein_id": "P00352",
+      "len": 501,
+      "n_pos": 9,
+      "pp_auc_original": 0.9927021861076355,
+      "pp_auc_ablated": 0.9903188943862915,
+      "delta_ablated_minus_original": -0.002383291721343994
+    },
+    {
+      "protein_id": "P00450",
+      "len": 1065,
+      "n_pos": 2,
+      "pp_auc_original": 0.999386191368103,
+      "pp_auc_ablated": 0.9981586337089539,
+      "delta_ablated_minus_original": -0.00122755765914917
+    },
+    {
+      "protein_id": "P00747",
+      "len": 810,
+      "n_pos": 16,
+      "pp_auc_original": 0.9770004153251648,
+      "pp_auc_ablated": 0.9847910404205322,
+      "delta_ablated_minus_original": 0.007790625095367432
+    },
+    {
+      "protein_id": "P01019",
+      "len": 476,
+      "n_pos": 6,
+      "pp_auc_original": 0.9973751306533813,
+      "pp_auc_ablated": 0.9853682518005371,
+      "delta_ablated_minus_original": -0.012006878852844238
+    },
+    {
+      "protein_id": "P01024",
+      "len": 1663,
+      "n_pos": 10,
+      "pp_auc_original": 0.990024745464325,
+      "pp_auc_ablated": 0.9622052311897278,
+      "delta_ablated_minus_original": -0.027819514274597168
+    },
+    {
+      "protein_id": "P01031",
+      "len": 1676,
+      "n_pos": 11,
+      "pp_auc_original": 0.9344152212142944,
+      "pp_auc_ablated": 0.9266632199287415,
+      "delta_ablated_minus_original": -0.0077520012855529785
+    },
+    {
+      "protein_id": "P01880",
+      "len": 430,
+      "n_pos": 2,
+      "pp_auc_original": 0.9996535778045654,
+      "pp_auc_ablated": 0.9974883198738098,
+      "delta_ablated_minus_original": -0.0021652579307556152
+    },
+    {
+      "protein_id": "P02774",
+      "len": 474,
+      "n_pos": 1,
+      "pp_auc_original": 0.9996870160102844,
+      "pp_auc_ablated": 0.9992175102233887,
+      "delta_ablated_minus_original": -0.00046950578689575195
+    },
+    {
+      "protein_id": "P04114",
+      "len": 4563,
+      "n_pos": 113,
+      "pp_auc_original": 0.9866101145744324,
+      "pp_auc_ablated": 0.9730038642883301,
+      "delta_ablated_minus_original": -0.013606250286102295
+    },
+    {
+      "protein_id": "P05164",
+      "len": 745,
+      "n_pos": 2,
+      "pp_auc_original": 0.9993125796318054,
+      "pp_auc_ablated": 0.9990670680999756,
+      "delta_ablated_minus_original": -0.000245511531829834
+    },
+    {
+      "protein_id": "P05165",
+      "len": 728,
+      "n_pos": 3,
+      "pp_auc_original": 0.9995977282524109,
+      "pp_auc_ablated": 0.9998323917388916,
+      "delta_ablated_minus_original": 0.0002346634864807129
+    },
+    {
+      "protein_id": "P06748",
+      "len": 294,
+      "n_pos": 4,
+      "pp_auc_original": 0.999159574508667,
+      "pp_auc_ablated": 0.9966382384300232,
+      "delta_ablated_minus_original": -0.002521336078643799
+    },
+    {
+      "protein_id": "P08579",
+      "len": 225,
+      "n_pos": 2,
+      "pp_auc_original": 0.9881157279014587,
+      "pp_auc_ablated": 0.9888046979904175,
+      "delta_ablated_minus_original": 0.0006889700889587402
+    },
+    {
+      "protein_id": "P08581",
+      "len": 1390,
+      "n_pos": 1,
+      "pp_auc_original": 0.9999479651451111,
+      "pp_auc_ablated": 0.9964609146118164,
+      "delta_ablated_minus_original": -0.0034870505332946777
+    },
+    {
+      "protein_id": "P08603",
+      "len": 1231,
+      "n_pos": 1,
+      "pp_auc_original": 0.997704267501831,
+      "pp_auc_ablated": 0.9939957857131958,
+      "delta_ablated_minus_original": -0.003708481788635254
+    },
+    {
+      "protein_id": "P09681",
+      "len": 153,
+      "n_pos": 1,
+      "pp_auc_original": 0.9984177350997925,
+      "pp_auc_ablated": 1.0,
+      "delta_ablated_minus_original": 0.0015822649002075195
+    },
+    {
+      "protein_id": "P0DOX3",
+      "len": 512,
+      "n_pos": 1,
+      "pp_auc_original": 0.9997110366821289,
+      "pp_auc_ablated": 0.9966772794723511,
+      "delta_ablated_minus_original": -0.003033757209777832
+    },
+    {
+      "protein_id": "P11215",
+      "len": 1152,
+      "n_pos": 15,
+      "pp_auc_original": 0.99452143907547,
+      "pp_auc_ablated": 0.9969624280929565,
+      "delta_ablated_minus_original": 0.0024409890174865723
+    },
+    {
+      "protein_id": "P13667",
+      "len": 645,
+      "n_pos": 7,
+      "pp_auc_original": 0.9995605945587158,
+      "pp_auc_ablated": 0.99895840883255,
+      "delta_ablated_minus_original": -0.0006021857261657715
+    },
+    {
+      "protein_id": "P14324",
+      "len": 419,
+      "n_pos": 3,
+      "pp_auc_original": 0.999288022518158,
+      "pp_auc_ablated": 0.9987540245056152,
+      "delta_ablated_minus_original": -0.0005339980125427246
+    },
+    {
+      "protein_id": "P14410",
+      "len": 1827,
+      "n_pos": 9,
+      "pp_auc_original": 0.9947612285614014,
+      "pp_auc_ablated": 0.9858587980270386,
+      "delta_ablated_minus_original": -0.008902430534362793
+    },
+    {
+      "protein_id": "P14923",
+      "len": 745,
+      "n_pos": 5,
+      "pp_auc_original": 0.998192548751831,
+      "pp_auc_ablated": 0.9970137476921082,
+      "delta_ablated_minus_original": -0.0011788010597229004
+    },
+    {
+      "protein_id": "P15090",
+      "len": 132,
+      "n_pos": 6,
+      "pp_auc_original": 0.9973909258842468,
+      "pp_auc_ablated": 0.9924859404563904,
+      "delta_ablated_minus_original": -0.004904985427856445
+    },
+    {
+      "protein_id": "P15144",
+      "len": 967,
+      "n_pos": 13,
+      "pp_auc_original": 0.9881255626678467,
+      "pp_auc_ablated": 0.9747219681739807,
+      "delta_ablated_minus_original": -0.013403594493865967
+    },
+    {
+      "protein_id": "P17405",
+      "len": 631,
+      "n_pos": 1,
+      "pp_auc_original": 0.9744992852210999,
+      "pp_auc_ablated": 0.9742664098739624,
+      "delta_ablated_minus_original": -0.00023287534713745117
+    },
+    {
+      "protein_id": "P18206",
+      "len": 1134,
+      "n_pos": 2,
+      "pp_auc_original": 0.9992002248764038,
+      "pp_auc_ablated": 0.9760061502456665,
+      "delta_ablated_minus_original": -0.023194074630737305
+    },
+    {
+      "protein_id": "P19835",
+      "len": 753,
+      "n_pos": 1,
+      "pp_auc_original": 0.998251736164093,
+      "pp_auc_ablated": 0.9964063763618469,
+      "delta_ablated_minus_original": -0.0018453598022460938
+    },
+    {
+      "protein_id": "P21397",
+      "len": 527,
+      "n_pos": 1,
+      "pp_auc_original": 0.9488222002983093,
+      "pp_auc_ablated": 0.9098429679870605,
+      "delta_ablated_minus_original": -0.03897923231124878
+    },
+    {
+      "protein_id": "P21796",
+      "len": 283,
+      "n_pos": 4,
+      "pp_auc_original": 0.9995959997177124,
+      "pp_auc_ablated": 0.9993939995765686,
+      "delta_ablated_minus_original": -0.00020200014114379883
+    },
+    {
+      "protein_id": "P22102",
+      "len": 1010,
+      "n_pos": 1,
+      "pp_auc_original": 0.9999279975891113,
+      "pp_auc_ablated": 0.9985605478286743,
+      "delta_ablated_minus_original": -0.0013674497604370117
+    },
+    {
+      "protein_id": "P23458",
+      "len": 1154,
+      "n_pos": 8,
+      "pp_auc_original": 0.9868185520172119,
+      "pp_auc_ablated": 0.9489404559135437,
+      "delta_ablated_minus_original": -0.03787809610366821
+    },
+    {
+      "protein_id": "P23946.1",
+      "len": 247,
+      "n_pos": 1,
+      "pp_auc_original": 0.9987546801567078,
+      "pp_auc_ablated": 0.9943960309028625,
+      "delta_ablated_minus_original": -0.004358649253845215
+    },
+    {
+      "protein_id": "P25189",
+      "len": 248,
+      "n_pos": 2,
+      "pp_auc_original": 0.9917829632759094,
+      "pp_auc_ablated": 0.9837209582328796,
+      "delta_ablated_minus_original": -0.008062005043029785
+    },
+    {
+      "protein_id": "P28070",
+      "len": 264,
+      "n_pos": 4,
+      "pp_auc_original": 0.9997824430465698,
+      "pp_auc_ablated": 0.9931824803352356,
+      "delta_ablated_minus_original": -0.0065999627113342285
+    },
+    {
+      "protein_id": "P28288",
+      "len": 659,
+      "n_pos": 1,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 0.9989977478981018,
+      "delta_ablated_minus_original": -0.0010022521018981934
+    },
+    {
+      "protein_id": "P35443",
+      "len": 961,
+      "n_pos": 4,
+      "pp_auc_original": 0.9988451600074768,
+      "pp_auc_ablated": 0.9970465898513794,
+      "delta_ablated_minus_original": -0.0017985701560974121
+    },
+    {
+      "protein_id": "P35609",
+      "len": 894,
+      "n_pos": 2,
+      "pp_auc_original": 0.9837802648544312,
+      "pp_auc_ablated": 0.9548455476760864,
+      "delta_ablated_minus_original": -0.028934717178344727
+    },
+    {
+      "protein_id": "P48304",
+      "len": 166,
+      "n_pos": 1,
+      "pp_auc_original": 0.9961501359939575,
+      "pp_auc_ablated": 0.965832531452179,
+      "delta_ablated_minus_original": -0.030317604541778564
+    },
+    {
+      "protein_id": "P50591",
+      "len": 281,
+      "n_pos": 2,
+      "pp_auc_original": 0.9922701120376587,
+      "pp_auc_ablated": 0.9892866611480713,
+      "delta_ablated_minus_original": -0.0029834508895874023
+    },
+    {
+      "protein_id": "P53621",
+      "len": 1224,
+      "n_pos": 3,
+      "pp_auc_original": 0.9992697238922119,
+      "pp_auc_ablated": 0.9994473457336426,
+      "delta_ablated_minus_original": 0.00017762184143066406
+    },
+    {
+      "protein_id": "P55286",
+      "len": 799,
+      "n_pos": 1,
+      "pp_auc_original": 0.9994515776634216,
+      "pp_auc_ablated": 0.9982632398605347,
+      "delta_ablated_minus_original": -0.0011883378028869629
+    },
+    {
+      "protein_id": "P60174",
+      "len": 249,
+      "n_pos": 1,
+      "pp_auc_original": 0.9975308775901794,
+      "pp_auc_ablated": 0.9907407164573669,
+      "delta_ablated_minus_original": -0.0067901611328125
+    },
+    {
+      "protein_id": "P60174.3",
+      "len": 286,
+      "n_pos": 1,
+      "pp_auc_original": 0.9973390102386475,
+      "pp_auc_ablated": 0.9901543259620667,
+      "delta_ablated_minus_original": -0.0071846842765808105
+    },
+    {
+      "protein_id": "P61106",
+      "len": 215,
+      "n_pos": 4,
+      "pp_auc_original": 0.9807134866714478,
+      "pp_auc_ablated": 0.9379753470420837,
+      "delta_ablated_minus_original": -0.042738139629364014
+    },
+    {
+      "protein_id": "P61769",
+      "len": 119,
+      "n_pos": 3,
+      "pp_auc_original": 0.7503526210784912,
+      "pp_auc_ablated": 0.5169252753257751,
+      "delta_ablated_minus_original": -0.23342734575271606
+    },
+    {
+      "protein_id": "P80404",
+      "len": 500,
+      "n_pos": 1,
+      "pp_auc_original": 0.9997038841247559,
+      "pp_auc_ablated": 0.9995558261871338,
+      "delta_ablated_minus_original": -0.0001480579376220703
+    },
+    {
+      "protein_id": "P84243",
+      "len": 136,
+      "n_pos": 2,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 1.0,
+      "delta_ablated_minus_original": 0.0
+    },
+    {
+      "protein_id": "Q01118",
+      "len": 1682,
+      "n_pos": 1,
+      "pp_auc_original": 0.3060252368450165,
+      "pp_auc_ablated": 0.23264098167419434,
+      "delta_ablated_minus_original": -0.07338425517082214
+    },
+    {
+      "protein_id": "Q04721",
+      "len": 2471,
+      "n_pos": 3,
+      "pp_auc_original": 0.9989712238311768,
+      "pp_auc_ablated": 0.9997670650482178,
+      "delta_ablated_minus_original": 0.0007958412170410156
+    },
+    {
+      "protein_id": "Q06141",
+      "len": 175,
+      "n_pos": 4,
+      "pp_auc_original": 0.6969559192657471,
+      "pp_auc_ablated": 0.7503407597541809,
+      "delta_ablated_minus_original": 0.05338484048843384
+    },
+    {
+      "protein_id": "Q12999",
+      "len": 210,
+      "n_pos": 3,
+      "pp_auc_original": 0.9990094304084778,
+      "pp_auc_ablated": 0.9935611486434937,
+      "delta_ablated_minus_original": -0.005448281764984131
+    },
+    {
+      "protein_id": "Q13733",
+      "len": 1029,
+      "n_pos": 2,
+      "pp_auc_original": 0.9038773775100708,
+      "pp_auc_ablated": 0.8392542004585266,
+      "delta_ablated_minus_original": -0.06462317705154419
+    },
+    {
+      "protein_id": "Q14517",
+      "len": 4588,
+      "n_pos": 8,
+      "pp_auc_original": 0.9989195466041565,
+      "pp_auc_ablated": 0.9938417077064514,
+      "delta_ablated_minus_original": -0.005077838897705078
+    },
+    {
+      "protein_id": "Q14624",
+      "len": 930,
+      "n_pos": 10,
+      "pp_auc_original": 0.9819898009300232,
+      "pp_auc_ablated": 0.9763101935386658,
+      "delta_ablated_minus_original": -0.005679607391357422
+    },
+    {
+      "protein_id": "Q14721",
+      "len": 858,
+      "n_pos": 1,
+      "pp_auc_original": 0.9997450113296509,
+      "pp_auc_ablated": 0.9966853857040405,
+      "delta_ablated_minus_original": -0.0030596256256103516
+    },
+    {
+      "protein_id": "Q15738",
+      "len": 373,
+      "n_pos": 2,
+      "pp_auc_original": 0.9990954995155334,
+      "pp_auc_ablated": 0.997085452079773,
+      "delta_ablated_minus_original": -0.002010047435760498
+    },
+    {
+      "protein_id": "Q16647",
+      "len": 500,
+      "n_pos": 2,
+      "pp_auc_original": 0.9642381072044373,
+      "pp_auc_ablated": 0.9831926822662354,
+      "delta_ablated_minus_original": 0.018954575061798096
+    },
+    {
+      "protein_id": "Q16695",
+      "len": 136,
+      "n_pos": 3,
+      "pp_auc_original": 0.9587358832359314,
+      "pp_auc_ablated": 0.875,
+      "delta_ablated_minus_original": -0.0837358832359314
+    },
+    {
+      "protein_id": "Q58FG1",
+      "len": 418,
+      "n_pos": 4,
+      "pp_auc_original": 0.9991522431373596,
+      "pp_auc_ablated": 0.9978582859039307,
+      "delta_ablated_minus_original": -0.001293957233428955
+    },
+    {
+      "protein_id": "Q5QGZ9",
+      "len": 265,
+      "n_pos": 1,
+      "pp_auc_original": 0.9985565543174744,
+      "pp_auc_ablated": 0.9887413382530212,
+      "delta_ablated_minus_original": -0.009815216064453125
+    },
+    {
+      "protein_id": "Q5W0Z9",
+      "len": 365,
+      "n_pos": 4,
+      "pp_auc_original": 0.9996914267539978,
+      "pp_auc_ablated": 0.9965541958808899,
+      "delta_ablated_minus_original": -0.00313723087310791
+    },
+    {
+      "protein_id": "Q6P9A2",
+      "len": 607,
+      "n_pos": 3,
+      "pp_auc_original": 0.9977373480796814,
+      "pp_auc_ablated": 0.9932929277420044,
+      "delta_ablated_minus_original": -0.004444420337677002
+    },
+    {
+      "protein_id": "Q7KZF4",
+      "len": 910,
+      "n_pos": 1,
+      "pp_auc_original": 0.9983992576599121,
+      "pp_auc_ablated": 0.9700656533241272,
+      "delta_ablated_minus_original": -0.028333604335784912
+    },
+    {
+      "protein_id": "Q7Z5N4",
+      "len": 2213,
+      "n_pos": 2,
+      "pp_auc_original": 0.9978200793266296,
+      "pp_auc_ablated": 0.9993330240249634,
+      "delta_ablated_minus_original": 0.0015129446983337402
+    },
+    {
+      "protein_id": "Q86VP6",
+      "len": 1230,
+      "n_pos": 2,
+      "pp_auc_original": 0.9970247149467468,
+      "pp_auc_ablated": 0.9967595338821411,
+      "delta_ablated_minus_original": -0.0002651810646057129
+    },
+    {
+      "protein_id": "Q8IV08",
+      "len": 490,
+      "n_pos": 5,
+      "pp_auc_original": 0.993585467338562,
+      "pp_auc_ablated": 0.974372148513794,
+      "delta_ablated_minus_original": -0.019213318824768066
+    },
+    {
+      "protein_id": "Q8IXB1",
+      "len": 793,
+      "n_pos": 1,
+      "pp_auc_original": 0.9996315240859985,
+      "pp_auc_ablated": 0.996131181716919,
+      "delta_ablated_minus_original": -0.00350034236907959
+    },
+    {
+      "protein_id": "Q8IXQ6",
+      "len": 854,
+      "n_pos": 11,
+      "pp_auc_original": 0.99724942445755,
+      "pp_auc_ablated": 0.9951437711715698,
+      "delta_ablated_minus_original": -0.0021056532859802246
+    },
+    {
+      "protein_id": "Q8N187",
+      "len": 725,
+      "n_pos": 1,
+      "pp_auc_original": 0.9234652519226074,
+      "pp_auc_ablated": 0.9777867794036865,
+      "delta_ablated_minus_original": 0.0543215274810791
+    },
+    {
+      "protein_id": "Q8WTV0",
+      "len": 552,
+      "n_pos": 1,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 0.9993317127227783,
+      "delta_ablated_minus_original": -0.0006682872772216797
+    },
+    {
+      "protein_id": "Q8WW52",
+      "len": 585,
+      "n_pos": 1,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 1.0,
+      "delta_ablated_minus_original": 0.0
+    },
+    {
+      "protein_id": "Q92824",
+      "len": 1860,
+      "n_pos": 1,
+      "pp_auc_original": 0.9480111598968506,
+      "pp_auc_ablated": 0.8733426332473755,
+      "delta_ablated_minus_original": -0.0746685266494751
+    },
+    {
+      "protein_id": "Q92859",
+      "len": 1461,
+      "n_pos": 2,
+      "pp_auc_original": 0.9189637303352356,
+      "pp_auc_ablated": 0.5543376207351685,
+      "delta_ablated_minus_original": -0.36462610960006714
+    },
+    {
+      "protein_id": "Q96PL1",
+      "len": 93,
+      "n_pos": 1,
+      "pp_auc_original": 0.9990530014038086,
+      "pp_auc_ablated": 0.9696969985961914,
+      "delta_ablated_minus_original": -0.029356002807617188
+    },
+    {
+      "protein_id": "Q96QD8",
+      "len": 506,
+      "n_pos": 6,
+      "pp_auc_original": 0.8960680961608887,
+      "pp_auc_ablated": 0.9476072192192078,
+      "delta_ablated_minus_original": 0.05153912305831909
+    },
+    {
+      "protein_id": "Q9BTU6",
+      "len": 479,
+      "n_pos": 2,
+      "pp_auc_original": 0.9920266270637512,
+      "pp_auc_ablated": 0.98235023021698,
+      "delta_ablated_minus_original": -0.00967639684677124
+    },
+    {
+      "protein_id": "Q9BZE2",
+      "len": 481,
+      "n_pos": 1,
+      "pp_auc_original": 0.6510480642318726,
+      "pp_auc_ablated": 0.28483355045318604,
+      "delta_ablated_minus_original": -0.3662145137786865
+    },
+    {
+      "protein_id": "Q9BZZ2",
+      "len": 1709,
+      "n_pos": 1,
+      "pp_auc_original": 0.9989442825317383,
+      "pp_auc_ablated": 0.9988175630569458,
+      "delta_ablated_minus_original": -0.00012671947479248047
+    },
+    {
+      "protein_id": "Q9C0C4",
+      "len": 833,
+      "n_pos": 2,
+      "pp_auc_original": 0.9952256083488464,
+      "pp_auc_ablated": 0.9783179759979248,
+      "delta_ablated_minus_original": -0.01690763235092163
+    },
+    {
+      "protein_id": "Q9H2W1",
+      "len": 248,
+      "n_pos": 4,
+      "pp_auc_original": 0.9919329881668091,
+      "pp_auc_ablated": 0.9750232696533203,
+      "delta_ablated_minus_original": -0.01690971851348877
+    },
+    {
+      "protein_id": "Q9H7F0",
+      "len": 1226,
+      "n_pos": 3,
+      "pp_auc_original": 0.9998029470443726,
+      "pp_auc_ablated": 0.9994482398033142,
+      "delta_ablated_minus_original": -0.0003547072410583496
+    },
+    {
+      "protein_id": "Q9H7X7",
+      "len": 185,
+      "n_pos": 2,
+      "pp_auc_original": 0.9950917363166809,
+      "pp_auc_ablated": 0.9963721632957458,
+      "delta_ablated_minus_original": 0.0012804269790649414
+    },
+    {
+      "protein_id": "Q9HCL0",
+      "len": 1135,
+      "n_pos": 2,
+      "pp_auc_original": 0.9994885921478271,
+      "pp_auc_ablated": 0.9998721480369568,
+      "delta_ablated_minus_original": 0.00038355588912963867
+    },
+    {
+      "protein_id": "Q9HD45",
+      "len": 589,
+      "n_pos": 6,
+      "pp_auc_original": 0.9977068901062012,
+      "pp_auc_ablated": 0.9986658096313477,
+      "delta_ablated_minus_original": 0.0009589195251464844
+    },
+    {
+      "protein_id": "Q9NPD3",
+      "len": 245,
+      "n_pos": 1,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 0.9996859431266785,
+      "delta_ablated_minus_original": -0.0003140568733215332
+    },
+    {
+      "protein_id": "Q9NSA3",
+      "len": 81,
+      "n_pos": 1,
+      "pp_auc_original": 0.9831081032752991,
+      "pp_auc_ablated": 0.977477490901947,
+      "delta_ablated_minus_original": -0.005630612373352051
+    },
+    {
+      "protein_id": "Q9NZ52",
+      "len": 723,
+      "n_pos": 1,
+      "pp_auc_original": 0.9985824227333069,
+      "pp_auc_ablated": 0.993722140789032,
+      "delta_ablated_minus_original": -0.004860281944274902
+    },
+    {
+      "protein_id": "Q9NZ94",
+      "len": 848,
+      "n_pos": 2,
+      "pp_auc_original": 0.9962580800056458,
+      "pp_auc_ablated": 0.9964731335639954,
+      "delta_ablated_minus_original": 0.00021505355834960938
+    },
+    {
+      "protein_id": "Q9P035",
+      "len": 362,
+      "n_pos": 1,
+      "pp_auc_original": 0.8938199877738953,
+      "pp_auc_ablated": 0.6874740719795227,
+      "delta_ablated_minus_original": -0.20634591579437256
+    },
+    {
+      "protein_id": "Q9P2R3",
+      "len": 1169,
+      "n_pos": 2,
+      "pp_auc_original": 0.9999379515647888,
+      "pp_auc_ablated": 0.9984180331230164,
+      "delta_ablated_minus_original": -0.001519918441772461
+    },
+    {
+      "protein_id": "Q9UIJ5",
+      "len": 367,
+      "n_pos": 1,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 0.9997955560684204,
+      "delta_ablated_minus_original": -0.00020444393157958984
+    },
+    {
+      "protein_id": "Q9UKA4",
+      "len": 1901,
+      "n_pos": 1,
+      "pp_auc_original": 0.9999620914459229,
+      "pp_auc_ablated": 0.999582827091217,
+      "delta_ablated_minus_original": -0.00037926435470581055
+    },
+    {
+      "protein_id": "Q9ULI3",
+      "len": 1381,
+      "n_pos": 1,
+      "pp_auc_original": 0.9851215481758118,
+      "pp_auc_ablated": 0.97920161485672,
+      "delta_ablated_minus_original": -0.005919933319091797
+    },
+    {
+      "protein_id": "Q9UMX0",
+      "len": 589,
+      "n_pos": 1,
+      "pp_auc_original": 0.9926249980926514,
+      "pp_auc_ablated": 0.9283750057220459,
+      "delta_ablated_minus_original": -0.06424999237060547
+    },
+    {
+      "protein_id": "Q9Y277",
+      "len": 283,
+      "n_pos": 4,
+      "pp_auc_original": 0.999528706073761,
+      "pp_auc_ablated": 0.9988553524017334,
+      "delta_ablated_minus_original": -0.0006733536720275879
+    },
+    {
+      "protein_id": "Q9Y5G8",
+      "len": 931,
+      "n_pos": 1,
+      "pp_auc_original": 1.0,
+      "pp_auc_ablated": 0.9995307922363281,
+      "delta_ablated_minus_original": -0.000469207763671875
+    }
+  ]
+}
