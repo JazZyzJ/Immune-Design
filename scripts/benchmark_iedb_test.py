@@ -32,8 +32,10 @@ import time
 from collections import Counter
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 import torch
+from scipy import stats as scipy_stats
 
 from epitope_head.training.eval_metrics import (
     build_window_labels,
@@ -93,6 +95,34 @@ def parse_args() -> argparse.Namespace:
         "--near-miss-analysis",
         action="store_true",
         help="Compute optional exact-vs-overlap near-miss diagnostics.",
+    )
+    # EL landscape metric suite (see doc/EL_new_evaluation.md).
+    p.add_argument(
+        "--metric-suite",
+        choices=["exact", "residue", "iou_ladder", "emd", "all"],
+        default="all",
+        help="Which metric families to compute beyond the exact-span "
+             "primary/conditional baseline. 'exact' disables the EL-landscape "
+             "extensions; 'all' (default) enables residue+iou_ladder+emd.",
+    )
+    p.add_argument(
+        "--iou-thresholds",
+        type=float,
+        nargs="+",
+        default=[1.0, 0.7, 0.5, 0.0],
+        help="IoU tiers for the M6 ladder (1.0=exact, 0.0=any overlap).",
+    )
+    p.add_argument(
+        "--bootstrap-n",
+        type=int,
+        default=1000,
+        help="Bootstrap resamples for 95%% CI over proteins (default: 1000).",
+    )
+    p.add_argument(
+        "--bootstrap-seed",
+        type=int,
+        default=0,
+        help="Bootstrap RNG seed for reproducibility (default: 0).",
     )
     return p.parse_args()
 
@@ -485,6 +515,369 @@ def _summarize_near_miss_group(rows: list[dict]) -> dict:
     }
 
 
+# ── EL landscape metric suite (doc/EL_new_evaluation.md) ─────────────
+#
+# All three families (M2a residue, M6 IoU ladder, M3 EMD) operate on the
+# same per-protein inputs as the existing primary/conditional metrics.
+# Score convention: wins dicts passed to these helpers must already use the
+# "higher = more immunogenic" orientation (NMP el_rank pre-inverted by the
+# caller). Helpers are pure (no global state) so they are unit-testable.
+
+
+def _invert_nmp_wins(
+    wins: dict[tuple[int, int], float],
+) -> dict[tuple[int, int], float]:
+    """Flip NMP el_rank → higher-is-more-immunogenic convention."""
+    return {k: -v for k, v in wins.items()}
+
+
+# ── M2a · residue-level aggregation ─────────────────────────────────
+
+def _aggregate_residue_scores(
+    wins_inv: dict[tuple[int, int], float],
+    L: int,
+    k_filter: Optional[int] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-residue max score over windows containing r.
+
+    Args:
+        wins_inv: (start_0b, k) → score, higher-is-more-immunogenic.
+        L: protein length.
+        k_filter: if not None, only aggregate windows of this length.
+
+    Returns:
+        score_res: float32[L], -inf where no qualifying span covers r.
+        mask: bool[L], True where residue was covered.
+    """
+    score_res = np.full(L, -np.inf, dtype=np.float32)
+    for (s, k), v in wins_inv.items():
+        if k_filter is not None and k != k_filter:
+            continue
+        end = min(s + k, L)
+        if s >= L or end <= 0 or end <= s:
+            continue
+        segment = score_res[s:end]
+        np.maximum(segment, float(v), out=segment)
+    mask = np.isfinite(score_res)
+    return score_res, mask
+
+
+def _build_residue_labels(
+    positives: list[dict], L: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (y_cover, y_density), each int64[L]."""
+    y_density = np.zeros(L, dtype=np.int64)
+    for p in positives:
+        s = int(p["start_0b"])
+        e = min(int(p["end_0b"]), L)
+        if e <= s:
+            continue
+        y_density[max(s, 0):e] += 1
+    y_cover = (y_density > 0).astype(np.int64)
+    return y_cover, y_density
+
+
+def _pearson_corr(x: np.ndarray, y: np.ndarray) -> Optional[float]:
+    """Pearson r, None if degenerate."""
+    if x.size < 2 or np.std(x) == 0 or np.std(y) == 0:
+        return None
+    r = float(np.corrcoef(x.astype(np.float64), y.astype(np.float64))[0, 1])
+    return None if np.isnan(r) else r
+
+
+def _spearman_corr(x: np.ndarray, y: np.ndarray) -> Optional[float]:
+    """Spearman ρ via scipy, None if degenerate."""
+    if x.size < 2:
+        return None
+    res = scipy_stats.spearmanr(x, y)
+    r = float(res.statistic)
+    return None if np.isnan(r) else r
+
+
+def _compute_residue_metrics(
+    score_res: np.ndarray,
+    mask: np.ndarray,
+    y_cover: np.ndarray,
+    y_density: np.ndarray,
+) -> Optional[dict]:
+    """AUC/AP vs y_cover + Pearson/Spearman vs y_density on covered residues.
+
+    Returns None if not evaluable (no coverage, or all-positive/all-negative
+    label vector on the covered subset).
+    """
+    if mask.sum() == 0:
+        return None
+    cov = mask
+    scores_t = torch.from_numpy(score_res[cov].astype(np.float32))
+    labels_t = torch.from_numpy(y_cover[cov].astype(np.int64))
+    density_sub = y_density[cov]
+    n_pos = int(labels_t.sum().item())
+    n_neg = int((labels_t == 0).sum().item())
+    if n_pos == 0 or n_neg == 0:
+        return None
+    return {
+        "auc": compute_auc(scores_t, labels_t),
+        "ap": compute_ap(scores_t, labels_t),
+        "pearson": _pearson_corr(score_res[cov], density_sub),
+        "spearman": _spearman_corr(score_res[cov], density_sub),
+        "n_residues_scored": int(cov.sum()),
+        "n_residues_total": int(score_res.size),
+    }
+
+
+# ── M6 · IoU ladder with COCO-style greedy 1-to-1 assignment ───────
+
+def _iou_greedy_labels(
+    k15_spans: np.ndarray,  # [M, 2] (start, end) half-open
+    scores: np.ndarray,     # [M]
+    positives: list[dict],
+    iou_threshold: float,
+) -> tuple[np.ndarray, int]:
+    """Greedy 1-to-1 matching of predictions → GT spans.
+
+    Predictions are sorted by score desc. For each prediction, match to the
+    highest-IoU unassigned GT whose IoU ≥ threshold. Matched → TP, else FP.
+    For `iou_threshold == 0.0` (the "any overlap" tier) any overlap > 0
+    qualifies.
+
+    Returns (tp_labels, n_gt) where tp_labels is in score-descending order.
+    """
+    gt_spans = [
+        (int(p["start_0b"]), int(p["end_0b"]))
+        for p in positives
+    ]
+    n_gt = len(gt_spans)
+    M = int(k15_spans.shape[0])
+    if M == 0:
+        return np.zeros(0, dtype=np.int64), n_gt
+
+    order = np.argsort(-scores, kind="stable")
+    tp = np.zeros(M, dtype=np.int64)
+    matched = [False] * n_gt
+    for rank, idx in enumerate(order):
+        span = (int(k15_spans[idx, 0]), int(k15_spans[idx, 1]))
+        best_gt = -1
+        best_iou = -1.0
+        for g, gt in enumerate(gt_spans):
+            if matched[g]:
+                continue
+            if iou_threshold == 0.0:
+                if _span_overlap_len(span, gt) == 0:
+                    continue
+                iou = _span_iou(span, gt)
+            else:
+                iou = _span_iou(span, gt)
+                if iou < iou_threshold:
+                    continue
+            if iou > best_iou:
+                best_iou = iou
+                best_gt = g
+        if best_gt >= 0:
+            matched[best_gt] = True
+            tp[rank] = 1
+    return tp, n_gt
+
+
+def _detection_ap(sorted_tp: np.ndarray, n_gt: int) -> Optional[float]:
+    """COCO-style AP: ∑_k (TP_k/k) · I(TP_k) / n_gt."""
+    if n_gt == 0 or sorted_tp.size == 0:
+        return None
+    cum_tp = np.cumsum(sorted_tp)
+    ranks = np.arange(1, sorted_tp.size + 1, dtype=np.float64)
+    precisions = cum_tp / ranks
+    return float((precisions * sorted_tp).sum() / n_gt)
+
+
+def _detection_recall_at_k(
+    sorted_tp: np.ndarray, n_gt: int, k: int,
+) -> Optional[float]:
+    """Recall@K for detection: fraction of GT matched in top-K predictions."""
+    if n_gt == 0:
+        return None
+    top = sorted_tp[:min(k, sorted_tp.size)]
+    return float(top.sum() / n_gt)
+
+
+def _detection_auc(sorted_tp: np.ndarray) -> Optional[float]:
+    """Rank-AUC on the TP/FP binary labels from greedy assignment."""
+    if sorted_tp.size == 0:
+        return None
+    if sorted_tp.sum() == 0 or sorted_tp.sum() == sorted_tp.size:
+        return None
+    # Implicit scores are the descending rank; reuse compute_auc by
+    # assigning strictly decreasing scores.
+    scores_t = torch.arange(sorted_tp.size, 0, -1, dtype=torch.float32)
+    labels_t = torch.from_numpy(sorted_tp.astype(np.int64))
+    return compute_auc(scores_t, labels_t)
+
+
+def _iou_threshold_key(t: float) -> str:
+    if t >= 1.0:
+        return "exact"
+    if t <= 0.0:
+        return "overlap_any"
+    return f"iou_{t:.2f}".replace("0.", "0p")
+
+
+def _compute_iou_ladder(
+    wins_inv: dict[tuple[int, int], float],
+    L: int,
+    positives: list[dict],
+    iou_thresholds: list[float],
+    recall_ks: tuple[int, ...],
+) -> Optional[dict]:
+    """M6 ladder over k=15 windows. Returns None if no k=15 predictions."""
+    k15 = [
+        ((s, s + 15), v)
+        for (s, k), v in wins_inv.items()
+        if k == 15 and 0 <= s and s + 15 <= L
+    ]
+    if not k15:
+        return None
+    spans_np = np.array([[a, b] for ((a, b), _) in k15], dtype=np.int64)
+    scores_np = np.array([v for (_, v) in k15], dtype=np.float64)
+
+    out: dict = {
+        "n_pred_windows": int(spans_np.shape[0]),
+        "n_gt": len(positives),
+        "tiers": {},
+    }
+    for t in iou_thresholds:
+        sorted_tp, n_gt = _iou_greedy_labels(spans_np, scores_np, positives, t)
+        tier = {
+            "ap": _detection_ap(sorted_tp, n_gt),
+            "auc": _detection_auc(sorted_tp),
+        }
+        for rk in recall_ks:
+            tier[f"recall_{rk}"] = _detection_recall_at_k(sorted_tp, n_gt, rk)
+        out["tiers"][_iou_threshold_key(t)] = tier
+    return out
+
+
+# ── M3 · Normalized 1D EMD ──────────────────────────────────────────
+
+def _compute_emd(
+    wins_inv: dict[tuple[int, int], float],
+    L: int,
+    y_density: np.ndarray,
+    k_filter: int = 15,
+) -> Optional[dict]:
+    """1D EMD between per-residue pred density and GT coverage density.
+
+    Uses M2a-A aggregation (k=15 only, max) per doc §5.3. Returns None if
+    either distribution is degenerate.
+    """
+    if y_density.sum() == 0:
+        return None
+    score_res, mask = _aggregate_residue_scores(wins_inv, L, k_filter=k_filter)
+    if not mask.all():
+        # Residue not covered by any qualifying span → EMD undefined.
+        return None
+    # softplus with τ=1 (fixed per doc §5.3)
+    p_pred_raw = np.log1p(np.exp(np.minimum(score_res.astype(np.float64), 40.0)))
+    # handle overflow for large positive scores: softplus(x) ≈ x for x>>0
+    big = score_res.astype(np.float64) > 40.0
+    p_pred_raw[big] = score_res.astype(np.float64)[big]
+    total = p_pred_raw.sum()
+    if total <= 0:
+        return None
+    p_pred = p_pred_raw / total
+    p_gt = y_density.astype(np.float64) / y_density.sum()
+    cdf_pred = np.cumsum(p_pred)
+    cdf_gt = np.cumsum(p_gt)
+    emd_norm = float(np.abs(cdf_pred - cdf_gt).sum() / L)
+    return {
+        "emd_norm": emd_norm,
+        "similarity": 1.0 - emd_norm,
+    }
+
+
+# ── Statistics: bootstrap CI + Wilcoxon ──────────────────────────────
+
+def _bootstrap_ci(
+    values: list[float],
+    n_resamples: int,
+    seed: int,
+    confidence: float = 0.95,
+) -> Optional[dict]:
+    """Non-parametric percentile bootstrap CI over proteins."""
+    arr = np.asarray([v for v in values if v is not None], dtype=np.float64)
+    if arr.size == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, arr.size, size=(n_resamples, arr.size))
+    means = arr[idx].mean(axis=1)
+    alpha = (1.0 - confidence) / 2.0
+    lo = float(np.quantile(means, alpha))
+    hi = float(np.quantile(means, 1.0 - alpha))
+    return {
+        "mean": float(arr.mean()),
+        "low": lo,
+        "high": hi,
+        "n": int(arr.size),
+        "n_resamples": int(n_resamples),
+        "confidence": float(confidence),
+    }
+
+
+def _paired_wilcoxon(
+    head: list[Optional[float]], nmp: list[Optional[float]],
+) -> Optional[dict]:
+    """Wilcoxon signed-rank, head - nmp. Matched by position in input lists."""
+    assert len(head) == len(nmp)
+    pairs = [
+        (h, n) for h, n in zip(head, nmp)
+        if h is not None and n is not None
+    ]
+    if len(pairs) < 2:
+        return None
+    h_arr = np.array([p[0] for p in pairs], dtype=np.float64)
+    n_arr = np.array([p[1] for p in pairs], dtype=np.float64)
+    diffs = h_arr - n_arr
+    if np.all(diffs == 0):
+        return {
+            "n_pairs": len(pairs),
+            "statistic": 0.0,
+            "pvalue": 1.0,
+            "mean_diff": 0.0,
+            "median_diff": 0.0,
+            "effect_r": 0.0,
+        }
+    res = scipy_stats.wilcoxon(h_arr, n_arr, zero_method="wilcox", alternative="two-sided")
+    # rank-biserial effect size: r = 1 - 2W/(n(n+1)/2) using signed ranks.
+    abs_ranks = scipy_stats.rankdata(np.abs(diffs[diffs != 0]))
+    w_plus = abs_ranks[diffs[diffs != 0] > 0].sum()
+    n_nonzero = (diffs != 0).sum()
+    denom = n_nonzero * (n_nonzero + 1) / 2.0
+    effect_r = float(2 * w_plus / denom - 1.0) if denom > 0 else 0.0
+    return {
+        "n_pairs": len(pairs),
+        "statistic": float(res.statistic),
+        "pvalue": float(res.pvalue),
+        "mean_diff": float(diffs.mean()),
+        "median_diff": float(np.median(diffs)),
+        "effect_r": effect_r,
+    }
+
+
+def _collect_pp(
+    per_protein: list[dict], path: tuple[str, ...],
+) -> list[Optional[float]]:
+    """Walk a dotted path into each row; return list aligned with per_protein."""
+    out: list[Optional[float]] = []
+    for row in per_protein:
+        cur: object = row
+        for key in path:
+            if not isinstance(cur, dict):
+                cur = None
+                break
+            cur = cur.get(key)
+            if cur is None:
+                break
+        out.append(float(cur) if isinstance(cur, (int, float)) else None)
+    return out
+
+
 def main() -> int:
     args = parse_args()
     os.makedirs(os.path.dirname(os.path.abspath(args.output_json)), exist_ok=True)
@@ -519,8 +912,20 @@ def main() -> int:
         _log(f"  NMP workers        : {args.nmp_workers}")
     _log(f"  NMP timeout        : {args.nmp_timeout}s")
     _log(f"  Near-miss analysis : {args.near_miss_analysis}")
+    _log(f"  Metric suite       : {args.metric_suite}")
+    if args.metric_suite in ("iou_ladder", "all"):
+        _log(f"  IoU thresholds     : {args.iou_thresholds}")
+    if args.metric_suite != "exact":
+        _log(f"  Bootstrap resamples: {args.bootstrap_n} (seed={args.bootstrap_seed})")
     _log(f"  Output JSON        : {args.output_json}")
     _log("=" * 60)
+
+    # Toggles for metric suites (computed once; used in per-protein loop).
+    suite = args.metric_suite
+    do_residue = suite in ("residue", "all")
+    do_iou = suite in ("iou_ladder", "all")
+    do_emd = suite in ("emd", "all")
+    iou_thresholds = list(args.iou_thresholds)
 
     # ── Step 1: Load test entries ──────────────────────────────────────
     _log("\n[1/4] Loading test entries...")
@@ -820,6 +1225,64 @@ def main() -> int:
         }
         if args.near_miss_analysis:
             row["near_miss"] = _analyze_near_miss(spans, positives, head_full)
+
+        # ── EL landscape extensions (doc/EL_new_evaluation.md) ────────
+        # Re-express both predictors in higher-is-more-immunogenic form
+        # once per protein, then pass the inverted-NMP dict to all helpers.
+        if do_residue or do_iou or do_emd:
+            head_wins_inv = head_wins  # head is already higher-is-better
+            nmp_wins_inv = _invert_nmp_wins(nmp_wins)
+            y_cover, y_density = _build_residue_labels(positives, L)
+
+        if do_residue:
+            # M2a-A: k=15 symmetric (both predictors).
+            head_A_scores, head_A_mask = _aggregate_residue_scores(
+                head_wins_inv, L, k_filter=15,
+            )
+            nmp_A_scores, nmp_A_mask = _aggregate_residue_scores(
+                nmp_wins_inv, L, k_filter=15,
+            )
+            # M2a-B: head uses its full k∈[min_k, max_k] range; NMP is k=15.
+            head_B_scores, head_B_mask = _aggregate_residue_scores(
+                head_wins_inv, L, k_filter=None,
+            )
+            row["metrics"]["residue"] = {
+                "k15_symmetric": {
+                    "head": _compute_residue_metrics(
+                        head_A_scores, head_A_mask, y_cover, y_density,
+                    ),
+                    "nmp": _compute_residue_metrics(
+                        nmp_A_scores, nmp_A_mask, y_cover, y_density,
+                    ),
+                },
+                "variable_k": {
+                    "head": _compute_residue_metrics(
+                        head_B_scores, head_B_mask, y_cover, y_density,
+                    ),
+                    "nmp": _compute_residue_metrics(
+                        nmp_A_scores, nmp_A_mask, y_cover, y_density,
+                    ),
+                },
+            }
+
+        if do_iou:
+            row["metrics"]["iou_ladder"] = {
+                "head": _compute_iou_ladder(
+                    head_wins_inv, L, positives,
+                    iou_thresholds, RECALL_KS,
+                ),
+                "nmp": _compute_iou_ladder(
+                    nmp_wins_inv, L, positives,
+                    iou_thresholds, RECALL_KS,
+                ),
+            }
+
+        if do_emd:
+            row["metrics"]["emd"] = {
+                "head": _compute_emd(head_wins_inv, L, y_density, k_filter=15),
+                "nmp": _compute_emd(nmp_wins_inv, L, y_density, k_filter=15),
+            }
+
         per_protein.append(row)
 
     # ── Macro averages ─────────────────────────────────────────────────
@@ -881,6 +1344,127 @@ def main() -> int:
         "coverage": coverage_block,
     }
 
+    # ── EL landscape macro blocks ──────────────────────────────────────
+    def _macro_mean(values: list[Optional[float]]) -> Optional[float]:
+        vs = [float(v) for v in values if v is not None]
+        return sum(vs) / len(vs) if vs else None
+
+    if do_residue:
+        residue_block: dict = {}
+        for variant in ("k15_symmetric", "variable_k"):
+            block = {
+                "n_head_evaluable": sum(
+                    1 for r in per_protein
+                    if r["metrics"].get("residue", {}).get(variant, {}).get("head") is not None
+                ),
+                "n_nmp_evaluable": sum(
+                    1 for r in per_protein
+                    if r["metrics"].get("residue", {}).get(variant, {}).get("nmp") is not None
+                ),
+            }
+            for name in ("head", "nmp"):
+                for key in ("auc", "ap", "pearson", "spearman"):
+                    path = ("metrics", "residue", variant, name, key)
+                    vals = _collect_pp(per_protein, path)
+                    block.setdefault(name, {})[f"pp_{key}"] = _macro_mean(vals)
+            residue_block[variant] = block
+        macro["residue"] = residue_block
+
+    if do_iou:
+        iou_block: dict = {
+            "thresholds": iou_thresholds,
+            "n_head_evaluable": sum(
+                1 for r in per_protein
+                if r["metrics"].get("iou_ladder", {}).get("head") is not None
+            ),
+            "n_nmp_evaluable": sum(
+                1 for r in per_protein
+                if r["metrics"].get("iou_ladder", {}).get("nmp") is not None
+            ),
+        }
+        tier_keys = [_iou_threshold_key(t) for t in iou_thresholds]
+        tier_metric_keys = ["ap", "auc"] + [f"recall_{rk}" for rk in RECALL_KS]
+        for name in ("head", "nmp"):
+            iou_block[name] = {}
+            for tier in tier_keys:
+                tier_out = {}
+                for mk in tier_metric_keys:
+                    path = ("metrics", "iou_ladder", name, "tiers", tier, mk)
+                    tier_out[f"pp_{mk}"] = _macro_mean(
+                        _collect_pp(per_protein, path),
+                    )
+                iou_block[name][tier] = tier_out
+        macro["iou_ladder"] = iou_block
+
+    if do_emd:
+        emd_block: dict = {
+            "n_head_evaluable": sum(
+                1 for r in per_protein
+                if r["metrics"].get("emd", {}).get("head") is not None
+            ),
+            "n_nmp_evaluable": sum(
+                1 for r in per_protein
+                if r["metrics"].get("emd", {}).get("nmp") is not None
+            ),
+        }
+        for name in ("head", "nmp"):
+            emd_block[name] = {
+                "pp_emd_norm": _macro_mean(
+                    _collect_pp(per_protein, ("metrics", "emd", name, "emd_norm")),
+                ),
+                "pp_similarity": _macro_mean(
+                    _collect_pp(per_protein, ("metrics", "emd", name, "similarity")),
+                ),
+            }
+        macro["emd"] = emd_block
+
+    # ── Statistics: bootstrap 95% CI + paired Wilcoxon (head vs NMP) ──
+    # Applied to headline metrics where both predictors produce per-protein
+    # scalars. Skipped when the suite excludes the relevant family.
+    statistics: dict = {"bootstrap_95ci": {}, "wilcoxon_head_vs_nmp": {}}
+
+    headline_specs: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
+        # (label, head_path, nmp_path)
+        ("primary_ap",
+         ("metrics", "head_primary", "ap"),
+         ("metrics", "nmp_primary", "ap")),
+        ("primary_auc",
+         ("metrics", "head_primary", "auc"),
+         ("metrics", "nmp_primary", "auc")),
+    ]
+    if do_residue:
+        for variant in ("k15_symmetric", "variable_k"):
+            for metric in ("auc", "ap", "pearson", "spearman"):
+                headline_specs.append((
+                    f"residue_{variant}_{metric}",
+                    ("metrics", "residue", variant, "head", metric),
+                    ("metrics", "residue", variant, "nmp", metric),
+                ))
+    if do_iou:
+        for tier in [_iou_threshold_key(t) for t in iou_thresholds]:
+            for metric in ("ap", "auc"):
+                headline_specs.append((
+                    f"iou_{tier}_{metric}",
+                    ("metrics", "iou_ladder", "head", "tiers", tier, metric),
+                    ("metrics", "iou_ladder", "nmp", "tiers", tier, metric),
+                ))
+    if do_emd:
+        for metric in ("similarity", "emd_norm"):
+            headline_specs.append((
+                f"emd_{metric}",
+                ("metrics", "emd", "head", metric),
+                ("metrics", "emd", "nmp", metric),
+            ))
+
+    for label, head_path, nmp_path in headline_specs:
+        head_vals = _collect_pp(per_protein, head_path)
+        nmp_vals = _collect_pp(per_protein, nmp_path)
+        statistics["bootstrap_95ci"][label] = {
+            "head": _bootstrap_ci(head_vals, args.bootstrap_n, args.bootstrap_seed),
+            "nmp": _bootstrap_ci(nmp_vals, args.bootstrap_n, args.bootstrap_seed + 1),
+        }
+        statistics["wilcoxon_head_vs_nmp"][label] = _paired_wilcoxon(head_vals, nmp_vals)
+
     total_elapsed = time.time() - t0
 
     output = {
@@ -899,6 +1483,10 @@ def main() -> int:
             "nmp_batch_size": batch_size,
             "nmp_max_lengths_per_call": max_lengths_per_call,
             "nmp_workers": n_workers,
+            "metric_suite": args.metric_suite,
+            "iou_thresholds": iou_thresholds,
+            "bootstrap_n": args.bootstrap_n,
+            "bootstrap_seed": args.bootstrap_seed,
         },
         "timing": {
             "total_seconds": round(total_elapsed, 1),
@@ -909,6 +1497,7 @@ def main() -> int:
             ),
         },
         "macro": macro,
+        "statistics": statistics,
         "per_protein": per_protein,
         "nmp_timing_per_protein": per_protein_nmp_timing,
     }
@@ -978,6 +1567,62 @@ def main() -> int:
                     _log(f"      {key:<14} = {v:.4f}")
                 else:
                     _log(f"      {key:<14} = N/A")
+
+    # ── EL-landscape summary ────────────────────────────────────────
+    if do_residue:
+        _log("\n  [Residue (M2a) — per-residue landscape]")
+        for variant in ("k15_symmetric", "variable_k"):
+            block = macro["residue"][variant]
+            _log(f"    {variant}:")
+            for name in ("head", "nmp"):
+                n_eval = block[f"n_{name}_evaluable"]
+                cells = []
+                for key in ("pp_auc", "pp_ap", "pp_pearson", "pp_spearman"):
+                    v = block[name].get(key)
+                    cells.append(
+                        f"{key[3:]}={v:.4f}" if v is not None else f"{key[3:]}=N/A"
+                    )
+                _log(f"      [{name.upper():4s}] n={n_eval}/{macro['n_total']}  "
+                     + "  ".join(cells))
+
+    if do_iou:
+        _log("\n  [IoU ladder (M6) — window-level, k=15]")
+        block = macro["iou_ladder"]
+        _log(f"    n_head_evaluable = {block['n_head_evaluable']}/{macro['n_total']}")
+        _log(f"    n_nmp_evaluable  = {block['n_nmp_evaluable']}/{macro['n_total']}")
+        for name in ("head", "nmp"):
+            _log(f"    [{name.upper()}]")
+            for t in iou_thresholds:
+                tier = _iou_threshold_key(t)
+                cells = []
+                for key in (["pp_ap", "pp_auc"]
+                            + [f"pp_recall_{rk}" for rk in args.recall_ks]):
+                    v = block[name][tier].get(key)
+                    cells.append(
+                        f"{key[3:]}={v:.4f}" if v is not None else f"{key[3:]}=N/A"
+                    )
+                _log(f"      {tier:12s}  " + "  ".join(cells))
+
+    if do_emd:
+        _log("\n  [EMD (M3) — residue density distance]")
+        block = macro["emd"]
+        for name in ("head", "nmp"):
+            sim = block[name].get("pp_similarity")
+            emd = block[name].get("pp_emd_norm")
+            sim_s = f"{sim:.4f}" if sim is not None else "N/A"
+            emd_s = f"{emd:.4f}" if emd is not None else "N/A"
+            n_eval = block[f"n_{name}_evaluable"]
+            _log(f"    [{name.upper():4s}] n={n_eval}/{macro['n_total']}  "
+                 f"similarity={sim_s}  emd_norm={emd_s}")
+
+    if statistics["wilcoxon_head_vs_nmp"]:
+        _log("\n  [Statistics — paired Wilcoxon (head vs NMP, two-sided)]")
+        for label, wx in statistics["wilcoxon_head_vs_nmp"].items():
+            if wx is None:
+                continue
+            _log(f"    {label:<36s} n={wx['n_pairs']:3d}  "
+                 f"median_Δ={wx['median_diff']:+.4f}  "
+                 f"p={wx['pvalue']:.2e}  r={wx['effect_r']:+.3f}")
 
     _log("")
     _log(f"  Head wall time  = {t_head_elapsed:.1f}s")

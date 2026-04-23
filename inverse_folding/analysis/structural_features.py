@@ -588,6 +588,57 @@ def compute_contact_numbers(
     return within.sum(axis=1).astype(np.int32)
 
 
+def compute_contact_number_from_coords(
+    coords: np.ndarray,
+    cutoff_ang: float = 8.0,
+    seq_excl: int = 1,
+    resnums: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Coord-only contact-number helper. Notebook-friendly sibling of
+    `compute_contact_numbers`.
+
+    Parameters
+    ----------
+    coords:
+        `(N, 3)` array of Cα coordinates.
+    cutoff_ang:
+        Contact radius in Å (inclusive, i.e. `d² ≤ cutoff²`).
+    seq_excl:
+        Exclude sequence neighbors within ±`seq_excl` steps. When `resnums` is
+        None, the neighbor test uses positional indices `[0, 1, ..., N-1]`;
+        otherwise it uses the supplied residue numbers (so gaps in numbering
+        are respected).
+    resnums:
+        Optional `(N,)` integer array of author residue numbers. Pass it when
+        the ATOM-ordered list has gaps (disordered loops) and you want the
+        ±seq_excl exclusion to match the canonical `compute_contact_numbers`
+        semantics.
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    if coords.ndim != 2 or (coords.size > 0 and coords.shape[1] != 3):
+        raise ValueError(
+            f"coords must have shape (N, 3); got {coords.shape}"
+        )
+    n = coords.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=np.int32)
+    if resnums is None:
+        resnums = np.arange(n, dtype=np.int64)
+    else:
+        resnums = np.asarray(resnums, dtype=np.int64)
+        if resnums.shape != (n,):
+            raise ValueError(
+                f"resnums must have shape ({n},); got {resnums.shape}"
+            )
+    d2 = np.sum((coords[:, None, :] - coords[None, :, :]) ** 2, axis=-1)
+    within = d2 <= (cutoff_ang ** 2)
+    np.fill_diagonal(within, False)
+    if seq_excl > 0:
+        close_in_seq = np.abs(resnums[:, None] - resnums[None, :]) <= seq_excl
+        within &= ~close_in_seq
+    return within.sum(axis=1).astype(np.int32)
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Top-level builder
 # ─────────────────────────────────────────────────────────────────────────

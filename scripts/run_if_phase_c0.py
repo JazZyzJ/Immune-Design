@@ -36,6 +36,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--run-id", default=None, help="Optional explicit run_id.")
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=25,
+        help="Emit a per-protein progress line every N proteins (0 to disable).",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow writing into an existing non-empty run_dir (default: refuse).",
+    )
     args = parser.parse_args(argv)
 
     if args.n_designs_per_protein <= 0:
@@ -44,6 +55,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--max-iter must be positive")
     if args.temperature <= 0.0:
         parser.error("--temperature must be positive")
+    if args.progress_every < 0:
+        parser.error("--progress-every must be non-negative")
     return args
 
 
@@ -53,12 +66,17 @@ def generate_rows_for_entries(
     *,
     n_designs_per_protein: int,
     seed: int,
+    progress_every: int = 25,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Generate output rows while preserving input protein ordering."""
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
 
-    for _, entry in entries.iterrows():
+    total_entries = int(len(entries))
+    total_designs = total_entries * int(n_designs_per_protein)
+    run_start = time.time()
+
+    for entry_idx, (_, entry) in enumerate(entries.iterrows(), start=1):
         protein_id = str(entry["protein_id"])
         expected_length = int(entry["sequence_length"])
         for design_idx in range(n_designs_per_protein):
@@ -88,7 +106,52 @@ def generate_rows_for_entries(
                         "reason": f"{type(exc).__name__}: {exc}",
                     }
                 )
+
+        if progress_every > 0 and (
+            entry_idx % progress_every == 0 or entry_idx == total_entries
+        ):
+            _emit_progress(
+                entry_idx=entry_idx,
+                total_entries=total_entries,
+                protein_id=protein_id,
+                n_rows=len(rows),
+                n_failures=len(failures),
+                total_designs=total_designs,
+                run_start=run_start,
+            )
     return rows, failures
+
+
+def _emit_progress(
+    *,
+    entry_idx: int,
+    total_entries: int,
+    protein_id: str,
+    n_rows: int,
+    n_failures: int,
+    total_designs: int,
+    run_start: float,
+) -> None:
+    elapsed = time.time() - run_start
+    done = n_rows + n_failures
+    if done > 0 and total_designs > done:
+        eta = elapsed * (total_designs - done) / float(done)
+    else:
+        eta = 0.0
+    avg = elapsed / float(done) if done > 0 else 0.0
+    print(
+        f"[progress] {entry_idx}/{total_entries} proteins "
+        f"protein_id={protein_id} rows={n_rows} failures={n_failures} "
+        f"elapsed={_fmt_hms(elapsed)} avg_per_design={avg:.2f}s eta={_fmt_hms(eta)}",
+        flush=True,
+    )
+
+
+def _fmt_hms(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:d}h{m:02d}m{s:02d}s"
 
 
 def write_phase_c_outputs(
@@ -174,6 +237,8 @@ def print_resolved_hyperparams(args: argparse.Namespace, *, run_dir: Path, n_ent
         "max_iter": args.max_iter,
         "temperature": args.temperature,
         "device": args.device,
+        "progress_every": args.progress_every,
+        "overwrite": args.overwrite,
         "n_input_proteins": n_entries,
     }
     print("============================================================")
@@ -197,11 +262,19 @@ def main(argv: list[str] | None = None) -> int:
 
     run_id = _build_run_id(args)
     run_dir = Path(args.output_root) / safe_allele_tag(args.allele) / run_id
+    if run_dir.exists() and any(run_dir.iterdir()) and not args.overwrite:
+        print(
+            f"ERROR: run_dir {run_dir} already exists and is non-empty; "
+            "pass --overwrite to allow clobbering or choose a distinct --run-id.",
+            file=sys.stderr,
+        )
+        return 2
     run_dir.mkdir(parents=True, exist_ok=True)
 
     entries = load_test_entries(args.test_set_parquet)
     print_resolved_hyperparams(args, run_dir=run_dir, n_entries=len(entries))
 
+    run_start = time.time()
     generator = _build_generator(
         checkpoint=args.checkpoint,
         pdb_root=args.pdb_root,
@@ -214,7 +287,9 @@ def main(argv: list[str] | None = None) -> int:
         generator,
         n_designs_per_protein=args.n_designs_per_protein,
         seed=args.seed,
+        progress_every=args.progress_every,
     )
+    total_wall_seconds = time.time() - run_start
 
     run_config = {
         "mode": "c0_native_sampler",
@@ -243,14 +318,30 @@ def main(argv: list[str] | None = None) -> int:
         "failures_path": "failures.json" if failures else None,
     }
 
+    manifest["wall_clock_seconds"] = float(total_wall_seconds)
+    n_rows = int(len(rows))
+    n_failures = int(len(failures))
+    n_total_designs = int(len(entries) * args.n_designs_per_protein)
+    avg_per_design = (
+        total_wall_seconds / float(n_rows + n_failures) if (n_rows + n_failures) > 0 else 0.0
+    )
+    failure_rate = (
+        (n_failures / float(n_total_designs)) if n_total_designs > 0 else 0.0
+    )
+
     write_phase_c_outputs(run_dir, rows, run_config, manifest)
     if failures:
         write_json(run_dir / "failures.json", {"failures": failures})
 
+    print("============================================================")
     print(
-        f"[done] run_id={run_id} generated_rows={len(rows)} failures={len(failures)} "
+        f"[done] run_id={run_id} "
+        f"generated_rows={n_rows}/{n_total_designs} "
+        f"failures={n_failures} failure_rate={failure_rate:.2%} "
+        f"wall={_fmt_hms(total_wall_seconds)} avg_per_design={avg_per_design:.2f}s "
         f"output_dir={run_dir}"
     )
+    print("============================================================")
     return 0
 
 

@@ -29,7 +29,7 @@ from inverse_folding.reference_flow import (
     reference_flow_config_to_dict,
     with_reference_flow_overrides,
 )
-from scripts.run_if_phase_c0 import write_phase_c_outputs
+from scripts.run_if_phase_c0 import _fmt_hms, write_phase_c_outputs
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -53,6 +53,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fail-pct-threshold", type=float, default=0.05)
     parser.add_argument("--resume-from", default=None)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=25,
+        help="Emit a per-protein progress line every N proteins (0 to disable).",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow writing into an existing non-empty run_dir (default: refuse unless resuming).",
+    )
     args = parser.parse_args(argv)
 
     if args.fail_pct_threshold < 0.0 or args.fail_pct_threshold > 1.0:
@@ -61,6 +72,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--n-steps must be positive")
     if args.n_designs_per_protein is not None and args.n_designs_per_protein <= 0:
         parser.error("--n-designs-per-protein must be positive")
+    if args.progress_every < 0:
+        parser.error("--progress-every must be non-negative")
     return args
 
 
@@ -85,6 +98,8 @@ def print_resolved_hyperparams(
         "save_trajectories": args.save_trajectories,
         "fail_pct_threshold": args.fail_pct_threshold,
         "resume_from": args.resume_from,
+        "progress_every": args.progress_every,
+        "overwrite": args.overwrite,
         "n_input_proteins": n_entries,
         "resolved_config": config,
     }
@@ -101,7 +116,13 @@ def _build_run_id(args: argparse.Namespace) -> str:
     from inverse_folding.reference_flow.runtime import safe_allele_tag
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"c1_{safe_allele_tag(args.allele)}_{stamp}"
+    config_stem = Path(args.config).stem
+    # strip a redundant leading "c1_" from the config name so the run_id stays
+    # single-prefixed (e.g. "c1_null.yaml" → "c1_null_DRB1_07_01_<stamp>",
+    # not "c1_c1_null_DRB1_07_01_<stamp>")
+    if config_stem.startswith("c1_"):
+        config_stem = config_stem[len("c1_"):]
+    return f"c1_{config_stem}_{safe_allele_tag(args.allele)}_{stamp}"
 
 
 def _select_h_values(
@@ -249,6 +270,31 @@ def _is_oom(exc: Exception) -> bool:
     return "out of memory" in str(exc).lower()
 
 
+def _emit_progress(
+    *,
+    entry_idx: int,
+    total_entries: int,
+    protein_id: str,
+    n_rows: int,
+    n_failures: int,
+    total_designs: int,
+    run_start: float,
+) -> None:
+    elapsed = time.time() - run_start
+    done = n_rows + n_failures
+    if done > 0 and total_designs > done:
+        eta = elapsed * (total_designs - done) / float(done)
+    else:
+        eta = 0.0
+    avg = elapsed / float(done) if done > 0 else 0.0
+    print(
+        f"[progress] {entry_idx}/{total_entries} proteins "
+        f"protein_id={protein_id} rows={n_rows} failures={n_failures} "
+        f"elapsed={_fmt_hms(elapsed)} avg_per_design={avg:.2f}s eta={_fmt_hms(eta)}",
+        flush=True,
+    )
+
+
 def derive_h_shuffle_seed(base_seed: int, protein_id: str, design_idx: int) -> int:
     """Derive a deterministic permutation seed for one (protein, design) pair."""
     payload = f"{int(base_seed)}::{protein_id}::{int(design_idx)}".encode("utf-8")
@@ -275,6 +321,19 @@ def main(argv: list[str] | None = None) -> int:
 
     run_id = _build_run_id(args)
     run_dir = Path(args.output_root) / safe_allele_tag(args.allele) / run_id
+    if (
+        run_dir.exists()
+        and any(run_dir.iterdir())
+        and not args.resume_from
+        and not args.overwrite
+    ):
+        print(
+            f"ERROR: run_dir {run_dir} already exists and is non-empty; "
+            "pass --resume-from <run_id> to resume, --overwrite to clobber, "
+            "or choose a distinct --run-id / config stem.",
+            file=sys.stderr,
+        )
+        return 2
     run_dir.mkdir(parents=True, exist_ok=True)
 
     config = load_reference_flow_config(args.config)
@@ -327,6 +386,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     total_designs = len(entries) * config.sampler.n_designs_per_protein
+    total_entries = int(len(entries))
+    run_start = time.time()
+    aborted = False
 
     for entry_idx, (_, entry) in enumerate(entries.iterrows(), start=1):
         protein_id = str(entry["protein_id"])
@@ -505,11 +567,31 @@ def main(argv: list[str] | None = None) -> int:
                 manifest=partial_manifest,
             )
 
+        if args.progress_every > 0 and (
+            entry_idx % args.progress_every == 0 or entry_idx == total_entries
+        ):
+            _emit_progress(
+                entry_idx=entry_idx,
+                total_entries=total_entries,
+                protein_id=protein_id,
+                n_rows=len(rows_by_key),
+                n_failures=len(failures),
+                total_designs=total_designs,
+                run_start=run_start,
+            )
+
         if _should_abort_failures(
             failures,
             n_total_designs=total_designs,
             threshold=args.fail_pct_threshold,
         ):
+            aborted = True
+            print(
+                f"[abort] failure rate exceeded threshold at entry_idx={entry_idx}: "
+                f"{len(failures)}/{total_designs} > {args.fail_pct_threshold:.2%}; "
+                "stopping main loop.",
+                flush=True,
+            )
             break
 
     if _should_abort_failures(
@@ -578,16 +660,31 @@ def main(argv: list[str] | None = None) -> int:
         "n_rows_generated": int(len(rows)),
         "n_failures": int(len(failures)),
         "failures_path": "failures.json" if failures else None,
+        "wall_clock_seconds": float(time.time() - run_start),
+        "aborted_on_failure_threshold": bool(aborted),
     }
 
     write_phase_c_outputs(run_dir, rows, run_config, manifest)
     if failures:
         write_json(run_dir / "failures.json", {"failures": failures})
 
+    total_wall = time.time() - run_start
+    n_rows = int(len(rows))
+    n_failures = int(len(failures))
+    avg_per_design = (
+        total_wall / float(n_rows + n_failures) if (n_rows + n_failures) > 0 else 0.0
+    )
+    failure_rate = (n_failures / float(total_designs)) if total_designs > 0 else 0.0
+
+    print("============================================================")
     print(
-        f"[done] run_id={run_id} generated_rows={len(rows)} failures={len(failures)} "
+        f"[done] run_id={run_id} "
+        f"generated_rows={n_rows}/{int(total_designs)} "
+        f"failures={n_failures} failure_rate={failure_rate:.2%} "
+        f"wall={_fmt_hms(total_wall)} avg_per_design={avg_per_design:.2f}s "
         f"output_dir={run_dir}"
     )
+    print("============================================================")
     return 0
 
 

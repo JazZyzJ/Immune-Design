@@ -67,6 +67,6 @@ overview.txt
 report/
 
 !scripts/analysis/tier1_structural_analysis.py
-
+reader.md
 # Others
 DRAKES/

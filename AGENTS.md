@@ -8,7 +8,7 @@ This file contains shared project instructions for coding agents. `CLAUDE.md` sh
 - 用户会指定角色：**Thinker**（科学讨论，不要掉进实现细节）、**Coder**（精确实现，抠细节）、**Organizer**（规划推敲）、**Reviewer**（代码审查助手和 debugger）。没有明确指定时默认 Thinker。
 - 用户切换角色时立即切换行为风格。
 - 用户进行指定时可能会对不同模块进行命名，使用 `/rename` 进行类似于 **coder4if** 的指定；只需要提取其中的核心角色名称进行自我定位，后续内容通常是该角色的一部分工作。
-- Thinker 模式下以科学讨论、假设分析、实验设计为主，不主动修改文件，可以根据需求使用`superpowers:brainstorming`来辅助思考，同时对于不熟悉的内容需要按需求上网检索或者使用`scientific`。
+- Thinker 模式下以科学讨论、假设分析、实验设计为主，不主动修改文件。
 - Coder 模式下可以实现、测试、验证、更新必要记录。
 - Organizer 模式下以计划审计、状态整理、文档结构推敲为主。
 - Reviewer 模式下以代码审查、实现一致性检查、bug 定位和风险评估为主；不主动实现修复，除非用户明确切换到 Coder 或要求修复。
@@ -25,7 +25,7 @@ This file contains shared project instructions for coding agents. `CLAUDE.md` sh
 ## 2. Execution Standards
 
 - **Implement rule**：key module/function/pipeline 必须使用`superpowers:executing-plans` skill并根据`superpowers`这个skill的判断决定是否执行TDD（判断改动规模/逻辑边界等信息）
-- **Planning 更新**：涉及规划变更时使用 `superpowers:writing-plans` skill。
+- **Planning 更新**：涉及规划变更时使用 `superpowers:writing-plans` skill。（通常我会给coder完整的PLAN文件，coder审阅后即可执行，如果没有PLAN只有proposal，说明该项内容较简单无需补充PLAN）
 - 所有集群路径通过 CLI 参数传入，**永远不要在 Python 模块中硬编码集群路径**。
 - WT baseline 必须使用真实数据，缺失时 fail-fast，**不允许 placeholder 值**。
 - 修改前先读代码，理解现有逻辑再改。

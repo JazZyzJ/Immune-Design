@@ -1877,3 +1877,29 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_IF.md:Task C0`
   - `PLAN_IF.md:Task C1`
   - `LOG.md:L0062`
+
+### L0064
+- timestamp: 2026-04-23T21:13:46+08:00
+- type: CODEMAP_DIFF
+- module: F
+- trigger: User requested implementing the new EL evaluation protocol from `doc/EL_new_evaluation.md` (residue-level, IoU ladder, 1D EMD, bootstrap CI) on top of the existing IEDB benchmark script.
+- change_summary: Extended `scripts/benchmark_iedb_test.py` with a `--metric-suite {exact,residue,iou_ladder,emd,all}` flag (default `all`) and added M2a residue-level AUC/AP/Pearson/Spearman (k=15-symmetric + variable-k variants), M6 COCO-style IoU ladder over `--iou-thresholds`, M3 normalized 1D EMD, and a `statistics` block with 1000-resample bootstrap 95% CI and paired Wilcoxon signed-rank (head vs NMP) on every headline metric.
+- rationale: Per `doc/EL_new_evaluation.md §6` the protocol should extend the existing benchmark script rather than branch into a new one; this keeps the head/NMP inference pass shared and preserves backwards-compatible JSON schema (all new keys are additive under `macro.residue`, `macro.iou_ladder`, `macro.emd`, `statistics`). Helpers are pure functions so they stay unit-testable.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/scripts/benchmark_iedb_test.py`
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_benchmark_iedb_test.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+- evidence: |
+    `pytest -q tests/scripts/test_benchmark_iedb_test.py` => 20 passed (5 existing + 15 new).
+    `PYTHONPATH=. python scripts/benchmark_iedb_test.py --help` => argparse smoke passed; new flags `--metric-suite`, `--iou-thresholds`, `--bootstrap-n`, `--bootstrap-seed` show up with expected defaults.
+    Interactive smoke on M2a/M6/M3/bootstrap/Wilcoxon helpers: residue max aggregation respects k-filter, IoU greedy matches highest-IoU unassigned GT, detection AP = (1 + 2/3)/3 on hand-worked example, bootstrap is deterministic under fixed seed.
+- impact:
+  - scope: IEDB benchmark output schema (additive only) + SLURM callers via `submit_benchmark.slurm` MODE=iedb continue to work with the default `--metric-suite all`.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: Run one full-allele benchmark on the cluster (`MODE=iedb ALLELE=HLA-DRB1*07:01 sbatch scripts/submit_benchmark.slurm`) to confirm wall-time impact of the new residue/IoU/EMD passes and to populate the first real M2a/M6/M3 numbers for the F2 revision.
+- refs:
+  - `doc/EL_new_evaluation.md`
+  - `doc/SCRIPTS.md` (Benchmark §2)
+

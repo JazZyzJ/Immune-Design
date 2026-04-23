@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -8,9 +9,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.benchmark_iedb_test import (
+    _aggregate_residue_scores,
     _analyze_near_miss,
+    _bootstrap_ci,
     _build_iou50_labels,
     _build_overlap_labels,
+    _build_residue_labels,
+    _compute_emd,
+    _compute_iou_ladder,
+    _compute_residue_metrics,
+    _detection_ap,
+    _detection_recall_at_k,
+    _invert_nmp_wins,
+    _iou_greedy_labels,
+    _iou_threshold_key,
+    _paired_wilcoxon,
     _select_near_miss_group,
     _span_gap,
     _span_iou,
@@ -157,3 +170,180 @@ def test_summarize_near_miss_group_aggregates_counts_and_medians():
     assert summary["gt_with_overlap_outranking_exact_fraction"] == 2 / 3
     assert summary["top_fp_breakdown"]["10"]["overlap_iou_gte_0_8"] == 3
     assert summary["top_fp_breakdown"]["10"]["far_gap_gt_10"] == 11
+
+
+# ── EL landscape metric suite tests ─────────────────────────────────
+
+def test_invert_nmp_wins_flips_sign():
+    wins = {(0, 15): 0.1, (1, 15): 0.8}
+    inv = _invert_nmp_wins(wins)
+    assert inv == {(0, 15): -0.1, (1, 15): -0.8}
+
+
+def test_aggregate_residue_scores_respects_k_filter_and_takes_max():
+    wins = {
+        (0, 15): 2.0,   # covers residues 0..14
+        (2, 15): 3.0,   # covers residues 2..16
+        (10, 12): 7.0,  # ignored when k_filter=15
+    }
+    scores, mask = _aggregate_residue_scores(wins, L=20, k_filter=15)
+    # Coverage: residues 0..16 covered by some k=15 span; 17..19 not.
+    assert mask[:17].all()
+    assert not mask[17:].any()
+    # r=0: only span (0,15); r=5: both spans → max = 3.0; r=16: only (2,15).
+    assert scores[0] == 2.0
+    assert scores[5] == 3.0
+    assert scores[16] == 3.0
+    # With k_filter=None, k=12 span at (10,22) contributes; r=11 → max = 7.0.
+    scores_all, mask_all = _aggregate_residue_scores(wins, L=20, k_filter=None)
+    assert scores_all[11] == 7.0
+    assert mask_all.all()
+
+
+def test_build_residue_labels_counts_overlapping_epitopes():
+    y_cover, y_density = _build_residue_labels(
+        [{"start_0b": 2, "end_0b": 8}, {"start_0b": 5, "end_0b": 10}],
+        L=12,
+    )
+    # y_density: positions 2,3,4 → 1; 5,6,7 → 2; 8,9 → 1; else 0.
+    assert y_density.tolist() == [0, 0, 1, 1, 1, 2, 2, 2, 1, 1, 0, 0]
+    assert y_cover.tolist() == [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]
+
+
+def test_compute_residue_metrics_returns_none_on_degenerate_labels():
+    # Everything covered → y_cover all-1 → not evaluable (no negatives).
+    score_res = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    mask = np.ones(3, dtype=bool)
+    y_cover = np.ones(3, dtype=np.int64)
+    y_density = np.ones(3, dtype=np.int64)
+    assert _compute_residue_metrics(score_res, mask, y_cover, y_density) is None
+
+
+def test_compute_residue_metrics_reports_expected_auc_on_separable_example():
+    score_res = np.array([0.1, 0.2, 0.9, 0.8, 0.05, 0.02], dtype=np.float32)
+    mask = np.ones(6, dtype=bool)
+    y_cover = np.array([0, 0, 1, 1, 0, 0], dtype=np.int64)
+    y_density = y_cover.copy()
+    out = _compute_residue_metrics(score_res, mask, y_cover, y_density)
+    # Perfectly separable.
+    assert out["auc"] == 1.0
+    assert out["ap"] == 1.0
+    assert out["pearson"] is not None and out["pearson"] > 0.5
+    assert out["n_residues_scored"] == 6
+
+
+def test_iou_greedy_labels_matches_highest_iou_unassigned_gt():
+    # Two GTs: [0,15) and [50,65). Three predictions — order by score:
+    #   [1,16) score 0.9  → best IoU with GT0 = 14/16 = 0.875 → TP
+    #   [50,65) score 0.8 → IoU=1 with GT1 → TP
+    #   [0,15)  score 0.5 → GT0 already taken, GT1 already taken → FP
+    spans = np.array([[1, 16], [50, 65], [0, 15]], dtype=np.int64)
+    scores = np.array([0.9, 0.8, 0.5], dtype=np.float64)
+    positives = [
+        {"start_0b": 0, "end_0b": 15},
+        {"start_0b": 50, "end_0b": 65},
+    ]
+    tp, n_gt = _iou_greedy_labels(spans, scores, positives, iou_threshold=0.7)
+    assert n_gt == 2
+    assert tp.tolist() == [1, 1, 0]
+
+
+def test_iou_greedy_labels_zero_threshold_uses_any_overlap():
+    spans = np.array([[14, 29], [0, 15]], dtype=np.int64)
+    scores = np.array([0.9, 0.5], dtype=np.float64)
+    positives = [{"start_0b": 0, "end_0b": 15}]
+    # [14,29) overlaps GT by 1 residue → IoU=1/29, passes threshold=0.0.
+    tp, n_gt = _iou_greedy_labels(spans, scores, positives, iou_threshold=0.0)
+    assert n_gt == 1
+    assert tp.tolist() == [1, 0]
+
+
+def test_detection_ap_and_recall_match_hand_calculation():
+    # 3 GT; predictions in score-descending order: TP, FP, TP, FP.
+    sorted_tp = np.array([1, 0, 1, 0])
+    # precisions at TP events: 1/1=1.0, 2/3≈0.667; recall denom = 3.
+    # AP = (1.0 + 0.667) / 3 = 0.5556
+    assert abs(_detection_ap(sorted_tp, n_gt=3) - (1.0 + 2 / 3) / 3) < 1e-9
+    # Recall@2 = 1 TP / 3 GT = 0.333
+    assert abs(_detection_recall_at_k(sorted_tp, 3, 2) - 1 / 3) < 1e-9
+    # Recall@4 = 2 / 3
+    assert abs(_detection_recall_at_k(sorted_tp, 3, 4) - 2 / 3) < 1e-9
+
+
+def test_iou_threshold_key_canonicalizes_values():
+    assert _iou_threshold_key(1.0) == "exact"
+    assert _iou_threshold_key(0.0) == "overlap_any"
+    assert _iou_threshold_key(0.5) == "iou_0p50"
+
+
+def test_compute_iou_ladder_produces_tiers_only_for_k15():
+    # Include k=15 and k=12 windows; only k=15 should be used.
+    wins = {
+        (0, 15): 0.9,
+        (1, 15): 0.5,
+        (50, 15): 0.8,
+        (0, 12): 10.0,  # ignored (not k=15)
+    }
+    positives = [
+        {"start_0b": 0, "end_0b": 15},
+        {"start_0b": 50, "end_0b": 65},
+    ]
+    out = _compute_iou_ladder(wins, L=100, positives=positives,
+                              iou_thresholds=[1.0, 0.5, 0.0],
+                              recall_ks=(50,))
+    assert out["n_pred_windows"] == 3
+    assert out["n_gt"] == 2
+    # Exact tier: only (0,15) and (50,65) match exactly (greedy assigns to
+    # best-IoU unassigned GT).
+    exact = out["tiers"]["exact"]
+    assert exact["ap"] is not None and exact["ap"] > 0
+    # Overlap_any tier: at threshold 0.0, greedy will still assign [1,16) to
+    # GT0 first (score=0.5 but top-ranked is [0,15) score=0.9 → GT0).
+    assert out["tiers"]["overlap_any"]["ap"] is not None
+
+
+def test_compute_emd_returns_none_when_density_is_zero():
+    # No positives → y_density all zeros → EMD undefined.
+    wins = {(0, 15): 1.0, (1, 15): 2.0}
+    y_density = np.zeros(20, dtype=np.int64)
+    assert _compute_emd(wins, L=20, y_density=y_density, k_filter=15) is None
+
+
+def test_compute_emd_matches_perfect_overlap():
+    # When prediction peak aligns with density peak, EMD should be small
+    # (not zero because softplus smears the mass) but similarity > 0.9.
+    L = 20
+    y_cover, y_density = _build_residue_labels(
+        [{"start_0b": 5, "end_0b": 10}], L=L,
+    )
+    # Put huge positive mass on spans around residues 5..9.
+    wins = {(s, 15): 0.0 for s in range(L - 15 + 1)}
+    wins[(0, 15)] = 50.0  # spans residues 0..14, peaks over [5..9] area
+    out = _compute_emd(wins, L=L, y_density=y_density, k_filter=15)
+    assert out is not None
+    assert 0 <= out["emd_norm"] <= 1
+    assert abs(out["emd_norm"] + out["similarity"] - 1.0) < 1e-9
+
+
+def test_bootstrap_ci_is_seeded_and_brackets_mean():
+    vals = [0.4, 0.5, 0.6, 0.7, 0.8]
+    ci1 = _bootstrap_ci(vals, n_resamples=200, seed=0)
+    ci2 = _bootstrap_ci(vals, n_resamples=200, seed=0)
+    assert ci1 == ci2  # deterministic under seed
+    assert ci1["low"] <= ci1["mean"] <= ci1["high"]
+    assert ci1["n"] == 5
+
+
+def test_paired_wilcoxon_handles_none_entries():
+    head = [0.6, None, 0.7, 0.8]
+    nmp = [0.5, 0.4, None, 0.6]
+    out = _paired_wilcoxon(head, nmp)
+    # Only (0.6, 0.5) and (0.8, 0.6) are valid pairs → n_pairs=2.
+    assert out is not None
+    assert out["n_pairs"] == 2
+    assert out["mean_diff"] > 0
+
+
+def test_paired_wilcoxon_returns_none_when_fewer_than_two_pairs():
+    assert _paired_wilcoxon([0.5], [0.4]) is None
+    assert _paired_wilcoxon([None, None], [0.5, 0.6]) is None

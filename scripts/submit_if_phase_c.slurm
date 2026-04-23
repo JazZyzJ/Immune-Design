@@ -110,8 +110,14 @@ case "${MODE}" in
     reference_flow)
         echo "  h_maps parquet  : ${H_MAPS_PARQUET}"
         echo "  Config          : ${CONFIG_PATH}"
+        echo "  Config stem     : $(basename "${CONFIG_PATH}" .yaml)"
         echo "  Fail threshold  : ${FAIL_PCT_THRESHOLD}"
         echo "  Save traj       : ${SAVE_TRAJECTORIES}"
+        echo "  Designs/protein : ${N_DESIGNS_PER_PROTEIN:-<from config>}"
+        echo "  Seed            : ${SEED:-<from config>}"
+        echo "  N steps         : ${N_STEPS:-<from config>}"
+        echo "  h corpus stats  : ${H_CORPUS_STATS:-<none>}"
+        echo "  Resume from     : ${RESUME_FROM:-<fresh run>}"
         EXTRA_FLAGS=()
         if [[ -n "${H_CORPUS_STATS}" ]]; then
             EXTRA_FLAGS+=(--h-corpus-stats "${H_CORPUS_STATS}")
