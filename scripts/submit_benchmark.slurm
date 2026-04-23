@@ -98,6 +98,7 @@ elif [ "${MODE}" = "iedb" ]; then
     MANIFEST_ROOT="${MANIFEST_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests}"
     ALLELE_SUBDIR="${ALLELE_SUBDIR:-}"  # e.g. drb0401 (leave empty for default 0701 manifest)
     NMP_MODE_ARG="${NMP_MODE:-original}"
+    NEAR_MISS_ANALYSIS="${NEAR_MISS_ANALYSIS:-0}"
     # Accelerated-mode knobs (ignored by the Python script when --nmp-mode=original)
     NMP_WORKERS="${NMP_WORKERS:-8}"
     NMP_BATCH_SIZE="${NMP_BATCH_SIZE:-8}"
@@ -116,6 +117,7 @@ elif [ "${MODE}" = "iedb" ]; then
     echo "  Parquet            : ${PROTEIN_SAMPLES_PARQUET}"
     echo "  Test IDs           : ${TEST_IDS}"
     echo "  NMP_MODE           : ${NMP_MODE_ARG}"
+    echo "  Near-miss analysis : ${NEAR_MISS_ANALYSIS}"
     if [ "${NMP_MODE_ARG}" = "accelerated" ]; then
         echo "  NMP workers        : ${NMP_WORKERS}"
         echo "  NMP batch size     : ${NMP_BATCH_SIZE}"
@@ -124,6 +126,11 @@ elif [ "${MODE}" = "iedb" ]; then
     echo "  NMP timeout        : ${NMP_TIMEOUT}s"
 
     RESULT_JSON="${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}.json"
+    EXTRA_ARGS=()
+    if [ "${NEAR_MISS_ANALYSIS}" = "1" ]; then
+        RESULT_JSON="${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}_near_miss.json"
+        EXTRA_ARGS+=(--near-miss-analysis)
+    fi
 
     python -u "${PROJECT_ROOT}/scripts/benchmark_iedb_test.py" \
         --protein-samples-parquet "${PROTEIN_SAMPLES_PARQUET}" \
@@ -138,7 +145,8 @@ elif [ "${MODE}" = "iedb" ]; then
         --nmp-batch-size "${NMP_BATCH_SIZE}" \
         --nmp-max-lengths-per-call "${NMP_MAX_LENGTHS_PER_CALL}" \
         --nmp-workers "${NMP_WORKERS}" \
-        --nmp-timeout "${NMP_TIMEOUT}"
+        --nmp-timeout "${NMP_TIMEOUT}" \
+        "${EXTRA_ARGS[@]}"
 
     python -u "${PROJECT_ROOT}/scripts/plot_benchmark_score_histograms.py" \
         --input-json "${RESULT_JSON}"

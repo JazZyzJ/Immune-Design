@@ -29,6 +29,7 @@ import logging
 import os
 import sys
 import time
+from collections import Counter
 from typing import Optional
 
 import pandas as pd
@@ -88,6 +89,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--nmp-batch-size", type=int, default=8)
     p.add_argument("--nmp-max-lengths-per-call", type=int, default=4)
     p.add_argument("--nmp-workers", type=int, default=1)
+    p.add_argument(
+        "--near-miss-analysis",
+        action="store_true",
+        help="Compute optional exact-vs-overlap near-miss diagnostics.",
+    )
     return p.parse_args()
 
 
@@ -157,6 +163,328 @@ def _load_test_entries(
     return entries
 
 
+def _span_overlap_len(a: tuple[int, int], b: tuple[int, int]) -> int:
+    """Return overlap length between two half-open spans."""
+    return max(0, min(a[1], b[1]) - max(a[0], b[0]))
+
+
+def _span_gap(a: tuple[int, int], b: tuple[int, int]) -> int:
+    """Return residue gap between spans, or 0 if they overlap."""
+    if a[1] <= b[0]:
+        return b[0] - a[1]
+    if b[1] <= a[0]:
+        return a[0] - b[1]
+    return 0
+
+
+def _span_iou(a: tuple[int, int], b: tuple[int, int]) -> float:
+    """Return IoU between two half-open spans."""
+    ov = _span_overlap_len(a, b)
+    if ov == 0:
+        return 0.0
+    union = (a[1] - a[0]) + (b[1] - b[0]) - ov
+    return ov / union
+
+
+def _build_overlap_labels(
+    candidate_spans: torch.Tensor,
+    positives: list[dict],
+) -> torch.Tensor:
+    """Label windows positive if they overlap any GT span."""
+    pos_spans = [
+        (int(p["start_0b"]), int(p["end_0b"]))
+        for p in positives
+    ]
+    labels = torch.zeros(candidate_spans.shape[0], dtype=torch.long)
+    for i in range(candidate_spans.shape[0]):
+        span = (
+            int(candidate_spans[i, 0].item()),
+            int(candidate_spans[i, 1].item()),
+        )
+        if any(_span_overlap_len(span, pos) > 0 for pos in pos_spans):
+            labels[i] = 1
+    return labels
+
+
+def _build_iou50_labels(
+    candidate_spans: torch.Tensor,
+    positives: list[dict],
+) -> torch.Tensor:
+    """Label windows positive if they match any GT span with IoU >= 0.5."""
+    pos_spans = [
+        (int(p["start_0b"]), int(p["end_0b"]))
+        for p in positives
+    ]
+    labels = torch.zeros(candidate_spans.shape[0], dtype=torch.long)
+    for i in range(candidate_spans.shape[0]):
+        span = (
+            int(candidate_spans[i, 0].item()),
+            int(candidate_spans[i, 1].item()),
+        )
+        if any(_span_iou(span, pos) >= 0.5 for pos in pos_spans):
+            labels[i] = 1
+    return labels
+
+
+def _sorted_median(values: list[int]) -> int | None:
+    """Median of a pre-sortable integer list, or None if empty."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def _empty_fp_bucket_counts() -> dict[str, int]:
+    """Exclusive bucket counts for high-score false positives."""
+    return {
+        "overlap_iou_gte_0_8": 0,
+        "overlap_iou_gte_0_5": 0,
+        "overlap_iou_lt_0_5": 0,
+        "near_gap_le_2": 0,
+        "near_gap_le_5": 0,
+        "near_gap_le_10": 0,
+        "far_gap_gt_10": 0,
+    }
+
+
+def _score_bucket_counts(rows: list[dict], cutoffs: tuple[int, ...]) -> dict[str, dict[str, int]]:
+    """Aggregate false-positive buckets for each requested cutoff."""
+    out: dict[str, dict[str, int]] = {}
+    for cutoff in cutoffs:
+        counts = _empty_fp_bucket_counts()
+        for row in rows[:cutoff]:
+            counts[row["bucket"]] += 1
+        out[str(cutoff)] = counts
+    return out
+
+
+def _build_ranked_window_rows(
+    spans: torch.Tensor,
+    scores_t: torch.Tensor,
+) -> tuple[list[dict], dict[tuple[int, int], int]]:
+    """Build descending-ranked windows with a span->rank map."""
+    rows = []
+    for i in range(spans.shape[0]):
+        span = (
+            int(spans[i, 0].item()),
+            int(spans[i, 1].item()),
+        )
+        rows.append({"span": span, "score": float(scores_t[i].item())})
+    rows.sort(key=lambda row: row["score"], reverse=True)
+    rank_map = {row["span"]: idx + 1 for idx, row in enumerate(rows)}
+    return rows, rank_map
+
+
+def _analyze_near_miss(
+    spans: torch.Tensor,
+    positives: list[dict],
+    scores_t: torch.Tensor,
+    fp_cutoffs: tuple[int, ...] = (10, 25, 50, 100),
+) -> dict:
+    """Summarize exact-vs-overlap ranking behavior for one protein."""
+    pos_spans = [
+        (int(p["start_0b"]), int(p["end_0b"]))
+        for p in positives
+    ]
+    pos_set = set(pos_spans)
+    if not pos_spans:
+        return {
+            "exact_ap": None,
+            "overlap_ap": None,
+            "iou50_ap": None,
+            "best_exact_rank": None,
+            "median_exact_rank": None,
+            "median_best_overlap_nonexact_rank": None,
+            "n_gt_total": 0,
+            "n_gt_with_overlap_outranking_exact": 0,
+            "gt_examples": [],
+            "top_fp_breakdown": {
+                str(cutoff): _empty_fp_bucket_counts() for cutoff in fp_cutoffs
+            },
+            "top_shift_pairs": [],
+        }
+    ranked_rows, rank_map = _build_ranked_window_rows(spans, scores_t)
+    overlap_labels = _build_overlap_labels(spans, positives)
+    iou50_labels = _build_iou50_labels(spans, positives)
+
+    gt_examples = []
+    exact_ranks: list[int] = []
+    best_overlap_nonexact_ranks: list[int] = []
+    n_outranking = 0
+    shift_counts: Counter[tuple[int, int]] = Counter()
+
+    for gt_span in pos_spans:
+        exact_rank = rank_map[gt_span]
+        exact_ranks.append(exact_rank)
+        best_overlap_nonexact = None
+        for row in ranked_rows:
+            span = row["span"]
+            if span == gt_span:
+                continue
+            if _span_overlap_len(span, gt_span) > 0:
+                best_overlap_nonexact = row
+                break
+
+        best_rank = None
+        best_span = None
+        best_iou = None
+        if best_overlap_nonexact is not None:
+            best_span = best_overlap_nonexact["span"]
+            best_rank = rank_map[best_span]
+            best_iou = _span_iou(best_span, gt_span)
+            best_overlap_nonexact_ranks.append(best_rank)
+            shift_counts[(best_span[0] - gt_span[0], best_span[1] - gt_span[1])] += 1
+            if best_rank < exact_rank:
+                n_outranking += 1
+
+        gt_examples.append({
+            "gt_span": [gt_span[0], gt_span[1]],
+            "exact_rank": exact_rank,
+            "best_overlap_nonexact_rank": best_rank,
+            "best_overlap_nonexact_span": (
+                None if best_span is None else [best_span[0], best_span[1]]
+            ),
+            "best_overlap_nonexact_iou": best_iou,
+        })
+
+    fp_rows = []
+    for row in ranked_rows:
+        span = row["span"]
+        if span in pos_set:
+            continue
+        overlap_ious = [
+            _span_iou(span, pos_span)
+            for pos_span in pos_spans
+            if _span_overlap_len(span, pos_span) > 0
+        ]
+        if overlap_ious:
+            best_iou = max(overlap_ious)
+            if best_iou >= 0.8:
+                bucket = "overlap_iou_gte_0_8"
+            elif best_iou >= 0.5:
+                bucket = "overlap_iou_gte_0_5"
+            else:
+                bucket = "overlap_iou_lt_0_5"
+        else:
+            nearest_gap = min(_span_gap(span, pos_span) for pos_span in pos_spans)
+            if nearest_gap <= 2:
+                bucket = "near_gap_le_2"
+            elif nearest_gap <= 5:
+                bucket = "near_gap_le_5"
+            elif nearest_gap <= 10:
+                bucket = "near_gap_le_10"
+            else:
+                bucket = "far_gap_gt_10"
+        fp_rows.append({"span": span, "bucket": bucket})
+
+    return {
+        "exact_ap": compute_ap(scores_t, build_window_labels(spans, positives)),
+        "overlap_ap": compute_ap(scores_t, overlap_labels),
+        "iou50_ap": compute_ap(scores_t, iou50_labels),
+        "best_exact_rank": min(exact_ranks) if exact_ranks else None,
+        "median_exact_rank": _sorted_median(exact_ranks),
+        "median_best_overlap_nonexact_rank": _sorted_median(best_overlap_nonexact_ranks),
+        "n_gt_total": len(pos_spans),
+        "n_gt_with_overlap_outranking_exact": n_outranking,
+        "gt_examples": gt_examples,
+        "top_fp_breakdown": _score_bucket_counts(fp_rows, fp_cutoffs),
+        "top_shift_pairs": [
+            {
+                "delta_start": ds,
+                "delta_end": de,
+                "count": count,
+            }
+            for (ds, de), count in shift_counts.most_common(10)
+        ],
+    }
+
+
+def _select_near_miss_group(per_protein_row: dict) -> str | None:
+    """Group proteins by exact-AP winner for near-miss summaries."""
+    head_primary = per_protein_row["metrics"].get("head_primary")
+    nmp_primary = per_protein_row["metrics"].get("nmp_primary")
+    if head_primary is None or nmp_primary is None:
+        return None
+    head_ap = head_primary.get("ap")
+    nmp_ap = nmp_primary.get("ap")
+    if head_ap is None or nmp_ap is None or head_ap == nmp_ap:
+        return None
+    return "head_better" if head_ap > nmp_ap else "nmp_better"
+
+
+def _summarize_near_miss_group(rows: list[dict]) -> dict:
+    """Aggregate near-miss outputs for a group of proteins."""
+    near_rows = [
+        row["near_miss"]
+        for row in rows
+        if row.get("near_miss") is not None
+    ]
+    if not near_rows:
+        return {
+            "n_proteins": 0,
+            "mean_exact_ap": None,
+            "mean_overlap_ap": None,
+            "mean_iou50_ap": None,
+            "median_exact_rank": None,
+            "median_best_overlap_nonexact_rank": None,
+            "n_gt_total": 0,
+            "n_gt_with_overlap_outranking_exact": 0,
+            "gt_with_overlap_outranking_exact_fraction": None,
+            "top_fp_breakdown": {},
+        }
+
+    exact_aps = [float(row["exact_ap"]) for row in near_rows if row["exact_ap"] is not None]
+    overlap_aps = [float(row["overlap_ap"]) for row in near_rows if row["overlap_ap"] is not None]
+    iou50_aps = [float(row["iou50_ap"]) for row in near_rows if row["iou50_ap"] is not None]
+    exact_ranks = [
+        int(gt["exact_rank"])
+        for row in near_rows
+        for gt in row["gt_examples"]
+        if gt.get("exact_rank") is not None
+    ]
+    overlap_ranks = [
+        int(gt["best_overlap_nonexact_rank"])
+        for row in near_rows
+        for gt in row["gt_examples"]
+        if gt.get("best_overlap_nonexact_rank") is not None
+    ]
+    total_gt = sum(int(row["n_gt_total"]) for row in near_rows)
+    outranking_gt = sum(
+        int(row["n_gt_with_overlap_outranking_exact"]) for row in near_rows
+    )
+
+    cutoffs = sorted({
+        cutoff
+        for row in near_rows
+        for cutoff in row["top_fp_breakdown"]
+    }, key=int)
+    top_fp_breakdown = {}
+    for cutoff in cutoffs:
+        counts = _empty_fp_bucket_counts()
+        for row in near_rows:
+            by_cutoff = row["top_fp_breakdown"].get(cutoff)
+            if by_cutoff is None:
+                continue
+            for key, value in by_cutoff.items():
+                counts[key] += int(value)
+        top_fp_breakdown[cutoff] = counts
+
+    return {
+        "n_proteins": len(near_rows),
+        "mean_exact_ap": sum(exact_aps) / len(exact_aps) if exact_aps else None,
+        "mean_overlap_ap": sum(overlap_aps) / len(overlap_aps) if overlap_aps else None,
+        "mean_iou50_ap": sum(iou50_aps) / len(iou50_aps) if iou50_aps else None,
+        "median_exact_rank": _sorted_median(exact_ranks),
+        "median_best_overlap_nonexact_rank": _sorted_median(overlap_ranks),
+        "n_gt_total": total_gt,
+        "n_gt_with_overlap_outranking_exact": outranking_gt,
+        "gt_with_overlap_outranking_exact_fraction": (
+            outranking_gt / total_gt if total_gt > 0 else None
+        ),
+        "top_fp_breakdown": top_fp_breakdown,
+    }
+
+
 def main() -> int:
     args = parse_args()
     os.makedirs(os.path.dirname(os.path.abspath(args.output_json)), exist_ok=True)
@@ -190,6 +518,7 @@ def main() -> int:
         _log(f"  NMP lengths/call   : {args.nmp_max_lengths_per_call}")
         _log(f"  NMP workers        : {args.nmp_workers}")
     _log(f"  NMP timeout        : {args.nmp_timeout}s")
+    _log(f"  Near-miss analysis : {args.near_miss_analysis}")
     _log(f"  Output JSON        : {args.output_json}")
     _log("=" * 60)
 
@@ -456,7 +785,7 @@ def main() -> int:
             else ("missing" if head_n_scored == 0 else "partial")
         )
 
-        per_protein.append({
+        row = {
             "protein_id": pid,
             "sequence_length": L,
             "n_positives_total": len(positives),
@@ -488,7 +817,10 @@ def main() -> int:
                     nmp_scored, labels_full[nmp_mask],
                 ),
             },
-        })
+        }
+        if args.near_miss_analysis:
+            row["near_miss"] = _analyze_near_miss(spans, positives, head_full)
+        per_protein.append(row)
 
     # ── Macro averages ─────────────────────────────────────────────────
     # Each (predictor, mode) averaged over its own evaluable proteins.
@@ -580,6 +912,24 @@ def main() -> int:
         "per_protein": per_protein,
         "nmp_timing_per_protein": per_protein_nmp_timing,
     }
+    if args.near_miss_analysis:
+        nmp_better_rows = [
+            row for row in per_protein
+            if _select_near_miss_group(row) == "nmp_better"
+        ]
+        head_better_rows = [
+            row for row in per_protein
+            if _select_near_miss_group(row) == "head_better"
+        ]
+        output["near_miss_summary"] = {
+            "enabled": True,
+            "group_metric": "exact_ap",
+            "groups": {
+                "nmp_better": _summarize_near_miss_group(nmp_better_rows),
+                "head_better": _summarize_near_miss_group(head_better_rows),
+                "all": _summarize_near_miss_group(per_protein),
+            },
+        }
 
     with open(args.output_json, "w") as f:
         json.dump(output, f, indent=2)
@@ -634,6 +984,12 @@ def main() -> int:
     _log(f"  NMP  wall time  = {t_nmp_elapsed:.1f}s "
          f"({t_nmp_elapsed / 60:.1f}min, "
          f"{t_nmp_elapsed / max(len(entries), 1):.2f}s/protein)")
+    if args.near_miss_analysis:
+        near = output["near_miss_summary"]["groups"]
+        _log("  Near-miss groups:")
+        _log(f"    nmp_better proteins = {near['nmp_better']['n_proteins']}")
+        _log(f"    head_better proteins = {near['head_better']['n_proteins']}")
+        _log(f"    all proteins = {near['all']['n_proteins']}")
     _log(f"  Total wall time = {total_elapsed:.1f}s "
          f"({total_elapsed / 60:.1f}min)")
     _log(f"\nSaved to {args.output_json}")

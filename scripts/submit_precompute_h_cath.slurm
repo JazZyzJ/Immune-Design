@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=B3-hmaps-cath
 #SBATCH --qos=gpu-medium
+#SBATCH --constraint="a100&gpu80&nomig"
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
