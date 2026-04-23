@@ -56,7 +56,7 @@ Scripts for training, inference, ablation, and visualization of the Epitope Head
 ### Benchmark
 
 1. `scripts/benchmark_head_vs_nmp.py` — Window-level comparison of epitope head vs NetMHCIIpan on a FASTA (no ground truth). Aligns predictions by (position, peptide_length), uses NMP strong-binder as label, computes per-protein AUC/AP/Recall@K/Spearman. Accelerated NMP. Outputs JSON.
-2. `scripts/benchmark_iedb_test.py` — IEDB test-set benchmark: evaluates **both** head and NMP against IEDB ground-truth EL-positive spans (from `protein_samples_*.parquet` + `test_ids.txt`). Default NMP mode is "original" (batch_size=1, max_lengths_per_call=14, n_workers=1) for a clean baseline wall-time. Outputs JSON with per-protein + macro metrics and detailed timing.
+2. `scripts/benchmark_iedb_test.py` — IEDB test-set benchmark: evaluates **both** head and NMP against IEDB ground-truth EL-positive spans (from `protein_samples_*.parquet` + `test_ids.txt`). Default NMP mode is "original" (batch_size=1, max_lengths_per_call=14, n_workers=1) for a clean baseline wall-time. Outputs JSON with per-protein + macro metrics and detailed timing. Optional `--near-miss-analysis` adds exact-vs-overlap diagnostics (`exact_ap`, `overlap_ap`, `iou50_ap`), GT exact-rank vs best-overlap-rank summaries, top-FP near/far buckets, and grouped summaries for `nmp_better`, `head_better`, and `all`. The flag is additive and leaves default benchmark behavior unchanged when omitted.
 
 ### SLURM
 
@@ -66,7 +66,7 @@ Scripts for training, inference, ablation, and visualization of the Epitope Head
 4. `scripts/submit_cnn_enhance.slurm` — CNN Lite augmentation training (24hr, 1 GPU, 64GB).
 5. `scripts/submit_encoder_ablation.slurm` — Encoder ablation evaluation (24hr, 1 GPU, 64GB).
 6. `scripts/submit_flank_ablation.slurm` — Flank ablation experiment (12hr, 1 GPU, 64GB).
-7. `scripts/submit_benchmark.slurm` — Head vs NMP benchmark (24hr, 1 GPU, 16 CPUs). `MODE=fasta` (default) runs `benchmark_head_vs_nmp.py`; `MODE=iedb` runs `benchmark_iedb_test.py` against IEDB ground truth. Shared overrides: `EPITOPE_CKPT`, `ALLELE`, `VARIANT_ID`, `DEVICE`. FASTA-mode: `INPUT_FASTA`, `NMP_WORKERS`, `NMP_BATCH_SIZE`. IEDB-mode: `PROFILE`, `ALLELE_SUBDIR`, `PROTEIN_SAMPLES_PARQUET`, `TEST_IDS`, `NMP_MODE`, `NMP_WORKERS`, `NMP_BATCH_SIZE`, `NMP_MAX_LENGTHS_PER_CALL`, `NMP_TIMEOUT`.
+7. `scripts/submit_benchmark.slurm` — Head vs NMP benchmark (24hr, 1 GPU, 16 CPUs). `MODE=fasta` (default) runs `benchmark_head_vs_nmp.py`; `MODE=iedb` runs `benchmark_iedb_test.py` against IEDB ground truth. Shared overrides: `EPITOPE_CKPT`, `ALLELE`, `VARIANT_ID`, `DEVICE`. FASTA-mode: `INPUT_FASTA`, `NMP_WORKERS`, `NMP_BATCH_SIZE`. IEDB-mode: `PROFILE`, `ALLELE_SUBDIR`, `PROTEIN_SAMPLES_PARQUET`, `TEST_IDS`, `NMP_MODE`, `NMP_WORKERS`, `NMP_BATCH_SIZE`, `NMP_MAX_LENGTHS_PER_CALL`, `NMP_TIMEOUT`, `NEAR_MISS_ANALYSIS`. When `NEAR_MISS_ANALYSIS=1`, the launcher appends `--near-miss-analysis` and writes to the `_near_miss.json` output variant; default behavior is unchanged when the env var is omitted or `0`.
 
 ---
 
