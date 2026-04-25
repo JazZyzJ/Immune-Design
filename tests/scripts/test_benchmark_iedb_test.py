@@ -23,7 +23,9 @@ from scripts.benchmark_iedb_test import (
     _invert_nmp_wins,
     _iou_greedy_labels,
     _iou_threshold_key,
+    _load_windows_cache,
     _paired_wilcoxon,
+    _save_windows_cache,
     _select_near_miss_group,
     _span_gap,
     _span_iou,
@@ -276,53 +278,64 @@ def test_iou_threshold_key_canonicalizes_values():
     assert _iou_threshold_key(0.5) == "iou_0p50"
 
 
-def test_compute_iou_ladder_produces_tiers_only_for_k15():
-    # Include k=15 and k=12 windows; only k=15 should be used.
+def test_compute_iou_ladder_uses_full_multi_k_span_set():
+    # Mix k=12, k=15, k=18 windows. All should participate (length-agnostic
+    # IoU). One GT is k=12 (length 12), the other is k=18 — only multi-k
+    # support can hit the exact tier on both.
     wins = {
-        (0, 15): 0.9,
-        (1, 15): 0.5,
-        (50, 15): 0.8,
-        (0, 12): 10.0,  # ignored (not k=15)
+        (0, 15): 0.6,    # IoU=12/15=0.8 with GT0 (12-mer)
+        (0, 12): 0.9,    # exact match with GT0
+        (50, 18): 0.95,  # exact match with GT1 (18-mer)
+        (40, 12): 0.5,   # FP, no overlap
     }
     positives = [
-        {"start_0b": 0, "end_0b": 15},
-        {"start_0b": 50, "end_0b": 65},
+        {"start_0b": 0, "end_0b": 12},   # k=12 GT
+        {"start_0b": 50, "end_0b": 68},  # k=18 GT
     ]
-    out = _compute_iou_ladder(wins, L=100, positives=positives,
-                              iou_thresholds=[1.0, 0.5, 0.0],
-                              recall_ks=(50,))
-    assert out["n_pred_windows"] == 3
+    out = _compute_iou_ladder(
+        wins, L=100, positives=positives,
+        iou_thresholds=[1.0, 0.5, 0.0], recall_ks=(50,),
+    )
+    assert out["n_pred_windows"] == 4
     assert out["n_gt"] == 2
-    # Exact tier: only (0,15) and (50,65) match exactly (greedy assigns to
-    # best-IoU unassigned GT).
+    # Exact tier: both GTs perfectly matched (different k).
     exact = out["tiers"]["exact"]
-    assert exact["ap"] is not None and exact["ap"] > 0
-    # Overlap_any tier: at threshold 0.0, greedy will still assign [1,16) to
-    # GT0 first (score=0.5 but top-ranked is [0,15) score=0.9 → GT0).
-    assert out["tiers"]["overlap_any"]["ap"] is not None
+    assert exact["ap"] is not None
+    # Recall@50 at exact: 2 of 2 GTs found.
+    assert exact["recall_50"] == 1.0
+    # IoU≥0.5 tier: should also score the (0,15)/(0,12) pair → 0.8 IoU.
+    iou50 = out["tiers"]["iou_0p50"]
+    assert iou50["ap"] is not None and iou50["ap"] > 0
+    assert iou50["recall_50"] == 1.0
 
 
 def test_compute_emd_returns_none_when_density_is_zero():
     # No positives → y_density all zeros → EMD undefined.
     wins = {(0, 15): 1.0, (1, 15): 2.0}
     y_density = np.zeros(20, dtype=np.int64)
-    assert _compute_emd(wins, L=20, y_density=y_density, k_filter=15) is None
+    assert _compute_emd(wins, L=20, y_density=y_density) is None
 
 
-def test_compute_emd_matches_perfect_overlap():
-    # When prediction peak aligns with density peak, EMD should be small
-    # (not zero because softplus smears the mass) but similarity > 0.9.
+def test_compute_emd_uses_full_multi_k_aggregation_by_default():
+    # Mixed k windows; default (k_filter=None) must aggregate all and
+    # require full residue coverage (every residue in some span).
     L = 20
     y_cover, y_density = _build_residue_labels(
         [{"start_0b": 5, "end_0b": 10}], L=L,
     )
-    # Put huge positive mass on spans around residues 5..9.
-    wins = {(s, 15): 0.0 for s in range(L - 15 + 1)}
-    wins[(0, 15)] = 50.0  # spans residues 0..14, peaks over [5..9] area
-    out = _compute_emd(wins, L=L, y_density=y_density, k_filter=15)
+    # Cover all 20 residues with a sliding window of k=12.
+    wins = {(s, 12): 0.0 for s in range(L - 12 + 1)}
+    # Add a k=15 span concentrating mass over residues 0..14 (weak).
+    wins[(0, 15)] = 0.0
+    # And a k=12 span concentrating mass over residues 5..16 (which covers
+    # the GT span 5..9). Multi-k aggregation should reflect this peak.
+    wins[(5, 12)] = 50.0
+    out = _compute_emd(wins, L=L, y_density=y_density)
     assert out is not None
     assert 0 <= out["emd_norm"] <= 1
     assert abs(out["emd_norm"] + out["similarity"] - 1.0) < 1e-9
+    # Sanity: with the peak aligned to GT, similarity should be > 0.5.
+    assert out["similarity"] > 0.5
 
 
 def test_bootstrap_ci_is_seeded_and_brackets_mean():
@@ -347,3 +360,43 @@ def test_paired_wilcoxon_handles_none_entries():
 def test_paired_wilcoxon_returns_none_when_fewer_than_two_pairs():
     assert _paired_wilcoxon([0.5], [0.4]) is None
     assert _paired_wilcoxon([None, None], [0.5, 0.6]) is None
+
+
+def test_windows_cache_round_trip_preserves_dicts(tmp_path):
+    # Mixed coverage: P1 has both head + NMP, P2 head-only (NMP failed),
+    # P3 NMP-only (head somehow missing — defensive case).
+    head_wins = {
+        "P1": {(0, 12): 0.5, (0, 15): 0.7, (5, 13): -1.2},
+        "P2": {(0, 12): 0.1, (3, 18): 2.5},
+    }
+    nmp_wins = {
+        "P1": {(0, 15): 0.2, (5, 13): 0.05},
+        "P3": {(10, 15): 0.4},
+    }
+    metadata = {
+        "allele": "HLA-DRB1*07:01",
+        "min_k": 12,
+        "max_k": 25,
+        "variant_id": "LC1",
+        "n_proteins": 3,
+    }
+    cache_path = str(tmp_path / "cache.parquet")
+    _save_windows_cache(cache_path, head_wins, nmp_wins, metadata)
+
+    head_loaded, nmp_loaded, meta_loaded = _load_windows_cache(cache_path)
+    assert head_loaded == head_wins
+    assert nmp_loaded == nmp_wins
+    assert meta_loaded == metadata
+
+
+def test_windows_cache_handles_predictor_only_proteins(tmp_path):
+    # A protein with NMP scores but no head should round-trip with empty
+    # head-side dict (no spurious zero entries).
+    head_wins = {"P1": {(0, 15): 0.9}}
+    nmp_wins = {"P1": {(0, 15): 0.1}, "P2": {(0, 15): 0.2}}
+    cache_path = str(tmp_path / "cache.parquet")
+    _save_windows_cache(cache_path, head_wins, nmp_wins, metadata={})
+    h, n, _ = _load_windows_cache(cache_path)
+    assert "P2" not in h
+    assert h["P1"] == {(0, 15): 0.9}
+    assert n == nmp_wins

@@ -124,6 +124,22 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Bootstrap RNG seed for reproducibility (default: 0).",
     )
+    # Windows cache for cheap metric iteration. Inference (steps 2 + 3) is
+    # the dominant wall-time; once cached, future metric tweaks reload the
+    # raw (start, k) → score dicts and skip head + NMP entirely.
+    p.add_argument(
+        "--windows-cache",
+        default=None,
+        help="If set, write head_wins+nmp_wins to this parquet path (with a "
+             "sidecar .meta.json) after inference.",
+    )
+    p.add_argument(
+        "--resume-from-cache",
+        default=None,
+        help="If set, load head_wins+nmp_wins from this parquet path and "
+             "skip steps 2 (head) and 3 (NMP). Mutually exclusive with "
+             "running fresh inference.",
+    )
     return p.parse_args()
 
 
@@ -726,16 +742,21 @@ def _compute_iou_ladder(
     iou_thresholds: list[float],
     recall_ks: tuple[int, ...],
 ) -> Optional[dict]:
-    """M6 ladder over k=15 windows. Returns None if no k=15 predictions."""
-    k15 = [
-        ((s, s + 15), v)
+    """M6 ladder over the full multi-k span set (per doc §5 head note).
+
+    IoU is length-agnostic — predictions and GT spans of differing length are
+    handled directly by `|w∩g| / |w∪g|`. Returns None if no in-bounds
+    predictions exist.
+    """
+    pred = [
+        ((s, s + k), v)
         for (s, k), v in wins_inv.items()
-        if k == 15 and 0 <= s and s + 15 <= L
+        if 0 <= s and s + k <= L
     ]
-    if not k15:
+    if not pred:
         return None
-    spans_np = np.array([[a, b] for ((a, b), _) in k15], dtype=np.int64)
-    scores_np = np.array([v for (_, v) in k15], dtype=np.float64)
+    spans_np = np.array([[a, b] for ((a, b), _) in pred], dtype=np.int64)
+    scores_np = np.array([v for (_, v) in pred], dtype=np.float64)
 
     out: dict = {
         "n_pred_windows": int(spans_np.shape[0]),
@@ -760,12 +781,13 @@ def _compute_emd(
     wins_inv: dict[tuple[int, int], float],
     L: int,
     y_density: np.ndarray,
-    k_filter: int = 15,
+    k_filter: Optional[int] = None,
 ) -> Optional[dict]:
     """1D EMD between per-residue pred density and GT coverage density.
 
-    Uses M2a-A aggregation (k=15 only, max) per doc §5.3. Returns None if
-    either distribution is degenerate.
+    Uses the residue-level `score(r)` from §5.1 (max over the full multi-k
+    span set). Returns None if either distribution is degenerate. The
+    `k_filter` argument is preserved for ablations only.
     """
     if y_density.sum() == 0:
         return None
@@ -860,6 +882,67 @@ def _paired_wilcoxon(
     }
 
 
+# ── Windows cache (parquet) ──────────────────────────────────────────
+#
+# Schema (long format makes head/NMP coverage gaps explicit):
+#   columns = [protein_id, start, k, head_score, nmp_el_rank]
+#   rows    = one per (pid, start, k) where either predictor scored
+# Sidecar `<path>.meta.json` records the inference config so a stale cache
+# can be flagged before reuse.
+
+
+def _save_windows_cache(
+    path: str,
+    head_wins_by_pid: dict[str, dict[tuple[int, int], float]],
+    nmp_wins_by_pid: dict[str, dict[tuple[int, int], float]],
+    metadata: dict,
+) -> None:
+    """Write the raw (start, k) → score dicts to a parquet + meta sidecar."""
+    pids = sorted(set(head_wins_by_pid) | set(nmp_wins_by_pid))
+    rows: list[dict] = []
+    for pid in pids:
+        h = head_wins_by_pid.get(pid, {})
+        n = nmp_wins_by_pid.get(pid, {})
+        for key in sorted(set(h) | set(n)):
+            s, k = int(key[0]), int(key[1])
+            rows.append({
+                "protein_id": pid,
+                "start": s,
+                "k": k,
+                "head_score": float(h[key]) if key in h else float("nan"),
+                "nmp_el_rank": float(n[key]) if key in n else float("nan"),
+            })
+    df = pd.DataFrame(rows)
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    df.to_parquet(path, index=False)
+    with open(path + ".meta.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
+
+def _load_windows_cache(
+    path: str,
+) -> tuple[dict[str, dict[tuple[int, int], float]],
+           dict[str, dict[tuple[int, int], float]],
+           dict]:
+    """Reload (head_wins_by_pid, nmp_wins_by_pid, metadata)."""
+    df = pd.read_parquet(path)
+    head: dict[str, dict[tuple[int, int], float]] = {}
+    nmp: dict[str, dict[tuple[int, int], float]] = {}
+    for row in df.itertuples(index=False):
+        pid = row.protein_id
+        key = (int(row.start), int(row.k))
+        if pd.notna(row.head_score):
+            head.setdefault(pid, {})[key] = float(row.head_score)
+        if pd.notna(row.nmp_el_rank):
+            nmp.setdefault(pid, {})[key] = float(row.nmp_el_rank)
+    meta_path = path + ".meta.json"
+    meta = {}
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+    return head, nmp, meta
+
+
 def _collect_pp(
     per_protein: list[dict], path: tuple[str, ...],
 ) -> list[Optional[float]]:
@@ -917,8 +1000,18 @@ def main() -> int:
         _log(f"  IoU thresholds     : {args.iou_thresholds}")
     if args.metric_suite != "exact":
         _log(f"  Bootstrap resamples: {args.bootstrap_n} (seed={args.bootstrap_seed})")
+    _log(f"  Windows cache      : {args.windows_cache or '(disabled)'}")
+    _log(f"  Resume from cache  : {args.resume_from_cache or '(no)'}")
     _log(f"  Output JSON        : {args.output_json}")
     _log("=" * 60)
+
+    if args.windows_cache and args.resume_from_cache:
+        _log("ERROR: --windows-cache (write) and --resume-from-cache (read) "
+             "are mutually exclusive. Pick one.")
+        return 1
+    if args.resume_from_cache and not os.path.exists(args.resume_from_cache):
+        _log(f"ERROR: cache file not found: {args.resume_from_cache}")
+        return 1
 
     # Toggles for metric suites (computed once; used in per-protein loop).
     suite = args.metric_suite
@@ -941,39 +1034,7 @@ def main() -> int:
         _log("ERROR: No test proteins found.")
         return 1
 
-    # ── Step 2: Head inference ─────────────────────────────────────────
-    _log("\n[2/4] Running epitope head inference...")
-    from scripts.run_if_guidance_sweep import load_epitope_predictor
-
-    config_dir = args.config_dir or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "epitope_head", "configs",
-    )
-    predictor = load_epitope_predictor(
-        config_dir=config_dir,
-        checkpoint_path=args.epitope_ckpt,
-        variant_id=args.variant_id,
-        device=args.device,
-    )
-
-    head_wins_by_pid: dict[str, dict[tuple[int, int], float]] = {}
-    t_head_start = time.time()
-    for idx, entry in enumerate(entries, start=1):
-        pred = predictor.predict_protein(entry["protein_seq"], allele_idx=0)
-        wins = {}
-        for w in pred["window_logits"]:
-            k = w["end_0b"] - w["start_0b"]
-            wins[(w["start_0b"], k)] = w["z"]
-        head_wins_by_pid[entry["protein_id"]] = wins
-        if idx % 20 == 0 or idx == len(entries):
-            _log(f"  Head: {idx}/{len(entries)}")
-    t_head_elapsed = time.time() - t_head_start
-    _log(f"  Head inference complete ({t_head_elapsed:.1f}s)")
-
-    # ── Step 3: NMP scoring ────────────────────────────────────────────
-    _log(f"\n[3/4] Running NetMHCIIpan (mode={args.nmp_mode})...")
-    from epitope_head.data.netmhciipan_runner import build_runner
-
+    # NMP runner config (recorded into output JSON regardless of cache path).
     if args.nmp_mode == "original":
         # One protein, all lengths in one subprocess — the "original" naive call.
         batch_size, max_lengths_per_call, n_workers = 1, 14, 1
@@ -982,57 +1043,145 @@ def main() -> int:
         max_lengths_per_call = args.nmp_max_lengths_per_call
         n_workers = args.nmp_workers
 
-    nmp_runner = build_runner(
-        backend="standalone",
-        binary_path=args.netmhciipan_bin,
-        batch_size=batch_size,
-        subprocess_timeout=args.nmp_timeout,
-        max_lengths_per_call=max_lengths_per_call,
-        n_workers=n_workers,
-    )
-
-    pep_lengths = list(range(args.min_k, args.max_k + 1))
+    head_wins_by_pid: dict[str, dict[tuple[int, int], float]] = {}
     nmp_wins_by_pid: dict[str, dict[tuple[int, int], float]] = {}
     per_protein_nmp_timing: list[dict] = []
+    t_head_elapsed = 0.0
+    t_nmp_elapsed = 0.0
 
-    t_nmp_start = time.time()
-    n_done = 0
-    for chunk_start in range(0, len(entries), batch_size):
-        chunk = entries[chunk_start:chunk_start + batch_size]
-        chunk_pairs = [(e["protein_id"], e["protein_seq"]) for e in chunk]
-        t_chunk = time.time()
-        batch_out = nmp_runner.score_batch(chunk_pairs, args.allele, pep_lengths)
-        chunk_elapsed = time.time() - t_chunk
-
-        for pid, by_len in batch_out.items():
-            wins: dict[tuple[int, int], float] = {}
-            for pl, scores in by_len.items():
-                for s in scores:
-                    wins[(s.pos, pl)] = s.el_rank  # 0-1 fraction
-            nmp_wins_by_pid[pid] = wins
-
-        # Per-chunk timing; in original mode each chunk = 1 protein
-        for e in chunk:
+    if args.resume_from_cache:
+        # ── Steps 2+3 short-circuit ────────────────────────────────────
+        _log(f"\n[2-3/4] Resuming from windows cache: {args.resume_from_cache}")
+        t_load = time.time()
+        head_wins_by_pid, nmp_wins_by_pid, cache_meta = _load_windows_cache(
+            args.resume_from_cache,
+        )
+        _log(f"  Loaded head pids={len(head_wins_by_pid)}, "
+             f"nmp pids={len(nmp_wins_by_pid)} in {time.time() - t_load:.2f}s")
+        if cache_meta:
+            _log(f"  Cache meta: allele={cache_meta.get('allele')!r}  "
+                 f"k=[{cache_meta.get('min_k')},{cache_meta.get('max_k')}]  "
+                 f"variant_id={cache_meta.get('variant_id')!r}")
+            if cache_meta.get("allele") and cache_meta["allele"] != args.allele:
+                _log(f"  WARNING: cache allele={cache_meta['allele']!r} != "
+                     f"requested {args.allele!r} — proceeding anyway.")
+            if (cache_meta.get("min_k") is not None
+                    and (cache_meta["min_k"] > args.min_k
+                         or cache_meta["max_k"] < args.max_k)):
+                _log(f"  WARNING: cache k-range "
+                     f"[{cache_meta['min_k']},{cache_meta['max_k']}] is narrower "
+                     f"than requested [{args.min_k},{args.max_k}].")
+        # Synthetic timing record so the per-protein timing column stays a
+        # stable schema; chunk_seconds=0 marks "loaded from cache".
+        for e in entries:
             per_protein_nmp_timing.append({
                 "protein_id": e["protein_id"],
                 "sequence_length": len(e["protein_seq"]),
-                "chunk_seconds": round(chunk_elapsed, 2),
+                "chunk_seconds": 0.0,
+                "from_cache": True,
             })
+    else:
+        # ── Step 2: Head inference ─────────────────────────────────────
+        _log("\n[2/4] Running epitope head inference...")
+        from scripts.run_if_guidance_sweep import load_epitope_predictor
 
-        n_done += len(chunk)
-        elapsed = time.time() - t_nmp_start
-        rate = n_done / max(elapsed, 1e-6)
-        eta = (len(entries) - n_done) / max(rate, 1e-6)
-        pids_label = chunk[0]["protein_id"] if len(chunk) == 1 else (
-            f"{chunk[0]['protein_id']}..{chunk[-1]['protein_id']}"
+        config_dir = args.config_dir or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "epitope_head", "configs",
         )
-        _log(f"  NMP [{n_done}/{len(entries)}] {pids_label}: "
-             f"chunk {chunk_elapsed:.1f}s | "
-             f"rate {rate * 60:.1f}/min, ETA {eta / 60:.1f}min")
+        predictor = load_epitope_predictor(
+            config_dir=config_dir,
+            checkpoint_path=args.epitope_ckpt,
+            variant_id=args.variant_id,
+            device=args.device,
+        )
 
-    t_nmp_elapsed = time.time() - t_nmp_start
-    _log(f"  NMP scoring complete ({t_nmp_elapsed:.1f}s total, "
-         f"{t_nmp_elapsed / max(len(entries), 1):.2f}s/protein mean)")
+        t_head_start = time.time()
+        for idx, entry in enumerate(entries, start=1):
+            pred = predictor.predict_protein(entry["protein_seq"], allele_idx=0)
+            wins = {}
+            for w in pred["window_logits"]:
+                k = w["end_0b"] - w["start_0b"]
+                wins[(w["start_0b"], k)] = w["z"]
+            head_wins_by_pid[entry["protein_id"]] = wins
+            if idx % 20 == 0 or idx == len(entries):
+                _log(f"  Head: {idx}/{len(entries)}")
+        t_head_elapsed = time.time() - t_head_start
+        _log(f"  Head inference complete ({t_head_elapsed:.1f}s)")
+
+        # ── Step 3: NMP scoring ────────────────────────────────────────
+        _log(f"\n[3/4] Running NetMHCIIpan (mode={args.nmp_mode})...")
+        from epitope_head.data.netmhciipan_runner import build_runner
+
+        nmp_runner = build_runner(
+            backend="standalone",
+            binary_path=args.netmhciipan_bin,
+            batch_size=batch_size,
+            subprocess_timeout=args.nmp_timeout,
+            max_lengths_per_call=max_lengths_per_call,
+            n_workers=n_workers,
+        )
+
+        pep_lengths = list(range(args.min_k, args.max_k + 1))
+
+        t_nmp_start = time.time()
+        n_done = 0
+        for chunk_start in range(0, len(entries), batch_size):
+            chunk = entries[chunk_start:chunk_start + batch_size]
+            chunk_pairs = [(e["protein_id"], e["protein_seq"]) for e in chunk]
+            t_chunk = time.time()
+            batch_out = nmp_runner.score_batch(chunk_pairs, args.allele, pep_lengths)
+            chunk_elapsed = time.time() - t_chunk
+
+            for pid, by_len in batch_out.items():
+                wins: dict[tuple[int, int], float] = {}
+                for pl, scores in by_len.items():
+                    for s in scores:
+                        wins[(s.pos, pl)] = s.el_rank  # 0-1 fraction
+                nmp_wins_by_pid[pid] = wins
+
+            # Per-chunk timing; in original mode each chunk = 1 protein
+            for e in chunk:
+                per_protein_nmp_timing.append({
+                    "protein_id": e["protein_id"],
+                    "sequence_length": len(e["protein_seq"]),
+                    "chunk_seconds": round(chunk_elapsed, 2),
+                })
+
+            n_done += len(chunk)
+            elapsed = time.time() - t_nmp_start
+            rate = n_done / max(elapsed, 1e-6)
+            eta = (len(entries) - n_done) / max(rate, 1e-6)
+            pids_label = chunk[0]["protein_id"] if len(chunk) == 1 else (
+                f"{chunk[0]['protein_id']}..{chunk[-1]['protein_id']}"
+            )
+            _log(f"  NMP [{n_done}/{len(entries)}] {pids_label}: "
+                 f"chunk {chunk_elapsed:.1f}s | "
+                 f"rate {rate * 60:.1f}/min, ETA {eta / 60:.1f}min")
+
+        t_nmp_elapsed = time.time() - t_nmp_start
+        _log(f"  NMP scoring complete ({t_nmp_elapsed:.1f}s total, "
+             f"{t_nmp_elapsed / max(len(entries), 1):.2f}s/protein mean)")
+
+        if args.windows_cache:
+            _log(f"\n  Writing windows cache → {args.windows_cache}")
+            t_save = time.time()
+            _save_windows_cache(
+                args.windows_cache,
+                head_wins_by_pid,
+                nmp_wins_by_pid,
+                metadata={
+                    "allele": args.allele,
+                    "min_k": int(args.min_k),
+                    "max_k": int(args.max_k),
+                    "variant_id": args.variant_id,
+                    "epitope_ckpt": args.epitope_ckpt,
+                    "n_proteins": len(entries),
+                    "nmp_mode": args.nmp_mode,
+                    "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                },
+            )
+            _log(f"  Cache write complete ({time.time() - t_save:.2f}s)")
 
     # ── Step 4: Build labels and compute three-tiered metrics ──────────
     # Q1 PRIMARY   : head uses real scores; NMP missing windows imputed with
@@ -1235,34 +1384,20 @@ def main() -> int:
             y_cover, y_density = _build_residue_labels(positives, L)
 
         if do_residue:
-            # M2a-A: k=15 symmetric (both predictors).
-            head_A_scores, head_A_mask = _aggregate_residue_scores(
-                head_wins_inv, L, k_filter=15,
-            )
-            nmp_A_scores, nmp_A_mask = _aggregate_residue_scores(
-                nmp_wins_inv, L, k_filter=15,
-            )
-            # M2a-B: head uses its full k∈[min_k, max_k] range; NMP is k=15.
-            head_B_scores, head_B_mask = _aggregate_residue_scores(
+            # Per doc §5: identical multi-k aggregation for head and NMP.
+            head_scores, head_mask = _aggregate_residue_scores(
                 head_wins_inv, L, k_filter=None,
             )
+            nmp_scores, nmp_mask = _aggregate_residue_scores(
+                nmp_wins_inv, L, k_filter=None,
+            )
             row["metrics"]["residue"] = {
-                "k15_symmetric": {
-                    "head": _compute_residue_metrics(
-                        head_A_scores, head_A_mask, y_cover, y_density,
-                    ),
-                    "nmp": _compute_residue_metrics(
-                        nmp_A_scores, nmp_A_mask, y_cover, y_density,
-                    ),
-                },
-                "variable_k": {
-                    "head": _compute_residue_metrics(
-                        head_B_scores, head_B_mask, y_cover, y_density,
-                    ),
-                    "nmp": _compute_residue_metrics(
-                        nmp_A_scores, nmp_A_mask, y_cover, y_density,
-                    ),
-                },
+                "head": _compute_residue_metrics(
+                    head_scores, head_mask, y_cover, y_density,
+                ),
+                "nmp": _compute_residue_metrics(
+                    nmp_scores, nmp_mask, y_cover, y_density,
+                ),
             }
 
         if do_iou:
@@ -1279,8 +1414,8 @@ def main() -> int:
 
         if do_emd:
             row["metrics"]["emd"] = {
-                "head": _compute_emd(head_wins_inv, L, y_density, k_filter=15),
-                "nmp": _compute_emd(nmp_wins_inv, L, y_density, k_filter=15),
+                "head": _compute_emd(head_wins_inv, L, y_density),
+                "nmp": _compute_emd(nmp_wins_inv, L, y_density),
             }
 
         per_protein.append(row)
@@ -1350,24 +1485,23 @@ def main() -> int:
         return sum(vs) / len(vs) if vs else None
 
     if do_residue:
-        residue_block: dict = {}
-        for variant in ("k15_symmetric", "variable_k"):
-            block = {
-                "n_head_evaluable": sum(
-                    1 for r in per_protein
-                    if r["metrics"].get("residue", {}).get(variant, {}).get("head") is not None
-                ),
-                "n_nmp_evaluable": sum(
-                    1 for r in per_protein
-                    if r["metrics"].get("residue", {}).get(variant, {}).get("nmp") is not None
-                ),
-            }
-            for name in ("head", "nmp"):
-                for key in ("auc", "ap", "pearson", "spearman"):
-                    path = ("metrics", "residue", variant, name, key)
-                    vals = _collect_pp(per_protein, path)
-                    block.setdefault(name, {})[f"pp_{key}"] = _macro_mean(vals)
-            residue_block[variant] = block
+        residue_block: dict = {
+            "n_head_evaluable": sum(
+                1 for r in per_protein
+                if r["metrics"].get("residue", {}).get("head") is not None
+            ),
+            "n_nmp_evaluable": sum(
+                1 for r in per_protein
+                if r["metrics"].get("residue", {}).get("nmp") is not None
+            ),
+        }
+        for name in ("head", "nmp"):
+            residue_block[name] = {}
+            for key in ("auc", "ap", "pearson", "spearman"):
+                path = ("metrics", "residue", name, key)
+                residue_block[name][f"pp_{key}"] = _macro_mean(
+                    _collect_pp(per_protein, path),
+                )
         macro["residue"] = residue_block
 
     if do_iou:
@@ -1433,13 +1567,12 @@ def main() -> int:
          ("metrics", "nmp_primary", "auc")),
     ]
     if do_residue:
-        for variant in ("k15_symmetric", "variable_k"):
-            for metric in ("auc", "ap", "pearson", "spearman"):
-                headline_specs.append((
-                    f"residue_{variant}_{metric}",
-                    ("metrics", "residue", variant, "head", metric),
-                    ("metrics", "residue", variant, "nmp", metric),
-                ))
+        for metric in ("auc", "ap", "pearson", "spearman"):
+            headline_specs.append((
+                f"residue_{metric}",
+                ("metrics", "residue", "head", metric),
+                ("metrics", "residue", "nmp", metric),
+            ))
     if do_iou:
         for tier in [_iou_threshold_key(t) for t in iou_thresholds]:
             for metric in ("ap", "auc"):
@@ -1487,6 +1620,8 @@ def main() -> int:
             "iou_thresholds": iou_thresholds,
             "bootstrap_n": args.bootstrap_n,
             "bootstrap_seed": args.bootstrap_seed,
+            "windows_cache": args.windows_cache,
+            "resume_from_cache": args.resume_from_cache,
         },
         "timing": {
             "total_seconds": round(total_elapsed, 1),
@@ -1570,20 +1705,18 @@ def main() -> int:
 
     # ── EL-landscape summary ────────────────────────────────────────
     if do_residue:
-        _log("\n  [Residue (M2a) — per-residue landscape]")
-        for variant in ("k15_symmetric", "variable_k"):
-            block = macro["residue"][variant]
-            _log(f"    {variant}:")
-            for name in ("head", "nmp"):
-                n_eval = block[f"n_{name}_evaluable"]
-                cells = []
-                for key in ("pp_auc", "pp_ap", "pp_pearson", "pp_spearman"):
-                    v = block[name].get(key)
-                    cells.append(
-                        f"{key[3:]}={v:.4f}" if v is not None else f"{key[3:]}=N/A"
-                    )
-                _log(f"      [{name.upper():4s}] n={n_eval}/{macro['n_total']}  "
-                     + "  ".join(cells))
+        _log("\n  [Residue (M2a) — per-residue landscape, k∈[min_k,max_k]]")
+        block = macro["residue"]
+        for name in ("head", "nmp"):
+            n_eval = block[f"n_{name}_evaluable"]
+            cells = []
+            for key in ("pp_auc", "pp_ap", "pp_pearson", "pp_spearman"):
+                v = block[name].get(key)
+                cells.append(
+                    f"{key[3:]}={v:.4f}" if v is not None else f"{key[3:]}=N/A"
+                )
+            _log(f"    [{name.upper():4s}] n={n_eval}/{macro['n_total']}  "
+                 + "  ".join(cells))
 
     if do_iou:
         _log("\n  [IoU ladder (M6) — window-level, k=15]")

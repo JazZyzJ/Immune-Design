@@ -53,7 +53,7 @@ These requirements are hard gates; alignment with the "landscape" framing is con
 | ID | Metric | Well-defined | Scale-invariant | Identifiability | Null | Precedent | Verdict |
 |---|---|---|---|---|---|---|---|
 | M1 | Overlap-/IoU-AP (exact-k window) | ✅ | ✅ (rank) | ⚠ needs 1-to-1 assignment | ✅ | **Strong** (COCO mAP) | **Accept** w/ COCO-style assignment |
-| M2a | Residue AUC/AP, binary coverage label | ✅ | ✅ (rank) | ⚠ aggregation + span-set asymmetry | ✅ | **Strong** (segmentation AUC, NMP eval) | **Accept** as primary |
+| M2a | Residue AUC/AP, binary coverage label | ✅ | ✅ (rank) | ⚠ aggregation choice (`max`/top-K mean/LSE) | ✅ | **Strong** (segmentation AUC, NMP eval) | **Accept** as primary |
 | M3 | 1D EMD (Wasserstein-1) on residue density | ✅ | ⚠ temperature τ in score→density | ⚠ τ-sensitive | requires MC | Medium (WMD, FID analog) | Accept as diagnostic only |
 | M4 | JS divergence on residue density | ✅ | ⚠ same τ issue | ⚠ spatially blind (JS is pointwise) | requires MC | Medium | **Reject** — strictly weaker than M3 |
 | M5 | Gaussian-smoothed label AUC | ✅ | ✅ | ⚠ σ is hyperparameter | ✅ | Weak — non-standard continuous-label AUC | **Reject** — M2a subsumes |
@@ -61,18 +61,17 @@ These requirements are hard gates; alignment with the "landscape" framing is con
 
 ## 5. Selected Metric Suite
 
+**Span set (shared across all metrics)**: $k \in [12, 25]$ enumerated for every protein, both head and NMP scored on the identical set. This is the existing `benchmark_iedb_test.py` default (`--min-k 12 --max-k 25`); no length restriction is imposed at metric time.
+
 ### 5.1 Primary — M2a: Residue-level AUC / AP / Pearson
 
 **Ground truth** per residue `r`:
-- `y_cover(r) = 1` iff `r ∈ ⋃ IEDB_EL_epitope_spans`, else `0`
+- `y_cover(r) = 1` iff `r ∈ ⋃ IEDB_EL_epitope_spans`, else `0` (length-agnostic — GT spans of any length contribute)
 - `y_density(r) = |{epitope e : r ∈ e}|` (integer coverage count, ≥ 0)
 
-**Model score per residue** — two reported variants:
-
-- **M2a-A (symmetric, k=15-restricted):** both head and NMP aggregate only k=15 spans/windows containing `r`. `score(r) = max over k=15 spans containing r`. Apples-to-apples under the IEDB 15-mer label convention.
-- **M2a-B (head-native, variable-k):** head aggregates all k∈[12,25] spans containing `r` (its trained output space); NMP uses k=15. `score(r) = max over spans containing r`.
-
-Report **both A and B** for head; A and B coincide for NMP.
+**Model score per residue**:
+- `score(r) = max over all spans (s,e) ∈ candidate_set with s ≤ r < e of f_model(s,e)`
+- Identical aggregation for head and NMP. Both share the same span set, so residue support is identical at every position.
 
 **Metrics**:
 - `residue_AUC` (vs `y_cover`) — ROC-AUC, binary positives, macro-averaged across proteins.
@@ -80,15 +79,17 @@ Report **both A and B** for head; A and B coincide for NMP.
 - `residue_Pearson` (vs `y_density`) — rewards matching the coverage *hotspot* structure (residues inside multiple overlapping epitopes carry higher weight).
 - `residue_Spearman` (vs `y_density`) — rank-based variant, robust to score distribution.
 
-**Aggregation fixed as `max`** across the suite. `max` is monotone in added spans (A→B changes only by adding more candidates, never removing), which keeps the A-vs-B comparison clean. Alternative aggregations (top-K mean, LogSumExp) are tracked as ablations only, not default.
+**Aggregation fixed as `max`** as default. Alternative aggregations (top-K mean, LogSumExp) are tracked as ablations only.
 
-### 5.2 Secondary — M6: Overlap/IoU-AP Ladder (window-level, k=15)
+### 5.2 Secondary — M6: Overlap/IoU-AP Ladder
 
-**Label relaxation** ladder:
+**Label relaxation** ladder, applied to the same multi-`k` span set as the primary:
 - `exact` — IoU = 1.0 (equivalent to current protocol)
-- `IoU ≥ 0.7` — ≥ 11 of 15 residues overlap
-- `IoU ≥ 0.5` — ≥ 8 of 15 residues overlap
+- `IoU ≥ 0.7`
+- `IoU ≥ 0.5`
 - `overlap > 0` — any residue overlaps (most lenient)
+
+IoU is length-agnostic — pred and GT spans of differing length are handled by the formula `|w∩g| / |w∪g|` directly; no length restriction needed.
 
 **Assignment (critical for validity)**:
 - Greedy 1-to-1 from COCO mAP convention.
@@ -101,10 +102,9 @@ Report **both A and B** for head; A and B coincide for NMP.
 
 ### 5.3 Diagnostic — M3: Normalized 1D EMD
 
-**Score → density** conversion:
+**Score → density** conversion (uses the same residue-level `score(r)` as §5.1):
 - `p_gt(r) = y_density(r) / Σ_r y_density(r)` (skip proteins with all-zero density)
-- `p_pred(r) = softplus(score_res(r)) / Σ_r softplus(score_res(r))`; τ=1 (fixed, not swept)
-- `score_res(r)` uses the M2a-A aggregation (k=15-only, `max`)
+- `p_pred(r) = softplus(score(r)) / Σ_r softplus(score(r))`; τ=1 (fixed, not swept)
 
 **Metric**: `EMD_norm = (1/L) · Σ_r |CDF_pred(r) - CDF_gt(r)|`, reported as `Similarity = 1 - EMD_norm ∈ [0, 1]`.
 
@@ -139,10 +139,9 @@ The 37% of top-10 FPs with gap > 10 aa from any GT are independent of metric ref
 
 ## 8. Open Decisions (to be resolved after full-126 run)
 
-1. **Which M2a variant (A vs B) becomes the headline residue-level number in the paper.** Prediction: B gives head ~1–3% AUC edge over A; if confirmed, report both, headline B; if B ≈ A, headline A for cleaner symmetry.
-2. **M6 IoU ladder granularity**: {exact, 0.7, 0.5, >0} is proposed default; can expand to {exact, 0.8, 0.6, 0.4, 0.2, >0} if visual curve warrants.
-3. **Whether to include M3 in paper main text or supplement**. Default: supplement, unless M2a and M6 alone are considered insufficient by reviewers.
-4. **Alternative aggregation ablations** (top-K mean, LogSumExp) — run as supplementary table, not default.
+1. **M6 IoU ladder granularity**: {exact, 0.7, 0.5, >0} is proposed default; can expand to {exact, 0.8, 0.6, 0.4, 0.2, >0} if visual curve warrants.
+2. **Whether to include M3 in paper main text or supplement**. Default: supplement, unless M2a and M6 alone are considered insufficient by reviewers.
+3. **Alternative aggregation ablations** (top-K mean, LogSumExp) — run as supplementary table, not default.
 
 ## 9. Relation to Existing Protocol
 

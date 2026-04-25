@@ -715,19 +715,25 @@ See `doc/Reference_Flow_Derivation.md §6`.
 
 ---
 
-## Phase C: Core Contribution — Position-Dependent Reference Flow (expanded 2026-04-23)
+## Phase C: Core Contribution — Position-Dependent Reference Flow (expanded 2026-04-24)
 
-**Objective**: Implement and validate position-dependent discrete flow matching as an immunogenicity-aware generative mechanism.
+**Objective**: Implement and validate position-dependent discrete flow matching as an immunogenicity-aware generative mechanism, with a clear separation between the base reference-flow mechanism, the static conditioning axis, and any optional adaptive controller.
 
-> **Scope of this plan section**: code contract + hyperparameter schema for the sampler / training machinery. **Experimental arm selection and hyperparameter values are not frozen here** — every tunable knob is exposed via YAML so the experimenter chooses arms, base schedules, amplification forms, `c` values, step counts, and shuffle controls without touching code.
+> **Scope of this plan section**: Phase C is now treated as a layered method family.
+> - **Base mechanism**: static-prior reference flow (`C1`, `C2`)
+> - **Second axis**: static hotspot conditioning (`C3`)
+> - **Optional extension**: adaptive controller (`Task D`)
+>
+> Concrete design choices for `C2/C3/D` are intentionally left open until offline design is frozen. Only `C1` has a detailed implementation contract in this file today.
 
-**Planned experiment tiers** (all supported by the same code path once C1 lands; arm selection = YAML config):
+**Planned experiment layers**:
 - **C0**: DPLM native sampler (baseline) — Task C0
-- **C1 (Tier 0)**: DFM sampler + position-dependent schedule (includes `g ≡ 1` uniform-schedule control via config) — Task C1
-- **C2 (Tier 1)**: Retrain DPLM with position-dependent forward — STUB
-- **C3 (Tier 2)**: FiLM + CFG conditioning — STUB
+- **C1 (Tier 0)**: static-prior DFM sampler + position-dependent schedule (includes `g ≡ 1` uniform-schedule control via config) — Task C1
+- **C2 (Tier 1)**: retrain with static-prior position-dependent forward process — STUB
+- **C3 (Tier 2)**: static hotspot conditioning axis (FiLM/additive/attention-bias family; CFG optional) — STUB
+- **Task D (optional extension)**: adaptive controller layer (online hotspot refresh / logit steering / revisit-corrector / schedule modulation) — STUB
 
-**Mathematical reference**: `doc/Reference_Flow_Derivation.md` §4 (sampling), §7 (design choices).
+**Mathematical reference**: `doc/Reference_Flow_Derivation.md` §4 (sampling + conditioning + adaptive controller), §7 (design choices).
 
 ### Task C0: DPLM Native-Sampler Baseline
 
@@ -920,11 +926,29 @@ return x
 
 ### Task C2: Retrain with Position-Dependent Forward Process — STUB
 
-Deferred. Spec to be added after C1 produces baseline + ablation runs and H4a/b signal is inspected.
+Deferred. This task is the **training-distribution version of the static-prior reference
+flow**: same hotspot prior family as C1, but written into the forward process during
+training so implicit weighting is realized. Detailed spec will be added after C1
+produces baseline + ablation runs and H4a/b signal is inspected.
 
-### Task C3: Explicit h_i Conditioning (FiLM + CFG) — STUB
+### Task C3: Static Hotspot Conditioning Axis — STUB
 
-Deferred. Spec to be added after C2.
+Deferred. This task adds the **WHAT-to-predict** axis on top of the base reference flow:
+the frozen hotspot prior enters the denoiser explicitly (FiLM / additive features /
+attention bias family). CFG may be used as an optional enhancement, but adaptive online
+updates do **not** belong to C3's core definition. Detailed spec to be added after C2.
+
+### Task D: Optional Adaptive Controller — STUB
+
+Deferred. This task is explicitly outside the base theorem object. It covers optional
+inference-time controller variants layered on top of C1/C2/C3, including:
+- online hotspot refresh from the current partially generated state
+- logit steering using an external hotspot field
+- risk-aware revisit/corrector of already-decided positions
+- dynamic schedule modulation (most invasive option; not the default first controller)
+
+Detailed spec will be added only after the static-prior method family (C1/C2/C3) is
+frozen well enough to serve as a clean baseline.
 
 ---
 
@@ -940,9 +964,9 @@ Deferred. Spec to be added after C2.
    - Module K baseline is adapter-only training on top of frozen DPLM sequence priors
 5. Frozen (2026-04-07):
    - Test set size: ~3,141 proteins (0701) / ~3,140 proteins (0401), assembled on cluster
-6. Partially frozen (2026-04-23):
+6. Partially frozen (2026-04-24):
    - C1 (sampling-only) code contract + hyperparameter schema frozen in §Task C1. Every experimental knob — `g(h)` form, `c` / `mu` / `kappa` / `p`, `h_source`, base schedule, `n_steps`, h-shuffle — is YAML-driven; experimenter controls arm selection and sweep values without code edits.
-   - C2 (retrain) and C3 (FiLM + CFG) specs still TBD.
+   - C2 (retrain static-prior schedule), C3 (static conditioning axis), and Task D (optional adaptive controller) remain skeleton-only; concrete design choices are intentionally deferred to offline design.
 7. Frozen (2026-04-04):
    - Level 3 dropped from v1 scope. DRAKES code available in `DRAKES/` for potential reviewer response.
 

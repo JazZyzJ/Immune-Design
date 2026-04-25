@@ -99,6 +99,11 @@ elif [ "${MODE}" = "iedb" ]; then
     ALLELE_SUBDIR="${ALLELE_SUBDIR:-}"  # e.g. drb0401 (leave empty for default 0701 manifest)
     NMP_MODE_ARG="${NMP_MODE:-original}"
     NEAR_MISS_ANALYSIS="${NEAR_MISS_ANALYSIS:-0}"
+    # Windows cache (write/read). Set WINDOWS_CACHE to write a cache after
+    # inference; set RESUME_FROM_CACHE to skip steps 2/3 entirely. Mutually
+    # exclusive — the Python script enforces this.
+    WINDOWS_CACHE="${WINDOWS_CACHE:-}"
+    RESUME_FROM_CACHE="${RESUME_FROM_CACHE:-}"
     # Accelerated-mode knobs (ignored by the Python script when --nmp-mode=original)
     NMP_WORKERS="${NMP_WORKERS:-8}"
     NMP_BATCH_SIZE="${NMP_BATCH_SIZE:-8}"
@@ -118,6 +123,8 @@ elif [ "${MODE}" = "iedb" ]; then
     echo "  Test IDs           : ${TEST_IDS}"
     echo "  NMP_MODE           : ${NMP_MODE_ARG}"
     echo "  Near-miss analysis : ${NEAR_MISS_ANALYSIS}"
+    echo "  Windows cache      : ${WINDOWS_CACHE:-(disabled)}"
+    echo "  Resume from cache  : ${RESUME_FROM_CACHE:-(no)}"
     if [ "${NMP_MODE_ARG}" = "accelerated" ]; then
         echo "  NMP workers        : ${NMP_WORKERS}"
         echo "  NMP batch size     : ${NMP_BATCH_SIZE}"
@@ -130,6 +137,12 @@ elif [ "${MODE}" = "iedb" ]; then
     if [ "${NEAR_MISS_ANALYSIS}" = "1" ]; then
         RESULT_JSON="${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}_near_miss.json"
         EXTRA_ARGS+=(--near-miss-analysis)
+    fi
+    if [ -n "${WINDOWS_CACHE}" ]; then
+        EXTRA_ARGS+=(--windows-cache "${WINDOWS_CACHE}")
+    fi
+    if [ -n "${RESUME_FROM_CACHE}" ]; then
+        EXTRA_ARGS+=(--resume-from-cache "${RESUME_FROM_CACHE}")
     fi
 
     python -u "${PROJECT_ROOT}/scripts/benchmark_iedb_test.py" \

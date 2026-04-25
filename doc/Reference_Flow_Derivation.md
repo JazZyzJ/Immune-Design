@@ -1,6 +1,22 @@
 # Position-Dependent Reference Flow: Mathematical Foundation
 
-Working document. Derives the math behind our core contribution: position-dependent reference flow for immunogenicity-aware inverse folding.
+Working document. Derives the math behind our core contribution: position-dependent
+reference flow for immunogenicity-aware inverse folding.
+
+**Scope note**. This document now distinguishes three layers:
+
+1. **Core mechanism**: static-prior reference flow (Tasks 0/A/B/C)  
+   A fixed hotspot field defines the position-dependent schedule.
+2. **Static conditioning axis**: the same fixed hotspot field can also enter the
+   denoiser as an explicit condition.
+3. **Optional adaptive controller**: online hotspot refresh, logit steering, and
+   revisit/corrector policies. This is a higher-level extension, not required for the
+   base reference-flow claim.
+
+This split is deliberate. Following the lesson from canonicalized flow/diffusion
+models, the main method should first stand on a **fixed external prior field**. Online
+updates are useful, but they are an optional controller/stabilizer rather than the
+foundational theorem object.
 
 **Dependencies**: DFM (Campbell 2024), DFM (Gat 2024), MDLM (Sahoo 2024), DPLM (Wang 2024).
 
@@ -20,13 +36,51 @@ Working document. Derives the math behind our core contribution: position-depend
 |--------|---------|
 | $x_1 = (x_1^1, \ldots, x_1^L)$ | clean protein sequence, $x_1^i \in \mathcal{V}$ |
 | $m$ | mask token, $m \notin \mathcal{V}$ |
-| $h_i$ | per-residue hotspot score (pre-computed, frozen) |
+| $h_i$ | generic fixed per-residue hotspot score used by the base schedule |
+| $h_i^{(0)}$ | static prior hotspot field, typically pre-computed from WT: $H(x^{WT})$ |
+| $h_i^{\mathrm{dyn}}(t)$ | optional online hotspot estimate from the current partially generated state |
 | $g: \mathbb{R} \to [1, \infty)$ | amplification function, monotonically increasing |
 | $\kappa_{\text{base}}(t)$ | base schedule: $\kappa_{\text{base}}(0)=0$, $\kappa_{\text{base}}(1)=1$, increasing |
 | $\kappa_i(t)$ | position-dependent schedule: $\kappa_i(t) = \kappa_{\text{base}}(t)^{g(h_i)}$ |
 | $g_i$ | shorthand for $g(h_i)$ |
+| $u_i^{\text{sched}}(t)$ | control field used by the scheduler (WHEN axis) |
+| $u_i^{\text{cond}}(t)$ | control field used by the denoiser condition (WHAT axis) |
+| $q_t^i(a)$ | denoiser token distribution $p_\theta(x_1^i=a \mid x_t, S, t, u_t^{\text{cond}})$ |
+| $C(x_t, q_t)$ | completion operator that builds a temporary full sequence from a partial state |
+| $r_i^-(t)$ | optional risk-aware remask/revisit rate for already-decided positions |
 
 **Reference tags**: [Gat.Eq.X], [Campbell.Prop.X], [MDLM.Eq.X].
+
+Unless stated otherwise, the completion operator $C(x_t, q_t)$ denotes any deterministic
+or stochastic rule that fills masked positions using the current denoiser output to
+produce a temporary full sequence $\bar{x}_t \in \mathcal{V}^L$ for external scoring.
+Examples include argmax fill, ancestral sampling, or top-k/temperature sampling.
+
+### 0.1 Layered method view
+
+The current project should be read as four progressively stronger objects:
+
+- **C1 (sampling-only)**: fixed prior schedule.  
+  Use a frozen hotspot field $h^{(0)}$ only to define the reverse schedule. This is the
+  cleanest ablation of the ordering mechanism.
+- **C2 (retrain)**: fixed prior schedule written into the training distribution.  
+  Same frozen field, but now it changes masking frequency during training and activates
+  implicit weighting.
+- **C3 (static conditioning)**: fixed prior field enters the denoiser explicitly.  
+  This changes WHAT the model predicts, while the reference flow changes WHEN positions
+  are decided.
+- **Task D (optional adaptive controller)**: online hotspot refresh, logit steering,
+  and/or revisit of already-decided positions.  
+  This is not required for the core claim. It is an extension for handling newly emerged
+  hotspots during generation.
+
+Two guiding principles follow from this layering:
+
+1. The **main theorem object** is the static-prior reference flow. We should not mix
+   optional online control into the base mechanism.
+2. The most natural adaptive controller for MHC-IF is **not** a learned rank head, but
+   an external hotspot field controller built around the existing epitope head
+   $H(\cdot)$.
 
 ---
 
@@ -359,6 +413,237 @@ $$\tilde{p}(x_1^i \mid x_t) \propto p_\theta(x_1^i \mid x_t, h)^{1+w} \cdot p_\t
 CFG controls HOW MUCH the model biases toward low-risk tokens. Position-dependent scheduling controls WHEN each position is resolved. These are independent axes.
 
 **Status: COMPLETE** ✓
+
+### 4.6 Static conditioning axis (C3 without adaptive control)
+
+The same frozen hotspot prior that defines the schedule can also enter the denoiser as
+an explicit conditioning signal:
+
+$$
+q_t^i(a) = p_\theta(x_1^i = a \mid x_t, S, t, h^{(0)})
+$$
+
+where $h^{(0)} = H(x^{WT})$ is a pre-computed per-residue hotspot field for the input
+protein. In practice this can be injected via FiLM, additive features, Fourier features,
+or attention bias. The exact architecture is implementation-dependent; mathematically it
+is simply an additional conditioning variable.
+
+This gives a clean separation of roles:
+
+- **Reference flow / schedule**: controls **WHEN** positions are resolved
+- **Static conditioning**: controls **WHAT** token distribution is predicted
+
+Crucially, no auxiliary hotspot/rank prediction head is required for this core setup.
+Unlike canonical rank in symmetry-based generation, hotspot scores already come from an
+external function $H(\cdot)$ with a clear semantic meaning. A learned auxiliary head may
+later be introduced as an amortized estimator for adaptive control, but it is **not**
+part of the minimal formulation.
+
+### 4.7 Optional adaptive controlled reverse process (Task D)
+
+The fixed-prior method above is the core mechanism. However, during generation, newly
+emerged hotspot regions may appear that were not salient in the WT prior. To handle this
+we define an **optional controller** on top of the base reverse process.
+
+#### D1. Online hotspot refresh
+
+Let the current denoiser output be
+
+$$
+q_t^i(a) = p_\theta(x_1^i = a \mid x_t, S, t, u_t^{\text{cond}})
+$$
+
+Construct a temporary full sequence using a completion operator:
+
+$$
+\bar{x}_t = C(x_t, q_t)
+$$
+
+and evaluate the online hotspot field
+
+$$
+h_i^{\mathrm{dyn}}(t) = H_i(\bar{x}_t)
+$$
+
+This refresh need not happen at every step. A natural gated policy is:
+
+$$
+h^{\mathrm{dyn}}(t)\ \text{updates only if}\ t \ge t_{\mathrm{start}}
+\ \text{and}\ k \equiv 0 \pmod K
+$$
+
+where $k$ is the reverse-step index. This treats online refresh as a stabilizer rather
+than a mandatory part of the core sampler.
+
+The role of $t_{\mathrm{start}}$ is reliability control. Early in reverse time,
+$\bar{x}_t$ is dominated by local completion heuristics and need not lie close to the
+protein manifold seen by the epitope head. In that regime $H(\bar{x}_t)$ may be a very
+noisy proxy for the eventual sequence-level risk landscape. Later in reverse time,
+$\bar{x}_t$ is typically more self-consistent and closer to the target manifold, so
+$H(\bar{x}_t)$ becomes more trustworthy. Delayed activation at $t \ge t_{\mathrm{start}}$
+is therefore justified as a confidence gate, not merely a heuristic.
+
+In practice one may further strengthen this gate using a confidence term based on
+remaining mask fraction, predictive entropy, or agreement across multiple completions.
+
+#### D2. Split the controller into two axes
+
+Define two control fields:
+
+$$
+u_i^{\text{cond}}(t) = (1-\beta_t)\, h_i^{(0)} + \beta_t\, h_i^{\mathrm{dyn}}(t)
+$$
+
+$$
+u_i^{\text{sched}}(t) = (1-\alpha_t)\, h_i^{(0)} + \alpha_t\, h_i^{\mathrm{dyn}}(t)
+$$
+
+These play different roles:
+
+- $u^{\text{cond}}$: WHAT-to-predict controller
+- $u^{\text{sched}}$: WHEN-to-decide controller
+
+This distinction should be preserved throughout the project. It prevents us from
+overloading one mechanism to do two logically different jobs.
+
+#### D3. Preferred first extension: online conditioning/logit steering
+
+The least invasive adaptive extension is to keep the schedule fixed at the static prior
+and update only the denoiser condition:
+
+$$
+q_t^i(a) = p_\theta(x_1^i = a \mid x_t, S, t, u_t^{\text{cond}})
+$$
+
+Optionally, the online hotspot field can further reweight token probabilities:
+
+$$
+\tilde{q}_t^i(a) \propto q_t^i(a)\,
+\exp\!\big(-\lambda_t \, \Delta \hat{R}_i(a; \bar{x}_t)\big)
+$$
+
+where $\Delta \hat{R}_i(a; \bar{x}_t)$ is an estimated change in risk if token $a$ were
+chosen at position $i$.
+
+This is the natural first adaptive controller for MHC-IF, because it changes WHAT is
+predicted without changing the underlying unmasking chronology.
+
+#### D4. Optional schedule modulation
+
+If desired, the scheduler can also be updated online:
+
+$$
+\kappa_i(t; u^{\text{sched}}) =
+\kappa_{\text{base}}(t)^{g(u_i^{\text{sched}}(t))}
+$$
+
+with corresponding hazard
+
+$$
+r_i^+(t) =
+\frac{\partial_t \kappa_i(t; u^{\text{sched}})}{1-\kappa_i(t; u^{\text{sched}})}
+$$
+
+Important caveat: once $\kappa_i$ depends on the evolving state through$u_i^{\text{sched}}(t)$, Theorem 1 no longer applies directly. The original ordering guarantee relied on $\kappa_i(t)$ being a function of time alone, so that the first unmasking time had CDF $\kappa_i(t)$. Under dynamic schedule modulation, the process is
+state-dependent and only a **conditional/local ordering interpretation** remains:
+holding the current controller state fixed, larger $g(u_i^{\text{sched}}(t))$ still
+delays local unmasking pressure. Recovering a global ordering statement would require
+additional assumptions, for example eventual stabilization or monotonicity of the
+controller state.
+
+However, this should **not** be the default first controller. Dynamic scheduler updates
+are more invasive, create additional train/sample mismatch concerns, and only affect
+positions that are still masked.
+
+#### D5. Why revisit/corrector matters more than dynamic scheduler
+
+A dynamic scheduler alone cannot repair already-decided positions that become risky
+later. Once a site has unmasked and absorbed a token, changing future hazards elsewhere
+does not revisit that decision.
+
+Therefore the principled mechanism for handling newly emerged hotspots is an optional
+risk-aware revisit process:
+
+$$
+r_i^-(t) = \eta_t \cdot s\!\big(h_i^{\mathrm{dyn}}(t), c_i(t)\big)
+$$
+
+where $c_i(t)$ may encode uncertainty, local risk increase, or another confidence score.
+The exact choice of $s(\cdot)$ is a design decision, but conceptually:
+
+- dynamic schedule controls **future masked sites**
+- revisit/corrector controls **already-decided risky sites**
+
+For MHC-IF, revisit is the more meaningful aggressive extension.
+
+One concrete instantiation is to trigger revisit only when the online risk rises above
+the static prior by a meaningful margin:
+
+$$
+\eta_t^i = \eta_0 \cdot
+\mathrm{ReLU}\!\big(h_i^{\mathrm{dyn}}(t) - h_i^{(0)} - \tau\big)
+$$
+
+and then use $\eta_t^i$ inside the corrector/revisit mechanism. This makes revisit fire
+only when the online controller detects a materially worse hotspot than expected from the
+prior. We keep the more schematic $s(\cdot)$ form above in the main formulation because
+other choices may incorporate uncertainty or confidence more explicitly.
+
+### 4.8 Recommended progression
+
+The above discussion suggests a stable development order:
+
+1. **Base method**: static prior schedule only (C1/C2)
+2. **Second axis**: static hotspot conditioning (C3)
+3. **First adaptive controller**: online conditioning/logit steering with fixed schedule
+4. **Stronger adaptive controller**: risk-aware revisit/corrector
+5. **Most invasive extension**: dynamic scheduler updates
+
+This order matches the scientific need to keep the main mechanism interpretable:
+reference flow first, adaptive controller second.
+
+### 4.9 Training-side support for adaptive control
+
+Adaptive control is not free: if the denoiser is trained only with static
+$h^{(0)}$ but receives dynamic $u_t^{\text{cond}}$ at inference, then the controller is
+feeding the model an out-of-distribution conditioning signal.
+
+This issue is strongest when the dynamic field is fed **into the denoiser**:
+
+$$
+q_t^i(a) = p_\theta(x_1^i = a \mid x_t, S, t, u_t^{\text{cond}})
+$$
+
+In that case the training distribution should include at least mild corruption,
+dropout, or mixing of the hotspot field, for example
+
+$$
+h^{\mathrm{corrupt}}(t) = h^{(0)} + \sigma(t)\,\epsilon,
+\qquad \sigma(t) \propto (1-t)
+$$
+
+or blended conditions that occasionally replace the clean prior with a noisier proxy.
+The purpose is not to simulate the exact online controller, but to expose the model to a
+family of imperfect conditions whose reliability varies with time.
+
+By contrast, if the adaptive controller acts only **outside** the denoiser, e.g. through
+external logit reweighting
+
+$$
+\tilde{q}_t^i(a) \propto q_t^i(a)\,
+\exp\!\big(-\lambda_t \, \Delta \hat{R}_i(a; \bar{x}_t)\big),
+$$
+
+then there is no conditioning OOD for the model itself; the challenge shifts from model
+generalization to controller approximation error.
+
+The recommended interpretation is therefore:
+
+- **Static-prior schedule/conditioning**: main method, no extra training support needed
+- **Dynamic condition fed into denoiser**: requires training-side robustness support
+- **External logit steering**: no conditioning mismatch, but controller-quality mismatch
+- **Dynamic scheduler modulation**: additionally weakens the clean static-prior theorems
+  and should be treated as a later-stage extension
 
 ---
 

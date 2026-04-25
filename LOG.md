@@ -1903,3 +1903,30 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `doc/EL_new_evaluation.md`
   - `doc/SCRIPTS.md` (Benchmark §2)
 
+### L0065
+- timestamp: 2026-04-25T22:31:49+08:00
+- type: CODEMAP_DIFF
+- module: F
+- trigger: User updated `doc/EL_new_evaluation.md` §5 to remove the k=15 restriction (NMP and head now share the full multi-k span set k∈[min_k,max_k] for all M2a/M6/M3 metrics) and asked whether the previous experiment can be resumed without re-running NMP subprocess.
+- change_summary: Dropped the k=15 filter from M2a residue aggregation, M6 IoU ladder, and M3 EMD (collapsing the dual `k15_symmetric`/`variable_k` residue variants into a single `residue` block); added a windows cache mechanism (`--windows-cache PATH` to write a parquet with sidecar `.meta.json`, `--resume-from-cache PATH` to reload and skip head + NMP inference entirely).
+- rationale: The prior experiment's JSON output only persists aggregated metrics and label-stratified `score_distributions` — it never serialized the raw `(start, k) → score` dicts, so re-running NMP was unavoidable for this metric change. Going forward, the windows cache makes any further metric/aggregation iteration a sub-second reload instead of a fresh NMP subprocess sweep (~30min-2hr per allele in original mode). The k=15 collapse follows `doc/EL_new_evaluation.md §5` head note ("k∈[12,25] enumerated for every protein, both head and NMP scored on the identical set; no length restriction is imposed at metric time") which makes residue aggregation and IoU comparison length-agnostic between predictors.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/scripts/benchmark_iedb_test.py`
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_benchmark_iedb_test.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+- evidence: |
+    `pytest -q tests/scripts/test_benchmark_iedb_test.py` => 22 passed (5 legacy + 15 EL-landscape carried over and rewritten where they pinned k=15 + 2 new cache round-trip tests).
+    `python -m py_compile scripts/benchmark_iedb_test.py` => passed.
+    `PYTHONPATH=. python scripts/benchmark_iedb_test.py --help` => surfaces `--windows-cache`, `--resume-from-cache`; mutual-exclusion guard short-circuits with a clear error when both are set.
+    Cache parquet schema verified via the new `test_windows_cache_round_trip_preserves_dicts` and `test_windows_cache_handles_predictor_only_proteins` tests (head-only / NMP-only proteins round-trip exactly).
+- impact:
+  - scope: Output JSON `macro.residue` collapses from `{k15_symmetric: {...}, variable_k: {...}}` to flat `{head: {...}, nmp: {...}}`; `statistics` headline labels rename `residue_k15_symmetric_*` and `residue_variable_k_*` → `residue_*`. Existing exact-span primary/conditional metrics and `near-miss` block unchanged. Old runs prior to L0064 do not need re-processing — but the corresponding L0064 cache was never written, so this iteration requires one fresh inference sweep per allele (and going forward `--windows-cache` lets you resume).
+  - risk: low (additive cache; metric collapse is the doc-prescribed default, and no callers pin the old keys yet — L0064 was never run in production)
+  - confidence: 0.9
+- status: done
+- next_action: Run `MODE=iedb ALLELE=HLA-DRB1*07:01 WINDOWS_CACHE=outputs/cache_iedb_drb0701.parquet sbatch scripts/submit_benchmark.slurm` (need to expose `WINDOWS_CACHE` env var in `submit_benchmark.slurm` if not already piped through) to populate the cache; subsequent metric / IoU-threshold / aggregation ablations then reload via `--resume-from-cache outputs/cache_iedb_drb0701.parquet` on a login node in seconds.
+- refs:
+  - `doc/EL_new_evaluation.md` §5 head note
+  - `LOG.md:L0064`
+  - `doc/SCRIPTS.md` (Benchmark §2)
+
