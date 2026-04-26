@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=bench-head-nmp
-#SBATCH --partition=mig
-#SBATCH --qos=gpu-short
+#SBATCH --job-name=benchmark
+#SBATCH --qos=gpu-medium
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --time=5:00:00
-#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epi/epi_bench_IEDB_%j.out
-#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epi/epi_bench_IEDB_%j.err
+#SBATCH --time=12:00:00
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.err
 
 set -euo pipefail
 
@@ -16,10 +16,11 @@ set -euo pipefail
 # MODE=fasta : head vs NMP on a FASTA (no ground truth). Uses accelerated NMP.
 # MODE=iedb  : head + NMP vs IEDB ground truth from protein_samples parquet.
 #              NMP_MODE controls original vs accelerated (default: original).
+# MODE=phase_c: evaluate Phase C generated.parquet into schema-aligned
+#               immunogenicity / structural tables.
 MODE="${MODE:-iedb}"
 
 # ── Shared parameters (override via env) ─────────────────────────────────
-EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/ablation/cnn_enhance_v2/runs/LC1/seed_42/best.pt}"
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
 VARIANT_ID="${VARIANT_ID:-LC1}"
 DEVICE="${DEVICE:-cuda}"
@@ -31,6 +32,17 @@ LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epi"
 NETMHCIIPAN_BIN="${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan"
 
 ALLELE_TAG="$(echo "${ALLELE}" | tr -c '[:alnum:]' '_' | sed 's/_*$//')"
+
+if [ -z "${EPITOPE_CKPT:-}" ]; then
+    if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt"
+    elif [ "${ALLELE}" = "HLA-DRB1*04:01" ]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
+    else
+        echo "ERROR: EPITOPE_CKPT not set and no default is defined for ALLELE=${ALLELE}" >&2
+        exit 2
+    fi
+fi
 
 mkdir -p "${OUTPUT_DIR}" "${LOG_DIR}"
 
@@ -49,7 +61,7 @@ export WANDB_MODE=offline
 
 # ── Diagnostics ───────────────────────────────────────────────────────────
 echo "============================================================"
-echo "Benchmark: Epitope Head vs NetMHCIIpan"
+echo "Benchmark / Evaluation"
 echo "  Job ID       : ${SLURM_JOB_ID}"
 echo "  Node         : ${SLURM_NODELIST}"
 echo "  GPUs         : ${SLURM_GPUS_ON_NODE:-1}"
@@ -164,8 +176,85 @@ elif [ "${MODE}" = "iedb" ]; then
     python -u "${PROJECT_ROOT}/scripts/plot_benchmark_score_histograms.py" \
         --input-json "${RESULT_JSON}"
 
+elif [ "${MODE}" = "phase_c" ]; then
+    EVAL_MODE="${EVAL_MODE:-all}"
+    REFOLD_MODEL="${REFOLD_MODEL:-esmfold}"
+    FAIL_PCT_THRESHOLD="${FAIL_PCT_THRESHOLD:-0.05}"
+    PROGRESS_EVERY="${PROGRESS_EVERY:-25}"
+    OVERWRITE="${OVERWRITE:-0}"
+    NMP_WORKERS="${NMP_WORKERS:-8}"
+    NMP_BATCH_SIZE="${NMP_BATCH_SIZE:-8}"
+    NMP_MAX_LENGTHS_PER_CALL="${NMP_MAX_LENGTHS_PER_CALL:-4}"
+    NMP_TIMEOUT="${NMP_TIMEOUT:-1800}"
+    STRONG_BINDER_THRESHOLD="${STRONG_BINDER_THRESHOLD:-2.0}"
+    TMALIGN_BIN="${TMALIGN_BIN:-TMalign}"
+
+    if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet}"
+        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs/0701}"
+    elif [ "${ALLELE}" = "HLA-DRB1*04:01" ]; then
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet}"
+        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs/0401}"
+    else
+        echo "ERROR: TEST_SET_PARQUET/PDB_ROOT defaults only defined for 0701/0401; set them explicitly" >&2
+        exit 2
+    fi
+
+    GENERATED_PARQUET="${GENERATED_PARQUET:-}"
+    if [ -z "${GENERATED_PARQUET}" ]; then
+        echo "ERROR: GENERATED_PARQUET is required for MODE=phase_c" >&2
+        exit 2
+    fi
+
+    PHASE_C_OUTPUT_ROOT="${PHASE_C_OUTPUT_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/if_phase_c}"
+    ESMFOLD_CACHE_DIR="${ESMFOLD_CACHE_DIR:-${PHASE_C_OUTPUT_ROOT}/.cache/esmfold/${ALLELE_TAG}}"
+
+    echo "  Eval mode         : ${EVAL_MODE}"
+    echo "  Generated parquet : ${GENERATED_PARQUET}"
+    echo "  Test-set parquet  : ${TEST_SET_PARQUET}"
+    echo "  PDB root          : ${PDB_ROOT}"
+    echo "  Refold model      : ${REFOLD_MODEL}"
+    echo "  Phase-C output    : ${PHASE_C_OUTPUT_ROOT}"
+    echo "  ESMFold cache     : ${ESMFOLD_CACHE_DIR}"
+    echo "  NMP workers       : ${NMP_WORKERS}"
+    echo "  NMP batch size    : ${NMP_BATCH_SIZE}"
+    echo "  NMP lengths/call  : ${NMP_MAX_LENGTHS_PER_CALL}"
+    echo "  NMP timeout       : ${NMP_TIMEOUT}s"
+    echo "  Strong threshold  : ${STRONG_BINDER_THRESHOLD}%"
+
+    EXTRA_ARGS=()
+    if [ -n "${RUN_ID:-}" ]; then
+        EXTRA_ARGS+=(--run-id "${RUN_ID}")
+    fi
+    if [ "${OVERWRITE}" = "1" ]; then
+        EXTRA_ARGS+=(--overwrite)
+    fi
+
+    python -u "${PROJECT_ROOT}/scripts/evaluate_phase_c.py" \
+        --generated-parquet "${GENERATED_PARQUET}" \
+        --test-set-parquet "${TEST_SET_PARQUET}" \
+        --allele "${ALLELE}" \
+        --mode "${EVAL_MODE}" \
+        --output-root "${PHASE_C_OUTPUT_ROOT}" \
+        --epitope-ckpt "${EPITOPE_CKPT}" \
+        --epitope-variant-id "${VARIANT_ID}" \
+        --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
+        --nmp-batch-size "${NMP_BATCH_SIZE}" \
+        --nmp-workers "${NMP_WORKERS}" \
+        --nmp-timeout "${NMP_TIMEOUT}" \
+        --nmp-max-lengths-per-call "${NMP_MAX_LENGTHS_PER_CALL}" \
+        --strong-binder-threshold "${STRONG_BINDER_THRESHOLD}" \
+        --pdb-root "${PDB_ROOT}" \
+        --refold-model "${REFOLD_MODEL}" \
+        --tmalign-bin "${TMALIGN_BIN}" \
+        --esmfold-cache-dir "${ESMFOLD_CACHE_DIR}" \
+        --device "${DEVICE}" \
+        --progress-every "${PROGRESS_EVERY}" \
+        --fail-pct-threshold "${FAIL_PCT_THRESHOLD}" \
+        "${EXTRA_ARGS[@]}"
+
 else
-    echo "ERROR: unknown MODE='${MODE}' (expected: fasta | iedb)"
+    echo "ERROR: unknown MODE='${MODE}' (expected: fasta | iedb | phase_c)"
     exit 1
 fi
 

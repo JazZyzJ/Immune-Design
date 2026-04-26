@@ -1930,3 +1930,64 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `LOG.md:L0064`
   - `doc/SCRIPTS.md` (Benchmark §2)
 
+### L0066
+- timestamp: 2026-04-26T16:00:00+08:00
+- type: PLAN_UPDATE
+- module: PHASE_B
+- trigger: User (Coder-track) flagged that Phase C generation outputs (`generated.parquet` + concatenated `generated.fasta`) do not align with the legacy evaluator (`scripts/evaluate_if.py`) input contract, that the legacy evaluator additionally imports from a deprecated Module M file, and that there is no end-to-end evaluation protocol wired to Phase C output. User asked B4 to (a) reuse the existing benchmark pieces (`scripts/benchmark_head_vs_nmp.py`, `scripts/benchmark_iedb_test.py`) for the immunogenicity side, (b) add a structural mode that accepts a configurable refold backend (ESMFold default, AF3 reserved), (c) drop WT mixing inside the evaluator, and (d) avoid creating fan-out per-protein FASTAs.
+- change_summary: Expanded `PLAN_IF.md` Task B4 from a 3-bullet stub to an implementation-ready spec for `scripts/evaluate_phase_c.py`. Froze (a) parquet-in / parquet-out interface (consumes `generated.parquet` + `test_set_parquet`, no per-protein FASTA fan-out, no separate WT FASTA), (b) three modes `imm | struct | all` with idempotent per-mode parquet outputs and `--overwrite` clobber control, (c) pluggable refold backend via `--refold-model esmfold|af3` (`af3` raises `NotImplementedError` today; dispatcher contract is in place via new `inverse_folding/evaluation/refold.py`), (d) schema-aligned outputs `imm_head.parquet` / `imm_nmp.parquet` / `structural.parquet` matching `inverse_folding/evaluation/schema.py` columns plus `design_idx` and `refold_backend` for join-back / provenance, (e) WT-free contract (recovery is per-design sequence identity, no `delta_*` metrics; WT-relative metrics are downstream joins against a future static `wt_metrics_<allele>.parquet`), (f) predictor source set to `scripts.infer_v1.build_predictor` (not the deprecated `scripts/run_if_guidance_sweep.py::load_epitope_predictor`), (g) SLURM integration as a new `MODE=phase_c` branch in `scripts/submit_benchmark.slurm` alongside the existing `fasta` / `iedb` modes, and (h) deletion of the legacy `scripts/evaluate_if.py` plus its single-purpose helpers in `inverse_folding/evaluation/aggregate.py`. Also added a §10 "Outstanding Tech Debt" section flagging the predictor-loader cleanup (six active scripts still import from `scripts/run_if_guidance_sweep.py`) as a non-blocking item.
+- rationale: (1) Aligning B4 output schema with `inverse_folding/evaluation/schema.py` lets analysis notebooks consume Phase C metrics without per-run shape fixes. (2) Mode-switchable refold (ESMFold vs AF3 stub) future-proofs the backend swap without forcing an evaluator refactor when AF3 lands. (3) Keeping WT logic out of the evaluator keeps each run's output a pure function of `(generated.parquet, head_ckpt, nmp_binary, refold_backend)`; WT-relative comparison becomes a separate static-artifact + join, which is simpler to version. (4) Reusing `scripts.infer_v1.build_predictor` matches Phase B `precompute_h_maps` and avoids making B4 the seventh script depending on a deprecated host file. (5) Per-mode idempotence (skip if target parquet exists, unless `--overwrite`) lets the experimenter rerun just the cheap mode (`imm`) without redoing ESMFold. (6) `MODE=phase_c` extension into `submit_benchmark.slurm` follows the project's parameterized-SLURM convention (`scripts/CLAUDE.md`) and keeps a single submission script per benchmark family.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_IF.md` (Task B4 rewritten; §10 Tech Debt section added; Phase B acceptance updated to "B1+B2+B3+B4 → Phase C ready")
+- evidence: N/A (planning update, no code change). Output schema verified column-by-column against `inverse_folding/evaluation/schema.py::STRUCTURAL_METRICS_COLUMNS`, `IMMUNOGENICITY_HEAD_COLUMNS`, `IMMUNOGENICITY_NMP_COLUMNS`. Predictor source choice cross-checked with `scripts/precompute_h_maps.py:86-109` (Phase B canonical caller of `scripts.infer_v1.build_predictor`).
+- impact:
+  - scope: Phase B Task B4 specification only. No code changed. Phase B B1/B2/B3 specs untouched. Will, when implemented, delete `scripts/evaluate_if.py` and trim `inverse_folding/evaluation/aggregate.py`.
+  - risk: low (spec is downstream-only; modes are independent; refold dispatcher keeps the AF3 swap surgical).
+  - confidence: 0.93
+- status: done
+- next_action: Implement `scripts/evaluate_phase_c.py` + `inverse_folding/evaluation/refold.py` + `tests/scripts/test_evaluate_phase_c_script.py` + the `MODE=phase_c` branch in `scripts/submit_benchmark.slurm` per the spec; register under `doc/SCRIPTS.md §Phase B`; smoke-test against a 3-protein × 2-design fixture before launching on full 0701 C0 output.
+- refs:
+  - `PLAN_IF.md:§Phase B / Task B4`
+  - `PLAN_IF.md:§10 Outstanding Tech Debt`
+  - `inverse_folding/evaluation/schema.py`
+  - `scripts/infer_v1.py::build_predictor`
+  - `scripts/benchmark_head_vs_nmp.py` (immunogenicity reference)
+  - `scripts/benchmark_iedb_test.py` (immunogenicity reference)
+  - `inverse_folding/evaluation/esmfold_runner.py` (struct mode)
+  - `inverse_folding/evaluation/tmalign.py` (struct mode)
+  - L0060 (B2/B3 spec), L0061 (Phase C spec)
+
+### L0067
+- timestamp: 2026-04-26T16:31:53+08:00
+- type: IMPLEMENTATION
+- module: PHASE_B
+- trigger: User (Coder-track) updated `PROGRESS.md` with the frozen B4 spec and asked for a review against the unified Phase C evaluation-schema requirements, then requested implementation if the design was sound.
+- change_summary: Implemented B4 end-to-end Phase C evaluation integration: added `scripts/evaluate_phase_c.py` (parquet-in / parquet-out evaluator with independent `imm|struct|all` modes, per-mode idempotence, failure ledgers, manifest/config emission, and WT-free outputs), added `inverse_folding/evaluation/refold.py` as the refold backend dispatcher (`esmfold` live, `af3` stub), wired `MODE=phase_c` into `scripts/submit_benchmark.slurm`, deleted the legacy FASTA-directory evaluator `scripts/evaluate_if.py`, updated script registration/docs, and refreshed a few stale script messages that still pointed to `evaluate_if.py`.
+- rationale: The new evaluator aligns the actual Phase C artifact contract (`generated.parquet`) with the frozen metric schema without forcing temporary FASTA fan-out or hidden WT-relative joins. Reusing `scripts.infer_v1.build_predictor`, `build_runner`, `esmfold_runner`, and `tmalign` keeps B4 on the same inference stack as B2/B3 while isolating the future AF3 swap behind a narrow dispatcher interface. `submit_benchmark.slurm` was extended instead of duplicated to respect the repo's parameterized-SLURM rule.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/scripts/evaluate_phase_c.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/evaluation/refold.py`
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_evaluate_phase_c_script.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_benchmark.slurm`
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_level1_filter.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_guidance_sweep.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md`
+  - `/Users/jerry/Project/MHC-IF/scripts/evaluate_if.py` (deleted)
+- evidence: |
+    `pytest -q tests/scripts/test_evaluate_phase_c_script.py` => 6 passed.
+    `pytest -q tests/scripts/test_evaluate_phase_c_script.py tests/scripts/test_run_if_phase_c0_script.py tests/scripts/test_run_if_phase_c1_script.py tests/inverse_folding/test_reference_flow_schedule.py tests/inverse_folding/test_reference_flow_amplification.py tests/inverse_folding/test_reference_flow_config.py tests/inverse_folding/test_reference_flow_sampler.py tests/inverse_folding/test_reference_flow_runtime.py tests/inverse_folding/test_h_maps_contract.py tests/inverse_folding/test_module_l_eval_contract.py` => 72 passed.
+    `python -m py_compile scripts/evaluate_phase_c.py inverse_folding/evaluation/refold.py scripts/run_if_level1_filter.py` => passed.
+    `python scripts/evaluate_phase_c.py --help` => argparse/import smoke passed.
+    `bash -n scripts/submit_benchmark.slurm` => passed.
+- impact:
+  - scope: Phase B4 only; Phase C generators, Phase B h-map precompute, and Module L comparison contracts remain behaviorally unchanged.
+  - risk: medium
+  - confidence: 0.9
+- status: done
+- next_action: Launch a small Della smoke (`MODE=phase_c EVAL_MODE=imm` on a tiny C0/C1 `generated.parquet` fixture), then run one full-allele `EVAL_MODE=all REFOLD_MODEL=esmfold` pass to populate the first schema-aligned Phase C metrics.
+- refs:
+  - `PLAN_IF.md:Task B4`
+  - `LOG.md:L0066`
+  - `doc/SCRIPTS.md:Phase B`
+  - `inverse_folding/evaluation/schema.py`

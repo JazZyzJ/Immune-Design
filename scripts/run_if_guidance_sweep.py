@@ -630,7 +630,7 @@ def main() -> int:
         print(f"  eta_{eta:.1f}/generated/  (per-protein FASTA)")
         print(f"  eta_{eta:.1f}/provenance.json")
 
-    print(f"\nNext step: run evaluate_if.py on each eta_*/generated/ directory")
+    print(f"\nNext step: run evaluate_phase_c.py on each eta_*/generated artifact bundle")
 
     return 0
 

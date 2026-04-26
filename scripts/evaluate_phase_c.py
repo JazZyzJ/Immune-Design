@@ -1,0 +1,932 @@
+#!/usr/bin/env python
+"""Evaluate Phase C generated.parquet artifacts without WT-relative mixing."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import yaml
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from inverse_folding.evaluation.immunogenicity import NMP_PEP_LENGTHS
+from inverse_folding.evaluation.schema import (
+    IMMUNOGENICITY_HEAD_COLUMNS,
+    IMMUNOGENICITY_NMP_COLUMNS,
+    STRUCTURAL_COLUMNS,
+    validate_dataframe,
+)
+from inverse_folding.evaluation.refold import load_refold_model, refold
+from scripts.run_if_phase_c0 import _fmt_hms
+
+
+CANONICAL_AA = frozenset("ACDEFGHIKLMNPQRSTVWY")
+_NMP_WEAK_BINDER_THRESHOLD = 10.0
+_NMP_TOP_K_FOR_MEAN_BEST = 5
+
+
+class DataConsistencyError(RuntimeError):
+    """Raised when generated parquet rows are inconsistent with the test set contract."""
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Evaluate Phase C generated.parquet outputs into schema-aligned per-design tables.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--generated-parquet", required=True)
+    parser.add_argument("--test-set-parquet", required=True)
+    parser.add_argument("--allele", required=True)
+    parser.add_argument("--mode", choices=("imm", "struct", "all"), required=True)
+    parser.add_argument("--output-root", required=True)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--progress-every", type=int, default=25)
+    parser.add_argument("--fail-pct-threshold", type=float, default=0.05)
+
+    parser.add_argument("--epitope-ckpt", default=None)
+    parser.add_argument("--epitope-config-dir", default=None)
+    parser.add_argument("--epitope-variant-id", default="LC1")
+    parser.add_argument("--netmhciipan-bin", default=None)
+    parser.add_argument("--nmp-batch-size", type=int, default=8)
+    parser.add_argument("--nmp-workers", type=int, default=1)
+    parser.add_argument("--nmp-timeout", type=int, default=600)
+    parser.add_argument("--nmp-max-lengths-per-call", type=int, default=4)
+    parser.add_argument("--strong-binder-threshold", type=float, default=2.0)
+    parser.add_argument(
+        "--hotspot-threshold",
+        type=float,
+        default=0.5,
+        help="Per-residue hotspot threshold for n_hotspot_positions count.",
+    )
+
+    parser.add_argument("--pdb-root", default=None)
+    parser.add_argument("--refold-model", choices=("esmfold", "af3"), default="esmfold")
+    parser.add_argument("--tmalign-bin", default="TMalign")
+    parser.add_argument("--esmfold-cache-dir", default=None)
+    parser.add_argument("--device", default="cuda")
+
+    args = parser.parse_args(argv)
+    if args.progress_every < 0:
+        parser.error("--progress-every must be non-negative")
+    if not (0.0 <= args.fail_pct_threshold <= 1.0):
+        parser.error("--fail-pct-threshold must be in [0, 1]")
+    if args.nmp_batch_size <= 0:
+        parser.error("--nmp-batch-size must be positive")
+    if args.nmp_workers <= 0:
+        parser.error("--nmp-workers must be positive")
+    return args
+
+
+def build_run_id(args: argparse.Namespace) -> str:
+    if args.run_id:
+        return str(args.run_id)
+    from inverse_folding.reference_flow.runtime import safe_allele_tag
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    refold_tag = args.refold_model if args.mode in {"struct", "all"} else "na"
+    return f"eval_{args.mode}_{refold_tag}_{safe_allele_tag(args.allele)}_{stamp}"
+
+
+def load_generated_designs(generated_parquet: str | Path) -> pd.DataFrame:
+    df = pd.read_parquet(generated_parquet).copy()
+    required = {"protein_id", "design_idx", "sequence", "seed", "wall_seconds"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"generated parquet missing required columns: {sorted(missing)}")
+    df["protein_id"] = df["protein_id"].astype(str)
+    df["design_idx"] = df["design_idx"].astype(int)
+    df["sequence"] = df["sequence"].astype(str).str.upper()
+    if df[["protein_id", "design_idx"]].duplicated().any():
+        raise ValueError("generated parquet contains duplicate (protein_id, design_idx) rows")
+    df["design_id"] = df["design_idx"].map(lambda idx: f"design_{idx:04d}")
+    return df
+
+
+def load_test_lookup(test_set_parquet: str | Path) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
+    df = pd.read_parquet(test_set_parquet).copy()
+    required = {"protein_id", "sequence", "sequence_length", "pdb_path"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"test-set parquet missing required columns: {sorted(missing)}")
+    df["protein_id"] = df["protein_id"].astype(str)
+    if df["protein_id"].duplicated().any():
+        raise ValueError("test-set parquet contains duplicate protein_id rows")
+    return df, {str(row["protein_id"]): row.to_dict() for _, row in df.iterrows()}
+
+
+def validate_sequence(sequence: str) -> str | None:
+    if not sequence:
+        return "empty_sequence"
+    chars = set(sequence)
+    invalid = chars - CANONICAL_AA
+    if invalid:
+        return f"non_canonical_aa:{''.join(sorted(invalid))}"
+    return None
+
+
+def build_head_predictor(
+    *,
+    checkpoint_path: str | Path,
+    config_dir: str | Path | None,
+    variant_id: str,
+    device: str,
+):
+    from epitope_head.configs import (
+        load_ablation_config,
+        load_inference_config,
+        load_model_config,
+    )
+    from scripts.infer_v1 import build_predictor
+
+    if config_dir is None:
+        config_dir = PROJECT_ROOT / "epitope_head" / "configs"
+    config_dir = Path(config_dir)
+    return build_predictor(
+        model_cfg=load_model_config(config_dir / "model.yaml"),
+        ablation_cfg=load_ablation_config(config_dir / "model_ablation.yaml"),
+        inference_cfg=load_inference_config(config_dir / "inference.yaml"),
+        variant_id=variant_id,
+        checkpoint_path=Path(checkpoint_path),
+        device=device,
+    )
+
+
+def build_nmp_runner(
+    *,
+    binary_path: str | Path,
+    batch_size: int,
+    n_workers: int,
+    timeout: int,
+    max_lengths_per_call: int,
+):
+    from epitope_head.data.netmhciipan_runner import build_runner
+
+    return build_runner(
+        backend="standalone",
+        binary_path=str(binary_path),
+        batch_size=batch_size,
+        subprocess_timeout=timeout,
+        max_lengths_per_call=max_lengths_per_call,
+        n_workers=n_workers,
+    )
+
+
+def evaluate_immunogenicity_rows(
+    generated_df: pd.DataFrame,
+    *,
+    predictor: Any,
+    nmp_runner: Any,
+    allele: str,
+    strong_binder_threshold: float = 2.0,
+    nmp_batch_size: int = 8,
+    progress_every: int = 25,
+    hotspot_threshold: float = 0.5,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, Any]]]:
+    head_rows: list[dict[str, Any]] = []
+    nmp_rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+
+    total = len(generated_df)
+    started = time.time()
+
+    # Head scoring is row-wise.
+    for row_idx, row in enumerate(generated_df.itertuples(index=False), start=1):
+        invalid = validate_sequence(str(row.sequence))
+        if invalid is not None:
+            failures.append(_failure_row(row, stage="imm_head", reason=invalid))
+            continue
+        try:
+            pred = predictor.predict_protein(str(row.sequence))
+            hotspot = pred["residue_hotspot"]
+            head_rows.append(
+                {
+                    "protein_id": str(row.protein_id),
+                    "design_id": str(row.design_id),
+                    "design_idx": int(row.design_idx),
+                    "global_risk": float(pred["global_risk"]),
+                    "mean_hotspot": float(hotspot.mean()),
+                    "max_hotspot": float(hotspot.max()),
+                    "n_hotspot_positions": int((hotspot > hotspot_threshold).sum()),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            failures.append(_failure_row(row, stage="imm_head", reason=f"{type(exc).__name__}:{exc}"))
+        if progress_every > 0 and (row_idx % progress_every == 0 or row_idx == total):
+            _emit_progress(
+                stage="imm_head",
+                current=row_idx,
+                total=total,
+                n_rows=len(head_rows),
+                n_failures=_count_stage_failures(failures, "imm_head"),
+                started=started,
+            )
+
+    # NMP scoring is batched, but temp IDs must be unique across designs.
+    nmp_started = time.time()
+    row_records = list(generated_df.to_dict("records"))
+    for chunk_start in range(0, len(row_records), nmp_batch_size):
+        chunk = row_records[chunk_start:chunk_start + nmp_batch_size]
+        entries: list[tuple[str, str]] = []
+        row_by_temp_id: dict[str, dict[str, Any]] = {}
+        for row in chunk:
+            invalid = validate_sequence(str(row["sequence"]))
+            if invalid is not None:
+                failures.append(_failure_row_dict(row, stage="imm_nmp", reason=invalid))
+                continue
+            temp_id = _temp_design_key(str(row["protein_id"]), int(row["design_idx"]))
+            entries.append((temp_id, str(row["sequence"])))
+            row_by_temp_id[temp_id] = row
+
+        batch_scores: dict[str, dict[int, list[Any]]]
+        if entries:
+            try:
+                batch_scores = nmp_runner.score_batch(entries, allele, NMP_PEP_LENGTHS)
+            except Exception as exc:  # noqa: BLE001
+                for temp_id, _seq in entries:
+                    failures.append(
+                        _failure_row_dict(
+                            row_by_temp_id[temp_id],
+                            stage="imm_nmp",
+                            reason=f"{type(exc).__name__}:{exc}",
+                        )
+                    )
+                batch_scores = {}
+        else:
+            batch_scores = {}
+
+        for temp_id, row in row_by_temp_id.items():
+            by_len = batch_scores.get(temp_id, {})
+            if not by_len:
+                failures.append(_failure_row_dict(row, stage="imm_nmp", reason="timeout_or_no_scores"))
+                continue
+            scores_df = _scores_by_len_to_dataframe(by_len)
+            agg = aggregate_nmp_scores_with_threshold(scores_df, strong_binder_threshold)
+            nmp_rows.append(
+                {
+                    "protein_id": str(row["protein_id"]),
+                    "design_id": f"design_{int(row['design_idx']):04d}",
+                    "design_idx": int(row["design_idx"]),
+                    **agg,
+                }
+            )
+
+        done = min(chunk_start + nmp_batch_size, len(row_records))
+        if progress_every > 0 and (done % progress_every == 0 or done == len(row_records)):
+            _emit_progress(
+                stage="imm_nmp",
+                current=done,
+                total=len(row_records),
+                n_rows=len(nmp_rows),
+                n_failures=_count_stage_failures(failures, "imm_nmp"),
+                started=nmp_started,
+            )
+
+    head_df = pd.DataFrame(head_rows)
+    nmp_df = pd.DataFrame(nmp_rows)
+    return head_df, nmp_df, failures
+
+
+def evaluate_structural_rows(
+    generated_df: pd.DataFrame,
+    test_lookup: dict[str, dict[str, Any]],
+    *,
+    pdb_root: str | Path,
+    refold_backend: str,
+    device: str,
+    tmalign_bin: str,
+    esmfold_cache_dir: str | None = None,
+    progress_every: int = 25,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    from inverse_folding.evaluation.tmalign import run_tmalign
+    from inverse_folding.reference_flow.runtime import resolve_structure_path
+
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+
+    model = None
+    cpu_model = None
+    started = time.time()
+    total = len(generated_df)
+
+    if refold_backend == "esmfold":
+        model = load_refold_model("esmfold", device=device)
+
+    for row_idx, row in enumerate(generated_df.itertuples(index=False), start=1):
+        test_row = test_lookup.get(str(row.protein_id))
+        if test_row is None:
+            failures.append(_failure_row(row, stage="struct", reason="missing_test_set_row"))
+            continue
+
+        expected_length = int(test_row["sequence_length"])
+        sequence = str(row.sequence)
+        if len(sequence) != expected_length:
+            raise DataConsistencyError(
+                f"{row.protein_id} design_idx={row.design_idx}: generated length "
+                f"{len(sequence)} != test-set sequence_length {expected_length}"
+            )
+
+        invalid = validate_sequence(sequence)
+        if invalid is not None:
+            failures.append(_failure_row(row, stage="struct", reason=invalid))
+            continue
+
+        try:
+            ref_path = resolve_structure_path(test_row, pdb_root)
+        except FileNotFoundError:
+            failures.append(_failure_row(row, stage="struct", reason="missing_pdb"))
+            continue
+
+        design_id = str(row.design_id)
+        pred = None
+        try:
+            pred = refold(
+                sequence=sequence,
+                protein_id=str(row.protein_id),
+                design_id=design_id,
+                backend=refold_backend,
+                cache_dir=esmfold_cache_dir,
+                model=model,
+            )
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower() and str(device).startswith("cuda"):
+                if cpu_model is None and refold_backend == "esmfold":
+                    cpu_model = load_refold_model("esmfold", device="cpu")
+                try:
+                    pred = refold(
+                        sequence=sequence,
+                        protein_id=str(row.protein_id),
+                        design_id=design_id,
+                        backend=refold_backend,
+                        cache_dir=esmfold_cache_dir,
+                        model=cpu_model,
+                    )
+                except Exception as retry_exc:  # noqa: BLE001
+                    failures.append(
+                        _failure_row(
+                            row,
+                            stage="struct",
+                            reason=f"oom_cpu_retry_failed:{type(retry_exc).__name__}:{retry_exc}",
+                        )
+                    )
+                    continue
+            else:
+                raise
+
+        recovery = compute_recovery(sequence, str(test_row["sequence"]))
+        try:
+            tm_metrics = run_tmalign(
+                pred_pdb=str(pred["pdb_path"]),
+                ref_pdb=str(ref_path),
+                tmalign_bin=tmalign_bin,
+                cache_dir=None,
+            )
+            sc_tm = float(tm_metrics["tm_score"])
+            bb_rmsd = float(tm_metrics["rmsd"])
+            foldability = bool(sc_tm > 0.5)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(_failure_row(row, stage="struct", reason=f"tmalign_failed:{type(exc).__name__}:{exc}"))
+            sc_tm = float("nan")
+            bb_rmsd = float("nan")
+            foldability = False
+
+        rows.append(
+            {
+                "protein_id": str(row.protein_id),
+                "design_id": design_id,
+                "design_idx": int(row.design_idx),
+                "sequence": sequence,
+                "scTM": sc_tm,
+                "pLDDT": float(pred["pLDDT"]),
+                "bb_RMSD": bb_rmsd,
+                "recovery": recovery,
+                "foldability": foldability,
+                "refold_backend": refold_backend,
+            }
+        )
+
+        if progress_every > 0 and (row_idx % progress_every == 0 or row_idx == total):
+            _emit_progress(
+                stage="struct",
+                current=row_idx,
+                total=total,
+                n_rows=len(rows),
+                n_failures=_count_stage_failures(failures, "struct"),
+                started=started,
+            )
+
+    return pd.DataFrame(rows), failures
+
+
+def compute_recovery(sequence: str, wt_sequence: str) -> float:
+    if not wt_sequence:
+        return float("nan")
+    matches = sum(a == b for a, b in zip(sequence, wt_sequence))
+    return matches / float(len(wt_sequence))
+
+
+def aggregate_nmp_scores_with_threshold(
+    scores: pd.DataFrame,
+    strong_binder_threshold: float,
+) -> dict[str, Any]:
+    n = len(scores)
+    if n == 0:
+        return {
+            "n_strong_binders": 0,
+            "n_weak_binders": 0,
+            "mean_best_rank": float("nan"),
+            "n_windows_scored": 0,
+        }
+
+    ranks = scores["rank_EL"]
+    top_k = min(_NMP_TOP_K_FOR_MEAN_BEST, n)
+    mean_best_rank = float(ranks.sort_values().head(top_k).mean()) if top_k > 0 else float("nan")
+    return {
+        "n_strong_binders": int((ranks < strong_binder_threshold).sum()),
+        "n_weak_binders": int((ranks < _NMP_WEAK_BINDER_THRESHOLD).sum()),
+        "mean_best_rank": mean_best_rank,
+        "n_windows_scored": int(n),
+    }
+
+
+def build_resolved_run_config(args: argparse.Namespace) -> dict[str, Any]:
+    """Return a vars(args) copy with path-typed CLI values resolved to absolute paths.
+
+    This keeps run_config.yaml's paths in sync with manifest.json, which uses
+    Path(...).resolve() for the same fields.
+    """
+    resolved = vars(args).copy()
+    path_fields = (
+        "generated_parquet",
+        "test_set_parquet",
+        "output_root",
+        "epitope_ckpt",
+        "epitope_config_dir",
+        "netmhciipan_bin",
+        "pdb_root",
+        "esmfold_cache_dir",
+    )
+    for key in path_fields:
+        value = resolved.get(key)
+        if value is None:
+            continue
+        resolved[key] = str(Path(value).resolve())
+    # tmalign_bin may be a bare command name like "TMalign"; only resolve if it's
+    # an actual filesystem path that exists.
+    tmalign_bin = resolved.get("tmalign_bin")
+    if tmalign_bin is not None:
+        candidate = Path(tmalign_bin)
+        if candidate.exists():
+            resolved["tmalign_bin"] = str(candidate.resolve())
+    return resolved
+
+
+def build_manifest(
+    *,
+    args: argparse.Namespace,
+    run_id: str,
+    modes_run: list[str],
+    rows_per_mode: dict[str, int],
+    wall_seconds_per_mode: dict[str, float],
+    generated_df: pd.DataFrame,
+) -> dict[str, Any]:
+    from inverse_folding.reference_flow.runtime import git_sha
+
+    manifest = {
+        "run_id": run_id,
+        "modes_run": modes_run,
+        "refold_backend": args.refold_model if "struct" in modes_run else None,
+        "allele": args.allele,
+        "generated_parquet_path": str(Path(args.generated_parquet).resolve()),
+        "generated_parquet_sha256": sha256_file(args.generated_parquet),
+        "test_set_parquet_path": str(Path(args.test_set_parquet).resolve()),
+        "head_ckpt_path": str(Path(args.epitope_ckpt).resolve()) if args.epitope_ckpt else None,
+        "head_ckpt_digest": sha256_file(args.epitope_ckpt) if args.epitope_ckpt else None,
+        "nmp_binary_path": str(Path(args.netmhciipan_bin).resolve()) if args.netmhciipan_bin else None,
+        "nmp_version_string": probe_nmp_version(args.netmhciipan_bin) if args.netmhciipan_bin else None,
+        "git_sha": git_sha(PROJECT_ROOT),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "n_input_designs": int(len(generated_df)),
+        "n_rows_per_mode": rows_per_mode,
+        "wall_seconds_per_mode": wall_seconds_per_mode,
+    }
+    return manifest
+
+
+def probe_nmp_version(binary_path: str | None) -> str | None:
+    if binary_path is None:
+        return None
+    try:
+        result = subprocess.run(
+            [str(binary_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        text = "\n".join([result.stdout.strip(), result.stderr.strip()]).strip()
+        for line in text.splitlines():
+            if line.strip():
+                return line.strip()[:200]
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def sha256_file(path: str | Path | None) -> str | None:
+    if path is None:
+        return None
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def output_paths(run_dir: str | Path) -> dict[str, Path]:
+    run_dir = Path(run_dir)
+    return {
+        "imm_head": run_dir / "imm_head.parquet",
+        "imm_nmp": run_dir / "imm_nmp.parquet",
+        "structural": run_dir / "structural.parquet",
+        "manifest": run_dir / "manifest.json",
+        "failures": run_dir / "failures.json",
+        "run_config": run_dir / "run_config.yaml",
+        "partial_dir": run_dir / ".partial",
+    }
+
+
+def mode_outputs_exist(mode: str, paths: dict[str, Path]) -> tuple[bool, list[Path]]:
+    if mode == "imm":
+        required = [paths["imm_head"], paths["imm_nmp"]]
+    elif mode == "struct":
+        required = [paths["structural"]]
+    else:
+        raise ValueError(mode)
+    existing = [path for path in required if path.exists()]
+    return len(existing) == len(required), existing
+
+
+def ensure_run_dir_state(
+    *,
+    run_dir: Path,
+    requested_modes: list[str],
+    paths: dict[str, Path],
+    overwrite: bool,
+) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if overwrite:
+        return
+    if not any(run_dir.iterdir()):
+        return
+    missing_for_requested = False
+    for mode in requested_modes:
+        mode_complete, existing = mode_outputs_exist(mode, paths)
+        if existing and not mode_complete:
+            raise FileExistsError(
+                f"run_dir contains partial outputs for mode={mode}; rerun with --overwrite"
+            )
+        if not mode_complete:
+            missing_for_requested = True
+    if missing_for_requested:
+        # Allow existing run_dir only when all requested modes can be skipped cleanly.
+        raise FileExistsError(
+            f"run_dir already exists and is non-empty: {run_dir}. "
+            "Use --overwrite or a new --run-id."
+        )
+
+
+def write_run_metadata(
+    *,
+    paths: dict[str, Path],
+    manifest: dict[str, Any],
+    run_config: dict[str, Any],
+    failures: list[dict[str, Any]],
+) -> None:
+    with open(paths["manifest"], "w") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+    with open(paths["run_config"], "w") as f:
+        yaml.safe_dump(run_config, f, sort_keys=False)
+    with open(paths["failures"], "w") as f:
+        json.dump({"failures": failures}, f, indent=2, sort_keys=True)
+
+
+def write_partial_dataframe(path: Path, df: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, index=False)
+
+
+def _temp_design_key(protein_id: str, design_idx: int) -> str:
+    return f"{protein_id}__design_{design_idx:04d}"
+
+
+def _scores_by_len_to_dataframe(by_len: dict[int, list[Any]]) -> pd.DataFrame:
+    rows = []
+    for scores in by_len.values():
+        for score in scores:
+            rows.append(
+                {
+                    "peptide": score.peptide,
+                    "rank_EL": score.el_rank * 100.0,
+                    "pos": score.pos,
+                    "core": score.core,
+                    "el_score": score.el_score,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _failure_row(row: Any, *, stage: str, reason: str) -> dict[str, Any]:
+    return {
+        "protein_id": str(row.protein_id),
+        "design_id": str(row.design_id),
+        "design_idx": int(row.design_idx),
+        "stage": stage,
+        "reason": reason,
+    }
+
+
+def _failure_row_dict(row: dict[str, Any], *, stage: str, reason: str) -> dict[str, Any]:
+    return {
+        "protein_id": str(row["protein_id"]),
+        "design_id": f"design_{int(row['design_idx']):04d}",
+        "design_idx": int(row["design_idx"]),
+        "stage": stage,
+        "reason": reason,
+    }
+
+
+def _count_stage_failures(failures: list[dict[str, Any]], stage: str) -> int:
+    return sum(1 for row in failures if row.get("stage") == stage)
+
+
+def _emit_progress(
+    *,
+    stage: str,
+    current: int,
+    total: int,
+    n_rows: int,
+    n_failures: int,
+    started: float,
+) -> None:
+    elapsed = time.time() - started
+    done = n_rows + n_failures
+    eta = elapsed * max(total - done, 0) / float(done) if done > 0 else 0.0
+    avg = elapsed / float(done) if done > 0 else 0.0
+    print(
+        f"[progress:{stage}] {current}/{total} rows={n_rows} failures={n_failures} "
+        f"elapsed={_fmt_hms(elapsed)} avg_per_row={avg:.2f}s eta={_fmt_hms(eta)}",
+        flush=True,
+    )
+
+
+def run_mode_imm(
+    *,
+    args: argparse.Namespace,
+    generated_df: pd.DataFrame,
+    paths: dict[str, Path],
+) -> tuple[int, float, list[dict[str, Any]]]:
+    predictor = build_head_predictor(
+        checkpoint_path=args.epitope_ckpt,
+        config_dir=args.epitope_config_dir,
+        variant_id=args.epitope_variant_id,
+        device=args.device,
+    )
+    nmp_runner = build_nmp_runner(
+        binary_path=args.netmhciipan_bin,
+        batch_size=args.nmp_batch_size,
+        n_workers=args.nmp_workers,
+        timeout=args.nmp_timeout,
+        max_lengths_per_call=args.nmp_max_lengths_per_call,
+    )
+    started = time.time()
+    head_df, nmp_df, failures = evaluate_immunogenicity_rows(
+        generated_df,
+        predictor=predictor,
+        nmp_runner=nmp_runner,
+        allele=args.allele,
+        strong_binder_threshold=args.strong_binder_threshold,
+        nmp_batch_size=args.nmp_batch_size,
+        progress_every=args.progress_every,
+        hotspot_threshold=args.hotspot_threshold,
+    )
+    failed_keys = {
+        (row["protein_id"], int(row["design_idx"]))
+        for row in failures
+        if row["stage"] in {"imm_head", "imm_nmp"}
+    }
+    if len(failed_keys) / float(max(len(generated_df), 1)) > args.fail_pct_threshold:
+        partial_dir = paths["partial_dir"]
+        write_partial_dataframe(partial_dir / "imm_head.parquet", head_df)
+        write_partial_dataframe(partial_dir / "imm_nmp.parquet", nmp_df)
+        raise RuntimeError("imm mode exceeded fail-pct-threshold")
+
+    validate_dataframe(head_df, IMMUNOGENICITY_HEAD_COLUMNS)
+    validate_dataframe(nmp_df, IMMUNOGENICITY_NMP_COLUMNS)
+    head_df.to_parquet(paths["imm_head"], index=False)
+    nmp_df.to_parquet(paths["imm_nmp"], index=False)
+    return len(head_df), time.time() - started, failures
+
+
+def run_mode_struct(
+    *,
+    args: argparse.Namespace,
+    generated_df: pd.DataFrame,
+    test_lookup: dict[str, dict[str, Any]],
+    paths: dict[str, Path],
+) -> tuple[int, float, list[dict[str, Any]]]:
+    started = time.time()
+    df, failures = evaluate_structural_rows(
+        generated_df,
+        test_lookup,
+        pdb_root=args.pdb_root,
+        refold_backend=args.refold_model,
+        device=args.device,
+        tmalign_bin=args.tmalign_bin,
+        esmfold_cache_dir=args.esmfold_cache_dir,
+        progress_every=args.progress_every,
+    )
+    failed_keys = {
+        (row["protein_id"], int(row["design_idx"]))
+        for row in failures
+        if row["stage"] == "struct"
+    }
+    if len(failed_keys) / float(max(len(generated_df), 1)) > args.fail_pct_threshold:
+        partial_dir = paths["partial_dir"]
+        write_partial_dataframe(partial_dir / "structural.parquet", df)
+        raise RuntimeError("struct mode exceeded fail-pct-threshold")
+
+    validate_dataframe(df, STRUCTURAL_COLUMNS)
+    df.to_parquet(paths["structural"], index=False)
+    return len(df), time.time() - started, failures
+
+
+def print_resolved_hyperparams(args: argparse.Namespace, *, run_dir: Path, n_designs: int) -> None:
+    resolved = vars(args).copy()
+    resolved["generated_parquet"] = str(Path(args.generated_parquet).resolve())
+    resolved["test_set_parquet"] = str(Path(args.test_set_parquet).resolve())
+    resolved["output_root"] = str(Path(args.output_root).resolve())
+    resolved["run_dir"] = str(run_dir)
+    resolved["n_input_designs"] = n_designs
+    print("============================================================")
+    print("Phase C evaluation resolved parameters")
+    for key, value in resolved.items():
+        print(f"  {key}: {value}")
+    print("============================================================")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    generated_df = load_generated_designs(args.generated_parquet)
+    _test_df, test_lookup = load_test_lookup(args.test_set_parquet)
+    run_id = build_run_id(args)
+
+    from inverse_folding.reference_flow.runtime import safe_allele_tag
+
+    run_dir = Path(args.output_root) / safe_allele_tag(args.allele) / run_id
+    paths = output_paths(run_dir)
+    requested_modes = ["imm", "struct"] if args.mode == "all" else [args.mode]
+    ensure_run_dir_state(
+        run_dir=run_dir,
+        requested_modes=requested_modes,
+        paths=paths,
+        overwrite=args.overwrite,
+    )
+    print_resolved_hyperparams(args, run_dir=run_dir, n_designs=len(generated_df))
+
+    if "imm" in requested_modes:
+        if args.epitope_ckpt is None or args.netmhciipan_bin is None:
+            raise ValueError("--epitope-ckpt and --netmhciipan-bin are required for imm/all mode")
+    if "struct" in requested_modes:
+        if args.pdb_root is None:
+            raise ValueError("--pdb-root is required for struct/all mode")
+        if args.esmfold_cache_dir is None:
+            args.esmfold_cache_dir = str(run_dir / ".cache" / "esmfold")
+
+    all_failures: list[dict[str, Any]] = []
+    modes_run: list[str] = []
+    rows_per_mode: dict[str, int] = {}
+    wall_seconds_per_mode: dict[str, float] = {}
+
+    try:
+        for mode in requested_modes:
+            complete, existing = mode_outputs_exist(mode, paths)
+            if complete and not args.overwrite:
+                print(f"[skip] mode={mode} outputs already exist in {run_dir}", flush=True)
+                modes_run.append(f"{mode}:skipped")
+                continue
+            if existing and not complete and not args.overwrite:
+                raise FileExistsError(
+                    f"mode={mode} has partial outputs in {run_dir}; rerun with --overwrite"
+                )
+
+            if mode == "imm":
+                n_rows, wall_seconds, failures = run_mode_imm(
+                    args=args,
+                    generated_df=generated_df,
+                    paths=paths,
+                )
+            else:
+                n_rows, wall_seconds, failures = run_mode_struct(
+                    args=args,
+                    generated_df=generated_df,
+                    test_lookup=test_lookup,
+                    paths=paths,
+                )
+            modes_run.append(mode)
+            rows_per_mode[mode] = n_rows
+            wall_seconds_per_mode[mode] = wall_seconds
+            all_failures.extend(failures)
+    except DataConsistencyError as exc:
+        write_run_metadata(
+            paths=paths,
+            manifest=build_manifest(
+                args=args,
+                run_id=run_id,
+                modes_run=modes_run,
+                rows_per_mode=rows_per_mode,
+                wall_seconds_per_mode=wall_seconds_per_mode,
+                generated_df=generated_df,
+            ),
+            run_config=build_resolved_run_config(args),
+            failures=all_failures,
+        )
+        print(f"ERROR: data consistency: {exc}", file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        if "fail-pct-threshold" in str(exc):
+            write_run_metadata(
+                paths=paths,
+                manifest=build_manifest(
+                    args=args,
+                    run_id=run_id,
+                    modes_run=modes_run,
+                    rows_per_mode=rows_per_mode,
+                    wall_seconds_per_mode=wall_seconds_per_mode,
+                    generated_df=generated_df,
+                ),
+                run_config=build_resolved_run_config(args),
+                failures=all_failures,
+            )
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        raise
+
+    write_run_metadata(
+        paths=paths,
+        manifest=build_manifest(
+            args=args,
+            run_id=run_id,
+            modes_run=modes_run,
+            rows_per_mode=rows_per_mode,
+            wall_seconds_per_mode=wall_seconds_per_mode,
+            generated_df=generated_df,
+        ),
+        run_config=build_resolved_run_config(args),
+        failures=all_failures,
+    )
+
+    # Banner summary mirroring scripts/run_if_phase_c0.py / run_if_phase_c1.py.
+    n_input = max(len(generated_df), 1)
+    total_failures = len(all_failures)
+    failure_rate = total_failures / float(n_input)
+    total_wall = sum(wall_seconds_per_mode.values())
+    skipped_modes = [m.split(":", 1)[0] for m in modes_run if m.endswith(":skipped")]
+    skipped_str = ",".join(skipped_modes) if skipped_modes else "<none>"
+
+    print("============================================================", flush=True)
+    print(f"[done] run_id={run_id}", flush=True)
+    print(f"       run_dir={run_dir}", flush=True)
+    for mode in ("imm", "struct"):
+        if mode in rows_per_mode:
+            n_rows = rows_per_mode[mode]
+            wall = wall_seconds_per_mode.get(mode, 0.0)
+            avg = wall / float(n_rows) if n_rows > 0 else 0.0
+            print(
+                f"   {mode:<6} : rows={n_rows} wall={_fmt_hms(wall)} avg={avg:.2f}s",
+                flush=True,
+            )
+    print(
+        f"   skipped: {skipped_str} | total_failures={total_failures} "
+        f"({failure_rate:.2%}) total_wall={_fmt_hms(total_wall)}",
+        flush=True,
+    )
+    print("============================================================", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

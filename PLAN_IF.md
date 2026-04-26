@@ -707,11 +707,90 @@ See `doc/Reference_Flow_Derivation.md §6`.
 
 ### Task B4: End-to-End Eval Pipeline Integration
 
-- Integrate existing evaluation code into one CLI: generate → ESMFold → TM-align → head → NMP
-- Reuse relevant pieces from Module L evaluation wrappers
-- Verify on 2-3 test proteins before full-scale runs
+**Goal**
+- Provide a single CLI that takes a Phase C `generated.parquet` and emits schema-aligned per-design metrics (structural + immunogenicity) without touching WT comparison logic. The evaluator is mode-switchable so structure and immunogenicity can run independently or together, and the structure refold backend is pluggable for a future AF3 swap.
 
-**Acceptance**: all B tasks complete → Phase C can begin experiments.
+**Frozen design principles (2026-04-24)**
+1. **Input is the parquet, not a directory of FASTAs.** `generated.parquet` from Phase C is the source of truth; no per-protein FASTA fan-out, no separate WT FASTA. WT sequence (for `recovery` only) is read on the fly from `--test-set-parquet`.
+2. **Modes are independent and idempotent.** `--mode imm|struct|all`. Each mode writes its own parquet; rerunning one mode does not touch the other's output. If the target parquet already exists, the mode is skipped unless `--overwrite` is set.
+3. **Refold backend is a CLI flag.** `--refold-model esmfold|af3` (default `esmfold`). `af3` is reserved as a `NotImplementedError` stub today; the dispatcher contract is in place so adding AF3 later means adding one new module + one branch in the dispatcher, not refactoring the evaluator.
+4. **No WT mixing inside.** Outputs are absolute per-design metrics. WT-relative analyses (`delta_global_risk`, `hotspot_reduction`, etc.) are downstream join steps over a separate static `wt_metrics_<allele>.parquet`, computed once per (allele, test set, head ckpt) pair — out of B4 scope.
+5. **Predictor source is `scripts.infer_v1.build_predictor`.** Same path as Phase B `precompute_h_maps`. Do not import from `scripts/run_if_guidance_sweep.py` (that file is the deprecated Module M code; see tech-debt note at end of this plan).
+
+**Inputs**
+- `--generated-parquet <path>`: Phase C output (`protein_id`, `design_idx`, `sequence`, `seed`, `wall_seconds`).
+- `--test-set-parquet <path>`: B2 input. Provides `pdb_path`, `sequence_length`, and WT `sequence` for `recovery`.
+- `--allele <header form>`: e.g. `"HLA-DRB1*07:01"`.
+- `--mode imm|struct|all`.
+- For `imm` mode (required when mode includes immunogenicity): `--epitope-ckpt`, `--epitope-config-dir`, `--epitope-variant-id`, `--netmhciipan-bin`, `--nmp-batch-size`, `--nmp-workers`, `--nmp-timeout`, `--nmp-max-lengths-per-call`, `--strong-binder-threshold` (default 2.0%).
+- For `struct` mode: `--pdb-root`, `--refold-model esmfold|af3` (default `esmfold`), `--tmalign-bin`, `--esmfold-cache-dir`, `--device`.
+- Run-control: `--output-root`, `--run-id` (auto-generated if omitted), `--overwrite`, `--progress-every` (default 25), `--fail-pct-threshold` (default 0.05).
+
+**Run ID convention**
+- Auto-generated form: `eval_<modes>_<refold>_<allele_tag>_<UTC stamp>` — e.g. `eval_all_esmfold_DRB1_07_01_20260424T080000Z`.
+- Naming is self-identifying so runs against different generation sources / different refold backends do not collide silently. `--run-id` overrides; non-empty `run_dir` refused unless `--overwrite`.
+
+**Outputs** (all schema-aligned to `inverse_folding/evaluation/schema.py`)
+
+`<output_root>/<allele_tag>/<run_id>/`
+
+| File | Columns | Source |
+|------|---------|--------|
+| `imm_head.parquet` | `protein_id, design_id, design_idx, global_risk, mean_hotspot, max_hotspot, n_hotspot_positions` | `IMMUNOGENICITY_HEAD_COLUMNS` (+ `design_idx` for join back) |
+| `imm_nmp.parquet` | `protein_id, design_id, design_idx, n_strong_binders, n_weak_binders, mean_best_rank, n_windows_scored` | `IMMUNOGENICITY_NMP_COLUMNS` |
+| `structural.parquet` | `protein_id, design_id, design_idx, sequence, scTM, pLDDT, bb_RMSD, recovery, foldability, refold_backend` | `STRUCTURAL_METRICS_COLUMNS` (+ `design_idx`, + `refold_backend`) |
+| `manifest.json` | run_id, modes_run, refold_backend, allele, generated_parquet_path + sha256, test_set_parquet_path, head_ckpt_path + digest, nmp_binary_path + version_string, git_sha, timestamp, n_input_designs, n_rows_per_mode, wall_seconds_per_mode | metadata |
+| `failures.json` | per-row issues: NMP timeout, ESMFold OOM, missing PDB, invalid sequence, etc. | audit |
+| `run_config.yaml` | resolved CLI (every default materialized) | reproducibility |
+
+`design_id = f"design_{design_idx:04d}"`. The redundant `design_idx` int column makes joins back to `generated.parquet` trivial.
+
+**Mode behaviors**
+
+- `imm`: load head predictor via `scripts.infer_v1.build_predictor`; build NMP runner via `epitope_head/data/netmhciipan_runner.py::build_runner` (same constructor used by `benchmark_head_vs_nmp.py`). For each row in `generated.parquet`, score the design sequence and emit one row each in `imm_head.parquet` / `imm_nmp.parquet`. NMP scoring batched in chunks of `--nmp-batch-size` proteins.
+- `struct`: dispatch on `--refold-model`:
+  - `esmfold` → `inverse_folding/evaluation/esmfold_runner.py::predict_structure` (existing, with `(protein_id, sequence_hash)` cache key).
+  - `af3` → raise `NotImplementedError("af3 backend not yet wired; see B4 future work")`.
+  - For each generated row: refold the design sequence, run TM-align against `pdb_path` from test_set_parquet, compute `recovery` against WT `sequence` column, emit one row in `structural.parquet`. `refold_backend` column records which backend produced the row.
+- `all`: run `imm` then `struct` sequentially. Each mode independently checks for existing output and skips if present (unless `--overwrite`).
+
+**Planned File Touchpoints**
+- Create: `scripts/evaluate_phase_c.py`
+- Create: `inverse_folding/evaluation/refold.py` (dispatcher: `refold(sequence, protein_id, design_idx, *, backend, **kwargs)` → `{pdb_path, pLDDT}`; ESMFold branch wraps `esmfold_runner.predict_structure`; AF3 branch is a stub).
+- Modify: `scripts/submit_benchmark.slurm` (add `MODE=phase_c` branch alongside existing `fasta` / `iedb`).
+- Create: `tests/scripts/test_evaluate_phase_c_script.py`
+- Modify: `doc/SCRIPTS.md` (register under Phase B).
+- Delete: `scripts/evaluate_if.py` (legacy, replaced).
+- Delete or trim: `inverse_folding/evaluation/aggregate.py::compute_comparison`, `write_artifact_bundle` (only used by `evaluate_if.py`; remove with the script).
+
+**SLURM**
+- Extend `scripts/submit_benchmark.slurm` with `MODE=phase_c`. Required env vars: `GENERATED_PARQUET`, `TEST_SET_PARQUET`, `ALLELE`, `EVAL_MODE` (imm|struct|all), `REFOLD_MODEL` (esmfold default). Existing `MODE=fasta` / `MODE=iedb` branches untouched.
+- Default QOS `gpu-medium`. Walltime estimate for `--mode all` on full 0701 test set (3,141 × 1 design): ESMFold dominates → ~6–10h depending on batch.
+
+**Failure handling**
+1. Row in `generated.parquet` missing from `test_set_parquet` (no `pdb_path` lookup possible) → log + skip in struct mode; imm mode unaffected.
+2. NMP subprocess timeout → log per-row failure, continue.
+3. ESMFold OOM → retry that single design on CPU; second failure → log + skip.
+4. TM-align parse error → log + emit row with `scTM=NaN, foldability=False`.
+5. `len(generated_sequence) != test_set_parquet["sequence_length"]` → hard abort (data-consistency bug).
+6. Cumulative skip rate > `--fail-pct-threshold` → abort with exit code 2; partial parquets retained under `.partial/`.
+
+**TDD Gate**
+1. RED: evaluator emits row counts that do not match input row counts (minus logged failures); modes overwrite each other's parquet on rerun without `--overwrite`; `--refold-model af3` returns silent no-op instead of raising; `imm_head.parquet` row's `global_risk` differs from a direct `predict_protein` call on the same sequence.
+2. GREEN:
+   - 3-protein × 2-design fixture: `--mode imm` produces `imm_head.parquet` with 6 rows, `global_risk` matches `predict_protein` within 1e-5; `imm_nmp.parquet` 6 rows, `n_strong_binders` matches a direct count from raw NMP output.
+   - Same fixture, `--mode struct`: 6 rows in `structural.parquet`; `recovery` equals `sum(a==b for a,b in zip(seq, wt))/len(wt)`; `refold_backend == "esmfold"`; ESMFold cache hit on second run skips the model call.
+   - `--mode all` then rerunning `--mode struct` without `--overwrite`: `structural.parquet` skipped (already exists); `imm_*.parquet` untouched.
+   - `--refold-model af3` raises `NotImplementedError`.
+   - Manifest contains `git_sha`, `head_ckpt_digest`, `generated_parquet sha256` all populated.
+
+**Acceptance**
+- All TDD gates green.
+- `scripts/evaluate_phase_c.py --mode all --refold-model esmfold` completes one allele's C0 baseline output end-to-end with failure rate under `--fail-pct-threshold` and produces three schema-aligned parquets + manifest.
+- `scripts/evaluate_if.py` removed; no remaining caller in the repo.
+- B2/B3 + B4 together feed Phase C without further glue code: `generated.parquet` → `evaluate_phase_c.py` → schema-aligned parquets ready for analysis joins.
+
+**Acceptance for the whole Phase B**: B1 + B2 + B3 + B4 complete → Phase C can run experiments and emit ready-to-analyze metrics.
 
 ---
 
@@ -1034,3 +1113,15 @@ Create a new `LOG.md` entry whenever any of the following occurs:
 3. Use exact paths and absolute timestamps.
 4. If evidence is missing, status cannot be `done` for verification entries.
 5. If automated tests do not cover a claimed verification event, the uncovered items must be stated explicitly in `evidence`.
+
+---
+
+## 10. Outstanding Tech Debt (Non-Blocking)
+
+Items here do not block any current task. Listed so they don't get lost.
+
+1. **Predictor loader still lives inside a deprecated file.**
+   - `scripts/run_if_guidance_sweep.py::load_epitope_predictor` is the original epitope-head predictor builder. The host file is from superseded Module M and is not exercised end-to-end anymore.
+   - Six active scripts still import it: `scripts/prescreen_tier2.py`, `scripts/prescreen_uricases.py`, `scripts/evaluate_if.py` (slated for deletion in B4), `scripts/benchmark_head_vs_nmp.py`, `scripts/benchmark_iedb_test.py`, `scripts/assemble_if_test_set.py`.
+   - A canonical-shape equivalent (`scripts/infer_v1.py::build_predictor`) exists and is what Phase B `precompute_h_maps.py` and B4 `evaluate_phase_c.py` use.
+   - Effect: deleting `run_if_guidance_sweep.py` today breaks five active callers. Cleanup deferred.

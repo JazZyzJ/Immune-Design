@@ -2,7 +2,7 @@
 
 Reads M3 sweep all_candidates/ directory, selects argmin-risk candidate
 per protein, and writes output in the same format as M3 eta_*/generated/
-so it can be evaluated through the same evaluate_if.py pipeline.
+so it can be evaluated through the Phase B4 `evaluate_phase_c.py` pipeline.
 
 Usage (cluster):
     python ${PROJECT_ROOT}/scripts/run_if_level1_filter.py \
@@ -129,7 +129,7 @@ def main() -> int:
     print(f"  {prov_path}")
     print(f"  {summary_path}")
     print(f"  {config_path}")
-    print(f"\nNext: run evaluate_if.py on {gen_dir}")
+    print(f"\nNext: run evaluate_phase_c.py on {args.output_dir}/generated.parquet")
 
     return 0
 

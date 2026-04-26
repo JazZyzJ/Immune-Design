@@ -115,10 +115,6 @@ Test set curation (three-tier) and shared evaluation pipeline.
 7. `scripts/download_test_set_pdbs.py` — Download PDB structure files for assembled IF test set proteins.
 8. `scripts/prescreen_uricases.py` — Pre-screen uricase sequences for Tier 3 via MMseqs2 overlap, epitope head prefilter, and batched NetMHCIIpan.
 
-### Evaluation
-
-1. `scripts/evaluate_if.py` — Run full IF evaluation pipeline: PDB + generated FASTA → ESMFold → TM-align → epitope head → NetMHCIIpan.
-
 ### SLURM
 
 1. `scripts/submit_assemble_test_set.slurm` — Assemble final IF test set (8hr, 1 GPU, 64GB).
@@ -134,10 +130,15 @@ Mechanical preparation jobs that bridge the fixed IF test set and Phase C refere
 
 1. `scripts/precompute_h_maps.py` — Shared B2/B3 CLI that computes wide per-protein h-map parquets from epitope-head `debug.h_raw` and `residue_hotspot`, with metadata sidecars, resume support, failure ledgers, and CATH corpus stats for JSONL training inputs.
 
+### Evaluation Integration
+
+1. `scripts/evaluate_phase_c.py` — B4 end-to-end evaluator for Phase C outputs. Reads `generated.parquet` + test-set parquet and writes schema-aligned `imm_head.parquet`, `imm_nmp.parquet`, and `structural.parquet` under a run directory; mode-switchable (`imm|struct|all`), idempotent per mode, WT-free, and backed by `inverse_folding/evaluation/refold.py` (`esmfold` active, `af3` stub).
+
 ### SLURM
 
 1. `scripts/submit_precompute_h_test.slurm` — B2 test-set h-map precompute (24hr, 1 GPU, 64GB). Parameterized: `ALLELE`, `EPITOPE_CKPT`, `INPUT_PARQUET`, `OUTPUT_PARQUET`, `OUTPUT_META`, `WINDOW_BATCH_SIZE`, `RESUME_FROM`.
 2. `scripts/submit_precompute_h_cath.slurm` — B3 CATH train h-map precompute (72hr, 1 GPU, 64GB). Parameterized: `ALLELE`, `EPITOPE_CKPT`, `CHAIN_SET`, `SPLITS_JSON`, `SPLIT`, `OUTPUT_PARQUET`, `OUTPUT_META`, `WINDOW_BATCH_SIZE`, `RESUME_FROM`.
+3. `scripts/submit_benchmark.slurm` — Shared benchmark/evaluation launcher. `MODE=fasta` and `MODE=iedb` keep the epitope-head benchmark workflows; `MODE=phase_c` runs `evaluate_phase_c.py`. Phase-C overrides: `GENERATED_PARQUET`, `TEST_SET_PARQUET`, `ALLELE`, `EVAL_MODE`, `REFOLD_MODEL`, `PDB_ROOT`, `PHASE_C_OUTPUT_ROOT`, `RUN_ID`, `OVERWRITE`, `FAIL_PCT_THRESHOLD`.
 
 ---
 

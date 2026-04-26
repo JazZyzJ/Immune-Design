@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-04-24T15:30:00+08:00
+> **Last synced**: 2026-04-26T16:31:53+08:00
 > **Branch**: dev_head
 
 ---
@@ -140,7 +140,7 @@
 - **B1 (PDB download)**: **near-complete** — 0401: 2,943 .pdb + 192 .cif (AF rescue + RCSB cif + AFDB); 0701: 2,874 .pdb + 244 .cif. All RCSB 404s rescued via .cif tracks (`pdb_final_failures.txt` = 0 on both). Residual **41 UniProts** (18 on 0401 / 23 on 0701) have no AFDB prediction — listed in `pdbs/{0401,0701}/uniprot_final_failures.txt`; will be filled by **AF3 local prediction**
 - **B2 (h_i maps for test set)**: **code ready, cluster not run** — shared CLI `scripts/precompute_h_maps.py`, loader/validator `inverse_folding/evaluation/h_maps.py`, test-set SLURM `scripts/submit_precompute_h_test.slurm`; emits `h_raw`, `h_processed`, `global_risk`, `n_windows` + sidecar metadata for 0701/0401. Resume is guarded by sidecar metadata, allele/checkpoint/config/source matching, and sequence-length checks.
 - **B3 (h_i maps for CATH training set)**: **code ready, cluster not run** — same CLI with JSONL split filtering, CATH-specific sequence policy, guarded resume support, and required corpus-level `h_raw` stats; SLURM `scripts/submit_precompute_h_cath.slurm`
-- **B4 (eval pipeline integration)**: not started — need end-to-end: generate → ESMFold → TM-align → head → NMP
+- **B4 (eval pipeline integration)**: **code ready, cluster not run** — new `scripts/evaluate_phase_c.py` consumes Phase C `generated.parquet` directly, supports `imm | struct | all` mode separation, writes schema-aligned `imm_head.parquet`, `imm_nmp.parquet`, `structural.parquet`, uses `scripts.infer_v1.build_predictor` for head inference, dispatches refold via `inverse_folding/evaluation/refold.py` (`esmfold` active, `af3` stub), and is wired into `scripts/submit_benchmark.slurm` as `MODE=phase_c`. Legacy `scripts/evaluate_if.py` removed.
 
 ---
 
