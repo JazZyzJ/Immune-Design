@@ -16,6 +16,16 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
 export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 
+# wandb monitoring (compute nodes have network via `module load proxy/default`).
+# Each pipeline stage uses its own project; shared cluster-wide wandb dir avoids
+# polluting cwd.  Override WANDB_MODE=offline if the proxy is unavailable.
+export WANDB_DIR="/scratch/gpfs/KAIYIJIANG/zijie/wandb"
+export WANDB_CACHE_DIR="/scratch/gpfs/KAIYIJIANG/zijie/wandb/cache"
+export WANDB_DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/wandb/data"
+export WANDB_CONFIG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/wandb/config"
+export WANDB_MODE="${WANDB_MODE:-online}"
+mkdir -p "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}" "${WANDB_CONFIG_DIR}" 2>/dev/null || true
+
 
 export IMD_DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests"
 export IMD_RUN_DIR="/scratch/gpfs/KAIYIJIANG/zijie/run"

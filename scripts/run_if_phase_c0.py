@@ -47,6 +47,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Allow writing into an existing non-empty run_dir (default: refuse).",
     )
+
+    from inverse_folding.observability import add_wandb_cli_args
+
+    add_wandb_cli_args(parser, default_project="mhc-if-phase-c-sampling")
+
     args = parser.parse_args(argv)
 
     if args.n_designs_per_protein <= 0:
@@ -67,6 +72,7 @@ def generate_rows_for_entries(
     n_designs_per_protein: int,
     seed: int,
     progress_every: int = 25,
+    wandb_run: Any = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Generate output rows while preserving input protein ordering."""
     rows: list[dict[str, Any]] = []
@@ -119,6 +125,23 @@ def generate_rows_for_entries(
                 total_designs=total_designs,
                 run_start=run_start,
             )
+            if wandb_run is not None:
+                from inverse_folding.observability import log_metrics
+
+                elapsed = time.time() - run_start
+                done = len(rows) + len(failures)
+                avg = elapsed / float(done) if done > 0 else 0.0
+                log_metrics(
+                    wandb_run,
+                    {
+                        "progress/proteins_done": entry_idx,
+                        "progress/rows_generated": len(rows),
+                        "progress/failures": len(failures),
+                        "progress/elapsed_seconds": elapsed,
+                        "progress/avg_seconds_per_design": avg,
+                    },
+                    step=entry_idx,
+                )
     return rows, failures
 
 
@@ -274,6 +297,31 @@ def main(argv: list[str] | None = None) -> int:
     entries = load_test_entries(args.test_set_parquet)
     print_resolved_hyperparams(args, run_dir=run_dir, n_entries=len(entries))
 
+    from inverse_folding.observability import (
+        finish_wandb,
+        init_wandb_from_args,
+        set_summary,
+    )
+
+    wandb_run = init_wandb_from_args(
+        args,
+        run_name=run_id,
+        config={
+            "stage": "phase_c_sampling",
+            "arm": "c0_native_sampler",
+            "allele": args.allele,
+            "checkpoint": str(Path(args.checkpoint).resolve()),
+            "n_input_proteins": int(len(entries)),
+            "n_designs_per_protein": args.n_designs_per_protein,
+            "seed": args.seed,
+            "max_iter": args.max_iter,
+            "temperature": args.temperature,
+            "device": args.device,
+            "run_dir": str(run_dir),
+        },
+        extra_tags=["c0", "native_sampler", args.allele],
+    )
+
     run_start = time.time()
     generator = _build_generator(
         checkpoint=args.checkpoint,
@@ -288,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         n_designs_per_protein=args.n_designs_per_protein,
         seed=args.seed,
         progress_every=args.progress_every,
+        wandb_run=wandb_run,
     )
     total_wall_seconds = time.time() - run_start
 
@@ -342,6 +391,20 @@ def main(argv: list[str] | None = None) -> int:
         f"output_dir={run_dir}"
     )
     print("============================================================")
+
+    set_summary(
+        wandb_run,
+        {
+            "summary/n_input_proteins": int(len(entries)),
+            "summary/n_total_designs": n_total_designs,
+            "summary/n_rows_generated": n_rows,
+            "summary/n_failures": n_failures,
+            "summary/failure_rate": failure_rate,
+            "summary/wall_seconds": float(total_wall_seconds),
+            "summary/avg_seconds_per_design": float(avg_per_design),
+        },
+    )
+    finish_wandb(wandb_run)
     return 0
 
 

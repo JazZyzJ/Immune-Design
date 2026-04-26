@@ -67,7 +67,12 @@ export HF_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/huggingface"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-export WANDB_MODE=offline
+# wandb is opt-in per run via WANDB=1; default mode honors env (env.sh sets online).
+WANDB_FLAG="${WANDB:-0}"
+WANDB_MODE_FOR_RUN="${WANDB_MODE:-online}"
+WANDB_PROJECT_FOR_RUN="${WANDB_PROJECT:-mhc-if-phase-c-sampling}"
+WANDB_GROUP_FOR_RUN="${WANDB_GROUP:-}"
+WANDB_TAGS_FOR_RUN="${WANDB_TAGS:-}"
 
 echo "============================================================"
 echo "Phase C generation"
@@ -89,6 +94,20 @@ echo "  GPU name        : $(python -c 'import torch; print(torch.cuda.get_device
 echo "  Timestamp       : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "============================================================"
 
+WANDB_ARGS=()
+if [[ "${WANDB_FLAG}" == "1" ]]; then
+    WANDB_ARGS+=(--wandb)
+    WANDB_ARGS+=(--wandb-project "${WANDB_PROJECT_FOR_RUN}")
+    WANDB_ARGS+=(--wandb-mode "${WANDB_MODE_FOR_RUN}")
+    if [[ -n "${WANDB_GROUP_FOR_RUN}" ]]; then
+        WANDB_ARGS+=(--wandb-group "${WANDB_GROUP_FOR_RUN}")
+    fi
+    if [[ -n "${WANDB_TAGS_FOR_RUN}" ]]; then
+        WANDB_ARGS+=(--wandb-tags "${WANDB_TAGS_FOR_RUN}")
+    fi
+fi
+echo "  wandb           : ${WANDB_FLAG} (project=${WANDB_PROJECT_FOR_RUN} mode=${WANDB_MODE_FOR_RUN})"
+
 case "${MODE}" in
     native)
         echo "  Designs/protein : ${N_DESIGNS_PER_PROTEIN}"
@@ -105,7 +124,8 @@ case "${MODE}" in
             --seed "${SEED}" \
             --max-iter "${MAX_ITER}" \
             --temperature "${TEMPERATURE}" \
-            --device "${DEVICE}"
+            --device "${DEVICE}" \
+            "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;
     reference_flow)
         echo "  h_maps parquet  : ${H_MAPS_PARQUET}"
@@ -148,7 +168,8 @@ case "${MODE}" in
             --output-root "${OUTPUT_ROOT}" \
             --device "${DEVICE}" \
             --fail-pct-threshold "${FAIL_PCT_THRESHOLD}" \
-            "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
+            "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
+            "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;
     *)
         echo "Unsupported MODE=${MODE}; expected native or reference_flow" >&2

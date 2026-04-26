@@ -57,7 +57,13 @@ export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
 export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
-export WANDB_MODE=offline
+# wandb is opt-in per run via WANDB=1; default mode honors env (env.sh sets online).
+# fasta/iedb modes still run without wandb; phase_c forwards the flags below.
+WANDB_FLAG="${WANDB:-0}"
+WANDB_MODE_FOR_RUN="${WANDB_MODE:-online}"
+WANDB_PROJECT_FOR_RUN="${WANDB_PROJECT:-mhc-if-phase-c-eval}"
+WANDB_GROUP_FOR_RUN="${WANDB_GROUP:-}"
+WANDB_TAGS_FOR_RUN="${WANDB_TAGS:-}"
 
 # ── Diagnostics ───────────────────────────────────────────────────────────
 echo "============================================================"
@@ -229,6 +235,18 @@ elif [ "${MODE}" = "phase_c" ]; then
     if [ "${OVERWRITE}" = "1" ]; then
         EXTRA_ARGS+=(--overwrite)
     fi
+    if [ "${WANDB_FLAG}" = "1" ]; then
+        EXTRA_ARGS+=(--wandb)
+        EXTRA_ARGS+=(--wandb-project "${WANDB_PROJECT_FOR_RUN}")
+        EXTRA_ARGS+=(--wandb-mode "${WANDB_MODE_FOR_RUN}")
+        if [ -n "${WANDB_GROUP_FOR_RUN}" ]; then
+            EXTRA_ARGS+=(--wandb-group "${WANDB_GROUP_FOR_RUN}")
+        fi
+        if [ -n "${WANDB_TAGS_FOR_RUN}" ]; then
+            EXTRA_ARGS+=(--wandb-tags "${WANDB_TAGS_FOR_RUN}")
+        fi
+    fi
+    echo "  wandb              : ${WANDB_FLAG} (project=${WANDB_PROJECT_FOR_RUN} mode=${WANDB_MODE_FOR_RUN})"
 
     python -u "${PROJECT_ROOT}/scripts/evaluate_phase_c.py" \
         --generated-parquet "${GENERATED_PARQUET}" \

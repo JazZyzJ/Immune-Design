@@ -80,6 +80,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--esmfold-cache-dir", default=None)
     parser.add_argument("--device", default="cuda")
 
+    from inverse_folding.observability import add_wandb_cli_args
+
+    add_wandb_cli_args(parser, default_project="mhc-if-phase-c-eval")
+
     args = parser.parse_args(argv)
     if args.progress_every < 0:
         parser.error("--progress-every must be non-negative")
@@ -774,6 +778,53 @@ def run_mode_struct(
     return len(df), time.time() - started, failures
 
 
+def _log_evaluation_distributions(wandb_run: Any, paths: dict[str, Path]) -> None:
+    """Emit per-design metric histograms to wandb at the end of a run."""
+    if wandb_run is None:
+        return
+    try:
+        import wandb as _wandb
+    except Exception:  # noqa: BLE001
+        return
+
+    hist_targets: dict[str, tuple[Path, list[str]]] = {
+        "imm_head": (paths["imm_head"], ["global_risk", "mean_hotspot", "max_hotspot", "n_hotspot_positions"]),
+        "imm_nmp": (paths["imm_nmp"], ["n_strong_binders", "n_weak_binders", "mean_best_rank", "n_windows_scored"]),
+        "structural": (paths["structural"], ["scTM", "pLDDT", "bb_RMSD", "recovery"]),
+    }
+
+    payload: dict[str, Any] = {}
+    for mode, (parquet_path, columns) in hist_targets.items():
+        if not parquet_path.exists():
+            continue
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception:  # noqa: BLE001
+            continue
+        for col in columns:
+            if col not in df.columns:
+                continue
+            series = pd.to_numeric(df[col], errors="coerce").dropna()
+            if series.empty:
+                continue
+            try:
+                payload[f"distribution/{mode}/{col}"] = _wandb.Histogram(
+                    series.to_numpy()
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            payload[f"summary/{mode}/{col}_mean"] = float(series.mean())
+            payload[f"summary/{mode}/{col}_median"] = float(series.median())
+
+        if mode == "structural" and "foldability" in df.columns:
+            payload["summary/structural/foldability_rate"] = float(
+                pd.Series(df["foldability"], dtype="boolean").fillna(False).mean()
+            )
+
+    if payload:
+        wandb_run.log(payload)
+
+
 def print_resolved_hyperparams(args: argparse.Namespace, *, run_dir: Path, n_designs: int) -> None:
     resolved = vars(args).copy()
     resolved["generated_parquet"] = str(Path(args.generated_parquet).resolve())
@@ -816,6 +867,39 @@ def main(argv: list[str] | None = None) -> int:
         if args.esmfold_cache_dir is None:
             args.esmfold_cache_dir = str(run_dir / ".cache" / "esmfold")
 
+    from inverse_folding.observability import (
+        finish_wandb,
+        init_wandb_from_args,
+        log_metrics,
+        set_summary,
+    )
+
+    wandb_run = init_wandb_from_args(
+        args,
+        run_name=run_id,
+        config={
+            "stage": "phase_c_evaluation",
+            "modes_requested": requested_modes,
+            "allele": args.allele,
+            "refold_model": args.refold_model,
+            "generated_parquet": str(Path(args.generated_parquet).resolve()),
+            "test_set_parquet": str(Path(args.test_set_parquet).resolve()),
+            "epitope_ckpt": str(Path(args.epitope_ckpt).resolve()) if args.epitope_ckpt else None,
+            "epitope_variant_id": args.epitope_variant_id,
+            "n_input_designs": int(len(generated_df)),
+            "fail_pct_threshold": args.fail_pct_threshold,
+            "hotspot_threshold": args.hotspot_threshold,
+            "strong_binder_threshold_pct": args.strong_binder_threshold,
+            "device": args.device,
+            "run_dir": str(run_dir),
+        },
+        extra_tags=[
+            f"mode={args.mode}",
+            f"refold={args.refold_model}",
+            args.allele,
+        ],
+    )
+
     all_failures: list[dict[str, Any]] = []
     modes_run: list[str] = []
     rows_per_mode: dict[str, int] = {}
@@ -850,6 +934,16 @@ def main(argv: list[str] | None = None) -> int:
             rows_per_mode[mode] = n_rows
             wall_seconds_per_mode[mode] = wall_seconds
             all_failures.extend(failures)
+            log_metrics(
+                wandb_run,
+                {
+                    f"mode/{mode}/n_rows": n_rows,
+                    f"mode/{mode}/wall_seconds": float(wall_seconds),
+                    f"mode/{mode}/n_failures": int(
+                        sum(1 for f in failures if f.get("stage", "").startswith(mode))
+                    ),
+                },
+            )
     except DataConsistencyError as exc:
         write_run_metadata(
             paths=paths,
@@ -865,6 +959,8 @@ def main(argv: list[str] | None = None) -> int:
             failures=all_failures,
         )
         print(f"ERROR: data consistency: {exc}", file=sys.stderr)
+        set_summary(wandb_run, {"summary/aborted_reason": "data_consistency"})
+        finish_wandb(wandb_run)
         return 2
     except RuntimeError as exc:
         if "fail-pct-threshold" in str(exc):
@@ -882,7 +978,10 @@ def main(argv: list[str] | None = None) -> int:
                 failures=all_failures,
             )
             print(f"ERROR: {exc}", file=sys.stderr)
+            set_summary(wandb_run, {"summary/aborted_reason": "fail_pct_threshold"})
+            finish_wandb(wandb_run)
             return 2
+        finish_wandb(wandb_run)
         raise
 
     write_run_metadata(
@@ -925,6 +1024,22 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     print("============================================================", flush=True)
+
+    summary: dict[str, Any] = {
+        "summary/n_input_designs": int(n_input),
+        "summary/total_failures": int(total_failures),
+        "summary/failure_rate": float(failure_rate),
+        "summary/total_wall_seconds": float(total_wall),
+        "summary/modes_run": ",".join(modes_run),
+    }
+    for mode, n in rows_per_mode.items():
+        summary[f"summary/mode_{mode}_rows"] = int(n)
+        summary[f"summary/mode_{mode}_wall_seconds"] = float(
+            wall_seconds_per_mode.get(mode, 0.0)
+        )
+    set_summary(wandb_run, summary)
+    _log_evaluation_distributions(wandb_run, paths)
+    finish_wandb(wandb_run)
     return 0
 
 

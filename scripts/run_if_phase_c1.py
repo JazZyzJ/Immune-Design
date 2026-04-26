@@ -64,6 +64,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Allow writing into an existing non-empty run_dir (default: refuse unless resuming).",
     )
+
+    from inverse_folding.observability import add_wandb_cli_args
+
+    add_wandb_cli_args(parser, default_project="mhc-if-phase-c-sampling")
+
     args = parser.parse_args(argv)
 
     if args.fail_pct_threshold < 0.0 or args.fail_pct_threshold > 1.0:
@@ -359,6 +364,40 @@ def main(argv: list[str] | None = None) -> int:
         n_entries=len(entries),
     )
 
+    from inverse_folding.observability import (
+        finish_wandb,
+        init_wandb_from_args,
+        log_metrics,
+        set_summary,
+    )
+
+    wandb_run = init_wandb_from_args(
+        args,
+        run_name=run_id,
+        config={
+            "stage": "phase_c_sampling",
+            "arm": "c1_reference_flow",
+            "allele": args.allele,
+            "checkpoint": str(Path(args.checkpoint).resolve()),
+            "config_path": str(Path(args.config).resolve()),
+            "h_maps_parquet": str(Path(args.h_maps_parquet).resolve()),
+            "n_input_proteins": int(len(entries)),
+            "device": args.device,
+            "save_trajectories": args.save_trajectories,
+            "fail_pct_threshold": args.fail_pct_threshold,
+            "run_dir": str(run_dir),
+            "reference_flow_config": config_dict,
+        },
+        extra_tags=[
+            "c1",
+            "reference_flow",
+            args.allele,
+            f"amp_form={config.amplification.form}",
+            f"schedule={config.schedule.base_form}",
+            f"h_source={config.amplification.h_source}",
+        ],
+    )
+
     task = load_if_task(args.checkpoint, device=args.device)
     cpu_task = None
     sampler = PositionDependentDFMSampler(
@@ -579,6 +618,20 @@ def main(argv: list[str] | None = None) -> int:
                 total_designs=total_designs,
                 run_start=run_start,
             )
+            elapsed = time.time() - run_start
+            done = len(rows_by_key) + len(failures)
+            avg = elapsed / float(done) if done > 0 else 0.0
+            log_metrics(
+                wandb_run,
+                {
+                    "progress/proteins_done": entry_idx,
+                    "progress/rows_generated": len(rows_by_key),
+                    "progress/failures": len(failures),
+                    "progress/elapsed_seconds": elapsed,
+                    "progress/avg_seconds_per_design": avg,
+                },
+                step=entry_idx,
+            )
 
         if _should_abort_failures(
             failures,
@@ -685,6 +738,21 @@ def main(argv: list[str] | None = None) -> int:
         f"output_dir={run_dir}"
     )
     print("============================================================")
+
+    set_summary(
+        wandb_run,
+        {
+            "summary/n_input_proteins": int(len(entries)),
+            "summary/n_total_designs": int(total_designs),
+            "summary/n_rows_generated": n_rows,
+            "summary/n_failures": n_failures,
+            "summary/failure_rate": failure_rate,
+            "summary/wall_seconds": float(total_wall),
+            "summary/avg_seconds_per_design": float(avg_per_design),
+            "summary/aborted_on_failure_threshold": bool(aborted),
+        },
+    )
+    finish_wandb(wandb_run)
     return 0
 
 
