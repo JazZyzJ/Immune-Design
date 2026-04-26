@@ -67,7 +67,14 @@ export HF_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/huggingface"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-# wandb is opt-in per run via WANDB=1; default mode honors env (env.sh sets online).
+
+# wandb storage roots — keep all run state on /scratch, never in $HOME or cwd.
+export WANDB_DIR="${WANDB_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb}"
+export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/cache}"
+export WANDB_DATA_DIR="${WANDB_DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/data}"
+export WANDB_CONFIG_DIR="${WANDB_CONFIG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/config}"
+mkdir -p "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}" "${WANDB_CONFIG_DIR}"
+# wandb is opt-in per run via WANDB=1.
 WANDB_FLAG="${WANDB:-0}"
 WANDB_MODE_FOR_RUN="${WANDB_MODE:-online}"
 WANDB_PROJECT_FOR_RUN="${WANDB_PROJECT:-mhc-if-phase-c-sampling}"

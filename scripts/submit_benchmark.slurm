@@ -57,7 +57,14 @@ export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
 export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
-# wandb is opt-in per run via WANDB=1; default mode honors env (env.sh sets online).
+
+# wandb storage roots — keep all run state on /scratch, never in $HOME or cwd.
+export WANDB_DIR="${WANDB_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb}"
+export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/cache}"
+export WANDB_DATA_DIR="${WANDB_DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/data}"
+export WANDB_CONFIG_DIR="${WANDB_CONFIG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/config}"
+mkdir -p "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}" "${WANDB_CONFIG_DIR}"
+# wandb is opt-in per run via WANDB=1.
 # fasta/iedb modes still run without wandb; phase_c forwards the flags below.
 WANDB_FLAG="${WANDB:-0}"
 WANDB_MODE_FOR_RUN="${WANDB_MODE:-online}"
