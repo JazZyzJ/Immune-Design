@@ -27,8 +27,8 @@ DEVICE="${DEVICE:-cuda}"
 
 # ── Paths ────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
-OUTPUT_DIR="/scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/epi"
-LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epi"
+OUTPUT_DIR="/scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/epi_v2"
+LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epi_v2"
 NETMHCIIPAN_BIN="${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan"
 
 ALLELE_TAG="$(echo "${ALLELE}" | tr -c '[:alnum:]' '_' | sed 's/_*$//')"
