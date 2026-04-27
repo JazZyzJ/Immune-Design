@@ -79,6 +79,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tmalign-bin", default="TMalign")
     parser.add_argument("--esmfold-cache-dir", default=None)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--tag", default=None)
 
     from inverse_folding.observability import add_wandb_cli_args
 
@@ -103,7 +104,7 @@ def build_run_id(args: argparse.Namespace) -> str:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     refold_tag = args.refold_model if args.mode in {"struct", "all"} else "na"
-    return f"eval_{args.mode}_{refold_tag}_{safe_allele_tag(args.allele)}_{stamp}"
+    return f"eval_{args.mode}_{refold_tag}_{safe_allele_tag(args.allele)}_{args.tag}_{stamp}"
 
 
 def load_generated_designs(generated_parquet: str | Path) -> pd.DataFrame:

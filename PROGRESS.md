@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-04-26T16:31:53+08:00
+> **Last synced**: 2026-04-27T00:47:26+08:00
 > **Branch**: dev_head
 
 ---
@@ -97,6 +97,9 @@
   - `work/immune-design/if_test_set/fastas/` — 6,166 FASTA files
   - `work/immune-design/if_test_set/pdbs/0401/` — **2,943 .pdb** (RCSB experimental) + **192 .cif** (local AF snapshot rescue + RCSB .cif Track A + AFDB Track B) = 3,135 structures; **18 unresolved** uricase UniProts listed in `uniprot_final_failures.txt` (no AFDB prediction)
   - `work/immune-design/if_test_set/pdbs/0701/` — **2,874 .pdb** (RCSB experimental) + **244 .cif** (18 local AF + 123 RCSB cif + 102 AFDB + 1 D3BGR1 fix) = 3,118 structures; **23 unresolved** uricase UniProts listed in `uniprot_final_failures.txt` (no AFDB prediction)
+  - `work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet` — **3,072 IF-ready proteins** (Tier 1:15, Tier 2:2,948, Tier 3:109; 2,881 `.pdb` + 191 `.cif`); cleaned structures in `work/immune-design/if_test_set/pdbs_if_ready/0401/`; DPLM `load_coords()` gate: **3,072/3,072 exact sequence+length match**
+  - `work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet` — **3,079 IF-ready proteins** (Tier 1:15, Tier 2:2,962, Tier 3:102; 2,839 `.pdb` + 240 `.cif`); cleaned structures in `work/immune-design/if_test_set/pdbs_if_ready/0701/`; DPLM `load_coords()` gate: **3,079/3,079 exact sequence+length match**
+  - IF-ready failure manifests: `if_ready/test_proteins_if_ready_HLA-DRB1_04_01.failures.csv` (68 failures: 50 unknown residues, 18 missing structures), `if_ready/test_proteins_if_ready_HLA-DRB1_07_01.failures.csv` (62 failures: 38 unknown residues, 24 missing structures)
   - Final-failure manifests (absolute paths):
     - `work/immune-design/if_test_set/pdbs/0401/uniprot_final_failures.txt` (18 UniProts, mostly Streptomyces / 小众真菌 / Uncharacterized TrEMBL entries)
     - `work/immune-design/if_test_set/pdbs/0701/uniprot_final_failures.txt` (23 UniProts, same pattern)
@@ -138,7 +141,8 @@
 ## Phase B: Experiment Preparation (NEW, 2026-04-07)
 
 - **B1 (PDB download)**: **near-complete** — 0401: 2,943 .pdb + 192 .cif (AF rescue + RCSB cif + AFDB); 0701: 2,874 .pdb + 244 .cif. All RCSB 404s rescued via .cif tracks (`pdb_final_failures.txt` = 0 on both). Residual **41 UniProts** (18 on 0401 / 23 on 0701) have no AFDB prediction — listed in `pdbs/{0401,0701}/uniprot_final_failures.txt`; will be filled by **AF3 local prediction**
-- **B2 (h_i maps for test set)**: **code ready, cluster not run** — shared CLI `scripts/precompute_h_maps.py`, loader/validator `inverse_folding/evaluation/h_maps.py`, test-set SLURM `scripts/submit_precompute_h_test.slurm`; emits `h_raw`, `h_processed`, `global_risk`, `n_windows` + sidecar metadata for 0701/0401. Resume is guarded by sidecar metadata, allele/checkpoint/config/source matching, and sequence-length checks.
+- **B1.5 (IF-ready structure/sequence cleaning)**: **complete for PDB/mmCIF-backed rows** — `scripts/build_if_ready_test_set.py` materialized resolved-backbone parquets and cleaned single-chain PDB/mmCIF structures. 0401: 3,072 ready / 68 failed; 0701: 3,079 ready / 62 failed. DPLM `load_coords()` exact sequence+length gate passes for all ready rows. Tier 3 uricases are now partially recovered via default chain `A` (0401:109, 0701:102). Remaining failures are missing structures or unknown residue symbols not covered by BioPython's extended PDB residue map.
+- **B2 (h_i maps for test set)**: **must rerun on IF-ready parquets** — shared CLI `scripts/precompute_h_maps.py`, loader/validator `inverse_folding/evaluation/h_maps.py`, test-set SLURM `scripts/submit_precompute_h_test.slurm`; previous biological-sequence h-maps are invalid for Phase C if their length differs from the resolved backbone sequence. Resume is guarded by sidecar metadata, allele/checkpoint/config/source matching, and sequence-length checks.
 - **B3 (h_i maps for CATH training set)**: **code ready, cluster not run** — same CLI with JSONL split filtering, CATH-specific sequence policy, guarded resume support, and required corpus-level `h_raw` stats; SLURM `scripts/submit_precompute_h_cath.slurm`
 - **B4 (eval pipeline integration)**: **code ready, cluster not run** — new `scripts/evaluate_phase_c.py` consumes Phase C `generated.parquet` directly, supports `imm | struct | all` mode separation, writes schema-aligned `imm_head.parquet`, `imm_nmp.parquet`, `structural.parquet`, uses `scripts.infer_v1.build_predictor` for head inference, dispatches refold via `inverse_folding/evaluation/refold.py` (`esmfold` active, `af3` stub), and is wired into `scripts/submit_benchmark.slurm` as `MODE=phase_c`. Legacy `scripts/evaluate_if.py` removed.
 

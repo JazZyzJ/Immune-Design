@@ -128,7 +128,8 @@ Mechanical preparation jobs that bridge the fixed IF test set and Phase C refere
 
 ### h-map Precompute
 
-1. `scripts/precompute_h_maps.py` — Shared B2/B3 CLI that computes wide per-protein h-map parquets from epitope-head `debug.h_raw` and `residue_hotspot`, with metadata sidecars, resume support, failure ledgers, and CATH corpus stats for JSONL training inputs.
+1. `scripts/build_if_ready_test_set.py` — B1.5 structure/sequence cleaning gate for Phase C. Reads the assembled biological-sequence test-set parquet plus downloaded PDB/mmCIF structures, extracts resolved single-chain backbone residues, canonicalizes modified amino acids via BioPython's extended PDB residue map, collapses duplicate author residue IDs and alternate conformers, writes cleaned single-chain PDB/mmCIF structures plus an IF-ready parquet whose `sequence`/`sequence_length`/`if_chain_id` exactly match DPLM `load_coords()` output. Original biological sequence, original length, source structure path, residue-number mapping, and failure ledgers are retained for audit.
+2. `scripts/precompute_h_maps.py` — Shared B2/B3 CLI that computes wide per-protein h-map parquets from epitope-head `debug.h_raw` and `residue_hotspot`, with metadata sidecars, resume support, failure ledgers, and CATH corpus stats for JSONL training inputs.
 
 ### Evaluation Integration
 

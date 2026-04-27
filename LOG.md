@@ -1991,3 +1991,79 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `LOG.md:L0066`
   - `doc/SCRIPTS.md:Phase B`
   - `inverse_folding/evaluation/schema.py`
+
+### L0068
+- timestamp: 2026-04-27T00:03:08+08:00
+- type: IMPLEMENTATION
+- module: PHASE_B
+- trigger: User (Coder-track) found that thousands of assembled IF test-set rows had parquet `sequence_length` values that did not match the downloaded structure length, making Phase C inverse folding invalid. User confirmed the fix should not drop mismatch rows outright, asked to preserve biological FASTA semantics, rebuild a resolved-backbone IF-ready dataset, skip formal TDD for speed, and record the cleanup after completion.
+- change_summary: Added `scripts/build_if_ready_test_set.py` as a B1.5 structure/sequence cleaning gate. The script reads the assembled biological-sequence parquet plus downloaded structures, extracts the requested chain's resolved residues with complete N/CA/C/O backbone atoms, canonicalizes modified amino-acid residue names using BioPython's extended PDB mapping, collapses duplicate author residue IDs by preferring standard ATOM residues, selects one alternate conformer per atom by highest occupancy, writes cleaned single-chain PDBs, and emits an IF-ready parquet whose `sequence` / `sequence_length` are the exact DPLM-readable resolved-backbone sequence. Original biological sequence, original length, source structure, residue-number mapping, original residue names, and failure ledgers are retained for audit. Registered the script in `doc/SCRIPTS.md` and updated `PROGRESS.md` to mark B1.5 complete and B2 h-map precompute as requiring rerun on IF-ready parquets.
+- rationale: The root cause was not incorrect FASTA, but a semantic mismatch: assembled parquet sequences are biological/full sequences, while DPLM/ProteinMPNN-style inverse folding requires one residue per resolved backbone coordinate. Missing terminal/loop residues, expression tags, modified residues, duplicate HET/ATOM author residue IDs, and altloc conformers must be resolved before Phase C. Rebuilding a derived IF-ready dataset preserves the original biological inputs while giving Phase C and h-map precompute a length-consistent substrate.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/scripts/build_if_ready_test_set.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.manifest.json`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.failures.csv`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0401/`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.manifest.json`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.failures.csv`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0701/`
+- evidence: |
+    `python -m py_compile scripts/build_if_ready_test_set.py` => passed.
+    `python scripts/build_if_ready_test_set.py --help` => argparse/import smoke passed.
+    `python scripts/build_if_ready_test_set.py ... HLA-DRB1_04_01 ...` => 3,140 input rows → 2,881 IF-ready rows, 259 failures (Tier 1: 14 ready / 1 failed; Tier 2: 2,867 ready / 131 failed; Tier 3: 127 failed). Failure reasons: 192 unsupported `.cif`, 49 unknown residues, 18 missing structures.
+    `python scripts/build_if_ready_test_set.py ... HLA-DRB1_07_01 ...` => 3,141 input rows → 2,839 IF-ready rows, 302 failures (Tier 1: 14 ready / 1 failed; Tier 2: 2,825 ready / 175 failed; Tier 3: 126 failed). Failure reasons: 243 unsupported `.cif`, 35 unknown residues, 24 missing structures.
+    Final DPLM gate using `inverse_folding.dplm.src.byprot.utils.io.load_coords()` on every cleaned PDB: HLA-DRB1_04_01 2,881/2,881 exact sequence+length match, 0 mismatch, 0 errors; HLA-DRB1_07_01 2,839/2,839 exact sequence+length match, 0 mismatch, 0 errors.
+- impact:
+  - scope: Adds a derived Phase B cleaning gate and materialized scratch artifacts. Original biological parquets, FASTAs, raw downloaded PDB/CIF files, and Phase C generator code are not overwritten.
+  - risk: medium (dataset semantics changed for Phase C; all WT immunogenicity artifacts and h-maps must now be regenerated on IF-ready sequences)
+  - confidence: 0.91
+- status: done
+- next_action: Rerun B2 h-map precompute and any WT head/NMP baseline artifacts against `if_ready/test_proteins_if_ready_*.parquet` with `PDB_ROOT=work/immune-design/if_test_set/pdbs_if_ready/{0401,0701}` before launching C0/C1. Add mmCIF support later to recover the currently unsupported `.cif` rows, and optionally investigate the remaining `unknown_residue` failures.
+- refs:
+  - `scripts/build_if_ready_test_set.py`
+  - `PROGRESS.md:Phase B`
+  - `doc/SCRIPTS.md:Phase B`
+
+### L0069
+- timestamp: 2026-04-27T00:47:26+08:00
+- type: IMPLEMENTATION
+- module: PHASE_B
+- trigger: User (Coder-track) noticed that many remaining IF-ready failures were `.cif` structures and asked to add CIF support to the backbone path so uricases would not all be excluded. User also asked whether the remaining three-letter residue symbols were still unmappable.
+- change_summary: Added mmCIF support to the DPLM backbone loader (`inverse_folding/dplm/src/byprot/utils/io.py`) by switching the biotite 1.6 path from removed `pdbx.PDBxFile` to `pdbx.CIFFile` and adding BioPython extended residue-name fallback for common modified amino acids. Extended `scripts/build_if_ready_test_set.py` to parse `.cif` inputs with `MMCIFParser`, write cleaned `.cif` outputs with `MMCIFIO`, preserve multi-character chain IDs, and accept `--default-chain A` for non-PDB-chain protein IDs such as Tier 3 UniProt-style uricases. Updated Phase C runtime (`inverse_folding/reference_flow/runtime.py`) to prefer `if_chain_id` from IF-ready parquet before inferring a chain from `protein_id`. Rebuilt both IF-ready parquets with `--allow-cif`, recovering most CIF-backed rows and many Tier 3 uricases.
+- rationale: The previous B1.5 pass deliberately skipped `.cif`, which left all Tier 3 uricase AFDB/local prediction rows unusable and also excluded RCSB CIF rescues. mmCIF support must preserve multi-character chain IDs (e.g. `AAA`), so writing those cleaned structures back to PDB is unsafe; cleaned CIF output plus runtime `if_chain_id` is the correct contract. Remaining unknown residue symbols are not covered by BioPython's extended PDB residue map and include ligand/cofactor-like codes (e.g. `SAM`, `SFG`, `BET`, `MTX`), so they remain fail-fast rather than guessed.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/src/byprot/utils/io.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/runtime.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/build_if_ready_test_set.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.manifest.json`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.failures.csv`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0401/`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.manifest.json`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.failures.csv`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0701/`
+- evidence: |
+    `python -m py_compile scripts/build_if_ready_test_set.py inverse_folding/reference_flow/runtime.py inverse_folding/dplm/src/byprot/utils/io.py` => passed.
+    Real-CIF smoke on `6TN1_AAA.cif`: `scripts.build_if_ready_test_set.process_row(... allow_cif=True)` emitted `6TN1_AAA.cif`; DPLM `load_coords()` read chain `AAA` with length 497 and exact sequence match.
+    Rebuilt 0401 with `--allow-cif`: 3,140 input rows → 3,072 IF-ready rows, 68 failures. Ready rows: Tier 1=15, Tier 2=2,948, Tier 3=109; formats: 2,881 `.pdb`, 191 `.cif`.
+    Rebuilt 0701 with `--allow-cif`: 3,141 input rows → 3,079 IF-ready rows, 62 failures. Ready rows: Tier 1=15, Tier 2=2,962, Tier 3=102; formats: 2,839 `.pdb`, 240 `.cif`.
+    Final DPLM gate using row-level `if_chain_id`: HLA-DRB1_04_01 3,072/3,072 exact sequence+length match, 0 mismatch, 0 errors; HLA-DRB1_07_01 3,079/3,079 exact sequence+length match, 0 mismatch, 0 errors.
+    Remaining failures: 0401 has 50 unknown residues + 18 missing structures; 0701 has 38 unknown residues + 24 missing structures. Unknown codes include `SAM`, `SFG`, `BET`, `MTX`, `KAI`, `R2P`, etc.; these are intentionally not guessed into canonical amino acids.
+- impact:
+  - scope: Adds active CIF support to backbone loading and IF-ready cleaning; Phase C can now consume cleaned `.pdb` and `.cif` structures through the same `pdb_root`.
+  - risk: medium (runtime chain resolution now depends on `if_chain_id` for non-PDB protein IDs; IF-ready parquets must be used consistently)
+  - confidence: 0.92
+- status: done
+- next_action: Rerun B2 h-map precompute and WT head/NMP artifacts on the updated IF-ready parquets. Optional later work: resolve missing Tier 3 structures via AF3 and inspect `unknown_residue` failures with CCD/ligand context before deciding whether any can be safely skipped rather than failing the whole chain.
+- refs:
+  - `LOG.md:L0068`
+  - `scripts/build_if_ready_test_set.py`
+  - `inverse_folding/dplm/src/byprot/utils/io.py`
+  - `inverse_folding/reference_flow/runtime.py`

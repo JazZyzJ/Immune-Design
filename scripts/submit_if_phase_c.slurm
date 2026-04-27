@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=if-phase-c
-#SBATCH --qos=gpu-medium
+#SBATCH --account=kaiyijiang
+#SBATCH --qos=gpu-short
+#SBATCH --partition=mig
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_phase_c/phase_c_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_phase_c/phase_c_%j.err
 
@@ -16,6 +18,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"
 WORK_DIR="${WORK_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design}"
 RUN_DIR="${RUN_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding}"
 LOG_DIR="${LOG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/logs/if_phase_c}"
+export PROJECT_ROOT WORK_DIR RUN_DIR LOG_DIR
 
 MODE="${MODE:-native}"   # native | reference_flow
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
@@ -24,26 +27,26 @@ DEVICE="${DEVICE:-cuda}"
 if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_07_01"
     ALLELE_TAG="DRB1_07_01"
-    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs/0701"
-    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/h_maps/h_maps_DRB1_07_01.parquet"
+    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0701"
+    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps/h_maps_DRB1_07_01.parquet"
 elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_04_01"
     ALLELE_TAG="DRB1_04_01"
-    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs/0401"
-    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/h_maps/h_maps_DRB1_04_01.parquet"
+    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0401"
+    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps/h_maps_DRB1_04_01.parquet"
 else
     echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
     exit 2
 fi
 
 CHECKPOINT="${CHECKPOINT:-${RUN_DIR}/dplm_v1_adapter/seed42_20260319_094244/checkpoints/best.ckpt}"
-TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/test_proteins_${ALLELE_FILE_TAG}.parquet}"
+TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/if_ready/test_proteins_if_ready_${ALLELE_FILE_TAG}.parquet}"
 PDB_ROOT="${PDB_ROOT:-${PDB_ROOT_DEFAULT}}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${WORK_DIR}/if_phase_c/${MODE}}"
 
 N_DESIGNS_PER_PROTEIN="${N_DESIGNS_PER_PROTEIN:-1}"
 SEED="${SEED:-42}"
-MAX_ITER="${MAX_ITER:-10}"
+MAX_ITER="${MAX_ITER:-50}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 
 H_MAPS_PARQUET="${H_MAPS_PARQUET:-${H_MAPS_DEFAULT}}"
@@ -57,6 +60,7 @@ mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 module purge
 module load anaconda3/2025.12
 conda activate immune-design
+module load proxy/default
 
 export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
@@ -74,12 +78,16 @@ export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/
 export WANDB_DATA_DIR="${WANDB_DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/data}"
 export WANDB_CONFIG_DIR="${WANDB_CONFIG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/config}"
 mkdir -p "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}" "${WANDB_CONFIG_DIR}"
-# wandb is opt-in per run via WANDB=1.
-WANDB_FLAG="${WANDB:-0}"
+WANDB_FLAG="${WANDB:-1}"
 WANDB_MODE_FOR_RUN="${WANDB_MODE:-online}"
 WANDB_PROJECT_FOR_RUN="${WANDB_PROJECT:-mhc-if-phase-c-sampling}"
 WANDB_GROUP_FOR_RUN="${WANDB_GROUP:-}"
 WANDB_TAGS_FOR_RUN="${WANDB_TAGS:-}"
+export WANDB_DIR="/scratch/gpfs/KAIYIJIANG/zijie/wandb"
+export WANDB_CACHE_DIR="/scratch/gpfs/KAIYIJIANG/zijie/wandb/cache"
+export WANDB_DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/wandb/data"
+export WANDB_CONFIG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/wandb/config"
+
 
 echo "============================================================"
 echo "Phase C generation"

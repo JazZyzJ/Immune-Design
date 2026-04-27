@@ -17,7 +17,8 @@ Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重�
 
 - **CPU**: `test` / `short` / `medium` / `vlong`
 - **GPU**: `gpu-test` / `gpu-short` / `gpu-medium` / `gpu-long`
-- **PLI / ailab**: 没有 `pli-short` / `pli-lc` / `pli-cpu` — 虽然 `pli` partition 本身 `AllowAccounts=ALL`，但它必须搭配 `pli-*` QOS 才能提交。**所以目前你跑不了 PLI 的 H100×8 节点**，要 Kaiyi 给你申请 PLI allocation 后才能用。
+- **PLI**: 没有 `pli-short` / `pli-lc` / `pli-cpu` — 虽然 `pli` partition 本身 `AllowAccounts=ALL`，但它必须搭配 `pli-*` QOS 才能提交。**所以目前你跑不了 PLI 的 H100×8 节点**，要 Kaiyi 给你申请 PLI allocation 后才能用。
+- **ailab**: 当前可用 `ailab` partition；用 `--partition=ailab --constraint="h200"` 可提交到 H200 节点。
 
 ## 2. 分区（Partition）和 GPU 节点
 
@@ -27,11 +28,12 @@ Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重�
 |-----------|------|-------|------|------|
 | `cpu`（默认）| 15 d | 166 | intel/amd | 纯 CPU |
 | `gpu` | 15 d | 89 | A100 混合 | **你主要用这个** |
-| `mig` | 15 d | 2 | `della-l01g[1-2]` 的 `1g.10gb` MIG 切片 | 极小切片，基本不用 |
+| `mig` | 15 d | 2 | `della-l01g[1-2]` 的 `1g.10gb` MIG 切片 | 极小切片，适合最快 smoke/inference |
 | `gputest` | 15 d | 112 | 所有 GPU 节点 | 仅 `gpu-test` QOS 可用，最多 2 并发 |
 | `grace` | 15 d | 1 | GH200（ARM） | 特殊需求 |
 | `pli` | 15 d | 38 | H100×8 | **需要 PLI QOS，目前你没有** |
 | `pli-lc` | 3 d | 9 | H100×8 | 同上 |
+| `ailab` | 15 d | 18 | H200×8 | 需 `ailab` group 权限；当前账号可用 |
 
 ### `gpu` 分区里的节点型号
 
@@ -39,11 +41,11 @@ Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重�
 |-------|-----|------|-----|----------|-----------------|
 | `della-i14g[1-20]` | 2× A100 PCIe | **40 GB** 完整卡 | 128 | 768 G | `amd,rome,a100,pcie,gpu40` |
 | `della-i12g[1-2]` | 2× A100 | 40 GB 完整卡 | 128 | 512 G | `amd,rome,a100,gpu40,nomig` |
-| `della-l01g[3-12]` | 8× A100 **MIG 3g.40gb** | 40 GB (3/7 算力) | 48 | 1024 G | `intel,icelake,a100,gpu40,mig` |
+| `della-l01g[3-12]` | 8× A100 **MIG 3g.40gb** | 40 GB (3/7 算力) | 48 | 1024 G | `intel,icelake,a100,gpu40,pcie` |
 | `della-l01g[13-16]…` | 4× A100 | **80 GB** 完整卡 | 48 | 1024 G | `intel,icelake,a100,gpu80,nomig` |
 | `della-l07g[2-7]…` | 4× A100 SXM | 80 GB | 48 | 1024 G | `amd,a100,gpu80,sxm,cryoem` |
 | `della-h19g[1-4]…` | 4× H100 SXM | 80 GB | 64 | 1024 G | `intel,h100,gpu80,sxm,cryoem` |
-| `della-i19g[1-3]` | 8× H200 | 141 G | 64 | 1500 G | `h200,gpu8`（很拥挤） |
+| `della-i19g[1-3]` 等 | 8× H200 | 141 G | 64 | 1500 G | `h200,gpu8`（`ailab` partition） |
 
 ### constraint 选择速查
 
@@ -57,11 +59,16 @@ Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重�
 # H100（`gpu` 分区里的 h19g 可用；8 卡 H100 需 PLI）
 #SBATCH --constraint="h100"
 
-# MIG 切片（只跑小推理）
-#SBATCH --constraint="mig"       # 配 partition=mig，1g.10gb
+# H200（ailab）
+#SBATCH --partition=ailab
+#SBATCH --constraint="h200"
+
+# 1g.10gb MIG 切片（只跑小推理 / smoke）
+#SBATCH --partition=mig
+# 不要写 --constraint="mig"；当前 mig 节点 feature 只有 rh9
 ```
 
-> ⚠️  `--constraint="intel&gpu40"` **只匹配 `della-l01g[3-12]`，这是 MIG 3g.40gb 切片**（显存 40 GB 但算力只有 A100 的 3/7）。推理够用但训练会很慢。改成 `"a100&gpu40&pcie"` 就能拿完整 A100-40G。
+> ⚠️  `--constraint="intel&gpu40"` **只匹配 `della-l01g[3-12]`，这是 MIG 3g.40gb 切片**（显存 40 GB 但算力只有 A100 的 3/7）。推理够用但训练会很慢。改成 `"a100&gpu40&pcie"` 就能拿完整 A100-40G。当前 Della 会拒绝在脚本中显式写 `#SBATCH --partition=gpu`；常规 A100 job 建议只写 `--qos` + `--constraint`，让 Slurm 自动落到 `gpu` partition。
 
 ## 3. QOS 限制
 
@@ -84,7 +91,6 @@ Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重�
 #!/bin/bash
 #SBATCH --job-name=<name>
 #SBATCH --account=kaiyijiang                      # 显式声明
-#SBATCH --partition=gpu
 #SBATCH --qos=gpu-short
 #SBATCH --constraint="a100&gpu80&nomig"           # 选真实节点型号
 #SBATCH --nodes=1
@@ -119,13 +125,40 @@ srun python -u <script>.py <args>
 ## 5. 常用命令
 
 ```bash
-# GPU测试SBATCH配置：
+# 只检查 SBATCH header / 资源请求，不实际提交运行：
+sbatch --test-only scripts/submit_if_phase_c.slurm
+
+# 最快真实 smoke：1g.10gb MIG，小显存 inference / 脚本连通性测试
 #SBATCH --job-name=bench-head-nmp
 #SBATCH --partition=mig
-#SBATCH --qos=gpu-test
+#SBATCH --qos=gpu-short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
+#SBATCH --gres=gpu:1
+#SBATCH --time=00:30:00
+# 不要加 #SBATCH --constraint="mig"
+
+# 快速但更强：ailab H200，适合 smoke run 可能超过 10 GB 显存的场景
+#SBATCH --job-name=smoke-h200
+#SBATCH --partition=ailab
+#SBATCH --constraint="h200"
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --gres=gpu:1
+#SBATCH --time=00:30:00
+
+# 常规 A100 快速测试：不要显式写 --partition=gpu
+#SBATCH --job-name=smoke-a100
+#SBATCH --qos=gpu-short
+#SBATCH --constraint="a100&gpu40&pcie"
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:30:00
 
@@ -156,8 +189,12 @@ sshare -U -l
 sprio -u $USER
 
 # 交互式 GPU（A100 40G，1 小时）
-salloc --partition=gpu --qos=gpu-test --constraint="a100&gpu40&pcie" \
+salloc --qos=gpu-test --constraint="a100&gpu40&pcie" \
        --gres=gpu:1 --cpus-per-task=8 --mem=32G --time=1:00:00
+
+# 交互式 H200（ailab，1 小时）
+salloc --partition=ailab --constraint="h200" \
+       --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=1:00:00
 
 # 存储配额
 checkquota
@@ -173,13 +210,15 @@ checkquota
 4. 若节点本身有问题：`scontrol show node <nodename>`，反复失败就报 RC。
 5. `seff <jobid>` 看 CPU/mem 利用率 vs 申请量，用于调优。
 
-## 7. 拿到 PLI / ailab 权限
+## 7. 拿到 PLI 权限
 
 从 `sacctmgr show assoc user=zc1519` 可确认你当前 QOS 列表里**没有** `pli-*`。`pli` partition 虽然 `AllowAccounts=ALL`，但必须搭配 `pli-*` QOS，`sbatch` 会报 `Invalid qos`。要开通：
 
 1. Kaiyi 在 <https://researchcomputing.princeton.edu/services/pli> 申请 PLI allocation。
 2. 批准后 RC 会用 `sacctmgr` 给你加上 `pli-short`（或 `pli-lc` 低竞争）。
 3. 然后提交 `--partition=pli --qos=pli-short --constraint="h100"`。
+
+`ailab` 权限当前已可用；提交 H200 job 时使用 `--partition=ailab --constraint="h200"`。
 
 ## 8. 刷新本文档
 

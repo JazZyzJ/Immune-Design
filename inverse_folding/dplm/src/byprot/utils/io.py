@@ -17,12 +17,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data
+from Bio.Data import PDBData
 from biotite.sequence import ProteinSequence
-from biotite.structure import filter_amino_acids, filter_backbone, get_chains
+from biotite.structure import filter_amino_acids, get_chains
 from biotite.structure.io import pdb, pdbx
 from biotite.structure.residues import get_residues
 from scipy.spatial import transform
 from scipy.stats import special_ortho_group
+
+
+AA3_TO1_EXT = {k.upper(): v for k, v in PDBData.protein_letters_3to1_extended.items()}
 
 
 def filter_backbone2(array):
@@ -59,7 +63,7 @@ def load_structure(fpath, chain=None):
     """
     if fpath.endswith("cif"):
         with open(fpath) as fin:
-            pdbxf = pdbx.PDBxFile.read(fin)
+            pdbxf = pdbx.CIFFile.read(fin)
         structure = pdbx.get_structure(pdbxf, model=1)
     elif fpath.endswith("pdb"):
         with open(fpath) as fin:
@@ -85,6 +89,17 @@ def load_structure(fpath, chain=None):
     return structure
 
 
+def convert_residue_3to1(resname):
+    """Convert standard or common modified residue names to one-letter code."""
+    try:
+        return ProteinSequence.convert_letter_3to1(resname)
+    except KeyError:
+        aa = AA3_TO1_EXT.get(str(resname).strip().upper())
+        if aa is None:
+            raise
+        return aa
+
+
 def extract_coords_from_structure(
     structure: biotite.structure.AtomArray, atoms=["N", "CA", "C"]
 ):
@@ -101,7 +116,7 @@ def extract_coords_from_structure(
     coords = get_atom_coords_residuewise(atoms, structure)
     residue_identities = get_residues(structure)[1]
     seq = "".join(
-        [ProteinSequence.convert_letter_3to1(r) for r in residue_identities]
+        [convert_residue_3to1(r) for r in residue_identities]
     )
     return coords, seq
 

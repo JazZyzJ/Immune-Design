@@ -4,6 +4,7 @@
 #         python scripts/analysis/diagnose_e1.py --checkpoint ... --device cpu
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PROJECT_ROOT
 
 module purge
 module load anaconda3/2025.12

@@ -159,7 +159,9 @@ def prepare_backbone(
         )
 
     structure_path = resolve_structure_path(row, pdb_root)
-    chain_id = infer_chain_id(protein_id)
+    chain_id = str(row.get("if_chain_id") or row.get("chain") or "").strip()
+    if not chain_id:
+        chain_id = infer_chain_id(protein_id)
     imports = _load_byprot_imports()
     coords, structure_sequence = imports["load_coords"](str(structure_path), chain=chain_id)
     if len(structure_sequence) != sequence_length:

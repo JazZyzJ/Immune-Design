@@ -201,13 +201,13 @@ elif [ "${MODE}" = "phase_c" ]; then
     NMP_TIMEOUT="${NMP_TIMEOUT:-1800}"
     STRONG_BINDER_THRESHOLD="${STRONG_BINDER_THRESHOLD:-2.0}"
     TMALIGN_BIN="${TMALIGN_BIN:-TMalign}"
-
+    TAG="${TAG:-}"
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
-        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet}"
-        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs/0701}"
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
+        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_ready/pdbs_if_ready/0701}"
     elif [ "${ALLELE}" = "HLA-DRB1*04:01" ]; then
-        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet}"
-        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs/0401}"
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet}"
+        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_ready/pdbs_if_ready/0401}"
     else
         echo "ERROR: TEST_SET_PARQUET/PDB_ROOT defaults only defined for 0701/0401; set them explicitly" >&2
         exit 2
@@ -276,6 +276,7 @@ elif [ "${MODE}" = "phase_c" ]; then
         --device "${DEVICE}" \
         --progress-every "${PROGRESS_EVERY}" \
         --fail-pct-threshold "${FAIL_PCT_THRESHOLD}" \
+        --tag "${TAG}" \
         "${EXTRA_ARGS[@]}"
 
 else

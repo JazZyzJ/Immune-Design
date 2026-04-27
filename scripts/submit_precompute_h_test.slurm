@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=B2-hmaps-test
 #SBATCH --qos=gpu-short
+#SBATCH --account=kaiyijiang
+#SBATCH --partition=mig
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=5:00:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval/h_maps_test_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval/h_maps_test_%j.err
 
@@ -14,7 +16,7 @@ set -euo pipefail
 
 # Paths
 PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"
-DATA_DIR="${DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set}"
+DATA_DIR="${DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready}"
 OUTPUT_DIR="${OUTPUT_DIR:-${DATA_DIR}/h_maps}"
 LOG_DIR="${LOG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval}"
 
@@ -37,8 +39,8 @@ else
     echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
     exit 2
 fi
-
-INPUT_PARQUET="${INPUT_PARQUET:-${DATA_DIR}/test_proteins_${ALLELE_FILE_TAG}.parquet}"
+    
+INPUT_PARQUET="${INPUT_PARQUET:-${DATA_DIR}/test_proteins_if_ready_${ALLELE_FILE_TAG}.parquet}"
 OUTPUT_PARQUET="${OUTPUT_PARQUET:-${OUTPUT_DIR}/h_maps_${ALLELE_TAG}.parquet}"
 OUTPUT_META="${OUTPUT_META:-${OUTPUT_DIR}/h_maps_${ALLELE_TAG}.meta.json}"
 INFERENCE_CONFIG="${INFERENCE_CONFIG:-${PROJECT_ROOT}/epitope_head/configs/inference.yaml}"
