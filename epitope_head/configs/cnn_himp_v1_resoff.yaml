@@ -1,0 +1,29 @@
+# HIMP v1 ablation: near_positive scheduling only (residue supervision off).
+# Isolates the contribution of relation-aware negative weighting. Compare
+# against cnn_himp_v1.yaml to attribute improvement between near_positive
+# vs residue.
+
+train:
+  near_positive:
+    enabled: true
+    near_gap_max: 10
+    schedule: sigmoid
+    schedule_params:
+      center: 5.0
+      slope: 1.0
+    metric: endpoint_gap
+    apply_to_span_negatives: true
+    apply_to_residue_labels: false
+
+  residue:
+    enabled: false
+    lambda_residue: 0.0
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 1.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4

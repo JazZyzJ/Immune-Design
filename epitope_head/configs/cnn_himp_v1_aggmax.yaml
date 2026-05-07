@@ -1,0 +1,27 @@
+# HIMP v1 ablation: residue aggregation = max (vs default log_mean_exp).
+# Tests whether soft (lme) vs hard (max) window→residue aggregation
+# produces qualitatively different residue landscapes.
+
+train:
+  near_positive:
+    enabled: true
+    near_gap_max: 10
+    schedule: sigmoid
+    schedule_params:
+      center: 5.0
+      slope: 1.0
+    metric: endpoint_gap
+    apply_to_span_negatives: true
+    apply_to_residue_labels: true
+
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: max
+    aggregation_params: {}
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4

@@ -1,0 +1,27 @@
+# HIMP v1 ablation: schedule=ignore (hardest near-positive policy).
+# Drops adjacent_or_near and overlap_nonexact negatives entirely (w=0).
+# Compare against cnn_himp_v1.yaml (sigmoid) to assess whether smooth
+# weighting matters or whether full exclusion suffices.
+
+train:
+  near_positive:
+    enabled: true
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: true
+    apply_to_residue_labels: true
+
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 1.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
