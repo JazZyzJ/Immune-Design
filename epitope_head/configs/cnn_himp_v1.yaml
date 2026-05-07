@@ -1,0 +1,47 @@
+# HIMP v1 training override-config — Epitope Head Improvement Plan §5 HIMP5.
+#
+# Pass this file to ``train_v2_ablation.py --override-config``. The launcher
+# loads it via ``override_raw.get("train", override_raw)``, so only the
+# top-level ``train:`` block below is deep-merged into the resolved
+# ``train_cfg`` (the LC1 baseline frozen constants and ``loss_overrides`` are
+# sourced separately from ``model_ablation.yaml``'s ``profiles.LC1`` and are
+# unchanged).
+#
+# Activates:
+#   - HIMP1 near_positive schedule (sigmoid, near_gap_max=10) so adjacent /
+#     near-overlap negatives are softly weighted instead of treated as full
+#     hard negatives.
+#   - HIMP2/3 residue-level ranking supervision (lambda_residue=0.1,
+#     log_mean_exp aggregation, sampled window mode) so the head learns a
+#     contiguous residue / region landscape, not just a peptide oracle.
+#
+# Augmentation is controlled at the SLURM layer via ``--registry-path`` and
+# ``--p-aug``; this file does not toggle augmentation. Sweep variants
+# (different schedules, lambda_residue values, aggregation modes) should
+# live in their own config files (one config per experiment) — never edit
+# this one in-place after a run has used it.
+
+train:
+  near_positive:
+    enabled: true
+    near_gap_max: 10
+    schedule: sigmoid
+    schedule_params:
+      center: 5.0
+      slope: 1.0
+    metric: endpoint_gap
+    apply_to_span_negatives: true
+    apply_to_residue_labels: true
+
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 1.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4

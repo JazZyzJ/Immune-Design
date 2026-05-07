@@ -6,6 +6,201 @@ import yaml
 _CONFIG_DIR = Path(__file__).parent
 
 
+# ── HIMP v0 frozen option sets (PLAN_EPI_IMP.md §5 HIMP0) ────────────────────
+
+NEAR_POSITIVE_SCHEDULES_V0 = frozenset({"ignore", "linear_clamp", "sigmoid"})
+NEAR_POSITIVE_METRICS_V0 = frozenset({"endpoint_gap"})
+
+RESIDUE_AGGREGATIONS_V0 = frozenset({"max", "log_mean_exp"})
+RESIDUE_LOSS_MODES_V0 = frozenset({"pairwise_margin"})
+RESIDUE_LABEL_MODES_V0 = frozenset({"binary_coverage"})
+RESIDUE_WINDOW_MODES_V0 = frozenset({"sampled", "all"})
+
+NEAR_POSITIVE_DEFAULTS = {
+    "enabled": False,
+    "near_gap_max": 10,
+    "schedule": "ignore",
+    "schedule_params": {},
+    "metric": "endpoint_gap",
+    "apply_to_span_negatives": True,
+    "apply_to_residue_labels": True,
+}
+
+RESIDUE_DEFAULTS = {
+    "enabled": False,
+    "lambda_residue": 0.0,
+    "label_mode": "binary_coverage",
+    "aggregation": "log_mean_exp",
+    "aggregation_params": {},
+    "loss_mode": "pairwise_margin",
+    "margin_m_residue": 0.5,
+    "window_mode": "sampled",
+    "max_windows_per_chunk": 1024,
+    "min_far_bg_residues": 4,
+}
+
+
+def _validate_and_default_near_positive(cfg: dict | None) -> dict:
+    """Validate and default-fill the train.near_positive sub-block.
+
+    Returns a dict containing all NEAR_POSITIVE_DEFAULTS keys with user
+    overrides applied. Raises ValueError on unknown keys, unsupported
+    schedule / metric names, or out-of-range values.
+    """
+    if cfg is None:
+        return dict(NEAR_POSITIVE_DEFAULTS)
+
+    if not isinstance(cfg, dict):
+        raise ValueError("train.near_positive must be a dict")
+
+    unknown = set(cfg.keys()) - set(NEAR_POSITIVE_DEFAULTS.keys())
+    if unknown:
+        raise ValueError(
+            f"train.near_positive has unknown keys: {sorted(unknown)}"
+        )
+
+    out = dict(NEAR_POSITIVE_DEFAULTS)
+    out.update(cfg)
+
+    if not isinstance(out["enabled"], bool):
+        raise ValueError("train.near_positive.enabled must be a bool")
+
+    near_gap_max = out["near_gap_max"]
+    if not isinstance(near_gap_max, int) or isinstance(near_gap_max, bool) or near_gap_max < 0:
+        raise ValueError(
+            f"train.near_positive.near_gap_max must be a non-negative int, got {near_gap_max!r}"
+        )
+
+    if out["schedule"] not in NEAR_POSITIVE_SCHEDULES_V0:
+        raise ValueError(
+            f"train.near_positive.schedule must be one of "
+            f"{sorted(NEAR_POSITIVE_SCHEDULES_V0)}, got {out['schedule']!r}"
+        )
+
+    if not isinstance(out["schedule_params"], dict):
+        raise ValueError(
+            f"train.near_positive.schedule_params must be a dict, "
+            f"got {type(out['schedule_params']).__name__}"
+        )
+
+    if out["metric"] not in NEAR_POSITIVE_METRICS_V0:
+        raise ValueError(
+            f"train.near_positive.metric must be one of "
+            f"{sorted(NEAR_POSITIVE_METRICS_V0)}, got {out['metric']!r}"
+        )
+
+    if not isinstance(out["apply_to_span_negatives"], bool):
+        raise ValueError("train.near_positive.apply_to_span_negatives must be a bool")
+    if not isinstance(out["apply_to_residue_labels"], bool):
+        raise ValueError("train.near_positive.apply_to_residue_labels must be a bool")
+
+    return out
+
+
+def _validate_and_default_residue(cfg: dict | None) -> dict:
+    """Validate and default-fill the train.residue sub-block.
+
+    Returns a dict containing all RESIDUE_DEFAULTS keys with user overrides
+    applied. Raises ValueError on unknown keys, unsupported names, or
+    out-of-range values.
+    """
+    if cfg is None:
+        return dict(RESIDUE_DEFAULTS)
+
+    if not isinstance(cfg, dict):
+        raise ValueError("train.residue must be a dict")
+
+    unknown = set(cfg.keys()) - set(RESIDUE_DEFAULTS.keys())
+    if unknown:
+        raise ValueError(
+            f"train.residue has unknown keys: {sorted(unknown)}"
+        )
+
+    out = dict(RESIDUE_DEFAULTS)
+    out.update(cfg)
+
+    if not isinstance(out["enabled"], bool):
+        raise ValueError("train.residue.enabled must be a bool")
+
+    lam = out["lambda_residue"]
+    if not isinstance(lam, (int, float)) or isinstance(lam, bool) or lam < 0:
+        raise ValueError(
+            f"train.residue.lambda_residue must be a non-negative number, got {lam!r}"
+        )
+
+    if out["label_mode"] not in RESIDUE_LABEL_MODES_V0:
+        raise ValueError(
+            f"train.residue.label_mode must be one of "
+            f"{sorted(RESIDUE_LABEL_MODES_V0)}, got {out['label_mode']!r}"
+        )
+
+    if out["aggregation"] not in RESIDUE_AGGREGATIONS_V0:
+        raise ValueError(
+            f"train.residue.aggregation must be one of "
+            f"{sorted(RESIDUE_AGGREGATIONS_V0)}, got {out['aggregation']!r}"
+        )
+
+    if not isinstance(out["aggregation_params"], dict):
+        raise ValueError(
+            f"train.residue.aggregation_params must be a dict, "
+            f"got {type(out['aggregation_params']).__name__}"
+        )
+
+    if out["loss_mode"] not in RESIDUE_LOSS_MODES_V0:
+        raise ValueError(
+            f"train.residue.loss_mode must be one of "
+            f"{sorted(RESIDUE_LOSS_MODES_V0)}, got {out['loss_mode']!r}"
+        )
+
+    margin_m = out["margin_m_residue"]
+    if not isinstance(margin_m, (int, float)) or isinstance(margin_m, bool) or margin_m < 0:
+        raise ValueError(
+            f"train.residue.margin_m_residue must be a non-negative number, got {margin_m!r}"
+        )
+
+    if out["window_mode"] not in RESIDUE_WINDOW_MODES_V0:
+        raise ValueError(
+            f"train.residue.window_mode must be one of "
+            f"{sorted(RESIDUE_WINDOW_MODES_V0)}, got {out['window_mode']!r}"
+        )
+
+    mwpc = out["max_windows_per_chunk"]
+    if not isinstance(mwpc, int) or isinstance(mwpc, bool) or mwpc <= 0:
+        raise ValueError(
+            f"train.residue.max_windows_per_chunk must be a positive int, got {mwpc!r}"
+        )
+
+    mfbr = out["min_far_bg_residues"]
+    if not isinstance(mfbr, int) or isinstance(mfbr, bool) or mfbr < 0:
+        raise ValueError(
+            f"train.residue.min_far_bg_residues must be a non-negative int, got {mfbr!r}"
+        )
+
+    return out
+
+
+def validate_himp_train_blocks(train_cfg: dict) -> dict:
+    """Re-run HIMP block validation on a (potentially override-merged) cfg.
+
+    ``load_train_config`` validates the *base* yaml. When the launcher applies
+    ``--override-config`` via raw deep-merge (e.g. ``train_v2_ablation.py``),
+    user overrides bypass that gate, so unknown schedule names, wrong types,
+    or unknown keys can slip through. This function re-validates the
+    ``near_positive`` and ``residue`` blocks in-place and writes back the
+    defaulted dicts. It is idempotent — calling it on an already-validated
+    cfg is a no-op (defaults match the input).
+
+    Returns the same ``train_cfg`` for chaining.
+    """
+    if not isinstance(train_cfg, dict):
+        raise ValueError("train_cfg must be a dict")
+    train_cfg["near_positive"] = _validate_and_default_near_positive(
+        train_cfg.get("near_positive")
+    )
+    train_cfg["residue"] = _validate_and_default_residue(train_cfg.get("residue"))
+    return train_cfg
+
+
 def load_data_config(path: Path | str | None = None) -> dict:
     """Load and validate data config. Raises on missing required keys."""
     if path is None:
@@ -109,6 +304,12 @@ def load_train_config(path: Path | str | None = None) -> dict:
     missing_chunking = [k for k in required_chunking if k not in chunking]
     if missing_chunking:
         raise ValueError(f"train.chunking missing required keys: {missing_chunking}")
+
+    # ── HIMP optional sub-blocks (default: disabled, backward-compatible) ──
+    train["near_positive"] = _validate_and_default_near_positive(
+        train.get("near_positive")
+    )
+    train["residue"] = _validate_and_default_residue(train.get("residue"))
 
     return train
 

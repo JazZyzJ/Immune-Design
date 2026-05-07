@@ -2067,3 +2067,147 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `scripts/build_if_ready_test_set.py`
   - `inverse_folding/dplm/src/byprot/utils/io.py`
   - `inverse_folding/reference_flow/runtime.py`
+
+### L0070
+- timestamp: 2026-04-30T00:04:38+08:00
+- type: PLAN_UPDATE
+- module: H
+- trigger: User switched to Thinker mode and requested a concise proposal backbone for epitope-head improvement before implementation planning.
+- change_summary: Added a design proposal reframing the epitope head as a contiguous-window-supported residue/region immunogenicity landscape rather than an exact peptide oracle.
+- rationale: New EL evaluation results suggest the main training mismatch is negative semantics and exact-boundary pressure; the next design step needs to preserve biological contiguity, support residue/region supervision, and leave global-risk calibration decisions explicit.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/doc/Epitope_Head_Improvement_Proposal.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only update; no runtime tests executed.
+- impact:
+  - scope: Epitope-head scientific direction and future implementation planning.
+  - risk: low
+  - confidence: 0.89
+- status: done
+- next_action: Resolve the marked TBDs on overlap weighting, residue-level supervision, and global-risk definitions before writing the implementation PLAN.
+- refs:
+  - `doc/Epitope_Head_v1.md`
+  - `doc/EL_new_evaluation.md`
+
+### L0071
+- timestamp: 2026-05-07T10:27:18+08:00
+- type: PLAN_UPDATE
+- module: H
+- trigger: User requested a concrete implementation plan for the epitope-head improvement proposal.
+- change_summary: Added `PLAN_EPI_IMP.md` with frozen decisions, scoped file touchpoints, tasks, TDD gates, deferred items, and release gates for near-positive negative scheduling plus span-derived residue ranking supervision.
+- rationale: The design discussion had converged on configurable near-positive handling, binary residue coverage, ranking-based residue loss, keeping InfoNCE unchanged for now, deferring consistency/global-risk changes, and preserving mutation augmentation as a later ablation.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_EPI_IMP.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only planning update; no runtime tests executed.
+- impact:
+  - scope: Epitope-head training improvement planning.
+  - risk: low
+  - confidence: 0.91
+- status: done
+- next_action: Review and freeze `PLAN_EPI_IMP.md`, then implement task-by-task with TDD gates.
+- refs:
+  - `doc/Epitope_Head_Improvement_Proposal.md`
+  - `report/Experimentresults0430.md`
+
+### L0072
+- timestamp: 2026-05-07T11:46:26+08:00
+- type: PLAN_UPDATE
+- module: H
+- trigger: User requested an alignment review of `PLAN_EPI_IMP.md` before implementation; six design questions were resolved.
+- change_summary: Revised `PLAN_EPI_IMP.md` to drop `softness_alpha`, fix `near_gap_max=10`, narrow v0 schedules to `{ignore, linear_clamp, sigmoid}`, mandate union window forward (no silent fallback), restrict residue labels/loss to chunk central region, add `min_far_bg_residues` per-chunk fallback for high-density alleles, freeze pairwise-margin residue loss form, and codify "one config file per experiment" as a frozen decision.
+- rationale: Six concrete design ambiguities identified during plan review (softness_alpha redundancy, span relation thresholds, schedule proliferation, window forward sharing, chunk-overlap residue handling, far-bg scarcity in 15:01) needed explicit resolution before implementation could begin without rework.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_EPI_IMP.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only planning update; covered by subsequent implementation entry L0073.
+- impact:
+  - scope: Epitope-head HIMP implementation contract.
+  - risk: low
+  - confidence: 0.94
+- status: done
+- next_action: Implement HIMP0–HIMP5 task-by-task with TDD gates (logged in L0073).
+- refs:
+  - `doc/Epitope_Head_Improvement_Proposal.md`
+
+### L0073
+- timestamp: 2026-05-07T11:46:26+08:00
+- type: VERIFICATION
+- module: H
+- trigger: User authorized full PLAN execution after design alignment in L0072.
+- change_summary: Implemented HIMP0–HIMP5 of `PLAN_EPI_IMP.md` end-to-end. Added `train.near_positive` / `train.residue` config schema with validators; new `near_positive.py` (5-class span relation classifier + ignore/linear_clamp/sigmoid schedule registry, reserved schedules raise NotImplementedError); new `residue_supervision.py` (binary coverage labels, ambiguous / far-bg / central masks, window enumeration, max + log_mean_exp aggregation); new `residue_pairwise_margin_loss` in `losses.py` with `min_far_bg_residues` skip-counter fallback; weighted variants of `info_nce_loss` / `margin_hard_loss` / `compute_loss` (legacy bit-for-bit when `neg_weights=None`); `prepare_chunk_spans` extended to 5-tuple with extras carrying weights / relations / residue_meta; new `_forward_union_and_compute_losses` runs a single union forward keyed by `(start, end, allele_idx)` and gathers logits via index slices; `train_step` / `val_step` rewired to the union path with decomposed loss logging (`loss_residue`, `lambda_residue`, `residue_skipped_chunks`, `n_residue_pairs`, `n_residue_chunks` added to `StepMetrics` + `LOG_ENTRY_KEYS` + `aggregate_epoch_metrics`); Trainer `__init__` resolves near_positive / residue from `train_cfg`, prints an HIMP startup banner with every new hyperparameter, and threads `chunk_central_margin = chunking.margin`; new `cnn_himp_v1.yaml` override-config (sigmoid schedule center=5, slope=1, near_gap_max=10; lambda_residue=0.1, log_mean_exp aggregation, sampled window mode, min_far_bg_residues=4) ready to be passed via `--override-config`.
+- rationale: PLAN §5 HIMP0–HIMP5 are the smallest atomic unit of behavior change for the head improvement; implementing all together avoids a half-finished landing where, e.g., schedule semantics are wired but residue supervision is not, which would require dual rebases of `train_step`.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/epitope_head/configs/__init__.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/configs/cnn_himp_v1.yaml`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/training/near_positive.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/training/residue_supervision.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/training/losses.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/training/negatives.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/training/trainer.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_himp_config.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_negative_schedule.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_residue_supervision.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_residue_loss.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_himp_train_integration.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_module_e_contract.py`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Full epitope_head test suite passes 443/443 (excl. 3 pre-existing `ModuleNotFoundError: esm` failures unrelated to this work). New tests by task: HIMP0 config (24) + HIMP1 schedules (26) + HIMP2 residue helpers (19) + HIMP3 residue loss (9) + HIMP4 trainer integration (14) = 92 new tests. Backward compat verified: existing `train.yaml` / `cnn_full_aug*.yaml` continue to load with `near_positive.enabled=False` / `residue.enabled=False` defaults; `info_nce_loss` / `margin_hard_loss` with `neg_weights=None` produce bit-for-bit identical loss values; `prepare_chunk_spans` legacy callers in `test_module_e_contract.py` updated to 5-tuple unpacking.
+- impact:
+  - scope: Epitope-head training pipeline (config schema, negative sampler, losses, trainer, profile config). Inference path and global-risk computation untouched.
+  - risk: medium
+  - confidence: 0.86
+- status: done
+- next_action: Launch a `--smoke` run on the cluster with `--override-config epitope_head/configs/cnn_himp_v1.yaml` to confirm the union forward end-to-end on real data; then full multi-allele training and benchmark per `doc/EL_new_evaluation.md`.
+- refs:
+  - `PLAN_EPI_IMP.md`
+  - `epitope_head/configs/cnn_himp_v1.yaml`
+
+### L0074
+- timestamp: 2026-05-07T12:25:24+08:00
+- type: VERIFICATION
+- module: H
+- trigger: User code review of L0073 implementation surfaced six concrete contract / correctness gaps (override-config validation bypass, apply_to_span_negatives ignored, -inf residue scores leaking into ranking pairs, symmetric central margin clobbering protein N/C termini, disrupted spans dropped on positive_set overlap, loss_total reflecting unweighted recompute instead of actual HIMP objective).
+- change_summary: Six surgical fixes with TDD red→green coverage. (1) Added `validate_himp_train_blocks` public API; `train_v2_ablation.py` calls it after the override `_deep_update`, and `Trainer.__init__` calls it defensively. (2) `prepare_chunk_spans` derives `np_cfg_for_negatives = near_positive_cfg if apply_to_span_negatives else None` so span-side weighting is gated independently of residue ambiguity. (3) `_forward_union_and_compute_losses` intersects `label_t / far_bg_t / central_t` with `torch.isfinite(residue_scores)` before invoking the residue ranking loss, so residues uncovered by any sampled window cannot inflate `n_far_bg / n_pairs` or bypass the `min_far_bg_residues` skip gate. (4) Replaced symmetric `central_margin` in `build_residue_labels` with explicit `central_start` / `central_end`; the trainer now derives per-chunk trusted intervals via `left_seam = 0 if chunk_starts[i]==0 else seam, right_seam = 0 if chunk_ends[i]>=sequence_lengths[i] else seam`, matching `ChunkPlan.trusted_interior` semantics so true protein N/C termini are no longer dropped from supervision. (5) Removed the `if span not in positive_set` filter inside `negatives.sample_negatives` disrupted block — counterfactual_disrupted spans now survive even when their coordinates exactly match a remaining positive, with relation `COUNTERFACTUAL_DISRUPTED` and weight 1.0 as PLAN HIMP1 #3 mandates. (6) `train_step` and `val_step` override `metrics.loss_total = avg_loss.detach().item()` so the JSONL log records the actual weighted span + `lambda_residue * residue` objective, not the unweighted recomputation; sanity diagnostics (`loss_intra`, `loss_margin`) still use the unweighted compute_loss for trend interpretability.
+- rationale: Each gap traced back to a specific PLAN_EPI_IMP.md contract or HIMP TDD gate that the L0073 implementation silently violated. The override-bypass + apply_to_span_negatives gaps were ablation-correctness issues (can't independently sweep schedule vs residue); the -inf leak + central-margin issues were correctness (numerically wrong loss / silently dropped supervision); the disrupted-overlap + loss_total issues were contract violations (PLAN-stated invariants not actually enforced).
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/epitope_head/configs/__init__.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/training/negatives.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/training/trainer.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/training/residue_supervision.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/train_v2_ablation.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_himp_config.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_negative_schedule.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_residue_supervision.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_residue_loss.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/training/test_himp_train_integration.py`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: 454/454 epitope_head tests pass (excl. 3 pre-existing ESM-import failures). Net new coverage vs L0073: +4 override revalidation tests, +1 apply_to_span_negatives gate test, +1 -inf-filter contract test, +4 trusted-interior tests (single-chunk, first/middle/last chunk seams), +1 disrupted exact-overlap test, +1 forward-union loss-plumbing test. Existing HIMP0–4 coverage continues to pass.
+- impact:
+  - scope: HIMP train-time correctness gates and ablation hygiene. Inference path unchanged.
+  - risk: low (each fix is surgical and TDD-locked)
+  - confidence: 0.92
+- status: done
+- next_action: Proceed to cluster `--smoke` run as planned in L0073.
+- refs:
+  - `PLAN_EPI_IMP.md`
+  - L0073
+
+### L0075
+- timestamp: 2026-05-07T20:32:00+08:00
+- type: DECISION
+- module: L
+- trigger: User wants per-allele evaluation wall time reduced from ~6.7 h (3079 proteins) to ~2 h to speed iteration; preserves the original tier hierarchy as the reduction axis. Final criteria after pushback: keep all Tier 1, drop ESMFold-fail / head-based stratification, use NMP as the difficulty signal, fill with stratified Tier 2.
+- change_summary: Built `test_proteins_if_ready_fast_HLA-DRB1_{07_01,04_01}.parquet` (~500 proteins per allele) by inline pandas filter on `data/test_set_4_Immune_Design/if_ready/test_proteins_if_ready_HLA-DRB1_*.parquet`. Selection: (1) all 15 Tier 1 retained verbatim; (2) Tier 3 uricase pool restricted to length 100–500 AA and middle 50% of `netmhciipan_n_strong` (Q25–Q75), then 35 sampled with seed 42; (3) Tier 2 pool restricted to length 100–500 AA, stratified into a 3×3 grid (length tertile × NMP n_strong tertile via rank-qcut), even per-cell sampling to fill remainder. Manifest written to `test_proteins_if_ready_fast.manifest.json` capturing input path, output sha256, per-cell pool/sampled counts, NMP band, length window, seed.
+- rationale: Tier-priority reduction is the simplest principled axis given the test set was originally tier-curated. NMP n_strong (external validator) is the right difficulty axis because using the head's own score for stratification would bias toward mode regimes that head already captures (circular). ESMFold failures are kept because foldability is a real model-capability signal, not noise. Length 100–500 matches Tier 1 curation thresholds and avoids NMP edge cases. Independent sampling per allele preserves NMP-distribution coverage even though most protein_ids overlap.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/data/test_set_4_Immune_Design/if_ready/test_proteins_if_ready_fast_HLA-DRB1_07_01.parquet`
+  - `/Users/jerry/Project/MHC-IF/data/test_set_4_Immune_Design/if_ready/test_proteins_if_ready_fast_HLA-DRB1_04_01.parquet`
+  - `/Users/jerry/Project/MHC-IF/data/test_set_4_Immune_Design/if_ready/test_proteins_if_ready_fast.manifest.json`
+- evidence: 0701: n_input=3079, n_output=493 (T1=15, T3=35, T2=443; one T2 cell short of 50 after length filter), NMP band [41.0, 84.5], sha256=85b2b90c4aaf846a9b8078fc41d18b779444f317e0d528be5cb6e33d7beef618. 0401: n_input=3072, n_output=500 (T1=15, T3=35, T2=450), NMP band [51.0, 109.0], sha256=a457ddfec172c5fcddbc1669f97588e0b2b19839f060472a78f8465080317804.
+- impact:
+  - scope: Iteration cadence for IF evaluation runs (imm head + struct refold). Full 3079-protein parquets remain authoritative for paper-ready results; fast subsets are for ablation/smoke iteration only.
+  - risk: low (subsets are stratified copies of audited rows; full set unmodified)
+  - confidence: 0.95
+- status: done
+- next_action: User to rsync the two fast parquets + manifest to the cluster and re-target eval driver `--test-set-parquet` to the fast variant for the next iteration round; do NOT replace `test_set_parquet_path` in archived eval manifests.

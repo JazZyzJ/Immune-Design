@@ -23,18 +23,27 @@ def info_nce_loss(
     pos_logits: torch.Tensor,
     neg_logits: torch.Tensor,
     tau: float = 0.1,
+    neg_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Intra-protein InfoNCE loss.
+    """Intra-protein InfoNCE loss with optional per-negative weighting.
 
-    For each positive, computes:
-      L = -log(exp(z_pos/tau) / (exp(z_pos/tau) + sum(exp(z_neg/tau))))
+    Default (``neg_weights=None``) evaluates:
 
-    Uses log-sum-exp trick for numerical stability.
+        L = -log(exp(z_pos/tau) / (exp(z_pos/tau) + sum_j exp(z_neg_j/tau)))
+
+    With weights ``w_j ∈ [0, 1]``, the partition is reweighted:
+
+        L = -log(exp(z_pos/tau) / (exp(z_pos/tau) + sum_j w_j * exp(z_neg_j/tau)))
+
+    Equivalently each negative's logit is shifted by ``log(w_j)`` before
+    log-sum-exp, with ``w_j == 0`` producing ``-inf`` (negative excluded).
 
     Args:
-        pos_logits: [P] logits for positive spans.
-        neg_logits: [N] logits for negative spans.
+        pos_logits: ``[P]`` logits for positive spans.
+        neg_logits: ``[N]`` logits for negative spans.
         tau: temperature (default 0.1).
+        neg_weights: optional ``[N]`` non-negative weights. ``None`` recovers
+            legacy behavior bit-for-bit.
 
     Returns:
         Scalar loss averaged over positives.
@@ -43,7 +52,7 @@ def info_nce_loss(
     # check tau is valid:
     if tau <= 0.0:
         raise ValueError("tau must be positive")
-    
+
     if pos_logits.numel() == 0:
         return torch.tensor(0.0, device=pos_logits.device, requires_grad=True)
 
@@ -53,12 +62,22 @@ def info_nce_loss(
     pos_scaled = pos_logits / tau  # [P]
     neg_scaled = neg_logits / tau  # [N]
 
-    # For each positive: L_i = -pos_scaled[i] + log(exp(pos_scaled[i]) + sum(exp(neg_scaled)))
-    # The denominator is shared across all positives (same neg set per chunk)
-    # all_scaled = cat([pos_scaled_i, neg_scaled]) for each i
-    # But since negatives are shared, we can optimize:
-    #   log_denom_i = log(exp(pos_scaled[i]) + sum(exp(neg_scaled)))
-    #              = log_sum_exp(cat([pos_scaled[i], neg_scaled]))
+    # Apply per-negative weights via log-shift (None → no-op).
+    if neg_weights is not None:
+        if neg_weights.shape[0] != neg_scaled.shape[0]:
+            raise ValueError(
+                f"neg_weights shape {tuple(neg_weights.shape)} does not match "
+                f"neg_logits shape {tuple(neg_scaled.shape)}"
+            )
+        # log(w) with w==0 → -inf so that contribution vanishes inside logsumexp.
+        eps = torch.finfo(neg_scaled.dtype).tiny
+        neg_w = neg_weights.to(neg_scaled.device).to(neg_scaled.dtype)
+        log_w = torch.where(
+            neg_w > 0,
+            torch.log(neg_w.clamp_min(eps)),
+            torch.full_like(neg_w, float("-inf")),
+        )
+        neg_scaled = neg_scaled + log_w
 
     losses = torch.zeros(P, device=pos_logits.device)
     for i in range(P):
@@ -125,22 +144,29 @@ def margin_hard_loss(
     neg_logits: torch.Tensor,
     margin_m: float = 0.5,
     hard_topk: int = 8,
+    neg_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Margin-based hard-example loss for AP-centric ranking.
+    """Margin-based hard-example loss with optional per-negative weighting.
 
-    Selects top-k hardest negatives (highest logit) and penalizes
-    when the gap between positive and hard negative is below margin.
+    Default (``neg_weights=None``) selects top-k hardest negatives by raw
+    logit and averages ``relu(m - gap)`` over all ``[P, k]`` pairs.
 
-    L_margin = mean(relu(m - (z_pos - z_neg_hard))) over [P, k] pairs.
+    With weights, negatives carrying ``w == 0`` are excluded *before* the
+    top-k selection (treated as if absent). Among the surviving negatives,
+    the resulting ``[P, k]`` pair losses are weighted-averaged by the
+    selected negatives' weights, so partial-weight negatives contribute
+    proportionally to their schedule output.
 
     Args:
-        pos_logits: [P] logits for positive spans.
-        neg_logits: [N] logits for negative spans.
-        margin_m: margin threshold (default 0.5).
+        pos_logits: ``[P]`` positive logits.
+        neg_logits: ``[N]`` negative logits.
+        margin_m: hinge margin (default 0.5).
         hard_topk: number of hardest negatives per positive (default 8).
+        neg_weights: optional ``[N]`` non-negative weights. ``None`` recovers
+            legacy behavior bit-for-bit.
 
     Returns:
-        Scalar margin loss (0 if no positives or no negatives).
+        Scalar margin loss (0 if no positives or no surviving negatives).
     """
     if hard_topk < 1:
         raise ValueError("hard_topk must be >= 1")
@@ -148,7 +174,30 @@ def margin_hard_loss(
     if pos_logits.numel() == 0 or neg_logits.numel() == 0:
         return torch.tensor(0.0, device=pos_logits.device, requires_grad=True)
 
-    # Select top-k hardest negatives (fallback: use all if N < hard_topk)
+    if neg_weights is not None:
+        if neg_weights.shape[0] != neg_logits.shape[0]:
+            raise ValueError(
+                f"neg_weights shape {tuple(neg_weights.shape)} does not match "
+                f"neg_logits shape {tuple(neg_logits.shape)}"
+            )
+        # Filter out fully-ignored negatives (w == 0) before topk selection.
+        keep = neg_weights > 0
+        if not keep.any():
+            return torch.tensor(0.0, device=pos_logits.device, requires_grad=True)
+        neg_logits_f = neg_logits[keep]
+        neg_w_f = neg_weights[keep].to(neg_logits_f.dtype).to(neg_logits_f.device)
+
+        k = min(hard_topk, neg_logits_f.numel())
+        hard_neg, top_idx = torch.topk(neg_logits_f, k)  # [k]
+        top_w = neg_w_f[top_idx]                          # [k]
+
+        gaps = pos_logits.unsqueeze(1) - hard_neg.unsqueeze(0)  # [P, k]
+        pair_loss = F.relu(margin_m - gaps)                     # [P, k]
+        weighted = pair_loss * top_w.unsqueeze(0)               # [P, k]
+        denom = top_w.sum().clamp_min(torch.finfo(weighted.dtype).tiny) * pos_logits.numel()
+        return weighted.sum() / denom
+
+    # Legacy path
     k = min(hard_topk, neg_logits.numel())
     hard_neg, _ = torch.topk(neg_logits, k)  # [k], highest logits
 
@@ -157,6 +206,73 @@ def margin_hard_loss(
     losses = F.relu(margin_m - gaps)  # [P, k]
 
     return losses.mean()
+
+
+def residue_pairwise_margin_loss(
+    residue_scores: torch.Tensor,
+    label: torch.Tensor,
+    far_bg_mask: torch.Tensor,
+    central_mask: torch.Tensor,
+    margin_m: float = 0.5,
+    min_far_bg: int = 4,
+) -> tuple[torch.Tensor, dict]:
+    """Pairwise margin hinge ranking loss over residue scores (HIMP3).
+
+    For each ``(positive_residue, far_bg_residue)`` pair restricted to the
+    chunk's central region, accumulates ``relu(margin_m - (s_pos - s_neg))``
+    and returns the mean. Residues that are not covered by any window
+    (``-inf`` scores) MUST already be excluded from ``far_bg_mask`` by the
+    caller — this function does not silently drop them.
+
+    Args:
+        residue_scores: ``[L]`` per-residue scores (output of
+            ``aggregate_window_logits_to_residues``).
+        label: ``[L]`` 0/1 (uint8 / bool / int) binary coverage labels.
+        far_bg_mask: ``[L]`` bool, residues eligible as ranking negatives.
+        central_mask: ``[L]`` bool, residues inside the chunk's central
+            region (boundary residues are excluded from training pairs).
+        margin_m: hinge margin ``m`` (default 0.5).
+        min_far_bg: chunks with fewer central far-bg residues than this are
+            **skipped** (loss=0, ``meta["skipped"]=True``) so per-chunk
+            pair counts stay statistically meaningful in dense alleles.
+
+    Returns:
+        ``(loss, meta)`` with ``meta`` containing:
+          - ``skipped``: bool, True if loss is degenerate (no pairs).
+          - ``n_pos``: int, central-region positive residue count.
+          - ``n_far_bg``: int, central-region far-bg residue count.
+          - ``n_pairs``: int, number of pairs that contributed to the loss.
+    """
+    device = residue_scores.device
+
+    label_bool = (label > 0) if label.dtype != torch.bool else label
+    pos_in_central = label_bool & central_mask
+    neg_in_central = far_bg_mask & central_mask
+
+    n_pos = int(pos_in_central.sum().item())
+    n_far_bg = int(neg_in_central.sum().item())
+
+    meta = {
+        "skipped": False,
+        "n_pos": n_pos,
+        "n_far_bg": n_far_bg,
+        "n_pairs": 0,
+    }
+
+    # Skip when either side is empty or far-bg below threshold.
+    if n_pos == 0 or n_far_bg < int(min_far_bg):
+        meta["skipped"] = True
+        return torch.zeros((), device=device, requires_grad=False), meta
+
+    pos_scores = residue_scores[pos_in_central]   # [n_pos]
+    neg_scores = residue_scores[neg_in_central]   # [n_far_bg]
+
+    # Pairwise gaps: pos[i] - neg[j] → [n_pos, n_far_bg]
+    gaps = pos_scores.unsqueeze(1) - neg_scores.unsqueeze(0)
+    losses = torch.relu(float(margin_m) - gaps)
+    loss = losses.mean()
+    meta["n_pairs"] = n_pos * n_far_bg
+    return loss, meta
 
 
 def compute_loss(
@@ -172,6 +288,7 @@ def compute_loss(
     margin_m: float = 0.5,
     hard_topk: int = 8,
     lambda_margin: float = 0.5,
+    neg_weights: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     """Compute total loss with decomposed terms.
 
@@ -201,13 +318,17 @@ def compute_loss(
 
     # InfoNCE (always computed unless margin_only)
     if objective_mode in ("infonce", "mixed_margin"):
-        loss_intra = info_nce_loss(pos_logits, neg_logits, tau=tau)
+        loss_intra = info_nce_loss(pos_logits, neg_logits, tau=tau, neg_weights=neg_weights)
     else:
         loss_intra = torch.tensor(0.0, device=device)
 
     # Margin hard-example loss
     if objective_mode in ("mixed_margin", "margin_only"):
-        loss_margin = margin_hard_loss(pos_logits, neg_logits, margin_m=margin_m, hard_topk=hard_topk)
+        loss_margin = margin_hard_loss(
+            pos_logits, neg_logits,
+            margin_m=margin_m, hard_topk=hard_topk,
+            neg_weights=neg_weights,
+        )
     else:
         loss_margin = torch.tensor(0.0, device=device)
 

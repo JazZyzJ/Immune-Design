@@ -44,6 +44,7 @@ from epitope_head.configs import (
     load_data_config,
     load_model_config,
     load_train_config,
+    validate_himp_train_blocks,
 )
 from epitope_head.data.netmhciipan_mutation import (
     MutationRegistryIndex,
@@ -191,6 +192,10 @@ def main() -> dict:
             return base
 
         _deep_update(train_cfg, override)
+        # Re-validate HIMP blocks after override merge — load_train_config only
+        # validated the base yaml, so unknown schedule names / wrong types in
+        # the override would otherwise reach training silently.
+        validate_himp_train_blocks(train_cfg)
         logger.info("User override config applied from %s: %s", override_path, override)
 
     # ── Override seed ─────────────────────────────────────────────────

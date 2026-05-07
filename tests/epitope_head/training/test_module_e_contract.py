@@ -1170,7 +1170,7 @@ class TestPrepareChunkSpans:
                 {"start_0b": 190, "end_0b": 210, "pep_len": 20},  # crosses end
             ]],
         }
-        pos_list, neg_list, _, _ = prepare_chunk_spans(
+        pos_list, neg_list, _, _, _ = prepare_chunk_spans(
             batch, batch_idx=0, rng=np.random.RandomState(42),
         )
         # Only the first positive is within [100, 200)
@@ -1188,7 +1188,7 @@ class TestPrepareChunkSpans:
                 {"start_0b": 200, "end_0b": 215, "pep_len": 15},
             ]],
         }
-        pos_list, neg_list, _, _ = prepare_chunk_spans(
+        pos_list, neg_list, _, _, _ = prepare_chunk_spans(
             batch, batch_idx=0, rng=np.random.RandomState(42),
         )
         assert pos_list[0].shape[0] == 0
@@ -1230,6 +1230,9 @@ class TestLogging:
             "mean_pos_logit": 2.0, "mean_neg_logit": 1.0, "logit_gap": 1.0,
             "per_protein_auc": 0.75,
             "total_pos": 10, "total_neg": 70, "n_steps": 5, "timestamp": 0.0,
+            # HIMP4 residue logging fields (always present, 0 when disabled)
+            "loss_residue": 0.0, "lambda_residue": 0.0,
+            "residue_skipped_chunks": 0, "n_residue_pairs": 0, "n_residue_chunks": 0,
         }
         write_log_entry(log_path, entry)
         with open(log_path) as f:

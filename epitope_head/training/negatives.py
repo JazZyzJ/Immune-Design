@@ -6,6 +6,11 @@ Implements PLAN.md Task E2 and codemap §7:
   - Easy negatives: random spans
   - Length sampling: match_positive distribution or uniform
   - Fail-fast on ratio shortfall (strict mode)
+
+HIMP1 extension: when ``near_positive_cfg`` is provided, each returned negative
+is annotated with its ``SpanRelation`` and a scalar penalty ``weight`` (both as
+parallel ``_relations`` / ``_weights`` lists on the returned ``_NegList``). The
+default ``None`` value preserves legacy behavior bit-for-bit.
 """
 
 from __future__ import annotations
@@ -13,6 +18,12 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+
+from epitope_head.training.near_positive import (
+    SpanRelation,
+    classify_span_relation,
+    compute_negative_weight,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +46,7 @@ def sample_negatives(
     rng: np.random.RandomState | None = None,
     strict: bool = True,
     disrupted_spans: list[dict] | None = None,
+    near_positive_cfg: dict | None = None,
 ) -> list[dict]:
     """Sample negative spans for one protein.
 
@@ -54,6 +66,14 @@ def sample_negatives(
         disrupted_spans: optional list of disrupted span dicts from runtime
             augmentation. These are guaranteed hard negatives that fill the
             hard quota first before offset-based sampling.
+        near_positive_cfg: optional dict enabling HIMP1 relation classification
+            and per-negative weights. Recognized keys:
+              - ``near_gap_max`` (int): end-point distance threshold.
+              - ``schedule`` (str): one of ``ignore``, ``linear_clamp``, ``sigmoid``.
+              - ``schedule_params`` (dict): kwargs forwarded to the schedule fn.
+              - ``metric`` (str): currently only ``endpoint_gap`` supported.
+            When ``None``, the returned ``_NegList`` does not carry relation /
+            weight metadata and behavior is identical to legacy callers.
 
     Returns:
         List of negative span dicts {start_0b, end_0b, pep_len}.
@@ -79,23 +99,30 @@ def sample_negatives(
     n_easy = total_neg - n_hard
 
     hard_negatives = []
+    hard_sources: list[str] = []  # "disrupted" | "offset" — for relation tagging
     easy_negatives = []
 
-    # --- Disrupted spans fill hard quota first (Stage J) ---
+    # --- Disrupted spans fill hard quota first (Stage J / HIMP1) ---
+    # Counterfactual_disrupted spans are mutation-derived pseudo-negatives.
+    # PLAN_EPI_IMP §5 HIMP1 #3 mandates that they are preserved with weight
+    # 1.0 even when their coordinates overlap a remaining WT positive — the
+    # mutation-derived evidence overrides the WT label. (In the current
+    # pipeline ``positives`` is already the post-mutation list with
+    # disrupted spans removed, so an exact coordinate clash is rare; the
+    # filter is removed here to make the contract robust to any caller
+    # that supplies WT positives instead.)
     n_disrupted_used = 0
     if disrupted_spans:
         for ds in disrupted_spans:
             if len(hard_negatives) >= n_hard:
                 break
-            span = (ds["start_0b"], ds["end_0b"])
-            # Must not be in current positive set (shouldn't be, but safety check)
-            if span not in positive_set:
-                hard_negatives.append({
-                    "start_0b": ds["start_0b"],
-                    "end_0b": ds["end_0b"],
-                    "pep_len": ds["pep_len"],
-                })
-                n_disrupted_used += 1
+            hard_negatives.append({
+                "start_0b": ds["start_0b"],
+                "end_0b": ds["end_0b"],
+                "pep_len": ds["pep_len"],
+            })
+            hard_sources.append("disrupted")
+            n_disrupted_used += 1
 
     # --- Hard negatives: offset from random positive (fill remaining quota) ---
     hard_attempts = 0
@@ -131,6 +158,7 @@ def sample_negatives(
             "end_0b": new_end,
             "pep_len": a_len,
         })
+        hard_sources.append("offset")
 
     # Check hard negative shortfall
     hard_shortfall = n_hard - len(hard_negatives)
@@ -198,4 +226,54 @@ def sample_negatives(
     result._n_disrupted_used = n_disrupted_used
     result._n_hard_target = n_hard
     result._n_total_target = total_neg
+
+    # HIMP1: when near-positive config is supplied, attach relation/weight
+    # metadata as parallel lists. Source-tagged negatives override classifier
+    # output so disrupted spans always carry COUNTERFACTUAL_DISRUPTED + w=1.0.
+    if near_positive_cfg is not None:
+        np_cfg = near_positive_cfg
+        near_gap_max = int(np_cfg["near_gap_max"])
+        schedule_name = str(np_cfg["schedule"])
+        schedule_params = np_cfg.get("schedule_params") or {}
+
+        positives_xy = [(p["start_0b"], p["end_0b"]) for p in positives]
+
+        relations: list[SpanRelation] = []
+        weights: list[float] = []
+
+        # Hard block: index parallel to hard_sources.
+        for idx, neg in enumerate(hard_negatives):
+            if idx < len(hard_sources) and hard_sources[idx] == "disrupted":
+                rel = SpanRelation.COUNTERFACTUAL_DISRUPTED
+                gap = 0
+            else:
+                rel, gap = classify_span_relation(
+                    (neg["start_0b"], neg["end_0b"]),
+                    positives_xy,
+                    near_gap_max=near_gap_max,
+                )
+            relations.append(rel)
+            weights.append(
+                compute_negative_weight(
+                    rel, gap, near_gap_max, schedule_name, schedule_params,
+                )
+            )
+
+        # Easy block: never disrupted.
+        for neg in easy_negatives:
+            rel, gap = classify_span_relation(
+                (neg["start_0b"], neg["end_0b"]),
+                positives_xy,
+                near_gap_max=near_gap_max,
+            )
+            relations.append(rel)
+            weights.append(
+                compute_negative_weight(
+                    rel, gap, near_gap_max, schedule_name, schedule_params,
+                )
+            )
+
+        result._relations = relations
+        result._weights = weights
+
     return result

@@ -24,14 +24,20 @@ import torch
 import torch.nn as nn
 import yaml
 
+from epitope_head.configs import validate_himp_train_blocks
 from epitope_head.training.eval_metrics import full_val_eval
-from epitope_head.training.losses import compute_loss
+from epitope_head.training.losses import compute_loss, residue_pairwise_margin_loss
 from epitope_head.training.negatives import sample_negatives
 from epitope_head.training.registry import (
     append_registry_row,
     build_registry_row,
     compute_protocol_signature,
     generate_run_id,
+)
+from epitope_head.training.residue_supervision import (
+    aggregate_window_logits_to_residues,
+    build_residue_labels,
+    enumerate_all_residue_windows,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,6 +53,11 @@ class StepMetrics:
     loss_mp: float = 0.0
     loss_smooth: float = 0.0
     loss_margin: float = 0.0
+    # HIMP4: residue ranking loss decomposition
+    loss_residue: float = 0.0
+    n_residue_pairs: int = 0
+    residue_skipped_chunks: int = 0
+    n_residue_chunks: int = 0
     mean_pos_logit: float = 0.0
     mean_neg_logit: float = 0.0
     logit_gap: float = 0.0
@@ -61,6 +72,10 @@ class StepMetrics:
             "loss_mp": self.loss_mp,
             "loss_smooth": self.loss_smooth,
             "loss_margin": self.loss_margin,
+            "loss_residue": self.loss_residue,
+            "n_residue_pairs": self.n_residue_pairs,
+            "residue_skipped_chunks": self.residue_skipped_chunks,
+            "n_residue_chunks": self.n_residue_chunks,
             "mean_pos_logit": self.mean_pos_logit,
             "mean_neg_logit": self.mean_neg_logit,
             "logit_gap": self.logit_gap,
@@ -118,12 +133,28 @@ def aggregate_epoch_metrics(step_metrics_list: list[StepMetrics]) -> dict:
         return {}
     n = len(step_metrics_list)
     auc_values = [m.per_protein_auc for m in step_metrics_list if m.per_protein_auc is not None]
+    # HIMP4: residue stats — average loss_residue over steps that contributed
+    # (i.e. had at least one non-skipped residue chunk), so the headline
+    # number is not diluted by chunks that legitimately skipped due to far-bg
+    # shortage.
+    n_residue_chunks_total = sum(m.n_residue_chunks for m in step_metrics_list)
+    residue_skipped_total = sum(m.residue_skipped_chunks for m in step_metrics_list)
+    residue_pairs_total = sum(m.n_residue_pairs for m in step_metrics_list)
+    contributing_steps = [m for m in step_metrics_list if m.loss_residue != 0.0]
+    if contributing_steps:
+        residue_loss_avg = sum(m.loss_residue for m in contributing_steps) / len(contributing_steps)
+    else:
+        residue_loss_avg = 0.0
     return {
         "loss_total": sum(m.loss_total for m in step_metrics_list) / n,
         "loss_intra": sum(m.loss_intra for m in step_metrics_list) / n,
         "loss_mp": sum(m.loss_mp for m in step_metrics_list) / n,
         "loss_smooth": sum(m.loss_smooth for m in step_metrics_list) / n,
         "loss_margin": sum(m.loss_margin for m in step_metrics_list) / n,
+        "loss_residue": residue_loss_avg,
+        "n_residue_pairs": residue_pairs_total,
+        "n_residue_chunks": n_residue_chunks_total,
+        "residue_skipped_chunks": residue_skipped_total,
         "mean_pos_logit": sum(m.mean_pos_logit for m in step_metrics_list) / n,
         "mean_neg_logit": sum(m.mean_neg_logit for m in step_metrics_list) / n,
         "logit_gap": sum(m.logit_gap for m in step_metrics_list) / n,
@@ -237,24 +268,65 @@ def prepare_chunk_spans(
     min_k: int = 12,
     max_k: int = 25,
     rng: np.random.RandomState | None = None,
-) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+    near_positive_cfg: dict | None = None,
+    residue_cfg: dict | None = None,
+    chunk_central_margin: int = 0,
+) -> tuple[
+    list[torch.Tensor], list[torch.Tensor],
+    list[torch.Tensor], list[torch.Tensor],
+    list[dict],
+]:
     """Prepare positive/negative spans for each chunk in batch.
 
     Converts protein-global positives to chunk-local coordinates,
     filters to spans within chunk bounds, samples negatives.
 
+    Args:
+        ... (existing args unchanged) ...
+        near_positive_cfg: optional HIMP1 config; when provided,
+            ``extras[i]["neg_weights"]`` and ``extras[i]["neg_relations"]``
+            are populated parallel to ``neg_spans_list[i]``.
+        residue_cfg: optional HIMP2/3 config; when ``residue_cfg["enabled"]``,
+            ``extras[i]["residue_meta"]`` (label / ambiguous / far_bg /
+            central masks) and ``extras[i]["residue_extra_windows"]`` (only
+            non-empty when ``window_mode=all``) are populated.
+        chunk_central_margin: residues to exclude on each side when building
+            ``central_mask`` for residue supervision.
+
     Returns:
-        pos_spans_list: list of [P_i, 2] tensors (chunk-local)
-        neg_spans_list: list of [N_i, 2] tensors (chunk-local)
-        allele_pos_list: list of [P_i] allele index tensors
-        allele_neg_list: list of [N_i] allele index tensors
+        Tuple ``(pos_spans, neg_spans, allele_pos, allele_neg, extras)`` where
+        ``extras`` is a list with one dict per chunk. Each dict carries:
+          - ``neg_weights`` (Tensor[N] | None)
+          - ``neg_relations`` (list[SpanRelation] | None)
+          - ``residue_meta`` (dict | None) — keys: label, ambiguous_mask,
+            far_bg_mask, central_mask
+          - ``residue_extra_windows`` (Tensor[W, 2] | None) — extra windows
+            for ``window_mode=all``; None for ``sampled``.
     """
     B = len(batch["protein_ids"])
     pos_spans_list = []
     neg_spans_list = []
     allele_pos_list = []
     allele_neg_list = []
+    extras_list: list[dict] = []
     _disrupted_stats = {"used": 0, "hard_target": 0, "total_neg": 0}
+
+    residue_enabled = bool(residue_cfg and residue_cfg.get("enabled", False))
+    window_mode = (residue_cfg or {}).get("window_mode", "sampled")
+    max_windows = int((residue_cfg or {}).get("max_windows_per_chunk", 1024))
+
+    # HIMP1 review fix 2: respect apply_to_span_negatives. When the user
+    # disables span-side weighting (e.g. for ablating residue supervision in
+    # isolation), the negative sampler must not classify or weight spans.
+    # apply_to_residue_labels is honored separately inside build_residue_labels.
+    np_cfg_for_negatives = (
+        near_positive_cfg
+        if (
+            near_positive_cfg is not None
+            and bool(near_positive_cfg.get("apply_to_span_negatives", True))
+        )
+        else None
+    )
 
     for i in range(B):
         chunk_start = batch["chunk_starts"][i].item()
@@ -289,6 +361,12 @@ def prepare_chunk_spans(
             if not local_disrupted:
                 local_disrupted = None
 
+        chunk_extras: dict = {
+            "neg_weights": None,
+            "neg_relations": None,
+            "residue_meta": None,
+            "residue_extra_windows": None,
+        }
         if local_positives:
             pos_spans = torch.tensor(
                 [[p["start_0b"], p["end_0b"]] for p in local_positives],
@@ -308,6 +386,7 @@ def prepare_chunk_spans(
                 rng=rng,
                 strict=False,
                 disrupted_spans=local_disrupted,
+                near_positive_cfg=np_cfg_for_negatives,
             )
             # Accumulate disrupted-fill stats if available
             _disrupted_stats["used"] += getattr(negs, "_n_disrupted_used", 0)
@@ -317,14 +396,65 @@ def prepare_chunk_spans(
                 [[n["start_0b"], n["end_0b"]] for n in negs],
                 dtype=torch.long,
             ) if negs else torch.zeros(0, 2, dtype=torch.long)
+
+            # HIMP1 extras: relations + weights, only when span weighting is
+            # actually enabled (np_cfg_for_negatives gates apply_to_span_negatives).
+            if np_cfg_for_negatives is not None and hasattr(negs, "_weights"):
+                chunk_extras["neg_relations"] = list(getattr(negs, "_relations", []))
+                w = getattr(negs, "_weights", [])
+                chunk_extras["neg_weights"] = torch.tensor(w, dtype=torch.float32)
         else:
             pos_spans = torch.zeros(0, 2, dtype=torch.long)
             neg_spans = torch.zeros(0, 2, dtype=torch.long)
+
+        # HIMP2 extras: residue masks + (optional) extra windows for window_mode=all.
+        if residue_enabled:
+            # Review fix 4: per-chunk trusted interior matching
+            # ChunkPlan.trusted_interior semantics: only drop the seam
+            # margin, not the protein N-/C-termini. ``chunk_central_margin``
+            # carries the configured seam width; we apply it on the left
+            # iff this chunk is not the first, and on the right iff it is
+            # not the last (i.e. its end reaches sequence_length).
+            seam = int(chunk_central_margin)
+            seq_lens = batch.get("sequence_lengths")
+            chunk_seq_len = (
+                int(seq_lens[i].item()) if seq_lens is not None else chunk_end
+            )
+            left_seam = 0 if chunk_start == 0 else seam
+            right_seam = 0 if chunk_end >= chunk_seq_len else seam
+            central_start_local = min(chunk_len, max(0, left_seam))
+            central_end_local = max(central_start_local, chunk_len - right_seam)
+
+            residue_meta = build_residue_labels(
+                positives=local_positives,
+                chunk_len=chunk_len,
+                central_start=central_start_local,
+                central_end=central_end_local,
+                near_positive_cfg=near_positive_cfg,
+            )
+            chunk_extras["residue_meta"] = residue_meta
+            if window_mode == "all":
+                # Enumerate residue-supervision windows over the trusted
+                # central region (per-chunk, NOT symmetric).
+                extra_windows = enumerate_all_residue_windows(
+                    central_start=central_start_local,
+                    central_end=central_end_local,
+                    min_k=int(min_k),
+                    max_k=int(max_k),
+                    max_windows=max_windows,
+                )
+                if extra_windows:
+                    chunk_extras["residue_extra_windows"] = torch.tensor(
+                        extra_windows, dtype=torch.long,
+                    )
+                else:
+                    chunk_extras["residue_extra_windows"] = torch.zeros(0, 2, dtype=torch.long)
 
         pos_spans_list.append(pos_spans)
         neg_spans_list.append(neg_spans)
         allele_pos_list.append(torch.zeros(pos_spans.shape[0], dtype=torch.long))
         allele_neg_list.append(torch.zeros(neg_spans.shape[0], dtype=torch.long))
+        extras_list.append(chunk_extras)
 
     # Log disrupted-fill ratio if any disrupted spans were used
     if _disrupted_stats["used"] > 0:
@@ -336,7 +466,203 @@ def prepare_chunk_spans(
             100.0 * _disrupted_stats["used"] / max(_disrupted_stats["total_neg"], 1),
         )
 
-    return pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list
+    return (
+        pos_spans_list, neg_spans_list,
+        allele_pos_list, allele_neg_list,
+        extras_list,
+    )
+
+
+def _split_himp_kwargs(neg_cfg: dict) -> tuple[dict, dict | None, dict | None, int]:
+    """Pull HIMP-only kwargs out of ``neg_cfg`` so the legacy ``**neg_cfg``
+    expansion still matches ``prepare_chunk_spans``'s positional kwargs."""
+    legacy = dict(neg_cfg)
+    near_positive_cfg = legacy.pop("near_positive_cfg", None)
+    residue_cfg = legacy.pop("residue_cfg", None)
+    chunk_central_margin = int(legacy.pop("chunk_central_margin", 0))
+    return legacy, near_positive_cfg, residue_cfg, chunk_central_margin
+
+
+def _forward_union_and_compute_losses(
+    model: nn.Module,
+    batch: dict,
+    pos_spans_list: list[torch.Tensor],
+    neg_spans_list: list[torch.Tensor],
+    allele_pos_list: list[torch.Tensor],
+    allele_neg_list: list[torch.Tensor],
+    extras_list: list[dict],
+    loss_cfg: dict,
+    residue_cfg: dict | None,
+) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], dict, int]:
+    """Run the union (pos + neg + residue-extra) forward and compute per-chunk
+    span + residue losses. Returns ``(avg_loss, all_pos_logits_detached,
+    all_neg_logits_detached, residue_stats, n_chunks_with_pos)``.
+
+    ``residue_stats`` keys: ``loss_residue_sum``, ``n_residue_pairs``,
+    ``residue_skipped_chunks``, ``n_residue_chunks``.
+    """
+    token_ids = batch["token_ids"]
+    attention_mask = batch["attention_mask"]
+    chunk_lengths = batch["chunk_ends"] - batch["chunk_starts"]
+    device = token_ids.device
+
+    residue_enabled = bool(residue_cfg and residue_cfg.get("enabled", False))
+    lambda_residue = float((residue_cfg or {}).get("lambda_residue", 0.0))
+    residue_aggregation = (residue_cfg or {}).get("aggregation", "log_mean_exp")
+    residue_agg_params = (residue_cfg or {}).get("aggregation_params", {})
+    residue_loss_mode = (residue_cfg or {}).get("loss_mode", "pairwise_margin")
+    residue_margin_m = float((residue_cfg or {}).get("margin_m_residue", 0.5))
+    residue_min_far_bg = int((residue_cfg or {}).get("min_far_bg_residues", 4))
+
+    # Build per-chunk forward batches: union of (pos, neg, residue_extra) spans.
+    all_spans_list = []
+    all_allele_list = []
+    pos_counts = []
+    neg_counts = []
+    residue_extra_counts = []  # number of residue-only extra windows appended
+    for i in range(len(pos_spans_list)):
+        ps = pos_spans_list[i]
+        ns = neg_spans_list[i]
+        ap = allele_pos_list[i]
+        an = allele_neg_list[i]
+        extras_i = extras_list[i] if i < len(extras_list) else {}
+        residue_extra = extras_i.get("residue_extra_windows")
+
+        parts = []
+        allele_parts = []
+        if ps.shape[0] > 0:
+            parts.append(ps)
+            allele_parts.append(ap)
+        if ns.shape[0] > 0:
+            parts.append(ns)
+            allele_parts.append(an)
+        n_extra = 0
+        if residue_enabled and residue_extra is not None and residue_extra.shape[0] > 0:
+            parts.append(residue_extra)
+            allele_parts.append(torch.zeros(residue_extra.shape[0], dtype=torch.long))
+            n_extra = int(residue_extra.shape[0])
+
+        if parts:
+            combined_spans = torch.cat(parts, dim=0)
+            combined_allele = torch.cat(allele_parts, dim=0)
+        else:
+            combined_spans = torch.zeros(0, 2, dtype=torch.long)
+            combined_allele = torch.zeros(0, dtype=torch.long)
+
+        all_spans_list.append(combined_spans.to(device))
+        all_allele_list.append(combined_allele.to(device))
+        pos_counts.append(int(ps.shape[0]))
+        neg_counts.append(int(ns.shape[0]))
+        residue_extra_counts.append(n_extra)
+
+    logits_list = model(token_ids, attention_mask, all_spans_list, all_allele_list, chunk_lengths)
+
+    # Per-chunk: span loss + (optional) residue loss
+    all_pos_logits: list[torch.Tensor] = []
+    all_neg_logits: list[torch.Tensor] = []
+    total_loss = torch.tensor(0.0, device=device)
+    residue_stats = {
+        "loss_residue_sum": 0.0,
+        "n_residue_pairs": 0,
+        "residue_skipped_chunks": 0,
+        "n_residue_chunks": 0,
+    }
+    n_chunks_with_pos = 0
+
+    for i, logits in enumerate(logits_list):
+        pc = pos_counts[i]
+        nc = neg_counts[i]
+        if pc == 0:
+            continue
+        pos_logits = logits[:pc]
+        neg_logits = logits[pc:pc + nc]
+
+        nan_guard(pos_logits, f"pos_logits[chunk={i}]")
+        nan_guard(neg_logits, f"neg_logits[chunk={i}]")
+
+        # HIMP1: pull negative weights from extras (None when not configured).
+        extras_i = extras_list[i] if i < len(extras_list) else {}
+        neg_w = extras_i.get("neg_weights")
+        if neg_w is not None:
+            neg_w = neg_w.to(device)
+
+        loss_dict = compute_loss(pos_logits, neg_logits, **loss_cfg, neg_weights=neg_w)
+        nan_guard(loss_dict["loss_total"], f"loss_total[chunk={i}]")
+        chunk_loss = loss_dict["loss_total"]
+
+        # HIMP3: residue ranking loss
+        if residue_enabled and extras_i.get("residue_meta") is not None:
+            residue_stats["n_residue_chunks"] += 1
+            meta = extras_i["residue_meta"]
+            chunk_len = int(meta["label"].shape[0])
+            # Residue-supervision windows = pos ∪ neg ∪ residue_extra.
+            # window_logits parallel to the union forward order: [pos | neg | extra].
+            n_extra = residue_extra_counts[i]
+            window_logits = logits[: pc + nc + n_extra]
+            # Reconstruct windows list parallel to window_logits.
+            windows: list[tuple[int, int]] = []
+            for k in range(pc):
+                s, e = pos_spans_list[i][k].tolist()
+                windows.append((int(s), int(e)))
+            for k in range(nc):
+                s, e = neg_spans_list[i][k].tolist()
+                windows.append((int(s), int(e)))
+            if n_extra:
+                extras_w = extras_i["residue_extra_windows"]
+                for k in range(n_extra):
+                    s, e = extras_w[k].tolist()
+                    windows.append((int(s), int(e)))
+
+            residue_scores = aggregate_window_logits_to_residues(
+                window_logits=window_logits,
+                windows=windows,
+                chunk_len=chunk_len,
+                mode=residue_aggregation,
+                params=residue_agg_params,
+            )
+            # Review fix 3: residues not covered by any residue-supervision
+            # window receive -inf scores from the aggregator. They MUST NOT
+            # leak into the ranking loss as "valid" pos / far_bg / central
+            # residues — otherwise n_pairs is inflated, ranking gaps are
+            # meaningless (-inf vs finite), and min_far_bg_residues skip can
+            # be circumvented. Intersect every mask with finite-score support.
+            finite_mask = torch.isfinite(residue_scores)
+            label_t = torch.tensor(meta["label"], device=device).bool() & finite_mask
+            far_bg_t = torch.tensor(meta["far_bg_mask"], device=device) & finite_mask
+            central_t = torch.tensor(meta["central_mask"], device=device) & finite_mask
+            if residue_loss_mode != "pairwise_margin":
+                raise NotImplementedError(
+                    f"residue.loss_mode={residue_loss_mode!r} not implemented in v0"
+                )
+            r_loss, r_meta = residue_pairwise_margin_loss(
+                residue_scores=residue_scores,
+                label=label_t,
+                far_bg_mask=far_bg_t,
+                central_mask=central_t,
+                margin_m=residue_margin_m,
+                min_far_bg=residue_min_far_bg,
+            )
+            if r_meta["skipped"]:
+                residue_stats["residue_skipped_chunks"] += 1
+            else:
+                residue_stats["loss_residue_sum"] += float(r_loss.detach().item())
+                residue_stats["n_residue_pairs"] += int(r_meta["n_pairs"])
+                chunk_loss = chunk_loss + float(lambda_residue) * r_loss
+
+        total_loss = total_loss + chunk_loss
+        n_chunks_with_pos += 1
+        all_pos_logits.append(pos_logits.detach())
+        all_neg_logits.append(neg_logits.detach())
+
+    if n_chunks_with_pos == 0:
+        return (
+            torch.tensor(0.0, device=device),
+            all_pos_logits, all_neg_logits,
+            residue_stats, 0,
+        )
+
+    avg_loss = total_loss / n_chunks_with_pos
+    return avg_loss, all_pos_logits, all_neg_logits, residue_stats, n_chunks_with_pos
 
 
 def train_step(
@@ -358,61 +684,34 @@ def train_step(
     model.train()
     loss_cfg = normalize_loss_cfg(loss_cfg)
 
-    pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list = \
-        prepare_chunk_spans(batch, batch_idx=0, rng=rng, **neg_cfg)
+    legacy_neg_cfg, near_positive_cfg, residue_cfg, chunk_central_margin = \
+        _split_himp_kwargs(neg_cfg)
+
+    pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list, extras_list = \
+        prepare_chunk_spans(
+            batch, batch_idx=0, rng=rng,
+            near_positive_cfg=near_positive_cfg,
+            residue_cfg=residue_cfg,
+            chunk_central_margin=chunk_central_margin,
+            **legacy_neg_cfg,
+        )
 
     # Skip batch if no positives at all
     total_pos = sum(s.shape[0] for s in pos_spans_list)
     if total_pos == 0:
         return StepMetrics()
 
-    # Forward: encode all chunks
-    token_ids = batch["token_ids"]
-    attention_mask = batch["attention_mask"]
-    chunk_lengths = batch["chunk_ends"] - batch["chunk_starts"]
-
-    # Combine pos + neg spans for model forward (move to same device as token_ids)
-    device = token_ids.device
-    all_spans_list = []
-    all_allele_list = []
-    pos_counts = []
-    for ps, ns, ap, an in zip(pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list):
-        combined_spans = torch.cat([ps, ns], dim=0) if ps.shape[0] > 0 else ns
-        combined_allele = torch.cat([ap, an], dim=0) if ap.shape[0] > 0 else an
-        all_spans_list.append(combined_spans.to(device))
-        all_allele_list.append(combined_allele.to(device))
-        pos_counts.append(ps.shape[0])
-
-    logits_list = model(token_ids, attention_mask, all_spans_list, all_allele_list, chunk_lengths)
-
-    # Compute per-chunk losses and aggregate
-    all_pos_logits = []
-    all_neg_logits = []
-    total_loss = torch.tensor(0.0, device=token_ids.device)
-    n_chunks_with_pos = 0
-
-    for i, logits in enumerate(logits_list):
-        pc = pos_counts[i]
-        if pc == 0:
-            continue
-        pos_logits = logits[:pc]
-        neg_logits = logits[pc:]
-
-        nan_guard(pos_logits, f"pos_logits[chunk={i}]")
-        nan_guard(neg_logits, f"neg_logits[chunk={i}]")
-
-        loss_dict = compute_loss(pos_logits, neg_logits, **loss_cfg)
-        nan_guard(loss_dict["loss_total"], f"loss_total[chunk={i}]")
-
-        total_loss = total_loss + loss_dict["loss_total"]
-        n_chunks_with_pos += 1
-        all_pos_logits.append(pos_logits.detach())
-        all_neg_logits.append(neg_logits.detach())
+    avg_loss, all_pos_logits, all_neg_logits, residue_stats, n_chunks_with_pos = \
+        _forward_union_and_compute_losses(
+            model=model, batch=batch,
+            pos_spans_list=pos_spans_list, neg_spans_list=neg_spans_list,
+            allele_pos_list=allele_pos_list, allele_neg_list=allele_neg_list,
+            extras_list=extras_list,
+            loss_cfg=loss_cfg, residue_cfg=residue_cfg,
+        )
 
     if n_chunks_with_pos == 0:
         return StepMetrics()
-
-    avg_loss = total_loss / n_chunks_with_pos
 
     # Backward + optimize
     optimizer.zero_grad()
@@ -434,12 +733,34 @@ def train_step(
     elif scheduler is not None:
         scheduler.step()
 
-    # Compute metrics
+    # Compute metrics. ``compute_loss`` here is recomputed unweighted on the
+    # concatenated logits as a *diagnostic* (so loss_intra / loss_margin
+    # reflect the unweighted span objective). The reported ``loss_total``
+    # however is overridden to ``avg_loss``, which already includes the
+    # per-negative weights and ``lambda_residue * loss_residue`` term — i.e.
+    # the actual quantity that ``avg_loss.backward()`` minimized.
     cat_pos = torch.cat(all_pos_logits) if all_pos_logits else torch.tensor([])
     cat_neg = torch.cat(all_neg_logits) if all_neg_logits else torch.tensor([])
     loss_for_metrics = compute_loss(cat_pos, cat_neg, **loss_cfg)
 
-    return compute_sanity_metrics(cat_pos, cat_neg, loss_for_metrics)
+    metrics = compute_sanity_metrics(cat_pos, cat_neg, loss_for_metrics)
+    metrics.loss_total = float(avg_loss.detach().item())
+    _attach_residue_stats(metrics, residue_stats)
+    return metrics
+
+
+def _attach_residue_stats(metrics: StepMetrics, residue_stats: dict) -> None:
+    """Mutate ``metrics`` with per-step residue aggregates."""
+    n_chunks = int(residue_stats.get("n_residue_chunks", 0))
+    n_skipped = int(residue_stats.get("residue_skipped_chunks", 0))
+    n_contributing = max(n_chunks - n_skipped, 0)
+    if n_contributing > 0:
+        metrics.loss_residue = float(residue_stats["loss_residue_sum"]) / n_contributing
+    else:
+        metrics.loss_residue = 0.0
+    metrics.n_residue_pairs = int(residue_stats.get("n_residue_pairs", 0))
+    metrics.residue_skipped_chunks = n_skipped
+    metrics.n_residue_chunks = n_chunks
 
 
 @torch.no_grad()
@@ -454,44 +775,43 @@ def val_step(
     model.eval()
     loss_cfg = normalize_loss_cfg(loss_cfg)
 
-    pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list = \
-        prepare_chunk_spans(batch, batch_idx=0, rng=rng, **neg_cfg)
+    legacy_neg_cfg, near_positive_cfg, residue_cfg, chunk_central_margin = \
+        _split_himp_kwargs(neg_cfg)
+
+    pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list, extras_list = \
+        prepare_chunk_spans(
+            batch, batch_idx=0, rng=rng,
+            near_positive_cfg=near_positive_cfg,
+            residue_cfg=residue_cfg,
+            chunk_central_margin=chunk_central_margin,
+            **legacy_neg_cfg,
+        )
 
     total_pos = sum(s.shape[0] for s in pos_spans_list)
     if total_pos == 0:
         return StepMetrics()
 
-    token_ids = batch["token_ids"]
-    attention_mask = batch["attention_mask"]
-    chunk_lengths = batch["chunk_ends"] - batch["chunk_starts"]
+    avg_loss, all_pos_logits, all_neg_logits, residue_stats, n_chunks_with_pos = \
+        _forward_union_and_compute_losses(
+            model=model, batch=batch,
+            pos_spans_list=pos_spans_list, neg_spans_list=neg_spans_list,
+            allele_pos_list=allele_pos_list, allele_neg_list=allele_neg_list,
+            extras_list=extras_list,
+            loss_cfg=loss_cfg, residue_cfg=residue_cfg,
+        )
 
-    device = token_ids.device
-    all_spans_list = []
-    all_allele_list = []
-    pos_counts = []
-    for ps, ns, ap, an in zip(pos_spans_list, neg_spans_list, allele_pos_list, allele_neg_list):
-        combined_spans = torch.cat([ps, ns], dim=0) if ps.shape[0] > 0 else ns
-        combined_allele = torch.cat([ap, an], dim=0) if ap.shape[0] > 0 else an
-        all_spans_list.append(combined_spans.to(device))
-        all_allele_list.append(combined_allele.to(device))
-        pos_counts.append(ps.shape[0])
-
-    logits_list = model(token_ids, attention_mask, all_spans_list, all_allele_list, chunk_lengths)
-
-    all_pos_logits = []
-    all_neg_logits = []
-    for i, logits in enumerate(logits_list):
-        pc = pos_counts[i]
-        if pc == 0:
-            continue
-        all_pos_logits.append(logits[:pc])
-        all_neg_logits.append(logits[pc:])
+    if n_chunks_with_pos == 0:
+        return StepMetrics()
 
     cat_pos = torch.cat(all_pos_logits) if all_pos_logits else torch.tensor([])
     cat_neg = torch.cat(all_neg_logits) if all_neg_logits else torch.tensor([])
     loss_dict = compute_loss(cat_pos, cat_neg, **loss_cfg)
-
-    return compute_sanity_metrics(cat_pos, cat_neg, loss_dict)
+    metrics = compute_sanity_metrics(cat_pos, cat_neg, loss_dict)
+    # Override loss_total with the actual HIMP objective (weighted span +
+    # lambda_residue * residue), matching what train_step backprops on.
+    metrics.loss_total = float(avg_loss.detach().item())
+    _attach_residue_stats(metrics, residue_stats)
+    return metrics
 
 
 # ── E6: Checkpointing & Logging ────────────────────────────────────────────
@@ -505,6 +825,9 @@ LOG_ENTRY_KEYS = frozenset({
     "epoch", "phase", "loss_total", "loss_intra", "loss_mp", "loss_smooth",
     "loss_margin", "mean_pos_logit", "mean_neg_logit", "logit_gap",
     "per_protein_auc", "total_pos", "total_neg", "n_steps", "timestamp",
+    # HIMP4: residue ranking loss decomposition (always present; 0 when disabled).
+    "loss_residue", "lambda_residue", "residue_skipped_chunks",
+    "n_residue_pairs", "n_residue_chunks",
 })
 
 
@@ -639,14 +962,65 @@ class Trainer:
         # Loss config (normalized to compute_loss signature)
         self.loss_cfg = normalize_loss_cfg(train_cfg["loss"])
 
-        # Negative sampling config
+        # Negative sampling config + HIMP1/2 hooks. Re-validate the HIMP
+        # blocks defensively so that any cfg reaching the trainer (whether
+        # from load_train_config, an override merge, or an ad-hoc test
+        # fixture) is guaranteed to satisfy the HIMP0 schema.
+        validate_himp_train_blocks(train_cfg)
+        np_cfg = train_cfg.get("near_positive")
+        if isinstance(np_cfg, dict) and not np_cfg.get("enabled", False):
+            np_cfg = None
+        res_cfg = train_cfg.get("residue")
+        if isinstance(res_cfg, dict) and not res_cfg.get("enabled", False):
+            res_cfg = None
+
+        chunk_margin = 0
+        if "chunking" in train_cfg and isinstance(train_cfg["chunking"], dict):
+            if bool(train_cfg["chunking"].get("enabled", False)):
+                chunk_margin = int(train_cfg["chunking"].get("margin", 0))
+
         self.neg_cfg = {
             "neg_ratio": train_cfg["neg_ratio"],
             "hard_negative_fraction": train_cfg["hard_negative_fraction"],
             "hard_neg_max_overlap_ratio": train_cfg["hard_neg_max_overlap_ratio"],
             "hard_neg_offset_range": train_cfg["hard_neg_offset_range"],
             "neg_length_sampling": train_cfg["neg_length_sampling"],
+            "near_positive_cfg": np_cfg,
+            "residue_cfg": res_cfg,
+            "chunk_central_margin": chunk_margin,
         }
+        self._lambda_residue = float((res_cfg or {}).get("lambda_residue", 0.0))
+
+        # HIMP4 startup banner: print every new hyperparameter so SLURM logs
+        # capture the effective resolved config.
+        logger.info(
+            "HIMP near_positive: enabled=%s schedule=%s near_gap_max=%s "
+            "schedule_params=%s metric=%s apply_to_span_negatives=%s "
+            "apply_to_residue_labels=%s",
+            np_cfg is not None,
+            (np_cfg or {}).get("schedule"),
+            (np_cfg or {}).get("near_gap_max"),
+            (np_cfg or {}).get("schedule_params"),
+            (np_cfg or {}).get("metric"),
+            (np_cfg or {}).get("apply_to_span_negatives"),
+            (np_cfg or {}).get("apply_to_residue_labels"),
+        )
+        logger.info(
+            "HIMP residue: enabled=%s lambda_residue=%s aggregation=%s "
+            "aggregation_params=%s loss_mode=%s margin_m_residue=%s "
+            "window_mode=%s max_windows_per_chunk=%s min_far_bg_residues=%s "
+            "central_margin=%s",
+            res_cfg is not None,
+            self._lambda_residue,
+            (res_cfg or {}).get("aggregation"),
+            (res_cfg or {}).get("aggregation_params"),
+            (res_cfg or {}).get("loss_mode"),
+            (res_cfg or {}).get("margin_m_residue"),
+            (res_cfg or {}).get("window_mode"),
+            (res_cfg or {}).get("max_windows_per_chunk"),
+            (res_cfg or {}).get("min_far_bg_residues"),
+            chunk_margin,
+        )
 
         # Checkpointing
         self.cfg_hash = config_hash(train_cfg)
@@ -719,6 +1093,10 @@ class Trainer:
 
     def train_epoch(self, epoch: int) -> dict:
         """Run one training epoch. Returns epoch metrics dict."""
+        # Reset train RNG each epoch with epoch-dependent seed: each epoch's
+        # negatives are deterministic given (seed, epoch), while still varying
+        # across epochs. Mirrors val_rng's per-epoch reset (line 768).
+        self.train_rng = np.random.RandomState(self.cfg["seed"] + epoch)
         step_metrics_list = []
         self._epoch_disrupted_used = 0
         self._epoch_hard_target = 0
@@ -754,6 +1132,7 @@ class Trainer:
         epoch_metrics["epoch"] = epoch
         epoch_metrics["phase"] = "train"
         epoch_metrics["timestamp"] = time.time()
+        epoch_metrics["lambda_residue"] = self._lambda_residue
         if self._epoch_aux_metrics:
             epoch_metrics.update(self._epoch_aux_metrics)
             self._last_epoch_aux_metrics = dict(self._epoch_aux_metrics)
@@ -783,6 +1162,7 @@ class Trainer:
         epoch_metrics["epoch"] = epoch
         epoch_metrics["phase"] = "val"
         epoch_metrics["timestamp"] = time.time()
+        epoch_metrics["lambda_residue"] = self._lambda_residue
 
         # Per-protein full-window-scan evaluation
         if self._pp_eval_enabled:
