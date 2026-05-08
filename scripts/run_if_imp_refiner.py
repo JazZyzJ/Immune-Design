@@ -1,0 +1,658 @@
+#!/usr/bin/env python
+"""IF improvement driver: DPLM generation with optional MapDiff IPA refiner.
+
+Reuses the helpers from ``scripts/run_if_phase_c0.py``
+(``generate_rows_for_entries``, ``write_phase_c_outputs``, ``_fmt_hms``)
+and the ``inverse_folding.reference_flow.runtime`` loaders. When
+``--refiner-checkpoint`` is provided, the script instantiates a
+``DPLMRefinerLogitProcessor`` and threads it into DPLM's
+``forward_decoder`` via the new optional hook (PLAN_IF_IMP.md Task 7).
+Default behavior with no refiner is bit-equivalent to ``run_if_phase_c0.py``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+import pandas as pd
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "IF improvement runner: DPLM generation with optional IPA refiner."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--checkpoint", required=True, help="Module K DPLM checkpoint (.ckpt).")
+    parser.add_argument("--test-set-parquet", required=True)
+    parser.add_argument("--pdb-root", required=True)
+    parser.add_argument("--allele", required=True)
+    parser.add_argument("--output-root", required=True)
+    parser.add_argument("--refiner-checkpoint", default=None, help="Optional .pt produced by train_if_imp_refiner.py.")
+    parser.add_argument("--sidecar-checkpoint", default=None, help="Optional .pt produced by train_if_imp_sidecar.py; enables Arm 3/4.")
+    parser.add_argument(
+        "--arm",
+        choices=("baseline", "refiner", "sidecar", "sidecar_refiner"),
+        default=None,
+        help=(
+            "Explicit ablation arm label. If omitted, derived from "
+            "--refiner-checkpoint and --sidecar-checkpoint presence."
+        ),
+    )
+    parser.add_argument(
+        "--ablation-mode",
+        action="store_true",
+        help=(
+            "Emit per-step refiner diagnostics + per-design summary "
+            "into ablation_diagnostics.parquet for downstream comparison."
+        ),
+    )
+    parser.add_argument("--n-designs-per-protein", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-iter", type=int, default=10)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--mc-dropout-passes", type=int, default=1)
+    parser.add_argument("--mask-ratio-center", type=float, default=0.4)
+    parser.add_argument("--mask-ratio-deviation", type=float, default=0.2)
+    parser.add_argument("--fusion-temperature", type=float, default=1.0)
+    parser.add_argument("--limit-proteins", type=int, default=None)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--progress-every", type=int, default=25)
+    parser.add_argument("--overwrite", action="store_true")
+
+    from inverse_folding.observability import add_wandb_cli_args
+
+    add_wandb_cli_args(parser, default_project="mhc-if-imp-refiner")
+
+    args = parser.parse_args(argv)
+
+    if args.n_designs_per_protein <= 0:
+        parser.error("--n-designs-per-protein must be positive")
+    if args.max_iter <= 0:
+        parser.error("--max-iter must be positive")
+    if args.temperature <= 0.0:
+        parser.error("--temperature must be positive")
+    if args.mc_dropout_passes < 1:
+        parser.error("--mc-dropout-passes must be >= 1")
+    if not (0.0 <= args.mask_ratio_center <= 1.0):
+        parser.error("--mask-ratio-center must be in [0, 1]")
+    if not (0.0 <= args.mask_ratio_deviation <= 1.0):
+        parser.error("--mask-ratio-deviation must be in [0, 1]")
+    if args.mask_ratio_center + args.mask_ratio_deviation > 1.0:
+        parser.error("--mask-ratio-center + --mask-ratio-deviation must be <= 1")
+    if args.fusion_temperature <= 0.0:
+        parser.error("--fusion-temperature must be positive")
+    if args.progress_every < 0:
+        parser.error("--progress-every must be non-negative")
+    if args.limit_proteins is not None and args.limit_proteins <= 0:
+        parser.error("--limit-proteins must be positive when provided")
+
+    return args
+
+
+def resolve_arm(args: argparse.Namespace) -> str:
+    """Resolve the 4-arm ablation label from args.
+
+    Explicit ``--arm`` wins; otherwise inferred from which optional
+    checkpoint flags are populated. Arms:
+
+    - ``baseline``        : no refiner, no sidecar (Arm 1)
+    - ``refiner``         : refiner only (Arm 2)
+    - ``sidecar``         : sidecar only (Arm 3)
+    - ``sidecar_refiner`` : both (Arm 4)
+    """
+    has_refiner = bool(args.refiner_checkpoint)
+    has_sidecar = bool(args.sidecar_checkpoint)
+    if args.arm is not None:
+        if args.arm == "refiner" and not has_refiner:
+            raise ValueError("--arm refiner requires --refiner-checkpoint")
+        if args.arm == "sidecar" and not has_sidecar:
+            raise ValueError("--arm sidecar requires --sidecar-checkpoint")
+        if args.arm == "sidecar_refiner" and not (has_refiner and has_sidecar):
+            raise ValueError(
+                "--arm sidecar_refiner requires BOTH --refiner-checkpoint "
+                "and --sidecar-checkpoint"
+            )
+        if args.arm == "baseline" and (has_refiner or has_sidecar):
+            raise ValueError(
+                "--arm baseline forbids --refiner-checkpoint/--sidecar-checkpoint"
+            )
+        return args.arm
+    if has_refiner and has_sidecar:
+        return "sidecar_refiner"
+    if has_refiner:
+        return "refiner"
+    if has_sidecar:
+        return "sidecar"
+    return "baseline"
+
+
+def _maybe_build_logit_processor(
+    args: argparse.Namespace,
+    *,
+    alphabet: Any,
+    diagnostics_sink: Any = None,
+) -> Any:
+    if not args.refiner_checkpoint:
+        return None
+    from inverse_folding.dplm_refiner.checkpoint import load_refiner_checkpoint
+    from inverse_folding.dplm_refiner.config import DPLMRefinerConfig
+    from inverse_folding.dplm_refiner.logit_processor import (
+        DPLMRefinerLogitProcessor,
+    )
+
+    refiner_path = Path(args.refiner_checkpoint).expanduser().resolve()
+    if not refiner_path.is_file():
+        raise FileNotFoundError(
+            f"--refiner-checkpoint not found: {refiner_path}"
+        )
+    model, _saved_config, _ = load_refiner_checkpoint(
+        refiner_path, map_location=args.device
+    )
+    model.eval()
+    if args.device != "cpu":
+        model = model.to(args.device)
+    cli_config = DPLMRefinerConfig(
+        enabled=True,
+        mask_ratio_center=float(args.mask_ratio_center),
+        mask_ratio_deviation=float(args.mask_ratio_deviation),
+        fusion_temperature=float(args.fusion_temperature),
+        mc_dropout_passes=int(args.mc_dropout_passes),
+    )
+    cli_config.validate()
+    processor = DPLMRefinerLogitProcessor(
+        refiner=model,
+        alphabet=alphabet,
+        config=cli_config,
+        diagnostics_sink=diagnostics_sink,
+    )
+    return processor
+
+
+def _maybe_attach_sidecar(args: argparse.Namespace, *, task: Any) -> bool:
+    """If --sidecar-checkpoint is set, wrap task.model.encoder. Returns
+    True if sidecar was attached."""
+    if not args.sidecar_checkpoint:
+        return False
+    from inverse_folding.dplm_refiner.checkpoint import load_sidecar_checkpoint
+    from inverse_folding.dplm_refiner.encoder_wrapper import (
+        SidecarAttachedEncoder,
+    )
+
+    sidecar_path = Path(args.sidecar_checkpoint).expanduser().resolve()
+    if not sidecar_path.is_file():
+        raise FileNotFoundError(
+            f"--sidecar-checkpoint not found: {sidecar_path}"
+        )
+    sidecar, _ = load_sidecar_checkpoint(sidecar_path, map_location=args.device)
+    sidecar.eval()
+    if args.device != "cpu":
+        sidecar = sidecar.to(args.device)
+
+    alphabet = task.alphabet
+
+    def _ssm(batch: dict[str, Any]):
+        import torch
+
+        tokens = batch.get("prev_tokens")
+        if tokens is None:
+            tokens = batch.get("tokens")
+        return (
+            tokens.eq(alphabet.padding_idx)
+            | tokens.eq(alphabet.cls_idx)
+            | tokens.eq(alphabet.eos_idx)
+        )
+
+    task.model.encoder = SidecarAttachedEncoder(
+        task.model.encoder, sidecar, get_special_sym_mask=_ssm
+    )
+    if args.device != "cpu":
+        task.model.encoder = task.model.encoder.to(args.device)
+    return True
+
+
+def _build_generator(
+    *,
+    checkpoint: str,
+    pdb_root: str,
+    device: str,
+    max_iter: int,
+    temperature: float,
+    args: argparse.Namespace,
+) -> tuple[
+    Callable[[pd.Series, int, int], dict[str, Any]],
+    dict[str, Any],
+    list[dict[str, Any]],
+]:
+    """Build the per-design generator; returns (generator, meta, diagnostics_buffer).
+
+    The diagnostics_buffer is shared across calls; the returned generator
+    appends per-design summary rows when ablation_mode is enabled.
+    """
+    from inverse_folding.reference_flow.runtime import (
+        generate_native_sequence,
+        load_if_task,
+        prepare_backbone,
+    )
+
+    task = load_if_task(checkpoint, device=device)
+    sidecar_attached = _maybe_attach_sidecar(args, task=task)
+
+    diagnostics_buffer: list[dict[str, Any]] = []
+    per_design_steps: list[dict[str, Any]] = []
+
+    def _step_sink(record: dict[str, Any]) -> None:
+        if args.ablation_mode:
+            per_design_steps.append(dict(record))
+
+    logit_processor = _maybe_build_logit_processor(
+        args,
+        alphabet=task.alphabet,
+        diagnostics_sink=_step_sink if args.ablation_mode else None,
+    )
+
+    # Ablation mode without a refiner: install a passthrough base-entropy
+    # probe so baseline / sidecar-only arms still emit real entropy
+    # measurements that are directly comparable to the refiner arms.
+    if logit_processor is None and args.ablation_mode:
+        from inverse_folding.dplm_refiner.diagnostics import (
+            DPLMBaseEntropyProbe,
+        )
+
+        logit_processor = DPLMBaseEntropyProbe(
+            alphabet=task.alphabet, diagnostics_sink=_step_sink
+        )
+
+    arm = resolve_arm(args)
+
+    def _generator(entry: pd.Series, design_idx: int, design_seed: int) -> dict[str, Any]:
+        per_design_steps.clear()
+        started = time.time()
+        prepared = prepare_backbone(
+            task=task, entry=entry, pdb_root=pdb_root, device=device
+        )
+        sequence = generate_native_sequence(
+            task=task,
+            prepared=prepared,
+            max_iter=max_iter,
+            temperature=temperature,
+            seed=design_seed,
+            logit_processor=logit_processor,
+        )
+        wall = time.time() - started
+        if args.ablation_mode:
+            diagnostics_buffer.append(
+                {
+                    "protein_id": str(entry["protein_id"]),
+                    "design_idx": int(design_idx),
+                    "arm": arm,
+                    "wall_seconds": float(wall),
+                    "n_residues": int(prepared.sequence_length),
+                    "step_records": list(per_design_steps),
+                }
+            )
+        return {
+            "sequence": sequence,
+            "wall_seconds": wall,
+        }
+
+    refiner_meta: dict[str, Any] = {
+        "arm": arm,
+        "refiner_enabled": logit_processor is not None,
+        "sidecar_enabled": bool(sidecar_attached),
+    }
+    if logit_processor is not None:
+        refiner_meta.update(
+            {
+                "refiner_checkpoint": str(
+                    Path(args.refiner_checkpoint).expanduser().resolve()
+                ),
+                "mask_ratio_center": float(args.mask_ratio_center),
+                "mask_ratio_deviation": float(args.mask_ratio_deviation),
+                "fusion_temperature": float(args.fusion_temperature),
+                "mc_dropout_passes": int(args.mc_dropout_passes),
+            }
+        )
+    if sidecar_attached:
+        refiner_meta["sidecar_checkpoint"] = str(
+            Path(args.sidecar_checkpoint).expanduser().resolve()
+        )
+    return _generator, refiner_meta, diagnostics_buffer
+
+
+def print_resolved_hyperparams(
+    args: argparse.Namespace,
+    *,
+    run_dir: Path,
+    n_entries: int,
+    refiner_meta: dict[str, Any],
+) -> None:
+    resolved = {
+        "checkpoint": str(Path(args.checkpoint).resolve()),
+        "test_set_parquet": str(Path(args.test_set_parquet).resolve()),
+        "pdb_root": str(Path(args.pdb_root).resolve()),
+        "allele": args.allele,
+        "output_root": str(Path(args.output_root).resolve()),
+        "run_dir": str(run_dir),
+        "n_designs_per_protein": args.n_designs_per_protein,
+        "seed": args.seed,
+        "max_iter": args.max_iter,
+        "temperature": args.temperature,
+        "device": args.device,
+        "progress_every": args.progress_every,
+        "overwrite": args.overwrite,
+        "limit_proteins": args.limit_proteins,
+        "n_input_proteins": n_entries,
+        "refiner_checkpoint": args.refiner_checkpoint,
+        "mc_dropout_passes": args.mc_dropout_passes,
+        "mask_ratio_center": args.mask_ratio_center,
+        "mask_ratio_deviation": args.mask_ratio_deviation,
+        "fusion_temperature": args.fusion_temperature,
+        **{f"refiner_meta__{k}": v for k, v in refiner_meta.items()},
+    }
+    print("============================================================")
+    print("IF improvement runner resolved parameters")
+    for key, value in resolved.items():
+        print(f"  {key}: {value}")
+    print("============================================================")
+
+
+def _build_run_id(args: argparse.Namespace) -> str:
+    from inverse_folding.reference_flow.runtime import safe_allele_tag
+
+    if args.run_id:
+        return str(args.run_id)
+    arm = resolve_arm(args)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"if_imp_{arm}_{safe_allele_tag(args.allele)}_{stamp}"
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    from inverse_folding.observability import (
+        finish_wandb,
+        init_wandb_from_args,
+        set_summary,
+    )
+    from inverse_folding.reference_flow.runtime import (
+        checkpoint_digest,
+        git_sha,
+        load_test_entries,
+        safe_allele_tag,
+        utc_timestamp,
+        write_json,
+    )
+    from scripts.run_if_phase_c0 import (
+        _fmt_hms,
+        generate_rows_for_entries,
+        write_phase_c_outputs,
+    )
+
+    run_id = _build_run_id(args)
+    run_dir = (
+        Path(args.output_root)
+        / safe_allele_tag(args.allele)
+        / run_id
+    )
+    if run_dir.exists() and any(run_dir.iterdir()) and not args.overwrite:
+        print(
+            f"ERROR: run_dir {run_dir} already exists and is non-empty; "
+            "pass --overwrite or choose a distinct --run-id.",
+            file=sys.stderr,
+        )
+        return 2
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    entries = load_test_entries(args.test_set_parquet)
+    if args.limit_proteins is not None:
+        entries = entries.head(int(args.limit_proteins)).reset_index(drop=True)
+
+    generator, refiner_meta, diagnostics_buffer = _build_generator(
+        checkpoint=args.checkpoint,
+        pdb_root=args.pdb_root,
+        device=args.device,
+        max_iter=args.max_iter,
+        temperature=args.temperature,
+        args=args,
+    )
+    print_resolved_hyperparams(
+        args, run_dir=run_dir, n_entries=len(entries), refiner_meta=refiner_meta
+    )
+
+    arm_tag = refiner_meta["arm"]
+    wandb_run = init_wandb_from_args(
+        args,
+        run_name=run_id,
+        config={
+            "stage": "if_imp_runner",
+            "arm": arm_tag,
+            "allele": args.allele,
+            "checkpoint": str(Path(args.checkpoint).resolve()),
+            "n_input_proteins": int(len(entries)),
+            "n_designs_per_protein": args.n_designs_per_protein,
+            "seed": args.seed,
+            "max_iter": args.max_iter,
+            "temperature": args.temperature,
+            "device": args.device,
+            "run_dir": str(run_dir),
+            **refiner_meta,
+        },
+        extra_tags=["if_imp", arm_tag, args.allele],
+    )
+
+    run_start = time.time()
+    rows, failures = generate_rows_for_entries(
+        entries,
+        generator,
+        n_designs_per_protein=args.n_designs_per_protein,
+        seed=args.seed,
+        progress_every=args.progress_every,
+        wandb_run=wandb_run,
+    )
+    total_wall_seconds = time.time() - run_start
+
+    run_config = {
+        "mode": f"if_imp_{arm_tag}",
+        "checkpoint": str(Path(args.checkpoint).resolve()),
+        "test_set_parquet": str(Path(args.test_set_parquet).resolve()),
+        "pdb_root": str(Path(args.pdb_root).resolve()),
+        "allele": args.allele,
+        "device": args.device,
+        "sampler": {
+            "max_iter": args.max_iter,
+            "temperature": args.temperature,
+            "n_designs_per_protein": args.n_designs_per_protein,
+            "seed": args.seed,
+        },
+        "refiner": refiner_meta,
+    }
+    manifest = {
+        "run_id": run_id,
+        "mode": f"if_imp_{arm_tag}",
+        "git_sha": git_sha(PROJECT_ROOT),
+        "checkpoint_digest": checkpoint_digest(args.checkpoint),
+        "refiner_checkpoint_digest": (
+            checkpoint_digest(args.refiner_checkpoint)
+            if args.refiner_checkpoint
+            else None
+        ),
+        "mapdiff_reference_commit": _resolve_mapdiff_reference_commit(),
+        "timestamp": utc_timestamp(),
+        "allele": args.allele,
+        "n_input_proteins": int(len(entries)),
+        "n_rows_generated": int(len(rows)),
+        "n_failures": int(len(failures)),
+        "failures_path": "failures.json" if failures else None,
+        "wall_clock_seconds": float(total_wall_seconds),
+    }
+
+    write_phase_c_outputs(run_dir, rows, run_config, manifest)
+    if failures:
+        write_json(run_dir / "failures.json", {"failures": failures})
+    if args.ablation_mode and diagnostics_buffer:
+        _write_ablation_diagnostics(run_dir, diagnostics_buffer)
+
+    n_rows = int(len(rows))
+    n_failures = int(len(failures))
+    n_total_designs = int(len(entries) * args.n_designs_per_protein)
+    avg_per_design = (
+        total_wall_seconds / float(n_rows + n_failures) if (n_rows + n_failures) > 0 else 0.0
+    )
+    failure_rate = (
+        (n_failures / float(n_total_designs)) if n_total_designs > 0 else 0.0
+    )
+
+    print("============================================================")
+    print(
+        f"[done] run_id={run_id} arm={arm_tag} "
+        f"generated_rows={n_rows}/{n_total_designs} "
+        f"failures={n_failures} failure_rate={failure_rate:.2%} "
+        f"wall={_fmt_hms(total_wall_seconds)} avg_per_design={avg_per_design:.2f}s "
+        f"output_dir={run_dir}"
+    )
+    print("============================================================")
+
+    set_summary(
+        wandb_run,
+        {
+            "summary/n_input_proteins": int(len(entries)),
+            "summary/n_total_designs": n_total_designs,
+            "summary/n_rows_generated": n_rows,
+            "summary/n_failures": n_failures,
+            "summary/failure_rate": failure_rate,
+            "summary/wall_seconds": float(total_wall_seconds),
+            "summary/avg_seconds_per_design": float(avg_per_design),
+            **{f"summary/refiner__{k}": v for k, v in refiner_meta.items()},
+        },
+    )
+    finish_wandb(wandb_run)
+    return 0
+
+
+def _nanmean(values: list[Any]) -> float:
+    """Mean over numeric values, ignoring None/NaN. Returns NaN if all
+    inputs are missing."""
+    import math
+
+    cleaned = [
+        float(v) for v in values
+        if v is not None and not (isinstance(v, float) and math.isnan(v))
+    ]
+    if not cleaned:
+        return float("nan")
+    return sum(cleaned) / len(cleaned)
+
+
+def _write_ablation_diagnostics(
+    run_dir: Path, diagnostics_buffer: list[dict[str, Any]]
+) -> None:
+    """Materialize per-design ablation diagnostics into two parquets:
+
+    - ``ablation_diagnostics.parquet``: one row per (protein, design)
+      with per-design summary columns. Fields that were not measured
+      on this arm (e.g. ``fused_entropy_*`` on a probe-only baseline
+      arm) are written as NaN, NEVER as fake zeros, so downstream
+      comparisons can NaN-skip them.
+    - ``ablation_step_diagnostics.parquet``: one row per (protein,
+      design, step) with the raw step-level entropy/selection records.
+    """
+    summary_rows: list[dict[str, Any]] = []
+    step_rows: list[dict[str, Any]] = []
+    for record in diagnostics_buffer:
+        steps = record.get("step_records") or []
+        # Probe-only arms (baseline, sidecar) emit n_selected=None; only
+        # refiner-bearing arms emit integer n_selected values.
+        selected_values = [
+            s.get("n_selected") for s in steps if s.get("n_selected") is not None
+        ]
+        n_selected_total = (
+            int(sum(int(v) for v in selected_values))
+            if selected_values
+            else float("nan")
+        )
+        n_selected_per_step_mean = (
+            float(_nanmean([int(v) for v in selected_values]))
+            if selected_values
+            else float("nan")
+        )
+
+        base_h_mean = _nanmean([s.get("base_entropy_mean") for s in steps])
+        fused_h_mean = _nanmean([s.get("fused_entropy_mean") for s in steps])
+        refiner_h_mean = _nanmean([s.get("refiner_entropy_mean") for s in steps])
+        base_q90_mean = _nanmean([s.get("base_entropy_q90") for s in steps])
+        fused_q90_mean = _nanmean([s.get("fused_entropy_q90") for s in steps])
+
+        summary_rows.append(
+            {
+                "protein_id": record["protein_id"],
+                "design_idx": int(record["design_idx"]),
+                "arm": record["arm"],
+                "wall_seconds": float(record["wall_seconds"]),
+                "n_residues": int(record["n_residues"]),
+                "n_diagnostic_steps": int(len(steps)),
+                "n_steps_with_refiner": int(len(selected_values)),
+                "n_selected_total": n_selected_total,
+                "n_selected_per_step_mean": n_selected_per_step_mean,
+                "base_entropy_mean": base_h_mean,
+                "fused_entropy_mean": fused_h_mean,
+                "refiner_entropy_mean": refiner_h_mean,
+                "base_entropy_q90_mean": base_q90_mean,
+                "fused_entropy_q90_mean": fused_q90_mean,
+            }
+        )
+        for step in steps:
+            step_rows.append(
+                {
+                    "protein_id": record["protein_id"],
+                    "design_idx": int(record["design_idx"]),
+                    "arm": record["arm"],
+                    **{k: v for k, v in step.items()},
+                }
+            )
+    pd.DataFrame(summary_rows).to_parquet(
+        run_dir / "ablation_diagnostics.parquet", index=False
+    )
+    if step_rows:
+        pd.DataFrame(step_rows).to_parquet(
+            run_dir / "ablation_step_diagnostics.parquet", index=False
+        )
+
+
+def _resolve_mapdiff_reference_commit() -> str | None:
+    """Best-effort: read the local MapDiff reference commit, if available."""
+    try:
+        import subprocess
+
+        mapdiff_dir = PROJECT_ROOT / "MapDiff"
+        if not mapdiff_dir.is_dir():
+            return None
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=mapdiff_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:  # noqa: BLE001 - best-effort metadata
+        pass
+    return None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

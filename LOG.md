@@ -2211,3 +2211,113 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.95
 - status: done
 - next_action: User to rsync the two fast parquets + manifest to the cluster and re-target eval driver `--test-set-parquet` to the fast variant for the next iteration round; do NOT replace `test_set_parquet_path` in archived eval manifests.
+
+### L0076
+- timestamp: 2026-05-08T01:01:18+08:00
+- type: PLAN
+- module: IF_IMP
+- trigger: User wants a new standalone DPLM inverse-folding optimization track after baseline/sampling checks, with MapDiff methods explicitly source-grounded and a separate encoder-replacement phase; user requested cloning MapDiff into the current project for future use.
+- change_summary: Cloned the official MapDiff repository into `/Users/jerry/Project/MHC-IF/MapDiff` at commit `6c1299584b71d3c53ad42e1d591459a59f299ed3`. Added `doc/IF_IMP.md`, a source-grounded improvement plan for DPLM-IF: Phase A imports MapDiff-style entropy mask ratio, IPA masked designer refinement, entropy-weighted fusion, DDIM/MC-dropout-inspired aggregation around the existing DPLM denoiser; Phase B tests whether replacing/augmenting the frozen GVP structure encoder with MapDiff-style geometry features or EGNN encoder improves DPLM conditioning; Phase C is intentionally left as an empty decision slot until Phase A/B identify the bottleneck.
+- rationale: Phase 0/1 baseline and sampling checks are already done, so the next useful plan should target mechanisms MapDiff directly supports: uncertainty-aware refinement and stronger geometry conditioning. Keeping Phase C empty prevents scope creep before empirical readout. The document separates paper-supported facts, code-verified facts, and explicit caveats so MapDiff claims are traceable rather than inferred.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/MapDiff`
+  - `/Users/jerry/Project/MHC-IF/doc/IF_IMP.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Read MapDiff Nature Machine Intelligence PDF from Zotero item `Q3VQM9CT`; verified source details in `MapDiff/model/prior_diff.py`, `MapDiff/model/ipa/ipa_net.py`, `MapDiff/model/egnn_pytorch/egnn_net.py`, `MapDiff/main.py`, `MapDiff/mask_ipa_pretrain.py`, and default configs under `MapDiff/conf/`. Confirmed MapDiff remote `https://github.com/peizhenbai/MapDiff.git` and cloned commit hash above. Ran document self-check for placeholder markers (`TBD`, `TODO`, `implement later`, candidate-direction placeholders) with no matches after revision.
+- impact:
+  - scope: Planning/documentation and local external-source checkout only; no project code path changed.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: If switching to Coder, implement Phase A first using `superpowers:executing-plans`, starting with tested entropy/mask/fusion utilities and an IPA refiner port from MapDiff.
+
+### L0077
+- timestamp: 2026-05-08T01:24:22+08:00
+- type: PLAN
+- module: IF_IMP
+- trigger: User requested a single coding PLAN for the MapDiff-grounded DPLM inverse-folding improvement path, after deciding not to split the work into separate A/B plans and asking for subagent-backed detail confirmation.
+- change_summary: Added `/Users/jerry/Project/MHC-IF/PLAN_IF_IMP.md`, a single agent-executable coding plan. The plan starts with a DPLM-compatible MapDiff-style IPA refiner path, then adds an opt-in IPA geometry sidecar for encoder conditioning. It includes exact files to create/modify, test files, command-level verification steps, DPLM/MapDiff source anchors, script registration requirements, and a final LOG schema for implementation completion.
+- rationale: Subagent review confirmed the safe DPLM insertion point is decoder-time logit processing before sampling, and that MapDiff's directly portable components are entropy masking, IPA masked refinement, entropy-weighted fusion, CB/IPA geometry handling, and MC dropout. The plan deliberately avoids wholesale MapDiff `Prior_Diff` or EGNN import because those require a different PyG graph/data contract and discrete posterior process than DPLM.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_IF_IMP.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Re-checked script governance in `doc/SCRIPTS.md` and `scripts/CLAUDE.md`; verified MapDiff IPA, entropy/fusion, CB construction, and denoising source anchors against `MapDiff/model/ipa/ipa_net.py`, `MapDiff/utils.py`, and `MapDiff/model/prior_diff.py`; verified DPLM hook/batch anchors against `inverse_folding/dplm/src/byprot/models/dplm/dplm_invfold.py`, `inverse_folding/dplm/src/byprot/datamodules/dataset/cath.py`, and `inverse_folding/reference_flow/runtime.py`. Ran plan self-check for placeholder markers and hardcoded cluster-path patterns with no matches.
+- impact:
+  - scope: Planning/documentation only; no production model or script behavior changed.
+  - risk: low
+  - confidence: 0.88
+- status: done
+- next_action: Switch to Coder and execute `PLAN_IF_IMP.md` with `superpowers:executing-plans`, starting from Task 1 token bridge and Task 2 geometry bridge before porting IPA modules.
+- refs:
+  - `PLAN_IF_IMP.md`
+  - `doc/IF_IMP.md`
+  - L0076
+
+### L0078
+- timestamp: 2026-05-08T12:22:00+08:00
+- type: VERIFICATION
+- module: IF_IMP
+- trigger: User asked Coder to execute `PLAN_IF_IMP.md` Tasks 1-12 plus extend the runner with 4-arm ablation infrastructure (baseline / refiner / sidecar / sidecar+refiner), wire ablation diagnostics into the IF improvement runner, and add a cross-arm comparison consumer for the existing DPLM evaluator pipeline.
+- change_summary: Implemented PLAN_IF_IMP.md Tasks 1-12 end-to-end (token/geometry/entropy/fusion/IPA refiner/logit processor/DPLM hook/checkpoint/training/scripts/local smoke/sidecar) and added ablation infrastructure: explicit `--arm` resolver, optional `--sidecar-checkpoint`, `--ablation-mode` per-step diagnostics emission, sidecar checkpoint helpers, sidecar training script, and a dedicated cross-arm comparison script that produces the 5 PLAN-mandated indicators.
+- rationale: The refiner alone matches MapDiff's local logit-fusion intervention, while the sidecar feeds geometric context into DPLM's encoder pre-decoder, so they target distinct points in the generation pipeline. To decide whether the dual-module Arm 4 is worth its compute, we need cross-arm deltas on (i) refiner-selection shrinkage, (ii) base-vs-fused entropy quantile gain, (iii) sidecar-induced base entropy reduction, (iv) Arm 4 - max(Arm 2, Arm 3) entropy gain, and (v) wall-time per design. These required: (a) an `--arm` switch, (b) a diagnostics sink in the logit processor, (c) per-design + per-step parquet emission in the runner, (d) a comparison consumer alongside the existing `evaluate_phase_c.py` so the user's per-arm immunogenicity / structural metrics still flow through the unchanged evaluator.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/__init__.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/tokens.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/geometry.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/entropy.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/fusion.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/config.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/logit_processor.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/checkpoint.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/training.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/sidecar.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/encoder_wrapper.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/ipa/{__init__,rigid_utils,ipa_utils,ipa_attn,refiner}.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/src/byprot/models/dplm/dplm_invfold.py` (added optional `logit_processor` + `batch` to `forward_decoder`/`generate`; default behavior bit-equivalent)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/runtime.py` (added optional `logit_processor` kwarg to `generate_native_sequence`)
+  - `/Users/jerry/Project/MHC-IF/scripts/train_if_imp_refiner.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/train_if_imp_sidecar.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_imp_refiner.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/compare_if_imp_ablation.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_imp.slurm`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md` (registered new H2 `Inverse Folding -- IF Improvement (PLAN_IF_IMP.md)` with 4 scripts + SLURM)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/{test_tokens,test_geometry,test_entropy,test_fusion,test_ipa_refiner,test_logit_processor,test_dplm_hook,test_training,test_sidecar}.py`
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_if_imp_scripts.py`
+- evidence:
+  - 39/39 IF_IMP unit + script tests pass (`tests/inverse_folding/dplm_refiner/` + `tests/scripts/test_if_imp_scripts.py`).
+  - 42/42 reference_flow + phase_c0 + dplm_refiner + dplm_hook regression tests pass; no regressions on the unchanged paths.
+  - `python -m compileall inverse_folding/dplm_refiner scripts/{train_if_imp_refiner,train_if_imp_sidecar,run_if_imp_refiner,compare_if_imp_ablation}.py` succeeds.
+  - Placeholder + hardcoded cluster path self-scan over Python modules + `PLAN_IF_IMP.md` returns no hits.
+  - CPU shape smoke for `DPLMIPARefiner` returns `(1, 8, 20)` finite logits.
+  - `--help` returns 0 for all four new scripts; CLI flags listed in `tests/scripts/test_if_imp_scripts.py` are present.
+- impact:
+  - scope: New DPLM IF improvement path (refiner + sidecar) and 4-arm ablation infra; default DPLM generation remains bit-equivalent when no refiner / sidecar / `--ablation-mode` is set; no changes to Module K, Phase B/C, Module M/N, evaluator schema.
+  - risk: medium
+  - confidence: 0.84
+- status: done
+- next_action: On Della: train refiner with `MODE=train_refiner` and sidecar with `MODE=train_sidecar` against the L0075 fast IF subset (small `--limit-batches` smoke first, then full CATH training). Then run all 4 arms with `MODE=generate_refiner --arm <ARM> --ablation-mode` on the same test set, evaluate each via the existing `evaluate_phase_c.py`, and produce cross-arm deltas with `MODE=compare_ablation`. Decide whether to retain Arm 4 based on `combined_minus_best_single_fused_entropy` and the wall-time cost reported by `compare_if_imp_ablation.py`.
+- refs:
+  - `PLAN_IF_IMP.md`
+  - `doc/IF_IMP.md`
+  - `doc/SCRIPTS.md` §Inverse Folding -- IF Improvement
+  - L0077
+
+### L0078a (tech debt)
+- timestamp: 2026-05-08T12:22:00+08:00
+- type: RISK
+- module: IF_IMP
+- trigger: Carry-over from PLAN_IF_IMP.md Task 12 verification.
+- change_summary: Document two known limitations not addressed in L0078: (a) DPLM `forward_decoder` line 223 hardcodes `temperature=0.0` in `stochastic_sample_from_categorical`, so `--temperature` flags on `run_if_imp_refiner.py` and `run_if_phase_c0.py` are no-ops at the decoder; (b) `train_if_imp_sidecar.py` uses a recovery-only objective with the encoder-pre-decoder injection path -- this works for the proof-of-concept ablation but is not the strongest training signal possible for the sidecar.
+- rationale: Both items are explicitly out of scope for `PLAN_IF_IMP.md`; logging them avoids silent debt accumulation.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/src/byprot/models/dplm/dplm_invfold.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/train_if_imp_sidecar.py`
+- evidence: Source inspection of `forward_decoder` lines 223-225 confirms hardcoded `temperature=0.0` regardless of `prev_decoder_out["temperature"]`.
+- impact:
+  - scope: Sampler temperature controllability + sidecar training signal quality.
+  - risk: low (item a is a silent no-op; item b is sub-optimal but not wrong)
+  - confidence: 1.00
+- status: open
+- next_action: After L0078 cluster runs land, decide whether to (a) patch DPLM `forward_decoder` to honor the schema temperature and (b) revisit sidecar training with a stronger curriculum (e.g. distillation against teacher decoder logits).
+- refs:
+  - L0078

@@ -159,6 +159,21 @@ Sampling-only and native-sampler generation drivers for the Phase C contribution
 
 ---
 
+## Inverse Folding -- IF Improvement (PLAN_IF_IMP.md)
+
+MapDiff-grounded DPLM inverse-folding improvement path: IPA refiner + IPA geometry sidecar, with 4-arm ablation infrastructure.
+
+1. `scripts/train_if_imp_refiner.py` -- Train the DPLM-compatible IPA refiner on CATH batches. Uses DPLM/ESM alphabet and `[N, CA, C, O]` coordinates, converts to IPA `[N, CA, C, CB, O]`, and saves a refiner checkpoint with config.
+2. `scripts/train_if_imp_sidecar.py` -- Train the DPLM-compatible IPA geometry sidecar on CATH backbones. The sidecar is wired into the GVP encoder via a residual on `feats`; objective is DPLM decoder masked-AA recovery with everything but the sidecar frozen. Saves `sidecar_last.pt` + config.
+3. `scripts/run_if_imp_refiner.py` -- Generate inverse-folding designs with optional refiner and/or sidecar. Supports the 4 ablation arms (`baseline` / `refiner` / `sidecar` / `sidecar_refiner`) via `--arm`, auto-resolved from `--refiner-checkpoint` and `--sidecar-checkpoint`. `--ablation-mode` emits per-step refiner diagnostics + per-design `ablation_diagnostics.parquet`.
+4. `scripts/compare_if_imp_ablation.py` -- Cross-arm ablation comparison consuming 2-4 run dirs from `run_if_imp_refiner.py --ablation-mode`. Computes the 5 PLAN-mandated indicators (refiner-selection shrinkage, fused-vs-base entropy quantile gain, sidecar effect on base entropy, combined-vs-best-single delta, compute cost per arm) into `comparison.parquet` + `comparison_summary.json`.
+
+### SLURM
+
+1. `scripts/submit_if_imp.slurm` -- Parameterized IF improvement launcher. `MODE=train_refiner|train_sidecar|generate_refiner|compare_ablation`. Generation overrides include `ARM`, `REFINER_CHECKPOINT`, `SIDECAR_CHECKPOINT`, `ABLATION_MODE=1`. Compare mode reads `BASELINE_RUN`/`REFINER_RUN`/`SIDECAR_RUN`/`COMBINED_RUN`.
+
+---
+
 ## Inverse Folding — Module M: Classifier Guidance (PLAN_IF.md)
 
 Inference-time epitope-aware steering with eta sweep.

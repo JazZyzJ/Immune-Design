@@ -189,6 +189,7 @@ def generate_native_sequence(
     max_iter: int,
     temperature: float,
     seed: int,
+    logit_processor: Any = None,
 ) -> str:
     _seed_all(seed)
     batch = clone_batch(prepared.batch)
@@ -198,13 +199,16 @@ def generate_native_sequence(
     batch["prev_tokens"] = prev_tokens
     batch["prev_token_mask"] = prev_token_mask
 
-    output_tokens, _ = task.model.generate(
+    generate_kwargs: dict[str, Any] = dict(
         batch=batch,
         max_iter=max_iter,
         sampling_strategy="argmax",
         temperature=temperature,
         use_draft_seq=bool(task.hparams.generator.use_draft_seq),
     )
+    if logit_processor is not None:
+        generate_kwargs["logit_processor"] = logit_processor
+    output_tokens, _ = task.model.generate(**generate_kwargs)
     special_sym_mask = (
         tokens.eq(task.alphabet.padding_idx)
         | tokens.eq(task.alphabet.cls_idx)

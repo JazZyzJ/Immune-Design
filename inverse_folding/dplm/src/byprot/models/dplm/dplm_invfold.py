@@ -187,6 +187,8 @@ class DPLMInvFold(nn.Module):
         need_attn_weights=False,
         partial_masks=None,
         sampling_strategy="gumbel_argmax",
+        logit_processor=None,
+        batch=None,
     ):
         output_tokens = prev_decoder_out["output_tokens"].clone()
         output_scores = prev_decoder_out["output_scores"].clone()
@@ -215,6 +217,23 @@ class DPLMInvFold(nn.Module):
         logits[..., self.pad_id] = -math.inf
         logits[..., self.bos_id] = -math.inf
         logits[..., self.eos_id] = -math.inf
+
+        # Optional decoder-time refiner hook: receives logits AFTER all
+        # five special-token bans, BEFORE sampling. The processor is
+        # responsible for re-banning special tokens after fusion (handled
+        # by DPLMTokenBridge.scatter_aa_logits). PLAN_IF_IMP.md Task 7.
+        if logit_processor is not None:
+            if batch is None:
+                raise ValueError(
+                    "batch is required when logit_processor is provided"
+                )
+            logits = logit_processor(
+                logits=logits,
+                output_tokens=output_tokens,
+                batch=batch,
+                step=step + 1,
+                max_step=max_step,
+            )
 
         if sampling_strategy == "argmax":
             _scores, _tokens = logits.max(-1)
@@ -405,6 +424,7 @@ class DPLMInvFold(nn.Module):
         partial_masks=None,
         sampling_strategy="argmax",
         use_draft_seq=False,
+        logit_processor=None,
     ):
         tokenizer = tokenizer
         max_iter = max_iter
@@ -445,6 +465,8 @@ class DPLMInvFold(nn.Module):
                     encoder_out=encoder_out,
                     partial_masks=partial_masks,
                     sampling_strategy=sampling_strategy,
+                    logit_processor=logit_processor,
+                    batch=batch,
                 )
 
             output_tokens = decoder_out["output_tokens"]
