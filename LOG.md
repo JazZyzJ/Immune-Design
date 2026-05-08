@@ -2352,3 +2352,37 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `doc/SCRIPTS.md` §Inverse Folding — Module N: Comparison Baselines
   - `scripts/CLAUDE.md` §3 (Module-level SLURM consolidation)
+
+### L0080
+- timestamp: 2026-05-08T17:30:00+08:00
+- type: VERIFICATION
+- module: C
+- trigger: User flagged that Phase C0 vs C1 head-to-head was unfair — C0 ran 50 reparam-decoded iterations, while C1 ran 10 one-shot categorical-sample iterations with no token refinement (sampler.py:89/132 + c1_*.yaml n_steps=10). Independently flagged that the h_maps↔test-set alignment was only enforced by `protein_id` + length, leaving silent position-misalignment exposure if the test parquet was ever regenerated with a different residue ordering for the same protein_id.
+- change_summary: (i) Aligned both C0 and C1 to the DPLM paper's inverse-folding evaluation default of 100 iterations: bumped `MAX_ITER` default in `scripts/submit_if_phase_c.slurm` from 50→100 and `sampler.n_steps` in all five `c1_*.yaml` configs from 10→100. (ii) Added optional inference-time reparameterized refinement to `PositionDependentDFMSampler`: tracks per-position chosen-token log-prob, then at every step except the last re-masks the bottom `1−(step+1)/n_steps` fraction of committed positions by score (DPLM-style `reparam-uncond-deterministic-linear`). New `RemaskConfig` dataclass on `SamplerConfig`, default off; enabled in all five `c1_*.yaml` so Phase C1 gets the same refinement budget DPLM's paper baseline reports. Disclaimer added to `doc/Reference_Flow_Derivation.md` §4.3.1 explaining that refinement is *not* part of the DFM derivation but is layered on top of the position-dependent schedule and does not read `h_i` or modify `g_i`. (iii) Hardened h_maps alignment: added `sequence_md5` column to the h-map parquet schema, written by `scripts/precompute_h_maps.py` from the input residue sequence (uppercased before hashing); `inverse_folding/evaluation/h_maps.py` validator now rejects rows with malformed/missing md5; `scripts/run_if_phase_c1.py` calls a new `assert_h_maps_align_with_test_set()` at startup that fails fast when any test-set protein has a missing or non-matching `sequence_md5`, also accepting extra h-map proteins as a superset.
+- rationale: Without (i)+(ii), C0 had ~5× more model forwards plus reparam refinement, so any C1 recovery drop was confounded with sampler contract instead of attributable to the h-map signal. The DPLM README evaluation example (`task.generator.max_iter=100`) is the right anchor for both — `max_iter=10` is the training default in `cond_dplm_*.yaml`, and `max_iter=50` was an ad hoc midpoint with no published reference. Reparam refinement violates the absorbing-chain assumption of the DFM derivation but does not read `h_i`, so the position-dependent inductive bias from §1 is preserved; we ship it on by default with an ablation switch (`sampler.remask.enabled: false`) so a clean DFM-faithful baseline remains reachable. For (iii), the previous c1 driver only checked `len(h_values) == sequence_length` per protein — same `protein_id` with same length but a re-cut chain would produce silent residue-wise misalignment of `h_raw[i]` vs `sequence[i]`. Binding each h-map row to `md5(uppercase(sequence))` and checking at startup gives byte-identity guarantees with one new column (~32 chars/row).
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/config.py` (new `RemaskConfig` dataclass + parsing)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/sampler.py` (per-position log-prob tracking + `_apply_reparam_remask` helper; `_sample_categorical` now returns chosen-token log-probs)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/__init__.py` (re-export `RemaskConfig`)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/c1_{null,linclamp,sigmoid,power,shuffle}.yaml` (n_steps 10→100, added `sampler.remask.enabled: true`)
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_phase_c.slurm` (MAX_ITER default 50→100, comment added)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/evaluation/h_maps.py` (new `sequence_md5()` helper; `HMAP_COLUMNS` includes `sequence_md5`; per-row md5 format check)
+  - `/Users/jerry/Project/MHC-IF/scripts/precompute_h_maps.py` (writes `sequence_md5` per row; `validate_resume_rows` cross-checks md5 against current input; `normalize_row` preserves md5)
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_phase_c1.py` (new `assert_h_maps_align_with_test_set()` invoked at startup right after `load_h_maps`)
+  - `/Users/jerry/Project/MHC-IF/doc/Reference_Flow_Derivation.md` (§4.3.1 inference-time reparameterized refinement disclaimer)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_sampler.py` (5 new tests: remask off = legacy; remask on triggers refinement; low-confidence positions are revisited; determinism with seed; YAML round-trip)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_h_maps_contract.py` (3 new tests: missing md5 column rejected; malformed md5 rejected; precompute round-trip emits correct md5; resume rejects md5 mismatch — extends existing 14 → 17)
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_run_if_phase_c1_script.py` (4 new tests for `assert_h_maps_align_with_test_set`: pass on match; fail on same-length-different-residues; fail on missing protein; pass with superset h_maps)
+- evidence:
+  - 45/45 tests pass: `python -m pytest tests/inverse_folding/test_reference_flow_{sampler,config,amplification,schedule,runtime}.py tests/inverse_folding/test_h_maps_contract.py tests/scripts/test_run_if_phase_c1_script.py`
+  - `c1_null.yaml` round-trips through `load_reference_flow_config` with `sampler.remask.enabled is True` and `sampler.n_steps == 100`.
+  - DPLM defaults cross-checked: `inverse_folding/dplm/configs/experiment/dplm/cond_dplm_650m.yaml:67` has `generator.max_iter: 10` (training default); `inverse_folding/dplm/README.md:468` shows `task.generator.max_iter=100` for the published inverse-folding evaluation.
+- impact:
+  - scope: Phase C0/C1 sampling iteration count + new C1 inference-time refinement layer + h_maps schema (1 new column) + c1 driver startup validation. Previous h_maps parquets must be regenerated to include `sequence_md5` (no backward-compat shim — user confirmed they will re-run on the new smaller test set).
+  - risk: medium. The `sequence_md5` column is a hard schema break for old parquets; any old h-map parquet without the column will fail-fast on load. Reparam refinement is mathematically a non-DFM augmentation but does not affect the position-dependent schedule; ablation toggle preserves a clean baseline.
+  - confidence: 0.92
+- status: done
+- next_action: Regenerate h_maps with `sbatch scripts/submit_precompute_h_test.slurm` (per-allele) using the new test set, then run a head-to-head: `MODE=native sbatch scripts/submit_if_phase_c.slurm` (C0 100 iter) vs `MODE=reference_flow CONFIG_PATH=inverse_folding/reference_flow/configs/c1_null.yaml sbatch scripts/submit_if_phase_c.slurm` (C1 100 iter + remask). Expect C1 null to track C0 closely now that compute budgets and refinement are aligned.
+- refs:
+  - `doc/Reference_Flow_Derivation.md` §4.3.1
+  - DPLM README inverse-folding evaluation block (line 466-469)

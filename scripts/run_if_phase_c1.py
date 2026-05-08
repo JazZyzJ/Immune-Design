@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from inverse_folding.evaluation.h_maps import load_h_maps
+from inverse_folding.evaluation.h_maps import load_h_maps, sequence_md5
 from inverse_folding.reference_flow import (
     PositionDependentDFMSampler,
     load_reference_flow_config,
@@ -307,6 +307,48 @@ def derive_h_shuffle_seed(base_seed: int, protein_id: str, design_idx: int) -> i
     return int.from_bytes(digest[:8], byteorder="big", signed=False)
 
 
+def assert_h_maps_align_with_test_set(
+    *,
+    entries: pd.DataFrame,
+    h_maps_df: pd.DataFrame,
+) -> None:
+    """Fail-fast if the test parquet and h-maps disagree on (protein_id, sequence).
+
+    Length checks only catch a subset of misalignment: same protein_id with
+    same residue count but a different residue ordering (e.g. a chain re-cut
+    or a different chain stretch) would silently produce position-wise wrong
+    h-values. We bind each h-map row to the exact sequence it was scored on
+    by comparing md5 digests stored in the parquet against the test set.
+    """
+    h_md5_by_id = {
+        str(row["protein_id"]): str(row["sequence_md5"])
+        for _, row in h_maps_df.iterrows()
+    }
+    mismatches: list[tuple[str, str, str]] = []
+    missing: list[str] = []
+    for _, entry in entries.iterrows():
+        protein_id = str(entry["protein_id"])
+        expected = sequence_md5(str(entry["sequence"]))
+        actual = h_md5_by_id.get(protein_id)
+        if actual is None:
+            missing.append(protein_id)
+            continue
+        if actual != expected:
+            mismatches.append((protein_id, expected, actual))
+    if missing:
+        raise ValueError(
+            "h-maps parquet missing protein_id values present in test set "
+            f"(first 5: {missing[:5]}; total {len(missing)})"
+        )
+    if mismatches:
+        first = mismatches[0]
+        raise ValueError(
+            "h-maps sequence_md5 does not match test-set sequence for "
+            f"{len(mismatches)} protein(s); first mismatch: protein_id={first[0]} "
+            f"expected={first[1]} found={first[2]}"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -352,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
 
     entries = load_test_entries(args.test_set_parquet)
     h_maps_df, h_maps_meta = load_h_maps(args.h_maps_parquet)
+    assert_h_maps_align_with_test_set(entries=entries, h_maps_df=h_maps_df)
     h_map_rows = {str(row["protein_id"]): row for _, row in h_maps_df.iterrows()}
     corpus_stats = _load_corpus_stats(args.h_corpus_stats)
     if config.amplification.h_source == "h_normalized_corpus" and corpus_stats is None:

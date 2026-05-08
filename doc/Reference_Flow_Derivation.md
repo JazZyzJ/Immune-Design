@@ -395,6 +395,18 @@ Output: x             -- generated sequence [L]
 
 Lines 5-10 are the only difference from standard DFM sampling: `rate_i` varies by position instead of being uniform.
 
+#### 4.3.1 Inference-time reparameterized refinement (non-DFM)
+
+Our reference implementation (`inverse_folding/reference_flow/sampler.py`) supports an optional refinement layer modeled on DPLM's `reparam-uncond-deterministic-linear` decoding. After step $k$ (excluding the final step), the sampler optionally re-masks the bottom $\lceil n_{\text{committed}} \cdot (1 - (k+1)/N) \rceil$ committed positions ranked by chosen-token log-probability, allowing them to be resampled in subsequent steps.
+
+This refinement **is not part of the DFM derivation**:
+
+- The DFM forward chain is *absorbing*: residue → mask transitions never occur in the prescribed forward process, so the reverse chain prescribed by the rate matrix in §2.2 has no `vocab → mask` transitions either. Reparameterized re-masking introduces such transitions, which violates the strict Markov chain interpretation.
+- However, the refinement is layered *on top of* the position-dependent unmasking schedule and **does not read $h_i$ or modify $g_i$**. The position-dependent schedule still governs *first*-unmask timing and remains the only place the hotspot signal enters the reverse process. This means the inductive bias derived in §1 (Emergent Ordering) is preserved.
+- At $t=1$ the re-mask rate $1 - (k+1)/N$ goes to $0$, so the terminal distribution over fully unmasked sequences is unaffected.
+
+**Recommended framing for evaluation**: Treat reparam refinement as inference-only, analogous to MaskGIT iterative MAP decoding, and report it as a sampling hyperparameter alongside step count and temperature. Pair main results with an ablation that disables refinement (`sampler.remask.enabled: false`) to isolate the contribution of position-dependent scheduling from the contribution of inference-time refinement.
+
 ### 4.4 With corrector steps (optional)
 
 Following [Gat.Thm.4], corrector steps with per-position stochasticity $\eta_i$:

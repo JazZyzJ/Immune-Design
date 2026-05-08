@@ -155,21 +155,23 @@
 ## Phase C: Core Contribution — Reference Flow (NEW, 2026-04-07)
 
 - **Status**: C0/C1 **code ready, cluster not run**. C2/C3 still stubbed.
-- **Math foundation**: `doc/Reference_Flow_Derivation.md` — Tasks 0, A, C complete; Task B framework complete
+- **Math foundation**: `doc/Reference_Flow_Derivation.md` — Tasks 0, A, C complete; Task B framework complete; §4.3.1 added 2026-05-08 documenting that the inference-time reparam refinement is *not* part of the DFM derivation
 - **Planned tiers**: C0 (unguided baseline) → C1 (sampling-only) → C2 (retrain) → C3 (FiLM+CFG)
 - **Implemented now**:
-  - `inverse_folding/reference_flow/` package: YAML-validated config schema, base schedules + derivatives, amplification forms (`constant_one`, `linear_clamp`, `sigmoid`, `power`), per-protein h-shuffle control, and denoiser-agnostic `PositionDependentDFMSampler`
-  - preset YAML scaffolds: `c1_null`, `c1_linclamp`, `c1_sigmoid`, `c1_power`, `c1_shuffle`
-  - C0/C1 drivers: `scripts/run_if_phase_c0.py`, `scripts/run_if_phase_c1.py`
-  - shared Phase C SLURM: `scripts/submit_if_phase_c.slurm` (`MODE=native|reference_flow`)
-  - tests: schedule / amplification / sampler / config + C0 artifact contract (**16 passing**)
+  - `inverse_folding/reference_flow/` package: YAML-validated config schema, base schedules + derivatives, amplification forms (`constant_one`, `linear_clamp`, `sigmoid`, `power`), per-protein h-shuffle control, denoiser-agnostic `PositionDependentDFMSampler`, and (2026-05-08) optional DPLM-style reparam re-mask refinement (`SamplerConfig.remask`)
+  - preset YAML scaffolds: `c1_null`, `c1_linclamp`, `c1_sigmoid`, `c1_power`, `c1_shuffle` — all on n_steps=100 + remask=true (2026-05-08, aligned with DPLM paper inverse-folding eval default)
+  - C0/C1 drivers: `scripts/run_if_phase_c0.py`, `scripts/run_if_phase_c1.py` (C1 now does h_maps↔test-set md5 alignment check at startup, fail-fast)
+  - shared Phase C SLURM: `scripts/submit_if_phase_c.slurm` (`MODE=native|reference_flow`); MAX_ITER default 100 (was 50)
+  - h_maps schema includes `sequence_md5` column (2026-05-08); old h_map parquets must be regenerated
+  - tests: schedule / amplification / sampler / config / remask / md5 alignment / C0 artifact contract (**45 passing in reference_flow + h_maps + c1 helper suites**)
 - **Acceptance status**:
   - TDD gates for C0/C1 contract layer: **pass**
   - Existing Phase B + Module L contract suites: still green after Phase C changes (**46 passing**)
-  - End-to-end allele run on Della: **pending**
+  - End-to-end allele run on Della: **pending — must regenerate h_maps with sequence_md5 first**
 - **Operational note**:
   - C0 can run immediately on the assembled IF test set + B1 structures.
   - C1 actual experiment runs still depend on B2 test-set h-maps being materialized for the target allele; `h_normalized_corpus` arms additionally need B3 corpus stats sidecar.
+  - **2026-05-08 schema bump**: every existing h_maps parquet must be re-generated to include `sequence_md5` before C1 will load it; the c1 driver fails fast on missing or mismatching md5.
 
 ### Experimental results (TBD — fill per run after cluster completes)
 

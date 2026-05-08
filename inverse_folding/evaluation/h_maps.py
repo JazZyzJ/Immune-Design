@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -10,15 +11,29 @@ import numpy as np
 import pandas as pd
 
 
+def sequence_md5(sequence: str) -> str:
+    """Return the lowercase hex md5 digest of a residue sequence.
+
+    Used to bind an h-map row to the exact sequence it was scored on so that
+    Phase C1 can fail-fast on any (protein_id, sequence) drift between the
+    test parquet and the precomputed h-maps. The sequence is uppercased
+    before hashing so that case-only differences are tolerated.
+    """
+    return hashlib.md5(sequence.upper().encode("utf-8")).hexdigest()
+
+
 HMAP_COLUMNS = (
     "protein_id",
     "allele",
     "sequence_length",
+    "sequence_md5",
     "h_raw",
     "h_processed",
     "global_risk",
     "n_windows",
 )
+
+SEQUENCE_MD5_LENGTH = 32
 
 HMAP_META_KEYS = (
     "run_id",
@@ -173,6 +188,18 @@ def validate_h_map_dataframe(df: pd.DataFrame, *, expected_allele: str | None = 
         sequence_length = int(row["sequence_length"])
         if sequence_length <= 0:
             raise HMapSchemaError(f"{protein_id}: sequence_length must be positive")
+
+        sequence_md5 = row["sequence_md5"]
+        if not isinstance(sequence_md5, str) or len(sequence_md5) != SEQUENCE_MD5_LENGTH:
+            raise HMapSchemaError(
+                f"{protein_id}: sequence_md5 must be a 32-character hex digest, "
+                f"got {sequence_md5!r}"
+            )
+        if not all(c in "0123456789abcdef" for c in sequence_md5):
+            raise HMapSchemaError(
+                f"{protein_id}: sequence_md5 must contain only lowercase hex digits, "
+                f"got {sequence_md5!r}"
+            )
 
         h_raw = _as_float_array(row["h_raw"], f"{protein_id}: h_raw")
         h_processed = _as_float_array(row["h_processed"], f"{protein_id}: h_processed")

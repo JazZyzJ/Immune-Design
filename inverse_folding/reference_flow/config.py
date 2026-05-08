@@ -14,11 +14,29 @@ class ReferenceFlowConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class RemaskConfig:
+    """Optional inference-time refinement on committed positions.
+
+    When ``enabled``, after each unmask step (except the final step) the
+    sampler re-masks the lowest-score committed positions following DPLM's
+    ``reparam-uncond-deterministic-linear`` rule. The cutoff fraction is
+    ``1 - (step + 1) / n_steps``. This is *not* part of the position-dependent
+    DFM derivation: it is an inference-only refinement layered on top of the
+    position-dependent unmasking schedule (analogous to MaskGIT iterative
+    decoding). The position-dependent schedule still drives *first*-unmask
+    timing and remains the only place the h-map signal is injected.
+    """
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class SamplerConfig:
     n_steps: int
     seed: int
     temperature: float = 1.0
     n_designs_per_protein: int = 1
+    remask: RemaskConfig = RemaskConfig()
 
 
 @dataclass(frozen=True)
@@ -76,11 +94,17 @@ def materialize_reference_flow_config(payload: dict[str, Any]) -> ReferenceFlowC
     if not isinstance(h_shuffle, dict):
         raise ReferenceFlowConfigError("h_shuffle section must be a mapping")
 
+    remask_payload = sampler.get("remask", {})
+    if not isinstance(remask_payload, dict):
+        raise ReferenceFlowConfigError("sampler.remask must be a mapping")
+    remask_cfg = RemaskConfig(enabled=bool(remask_payload.get("enabled", False)))
+
     sampler_cfg = SamplerConfig(
         n_steps=_require_int(sampler, "n_steps"),
         seed=_require_int(sampler, "seed"),
         temperature=float(sampler.get("temperature", 1.0)),
         n_designs_per_protein=int(sampler.get("n_designs_per_protein", 1)),
+        remask=remask_cfg,
     )
     if sampler_cfg.n_steps <= 0:
         raise ReferenceFlowConfigError("sampler.n_steps must be positive")

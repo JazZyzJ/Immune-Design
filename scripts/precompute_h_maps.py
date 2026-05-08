@@ -21,7 +21,11 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from inverse_folding.evaluation.h_maps import default_meta_path, load_h_maps
+from inverse_folding.evaluation.h_maps import (
+    default_meta_path,
+    load_h_maps,
+    sequence_md5,
+)
 
 
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWY")
@@ -312,6 +316,7 @@ def score_entry(
         "protein_id": entry.protein_id,
         "allele": allele,
         "sequence_length": len(entry.sequence),
+        "sequence_md5": sequence_md5(entry.sequence),
         "h_raw": h_raw,
         "h_processed": h_processed,
         "global_risk": float(prediction["global_risk"]),
@@ -505,11 +510,18 @@ def validate_resume_rows(
             raise ValueError(
                 f"resume row allele mismatch for {protein_id}: {row['allele']} != {args.allele}",
             )
-        current_len = len(current_by_id[protein_id].sequence)
+        current_seq = current_by_id[protein_id].sequence
+        current_len = len(current_seq)
         row_len = int(row["sequence_length"])
         if row_len != current_len:
             raise ValueError(
                 f"resume sequence_length mismatch for {protein_id}: {row_len} != {current_len}",
+            )
+        expected_md5 = sequence_md5(current_seq)
+        if str(row["sequence_md5"]) != expected_md5:
+            raise ValueError(
+                f"resume sequence_md5 mismatch for {protein_id}: "
+                f"{row['sequence_md5']} != {expected_md5}",
             )
 
 
@@ -522,6 +534,7 @@ def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     out["protein_id"] = str(out["protein_id"])
     out["allele"] = str(out["allele"])
     out["sequence_length"] = int(out["sequence_length"])
+    out["sequence_md5"] = str(out["sequence_md5"])
     out["h_raw"] = tensor_like_to_float_list(out["h_raw"])
     out["h_processed"] = tensor_like_to_float_list(out["h_processed"])
     out["global_risk"] = float(out["global_risk"])

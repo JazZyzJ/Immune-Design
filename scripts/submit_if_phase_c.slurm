@@ -46,7 +46,10 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-${WORK_DIR}/if_phase_c/${MODE}}"
 
 N_DESIGNS_PER_PROTEIN="${N_DESIGNS_PER_PROTEIN:-1}"
 SEED="${SEED:-42}"
-MAX_ITER="${MAX_ITER:-50}"
+# C0 (DPLM native) iterations. Aligned with the DPLM paper's inverse-folding
+# evaluation default (README task.generator.max_iter=100). C1 iter count is
+# read from the YAML config's sampler.n_steps (also 100) for fair comparison.
+MAX_ITER="${MAX_ITER:-100}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 
 H_MAPS_PARQUET="${H_MAPS_PARQUET:-${H_MAPS_DEFAULT}}"

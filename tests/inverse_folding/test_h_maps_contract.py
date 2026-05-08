@@ -16,7 +16,11 @@ import pandas as pd
 import pytest
 import torch
 
-from inverse_folding.evaluation.h_maps import HMapSchemaError, load_h_maps
+from inverse_folding.evaluation.h_maps import (
+    HMapSchemaError,
+    load_h_maps,
+    sequence_md5,
+)
 
 
 class FakePredictor:
@@ -145,6 +149,7 @@ def _valid_row(**overrides) -> dict:
         "protein_id": "p1",
         "allele": "HLA-DRB1*07:01",
         "sequence_length": 3,
+        "sequence_md5": sequence_md5("AAA"),
         "h_raw": [1.0, 2.0, 3.0],
         "h_processed": [-1.0, 0.0, 1.0],
         "global_risk": 2.0,
@@ -163,6 +168,7 @@ def test_load_h_maps_rejects_array_length_mismatch(tmp_path: Path):
             "protein_id": "p1",
             "allele": "HLA-DRB1*07:01",
             "sequence_length": 3,
+            "sequence_md5": sequence_md5("AAA"),
             "h_raw": [1.0, 2.0],
             "h_processed": [-1.0, 0.0],
             "global_risk": 0.5,
@@ -184,6 +190,7 @@ def test_load_h_maps_rejects_non_centered_processed_values(tmp_path: Path):
             "protein_id": "p1",
             "allele": "HLA-DRB1*07:01",
             "sequence_length": 3,
+            "sequence_md5": sequence_md5("AAA"),
             "h_raw": [1.0, 2.0, 3.0],
             "h_processed": [1.0, 2.0, 3.0],
             "global_risk": 2.0,
@@ -205,6 +212,7 @@ def test_load_h_maps_rejects_missing_metadata_key(tmp_path: Path):
             "protein_id": "p1",
             "allele": "HLA-DRB1*07:01",
             "sequence_length": 3,
+            "sequence_md5": sequence_md5("AAA"),
             "h_raw": [1.0, 2.0, 3.0],
             "h_processed": [-1.0, 0.0, 1.0],
             "global_risk": 2.0,
@@ -254,6 +262,98 @@ def test_load_h_maps_rejects_failure_count_mismatch(tmp_path: Path):
 
     with pytest.raises(HMapSchemaError, match="failures"):
         load_h_maps(parquet, meta)
+
+
+def test_load_h_maps_rejects_missing_sequence_md5_column(tmp_path: Path):
+    parquet = tmp_path / "h.parquet"
+    meta = tmp_path / "h.meta.json"
+    bad = _valid_row()
+    del bad["sequence_md5"]
+    _write_hmap(parquet, [bad])
+    _write_meta(meta)
+
+    with pytest.raises(HMapSchemaError, match="sequence_md5"):
+        load_h_maps(parquet, meta)
+
+
+def test_load_h_maps_rejects_malformed_sequence_md5(tmp_path: Path):
+    parquet = tmp_path / "h.parquet"
+    meta = tmp_path / "h.meta.json"
+    _write_hmap(parquet, [_valid_row(sequence_md5="not-a-real-md5")])
+    _write_meta(meta)
+
+    with pytest.raises(HMapSchemaError, match="sequence_md5"):
+        load_h_maps(parquet, meta)
+
+
+def test_precompute_writes_sequence_md5_matching_input_sequence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import scripts.precompute_h_maps as cli
+
+    source = tmp_path / "source.parquet"
+    out = tmp_path / "h_maps.parquet"
+    meta = tmp_path / "h_maps.meta.json"
+    checkpoint = tmp_path / "best.pt"
+    config = tmp_path / "inference.yaml"
+    checkpoint.write_text("fake")
+    config.write_text("inference: {}\n")
+    pd.DataFrame({
+        "protein_id": ["p1", "p2"],
+        "sequence": ["ACDEFGHIKLMN", "NPQRSTVWYACDE"],
+    }).to_parquet(source, index=False)
+
+    monkeypatch.setattr(cli, "build_predictor", lambda args: FakePredictor())
+    rc = cli.main([
+        "--head-checkpoint", str(checkpoint),
+        "--inference-config", str(config),
+        "--source", "parquet",
+        "--input", str(source),
+        "--id-column", "protein_id",
+        "--sequence-column", "sequence",
+        "--allele", "HLA-DRB1*07:01",
+        "--output-parquet", str(out),
+        "--output-meta", str(meta),
+        "--device", "cpu",
+    ])
+    assert rc == 0
+    df, _ = load_h_maps(out, meta)
+    md5_by_id = {str(row["protein_id"]): str(row["sequence_md5"]) for _, row in df.iterrows()}
+    assert md5_by_id["p1"] == sequence_md5("ACDEFGHIKLMN")
+    assert md5_by_id["p2"] == sequence_md5("NPQRSTVWYACDE")
+
+
+def test_resume_rejects_sequence_md5_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import scripts.precompute_h_maps as cli
+
+    source, checkpoint, config, first, _first_meta = _run_small_cli(tmp_path, monkeypatch)
+    # Replace p1 with a same-length but different residue ordering. md5 changes
+    # but sequence_length matches, so the older length-only check would miss it.
+    pd.DataFrame({
+        "protein_id": ["p1", "p2"],
+        "sequence": ["NMLKIHGFEDCA", "NPQRSTVWYACDE"],
+    }).to_parquet(source, index=False)
+    resumed = tmp_path / "md5_mismatch.parquet"
+    resumed_meta = tmp_path / "md5_mismatch.meta.json"
+
+    with pytest.raises(ValueError, match="sequence_md5"):
+        cli.main([
+            "--head-checkpoint", str(checkpoint),
+            "--inference-config", str(config),
+            "--source", "parquet",
+            "--input", str(source),
+            "--id-column", "protein_id",
+            "--sequence-column", "sequence",
+            "--allele", "HLA-DRB1*07:01",
+            "--output-parquet", str(resumed),
+            "--output-meta", str(resumed_meta),
+            "--resume-from", str(first),
+            "--device", "cpu",
+        ])
 
 
 def test_load_h_maps_can_require_cath_corpus_stats(tmp_path: Path):

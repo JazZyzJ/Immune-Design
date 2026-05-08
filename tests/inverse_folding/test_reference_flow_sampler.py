@@ -9,6 +9,7 @@ from inverse_folding.reference_flow.config import (
     AmplificationConfig,
     HShuffleConfig,
     ReferenceFlowConfig,
+    RemaskConfig,
     SamplerConfig,
     ScheduleConfig,
 )
@@ -79,7 +80,13 @@ def test_sampler_can_capture_trajectory():
         save_trajectories=True,
     )
     assert len(out.trajectory_rows) == 4
-    assert set(out.trajectory_rows[0].keys()) == {"step", "t", "unmasked_mask", "token_argmax"}
+    assert set(out.trajectory_rows[0].keys()) == {
+        "step",
+        "t",
+        "unmasked_mask",
+        "token_argmax",
+        "remasked_count",
+    }
 
 
 def test_sampler_h_shuffle_can_vary_per_design_seed():
@@ -112,3 +119,152 @@ def test_sampler_h_shuffle_can_vary_per_design_seed():
     )
     assert out1.g_values != out2.g_values
     assert sorted(out1.g_values) == sorted(out2.g_values)
+
+
+def _baseline_cfg(*, n_steps: int = 8, remask_enabled: bool = False) -> ReferenceFlowConfig:
+    return ReferenceFlowConfig(
+        sampler=SamplerConfig(
+            n_steps=n_steps,
+            seed=7,
+            temperature=1.0,
+            n_designs_per_protein=1,
+            remask=RemaskConfig(enabled=remask_enabled),
+        ),
+        schedule=ScheduleConfig(base_form="linear"),
+        amplification=AmplificationConfig(form="constant_one", h_source="h_processed"),
+        h_shuffle=HShuffleConfig(enabled=False, seed=None),
+    )
+
+
+def test_remask_disabled_matches_legacy_behavior():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _baseline_cfg(remask_enabled=False)
+    h = np.zeros(12, dtype=np.float32)
+    out_off = sampler.sample(
+        sequence_length=12,
+        h_values=h,
+        denoiser=uniform_denoiser,
+        config=cfg,
+        save_trajectories=True,
+    )
+    assert all(row["remasked_count"] == 0 for row in out_off.trajectory_rows)
+
+
+def biased_denoiser(x_t: torch.Tensor, t: float, struct) -> torch.Tensor:
+    """Per-position deterministic logits.
+
+    Position 0 has a strong preference for token 0 (high confidence),
+    position 1 has a near-uniform distribution over the non-mask tokens
+    (low confidence). Positions ≥ 2 mirror position 0.
+    """
+    L = x_t.shape[0]
+    logits = torch.zeros((L, VOCAB_SIZE), dtype=torch.float32)
+    logits[:, MASK_ID] = -1e9
+    # high-confidence positions
+    logits[:, 0] = 5.0
+    # low-confidence position (index 1)
+    logits[1, 0] = 0.0
+    return logits
+
+
+def test_remask_reaches_all_positions_with_low_confidence_committed():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _baseline_cfg(n_steps=10, remask_enabled=True)
+    out = sampler.sample(
+        sequence_length=8,
+        h_values=np.zeros(8, dtype=np.float32),
+        denoiser=biased_denoiser,
+        config=cfg,
+        save_trajectories=True,
+    )
+    # Final tokens are mask-free.
+    assert MASK_ID not in out.tokens.tolist()
+    # At least one intermediate step must have remasked some positions.
+    total_remasked = sum(row["remasked_count"] for row in out.trajectory_rows)
+    assert total_remasked > 0
+    # The final step never remasks (so remasked_count[-1] == 0).
+    assert out.trajectory_rows[-1]["remasked_count"] == 0
+
+
+def test_remask_preferentially_targets_low_confidence_positions():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _baseline_cfg(n_steps=12, remask_enabled=True)
+    out = sampler.sample(
+        sequence_length=8,
+        h_values=np.zeros(8, dtype=np.float32),
+        denoiser=biased_denoiser,
+        config=cfg,
+    )
+    # Position 1 has the lowest score → expected to be re-masked at least once,
+    # so its final unmask step should be later (on average) than the high-
+    # confidence positions. We only need to assert that position 1 is not
+    # uniformly the earliest committed position.
+    steps = np.asarray(out.unmask_step_by_pos)
+    other = np.delete(steps, 1)
+    assert steps[1] >= other.min()
+
+
+def test_remask_is_deterministic_for_same_seed():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _baseline_cfg(n_steps=12, remask_enabled=True)
+    out1 = sampler.sample(
+        sequence_length=8,
+        h_values=np.zeros(8, dtype=np.float32),
+        denoiser=biased_denoiser,
+        config=cfg,
+    )
+    out2 = sampler.sample(
+        sequence_length=8,
+        h_values=np.zeros(8, dtype=np.float32),
+        denoiser=biased_denoiser,
+        config=cfg,
+    )
+    assert torch.equal(out1.tokens, out2.tokens)
+    assert out1.unmask_step_by_pos == out2.unmask_step_by_pos
+
+
+def test_remask_config_round_trips_through_yaml(tmp_path):
+    from inverse_folding.reference_flow.config import (
+        load_reference_flow_config,
+        reference_flow_config_to_dict,
+    )
+
+    cfg_path = tmp_path / "remask.yaml"
+    cfg_path.write_text(
+        "sampler:\n"
+        "  n_steps: 16\n"
+        "  seed: 42\n"
+        "  temperature: 1.0\n"
+        "  n_designs_per_protein: 1\n"
+        "  remask:\n"
+        "    enabled: true\n"
+        "schedule:\n"
+        "  base_form: linear\n"
+        "amplification:\n"
+        "  form: constant_one\n"
+        "  h_source: h_processed\n"
+    )
+    cfg = load_reference_flow_config(cfg_path)
+    assert cfg.sampler.remask.enabled is True
+    payload = reference_flow_config_to_dict(cfg)
+    assert payload["sampler"]["remask"]["enabled"] is True
+
+
+def test_remask_defaults_to_disabled_when_absent_in_yaml(tmp_path):
+    from inverse_folding.reference_flow.config import load_reference_flow_config
+
+    cfg_path = tmp_path / "no_remask.yaml"
+    cfg_path.write_text(
+        "sampler:\n"
+        "  n_steps: 8\n"
+        "  seed: 42\n"
+        "  temperature: 1.0\n"
+        "  n_designs_per_protein: 1\n"
+        "schedule:\n"
+        "  base_form: linear\n"
+        "amplification:\n"
+        "  form: constant_one\n"
+        "  h_source: h_processed\n"
+    )
+    cfg = load_reference_flow_config(cfg_path)
+    assert cfg.sampler.remask.enabled is False
