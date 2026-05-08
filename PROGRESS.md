@@ -127,9 +127,13 @@
 - **N1 (Level 1 post-hoc filter)**: implemented (2026-04-02)
   - Code: `inverse_folding/baselines/level1_filter.py`
   - CLI: `scripts/run_if_level1_filter.py`
-  - SLURM: `scripts/submit_if_level1_filter.slurm`
+  - SLURM: `MODE=level1 sbatch scripts/submit_if_baselines.slurm`
   - Reads M3 eta=0 candidates, picks argmin global_risk
-- **N2 (Level 3 DRAKES)**: **dropped** — not needed for paper; can be added as reviewer response if requested
+- **N2 (ProteinMPNN baseline + optional NMP filter)**: implemented (2026-05-08)
+  - CLI: `scripts/run_proteinmpnn_baseline.py` (wraps vendored `DRAKES/drakes_protein/ProteinMPNN/`)
+  - SLURM: `MODE=proteinmpnn ALLELE=... [APPLY_NMP_FILTER=1] sbatch scripts/submit_if_baselines.slurm`
+  - Generates ``--num-seq-per-target`` designs per PDB, optional argmin-NMP-risk selection per protein
+- **N3 (Level 3 DRAKES)**: **dropped** — not needed for paper; can be added as reviewer response if requested
 - **Blocked by**: Phase C (need unguided baseline candidate pool from C0)
 - **Comparison structure for paper**:
   1. Level 1 post-hoc filter (N1) — from C0 candidates

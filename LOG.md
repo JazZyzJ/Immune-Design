@@ -2321,3 +2321,34 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - next_action: After L0078 cluster runs land, decide whether to (a) patch DPLM `forward_decoder` to honor the schema temperature and (b) revisit sidecar training with a stronger curriculum (e.g. distillation against teacher decoder logits).
 - refs:
   - L0078
+
+### L0079
+- timestamp: 2026-05-08T15:55:00+08:00
+- type: VERIFICATION
+- module: N
+- trigger: User asked for a simple ProteinMPNN inverse-folding interface with an optional NMP post-hoc filter switch, to be used as a comparison baseline against DPLM-based IF runs.
+- change_summary: Added (i) `scripts/run_proteinmpnn_baseline.py`: a thin wrapper around the vendored ProteinMPNN at `DRAKES/drakes_protein/ProteinMPNN/` that parses an input PDB folder via `parse_multiple_chains.py` (+ `assign_fixed_chains.py` when `--design-chains` is set), runs `protein_mpnn_run.py` to generate `--num-seq-per-target` designs per structure, parses `seqs/<pid>.fa` into per-design rows, and (with `--apply-nmp-filter`) scores each design via `epitope_head.data.netmhciipan_runner.StandaloneRunner.score_batch` and selects argmin-risk per protein under `--nmp-rule {min_n_sb,min_mean_rank}`. Outputs `generated.parquet` (schema-compatible with `run_if_phase_c0.py`: `protein_id`, `design_idx`, `sequence`, …), `generated.fasta`, `run_config.yaml`, and (NMP-on) `selection.parquet` + `selection.json`. Added (ii) `scripts/submit_if_baselines.slurm`: module-level Module-N launcher with `MODE={level1,proteinmpnn}` switch, GPU defaults aligned with `submit_if_phase_c.slurm` (1 GPU MIG / 24h / 64GB), canonical `NETMHCIIPAN_BIN=${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan` (matches `submit_benchmark.slurm` and other NMP-using SLURM scripts in the repo), `INPUT_PDB_FOLDER` default `${WORK_DIR}/if_test_set/pdbs_if_ready/{0701,0401}` selected by `ALLELE`, `OUTPUT_DIR` default `${RUN_DIR}/baselines/{level1_filter,proteinmpnn}/...`. Legacy `scripts/submit_if_level1_filter.slurm` deleted (user-approved 2026-05-08) — fully subsumed by `MODE=level1`; PROGRESS.md / PLAN_IF.md / `run_if_level1_filter.py` docstring updated to point at the new module-level launcher.
+- rationale: Module N is the natural home for ProteinMPNN+NMP since it already houses post-hoc filter baselines (`run_if_level1_filter.py`). The script is intentionally a subprocess wrapper instead of a deeper integration: the vendored ProteinMPNN uses local-relative imports (`from protein_mpnn_utils import ...`) and is only safe to invoke with `cwd=PROTEINMPNN_ROOT`. Multi-chain designs are split on `/` and aggregated (sum `n_sb`, mean `el_rank`) before selection so the rule remains valid for both single- and multi-chain inputs. The SLURM was consolidated into a module-level launcher per `scripts/CLAUDE.md` §3 ("one parameterized submission script per module") — initial v1 of this entry omitted the SLURM and used a wrong NMP path (`/scratch/.../work/netmhciipan/...`); both were corrected after user feedback.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/scripts/run_proteinmpnn_baseline.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_baselines.slurm` (new; module-level launcher)
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_run_proteinmpnn_baseline.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md` (Module N: registered both new artifacts; legacy `submit_if_level1_filter.slurm` line removed after deletion)
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md` (Module N section: N1 SLURM pointer updated; N2 ProteinMPNN section added)
+  - `/Users/jerry/Project/MHC-IF/PLAN_IF.md` (§Planned File Touchpoints: SLURM pointer updated)
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_level1_filter.py` (docstring SLURM pointer updated)
+- evidence:
+  - 7/7 unit tests pass: `tests/scripts/test_run_proteinmpnn_baseline.py` covers FASTA parser (skips WT, extracts sample/score/T/seq_recovery), multi-chain splitter, selection rules with tie-break, and CLI gate that fails fast when `--apply-nmp-filter` is missing `--netmhciipan-bin` / `--allele`.
+  - `PYTHONPATH=. python scripts/run_proteinmpnn_baseline.py --help` returns 0 after escaping `%Rank_EL` to `%%Rank_EL` (argparse default-formatter applies %-substitution).
+  - `bash -n scripts/submit_if_baselines.slurm` succeeds (syntax clean).
+  - Vendored ProteinMPNN entry point + helper scripts confirmed at `DRAKES/drakes_protein/ProteinMPNN/{protein_mpnn_run.py,helper_scripts/{parse_multiple_chains,assign_fixed_chains}.py}`; weights present at `vanilla_model_weights/v_48_{002,010,020,030}.pt`.
+  - Canonical NMP binary path `${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan` cross-checked against `submit_benchmark.slurm:59`, `submit_aug_drb0401.slurm:20`, `submit_epi_benchmark.slurm:29`, `submit_mutation_augmentation.slurm:20`, `submit_assemble_test_set.slurm:30`, `submit_prescreen_uricases.slurm:24`, `submit_prescreen_tier2.slurm:26`, `submit_prescreen_uricases_0401.slurm:24`.
+- impact:
+  - scope: New baseline driver + module-level launcher + tests + SCRIPTS.md/PROGRESS.md/PLAN_IF.md/docstring updates; legacy `submit_if_level1_filter.slurm` deleted (user-approved). No changes to existing libraries, evaluators, or vendored ProteinMPNN sources.
+  - risk: low (subprocess wrapper; SLURM defaults match canonical IF/Phase-C resource pattern; NMP filter only kicks in when the user supplies `--apply-nmp-filter` + binary + allele).
+  - confidence: 0.9
+- status: done
+- next_action: For first cluster run: `MODE=proteinmpnn ALLELE="HLA-DRB1*07:01" APPLY_NMP_FILTER=1 sbatch scripts/submit_if_baselines.slurm` will use the canonical IF-ready PDB tree and the project-root NMP binary. For the legacy N1 path: `MODE=level1 sbatch --partition=cpu --gres=none --time=01:00:00 --mem=16G scripts/submit_if_baselines.slurm`.
+- refs:
+  - `doc/SCRIPTS.md` §Inverse Folding — Module N: Comparison Baselines
+  - `scripts/CLAUDE.md` §3 (Module-level SLURM consolidation)

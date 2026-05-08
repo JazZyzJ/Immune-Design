@@ -494,7 +494,7 @@
 **Planned File Touchpoints**
 - Done: `inverse_folding/baselines/level1_filter.py`
 - Done: `scripts/run_if_level1_filter.py`
-- Done: `scripts/submit_if_level1_filter.slurm`
+- Done: `scripts/submit_if_baselines.slurm` (module-level launcher with `MODE={level1,proteinmpnn}`)
 
 ### Task N1: Implement the Level 1 Post-Hoc Filter Baseline — DONE (2026-04-02)
 

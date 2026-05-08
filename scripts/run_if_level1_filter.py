@@ -9,7 +9,7 @@ Usage (cluster):
         --m3-output-dir /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/guidance/sweep_seed42 \
         --output-dir /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/baselines/level1_filter/sweep_seed42
 
-See scripts/submit_if_level1_filter.slurm for SLURM submission.
+SLURM submission: `MODE=level1 sbatch scripts/submit_if_baselines.slurm`.
 """
 
 import argparse
