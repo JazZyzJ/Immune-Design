@@ -1,12 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=epi-train
 #SBATCH --qos=gpu-short
+#SBATCH --partition=mig
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=4:00:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/epitope_head/epi_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/epitope_head/epi_%j.err
 
@@ -26,6 +27,9 @@
 #       sbatch scripts/submit_epitope_train.slurm
 #     done
 #   done
+
+: "${PS1:=}"
+export PS1
 
 set -euo pipefail
 
@@ -57,14 +61,30 @@ mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 # ── Environment ───────────────────────────────────────────────────────────
 module purge
 module load anaconda3/2025.12
+export PS1="${PS1:-}"
 conda activate immune-design
+module load proxy/default
 
 export PYTHONHASHSEED="${SEED}"
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
 export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
-export WANDB_MODE=offline
+
+
+# wandb storage roots — keep all run state on /scratch, never in $HOME or cwd.
+export WANDB_DIR="${WANDB_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb}"
+export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/cache}"
+export WANDB_DATA_DIR="${WANDB_DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/data}"
+export WANDB_CONFIG_DIR="${WANDB_CONFIG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wandb/config}"
+mkdir -p "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}" "${WANDB_CONFIG_DIR}"
+# wandb is opt-in per run via WANDB=1.
+# fasta/iedb modes still run without wandb; phase_c forwards the flags below.
+WANDB_FLAG="${WANDB:-0}"
+WANDB_MODE_FOR_RUN="${WANDB_MODE:-online}"
+WANDB_PROJECT_FOR_RUN="${WANDB_PROJECT:-Immune-Design}"
+WANDB_GROUP_FOR_RUN="${WANDB_GROUP:-}"
+WANDB_TAGS_FOR_RUN="${WANDB_TAGS:-{CONFIG:${CFG_NAME},ALLELE:${ALLELE_TAG},SEED:${SEED}}}"
 
 # ── Diagnostics ───────────────────────────────────────────────────────────
 echo "============================================================"

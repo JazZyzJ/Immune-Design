@@ -1,14 +1,40 @@
 #!/bin/bash
 #SBATCH --job-name=benchmark
-#SBATCH --qos=gpu-medium
+#SBATCH --qos=short
+#SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --time=12:00:00
+#SBATCH --time=23:50:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.err
+
+# for imm mode: 
+# #SBATCH --job-name=benchmark
+# #SBATCH --qos=short
+# #SBATCH --partition=cpu
+# #SBATCH --nodes=1
+# #SBATCH --ntasks=1
+# #SBATCH --cpus-per-task=16
+# #SBATCH --mem=64G
+# #SBATCH --time=8:00:00
+# #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.out
+# #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.err
+
+# for struct mode:
+# #SBATCH --job-name=benchmark
+# #SBATCH --qos=gpu-short
+# #SBATCH --constraint="a100&gpu40&pcie"
+# #SBATCH --nodes=1
+# #SBATCH --ntasks=1
+# #SBATCH --cpus-per-task=16
+# #SBATCH --mem=64G
+# #SBATCH --gres=gpu:1
+# #SBATCH --time=06:00:00
+# #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.out
+# #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.err
+
 
 set -euo pipefail
 
@@ -27,6 +53,7 @@ DEVICE="${DEVICE:-cuda}"
 
 # ── Paths ────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
+DPLM_ROOT="${PROJECT_ROOT}/inverse_folding/dplm"
 OUTPUT_DIR="/scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/epi_v2"
 LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epi_v2"
 NETMHCIIPAN_BIN="${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan"
@@ -54,7 +81,7 @@ conda activate immune-design
 
 export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${DPLM_ROOT}/vendor/openfold:${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
 export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
 
@@ -195,6 +222,7 @@ elif [ "${MODE}" = "phase_c" ]; then
     FAIL_PCT_THRESHOLD="${FAIL_PCT_THRESHOLD:-0.05}"
     PROGRESS_EVERY="${PROGRESS_EVERY:-25}"
     OVERWRITE="${OVERWRITE:-0}"
+    NMP_MODE_ARG="${NMP_MODE:-accelerated}"
     NMP_WORKERS="${NMP_WORKERS:-8}"
     NMP_BATCH_SIZE="${NMP_BATCH_SIZE:-8}"
     NMP_MAX_LENGTHS_PER_CALL="${NMP_MAX_LENGTHS_PER_CALL:-4}"
@@ -203,11 +231,11 @@ elif [ "${MODE}" = "phase_c" ]; then
     TMALIGN_BIN="${TMALIGN_BIN:-TMalign}"
     TAG="${TAG:-}"
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
-        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
-        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_ready/pdbs_if_ready/0701}"
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
+        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0701}"
     elif [ "${ALLELE}" = "HLA-DRB1*04:01" ]; then
-        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet}"
-        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_ready/pdbs_if_ready/0401}"
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet}"
+        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0401}"
     else
         echo "ERROR: TEST_SET_PARQUET/PDB_ROOT defaults only defined for 0701/0401; set them explicitly" >&2
         exit 2
@@ -229,9 +257,14 @@ elif [ "${MODE}" = "phase_c" ]; then
     echo "  Refold model      : ${REFOLD_MODEL}"
     echo "  Phase-C output    : ${PHASE_C_OUTPUT_ROOT}"
     echo "  ESMFold cache     : ${ESMFOLD_CACHE_DIR}"
-    echo "  NMP workers       : ${NMP_WORKERS}"
-    echo "  NMP batch size    : ${NMP_BATCH_SIZE}"
-    echo "  NMP lengths/call  : ${NMP_MAX_LENGTHS_PER_CALL}"
+    echo "  NMP_MODE          : ${NMP_MODE_ARG}"
+    if [ "${NMP_MODE_ARG}" = "accelerated" ]; then
+        echo "  NMP workers       : ${NMP_WORKERS}"
+        echo "  NMP batch size    : ${NMP_BATCH_SIZE}"
+        echo "  NMP lengths/call  : ${NMP_MAX_LENGTHS_PER_CALL}"
+    else
+        echo "  NMP original      : batch_size=1 lengths/call=14 workers=1"
+    fi
     echo "  NMP timeout       : ${NMP_TIMEOUT}s"
     echo "  Strong threshold  : ${STRONG_BINDER_THRESHOLD}%"
 
@@ -264,6 +297,7 @@ elif [ "${MODE}" = "phase_c" ]; then
         --epitope-ckpt "${EPITOPE_CKPT}" \
         --epitope-variant-id "${VARIANT_ID}" \
         --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
+        --nmp-mode "${NMP_MODE_ARG}" \
         --nmp-batch-size "${NMP_BATCH_SIZE}" \
         --nmp-workers "${NMP_WORKERS}" \
         --nmp-timeout "${NMP_TIMEOUT}" \

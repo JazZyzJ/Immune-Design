@@ -35,6 +35,32 @@ Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重�
 | `pli-lc` | 3 d | 9 | H100×8 | 同上 |
 | `ailab` | 15 d | 18 | H200×8 | 需 `ailab` group 权限；当前账号可用 |
 
+### `cpu` 分区里的节点类型
+
+`cpu` 是默认 partition，适合不需要 CUDA 的 head / NetMHCIIpan / data processing job。当前节点池：
+
+| 节点 | CPU / RAM | 特征 | 推荐用途 |
+|------|-----------|------|----------|
+| `della-h14n*`, `della-h16n*`, `della-h17n*` | 多数 192 CPU / 1.5 TB | `amd,genoa,rh9,nvme` | 高并发 NMP workers、批量 CPU inference |
+| `della-h12n*` | 80-96 CPU / 0.5-6 TB | `intel,cascade/ice,rh9,nvme,memory` | 大内存 CPU job |
+| `della-i13n*` | 32-40 CPU / 190-380 GB | `intel,cascade,rh9` | 普通 CPU job |
+| `della-r3c[1-4]n*` | CPU pool | `intel,cascade,rh9` | 普通 CPU job |
+
+CPU job 只需要 `--partition=cpu` + CPU QOS（`test` / `short` / `medium` / `vlong`），**不要**写 GPU 相关选项：
+
+```bash
+#SBATCH --partition=cpu
+#SBATCH --qos=short
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --time=08:00:00
+# 不要写 --gres=gpu:1 / --constraint="a100..." / --qos=gpu-*
+```
+
+Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEVICE=cpu`。其中 head predictor 支持 CPU；主要瓶颈通常是 NetMHCIIpan，因此 `NMP_WORKERS` 建议与 `--cpus-per-task` 对齐。
+
 ### `gpu` 分区里的节点型号
 
 | 节点 | GPU | 显存 | CPU | 主机 RAM | 推荐 constraint |
@@ -162,6 +188,15 @@ sbatch --test-only scripts/submit_if_phase_c.slurm
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:30:00
 
+# CPU-only:
+#SBATCH --job-name=phasec-imm-cpu
+#SBATCH --partition=cpu
+#SBATCH --qos=short
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --time=08:00:00
 
 # 用环境变量覆盖参数（env 必须写在 sbatch 前）
 ALLELE="HLA-DRB1*04:01" sbatch scripts/submit_epi_benchmark.slurm

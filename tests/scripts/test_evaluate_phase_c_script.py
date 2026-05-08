@@ -20,6 +20,7 @@ from scripts.evaluate_phase_c import (
     compute_recovery,
     evaluate_immunogenicity_rows,
     evaluate_structural_rows,
+    resolve_nmp_runtime_params,
 )
 
 
@@ -108,6 +109,28 @@ def test_evaluate_immunogenicity_rows_matches_predictor_and_nmp_counts():
     assert len(nmp_df) == 6
     assert head_df.iloc[0]["global_risk"] == pytest.approx(0.4)
     assert nmp_df.iloc[0]["n_strong_binders"] == 1
+
+
+def test_resolve_nmp_runtime_params_original_matches_iedb_baseline():
+    args = SimpleNamespace(
+        nmp_mode="original",
+        nmp_batch_size=8,
+        nmp_max_lengths_per_call=4,
+        nmp_workers=8,
+    )
+
+    assert resolve_nmp_runtime_params(args) == (1, 14, 1)
+
+
+def test_resolve_nmp_runtime_params_accelerated_uses_explicit_knobs():
+    args = SimpleNamespace(
+        nmp_mode="accelerated",
+        nmp_batch_size=6,
+        nmp_max_lengths_per_call=3,
+        nmp_workers=5,
+    )
+
+    assert resolve_nmp_runtime_params(args) == (6, 3, 5)
 
 
 def test_evaluate_structural_rows_emits_expected_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

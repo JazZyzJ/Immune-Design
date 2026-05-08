@@ -140,7 +140,7 @@ Mechanical preparation jobs that bridge the fixed IF test set and Phase C refere
 
 1. `scripts/submit_precompute_h_test.slurm` — B2 test-set h-map precompute (24hr, 1 GPU, 64GB). Parameterized: `ALLELE`, `EPITOPE_CKPT`, `INPUT_PARQUET`, `OUTPUT_PARQUET`, `OUTPUT_META`, `WINDOW_BATCH_SIZE`, `RESUME_FROM`.
 2. `scripts/submit_precompute_h_cath.slurm` — B3 CATH train h-map precompute (72hr, 1 GPU, 64GB). Parameterized: `ALLELE`, `EPITOPE_CKPT`, `CHAIN_SET`, `SPLITS_JSON`, `SPLIT`, `OUTPUT_PARQUET`, `OUTPUT_META`, `WINDOW_BATCH_SIZE`, `RESUME_FROM`.
-3. `scripts/submit_benchmark.slurm` — Shared benchmark/evaluation launcher. `MODE=fasta` and `MODE=iedb` keep the epitope-head benchmark workflows; `MODE=phase_c` runs `evaluate_phase_c.py`. Phase-C overrides: `GENERATED_PARQUET`, `TEST_SET_PARQUET`, `ALLELE`, `EVAL_MODE`, `REFOLD_MODEL`, `PDB_ROOT`, `PHASE_C_OUTPUT_ROOT`, `RUN_ID`, `OVERWRITE`, `FAIL_PCT_THRESHOLD`.
+3. `scripts/submit_benchmark.slurm` — Shared benchmark/evaluation launcher. `MODE=fasta` and `MODE=iedb` keep the epitope-head benchmark workflows; `MODE=phase_c` runs `evaluate_phase_c.py`. Phase-C overrides: `GENERATED_PARQUET`, `TEST_SET_PARQUET`, `ALLELE`, `EVAL_MODE`, `REFOLD_MODEL`, `PDB_ROOT`, `PHASE_C_OUTPUT_ROOT`, `RUN_ID`, `OVERWRITE`, `FAIL_PCT_THRESHOLD`, `NMP_MODE`, `NMP_WORKERS`, `NMP_BATCH_SIZE`, `NMP_MAX_LENGTHS_PER_CALL`, `NMP_TIMEOUT`. In Phase C, `NMP_MODE=accelerated` is the default and uses the explicit NMP knobs; `NMP_MODE=original` matches the IEDB benchmark baseline (`batch_size=1`, `max_lengths_per_call=14`, `workers=1`).
 
 ---
 
