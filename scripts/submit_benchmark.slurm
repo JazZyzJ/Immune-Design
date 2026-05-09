@@ -152,10 +152,15 @@ elif [ "${MODE}" = "iedb" ]; then
     NMP_MODE_ARG="${NMP_MODE:-original}"
     NEAR_MISS_ANALYSIS="${NEAR_MISS_ANALYSIS:-0}"
     # Windows cache (write/read). Set WINDOWS_CACHE to write a cache after
-    # inference; set RESUME_FROM_CACHE to skip steps 2/3 entirely. Mutually
-    # exclusive — the Python script enforces this.
+    # inference; set RESUME_FROM_CACHE to skip steps 2/3 entirely; set
+    # REUSE_NMP_FROM_CACHE to skip ONLY step 3 (NMP) and rerun head fresh —
+    # ideal for head iteration on a frozen NMP. The two read paths
+    # (RESUME_FROM_CACHE / REUSE_NMP_FROM_CACHE) are mutually exclusive;
+    # WINDOWS_CACHE remains compatible with REUSE_NMP_FROM_CACHE so the
+    # rewritten cache captures the fresh head + reused NMP.
     WINDOWS_CACHE="${WINDOWS_CACHE:-}"
     RESUME_FROM_CACHE="${RESUME_FROM_CACHE:-}"
+    REUSE_NMP_FROM_CACHE="${REUSE_NMP_FROM_CACHE:-}"
     # Accelerated-mode knobs (ignored by the Python script when --nmp-mode=original)
     NMP_WORKERS="${NMP_WORKERS:-8}"
     NMP_BATCH_SIZE="${NMP_BATCH_SIZE:-8}"
@@ -177,6 +182,7 @@ elif [ "${MODE}" = "iedb" ]; then
     echo "  Near-miss analysis : ${NEAR_MISS_ANALYSIS}"
     echo "  Windows cache      : ${WINDOWS_CACHE:-(disabled)}"
     echo "  Resume from cache  : ${RESUME_FROM_CACHE:-(no)}"
+    echo "  Reuse NMP from cache: ${REUSE_NMP_FROM_CACHE:-(no)}"
     if [ "${NMP_MODE_ARG}" = "accelerated" ]; then
         echo "  NMP workers        : ${NMP_WORKERS}"
         echo "  NMP batch size     : ${NMP_BATCH_SIZE}"
@@ -195,6 +201,9 @@ elif [ "${MODE}" = "iedb" ]; then
     fi
     if [ -n "${RESUME_FROM_CACHE}" ]; then
         EXTRA_ARGS+=(--resume-from-cache "${RESUME_FROM_CACHE}")
+    fi
+    if [ -n "${REUSE_NMP_FROM_CACHE}" ]; then
+        EXTRA_ARGS+=(--reuse-nmp-from-cache "${REUSE_NMP_FROM_CACHE}")
     fi
 
     python -u "${PROJECT_ROOT}/scripts/benchmark_iedb_test.py" \

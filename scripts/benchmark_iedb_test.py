@@ -140,6 +140,15 @@ def parse_args() -> argparse.Namespace:
              "skip steps 2 (head) and 3 (NMP). Mutually exclusive with "
              "running fresh inference.",
     )
+    p.add_argument(
+        "--reuse-nmp-from-cache",
+        default=None,
+        help="If set, load only nmp_wins from this parquet path and skip "
+             "step 3 (NMP); head inference (step 2) still runs fresh from "
+             "--epitope-ckpt. For head iteration on a frozen NMP. Cache "
+             "metadata must match --allele and cover --min-k/--max-k. "
+             "Mutually exclusive with --resume-from-cache.",
+    )
     return p.parse_args()
 
 
@@ -919,6 +928,36 @@ def _save_windows_cache(
         json.dump(metadata, f, indent=2)
 
 
+def _validate_nmp_cache_meta(
+    cache_meta: dict,
+    *,
+    allele: str,
+    min_k: int,
+    max_k: int,
+) -> Optional[str]:
+    """Return an error message for hard-incompatible NMP cache metadata, or
+    None if the cache is usable. Soft mismatches (e.g. nmp_mode) are not
+    surfaced here — callers handle them as warnings."""
+    if not cache_meta:
+        return None
+    cache_allele = cache_meta.get("allele")
+    if cache_allele and cache_allele != allele:
+        return (
+            f"cache allele={cache_allele!r} != requested {allele!r}; "
+            f"NMP scores are allele-specific. Re-run NMP from scratch."
+        )
+    cache_min_k = cache_meta.get("min_k")
+    cache_max_k = cache_meta.get("max_k")
+    if cache_min_k is not None and cache_max_k is not None:
+        if cache_min_k > min_k or cache_max_k < max_k:
+            return (
+                f"cache k-range [{cache_min_k},{cache_max_k}] does not "
+                f"cover requested [{min_k},{max_k}]; NMP would be missing "
+                f"windows. Re-run NMP from scratch."
+            )
+    return None
+
+
 def _load_windows_cache(
     path: str,
 ) -> tuple[dict[str, dict[tuple[int, int], float]],
@@ -1002,15 +1041,23 @@ def main() -> int:
         _log(f"  Bootstrap resamples: {args.bootstrap_n} (seed={args.bootstrap_seed})")
     _log(f"  Windows cache      : {args.windows_cache or '(disabled)'}")
     _log(f"  Resume from cache  : {args.resume_from_cache or '(no)'}")
+    _log(f"  Reuse NMP from cache: {args.reuse_nmp_from_cache or '(no)'}")
     _log(f"  Output JSON        : {args.output_json}")
     _log("=" * 60)
 
+    if args.resume_from_cache and args.reuse_nmp_from_cache:
+        _log("ERROR: --resume-from-cache and --reuse-nmp-from-cache are "
+             "mutually exclusive (they're alternative read paths).")
+        return 1
     if args.windows_cache and args.resume_from_cache:
         _log("ERROR: --windows-cache (write) and --resume-from-cache (read) "
              "are mutually exclusive. Pick one.")
         return 1
     if args.resume_from_cache and not os.path.exists(args.resume_from_cache):
         _log(f"ERROR: cache file not found: {args.resume_from_cache}")
+        return 1
+    if args.reuse_nmp_from_cache and not os.path.exists(args.reuse_nmp_from_cache):
+        _log(f"ERROR: cache file not found: {args.reuse_nmp_from_cache}")
         return 1
 
     # Toggles for metric suites (computed once; used in per-protein loop).
@@ -1080,6 +1127,107 @@ def main() -> int:
                 "chunk_seconds": 0.0,
                 "from_cache": True,
             })
+    elif args.reuse_nmp_from_cache:
+        # ── Step 3 short-circuit: NMP from cache, head fresh ──────────
+        _log(f"\n[2-3/4] Reusing NMP from cache (head will run fresh): "
+             f"{args.reuse_nmp_from_cache}")
+        t_load = time.time()
+        _ignored_head, nmp_wins_by_pid, cache_meta = _load_windows_cache(
+            args.reuse_nmp_from_cache,
+        )
+        _log(f"  Loaded NMP pids={len(nmp_wins_by_pid)} "
+             f"(head dict from cache discarded) in {time.time() - t_load:.2f}s")
+        # Strict cache validation — NMP scores depend on allele and k coverage,
+        # so a mismatched cache would silently corrupt the benchmark.
+        if cache_meta:
+            _log(f"  Cache meta: allele={cache_meta.get('allele')!r}  "
+                 f"k=[{cache_meta.get('min_k')},{cache_meta.get('max_k')}]  "
+                 f"nmp_mode={cache_meta.get('nmp_mode')!r}  "
+                 f"epitope_ckpt={cache_meta.get('epitope_ckpt')!r}")
+            err = _validate_nmp_cache_meta(
+                cache_meta,
+                allele=args.allele,
+                min_k=args.min_k,
+                max_k=args.max_k,
+            )
+            if err is not None:
+                _log(f"ERROR: {err}")
+                return 1
+            if (cache_meta.get("nmp_mode")
+                    and cache_meta["nmp_mode"] != args.nmp_mode):
+                _log(f"  WARNING: cache nmp_mode={cache_meta['nmp_mode']!r} != "
+                     f"requested {args.nmp_mode!r} — proceeding (NMP outputs "
+                     f"should be deterministic across modes).")
+        # Warn if the cache covers fewer proteins than the current test set —
+        # missing proteins fall through to NMP_FILL_SCORE imputation later.
+        cached_pids = set(nmp_wins_by_pid)
+        test_pids = {e["protein_id"] for e in entries}
+        missing_pids = test_pids - cached_pids
+        if missing_pids:
+            _log(f"  WARNING: {len(missing_pids)} test proteins missing from NMP "
+                 f"cache (out of {len(test_pids)}); their NMP windows will be "
+                 f"imputed with worst-case el_rank=1.0. Examples: "
+                 f"{sorted(missing_pids)[:5]}")
+        # Synthetic NMP timing — head timing is real (filled below).
+        for e in entries:
+            per_protein_nmp_timing.append({
+                "protein_id": e["protein_id"],
+                "sequence_length": len(e["protein_seq"]),
+                "chunk_seconds": 0.0,
+                "from_cache": True,
+            })
+
+        # ── Step 2: Head inference (fresh) ─────────────────────────────
+        _log("\n[2/4] Running epitope head inference (NMP cached)...")
+        from scripts.run_if_guidance_sweep import load_epitope_predictor
+
+        config_dir = args.config_dir or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "epitope_head", "configs",
+        )
+        predictor = load_epitope_predictor(
+            config_dir=config_dir,
+            checkpoint_path=args.epitope_ckpt,
+            variant_id=args.variant_id,
+            device=args.device,
+        )
+
+        t_head_start = time.time()
+        for idx, entry in enumerate(entries, start=1):
+            pred = predictor.predict_protein(entry["protein_seq"], allele_idx=0)
+            wins = {}
+            for w in pred["window_logits"]:
+                k = w["end_0b"] - w["start_0b"]
+                wins[(w["start_0b"], k)] = w["z"]
+            head_wins_by_pid[entry["protein_id"]] = wins
+            if idx % 20 == 0 or idx == len(entries):
+                _log(f"  Head: {idx}/{len(entries)}")
+        t_head_elapsed = time.time() - t_head_start
+        _log(f"  Head inference complete ({t_head_elapsed:.1f}s)")
+
+        if args.windows_cache:
+            _log(f"\n  Writing windows cache (fresh head + reused NMP) → "
+                 f"{args.windows_cache}")
+            t_save = time.time()
+            _save_windows_cache(
+                args.windows_cache,
+                head_wins_by_pid,
+                nmp_wins_by_pid,
+                metadata={
+                    "allele": args.allele,
+                    "min_k": int(args.min_k),
+                    "max_k": int(args.max_k),
+                    "variant_id": args.variant_id,
+                    "epitope_ckpt": args.epitope_ckpt,
+                    "n_proteins": len(entries),
+                    "nmp_mode": args.nmp_mode,
+                    "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "nmp_source": (
+                        f"reused_from:{os.path.abspath(args.reuse_nmp_from_cache)}"
+                    ),
+                },
+            )
+            _log(f"  Cache write complete ({time.time() - t_save:.2f}s)")
     else:
         # ── Step 2: Head inference ─────────────────────────────────────
         _log("\n[2/4] Running epitope head inference...")
@@ -1622,6 +1770,7 @@ def main() -> int:
             "bootstrap_seed": args.bootstrap_seed,
             "windows_cache": args.windows_cache,
             "resume_from_cache": args.resume_from_cache,
+            "reuse_nmp_from_cache": args.reuse_nmp_from_cache,
         },
         "timing": {
             "total_seconds": round(total_elapsed, 1),

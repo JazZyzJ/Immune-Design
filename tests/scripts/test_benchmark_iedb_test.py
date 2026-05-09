@@ -31,6 +31,7 @@ from scripts.benchmark_iedb_test import (
     _span_iou,
     _span_overlap_len,
     _summarize_near_miss_group,
+    _validate_nmp_cache_meta,
 )
 
 
@@ -400,3 +401,86 @@ def test_windows_cache_handles_predictor_only_proteins(tmp_path):
     assert "P2" not in h
     assert h["P1"] == {(0, 15): 0.9}
     assert n == nmp_wins
+
+
+# ── --reuse-nmp-from-cache: cache metadata validation ────────────────────────
+
+def test_validate_nmp_cache_meta_accepts_matching_meta():
+    meta = {
+        "allele": "HLA-DRB1*07:01",
+        "min_k": 12,
+        "max_k": 25,
+        "nmp_mode": "original",
+    }
+    assert _validate_nmp_cache_meta(meta, allele="HLA-DRB1*07:01", min_k=12, max_k=25) is None
+
+
+def test_validate_nmp_cache_meta_accepts_wider_k_range():
+    """Cache covering a superset of requested k is fine."""
+    meta = {"allele": "HLA-DRB1*07:01", "min_k": 9, "max_k": 30}
+    assert _validate_nmp_cache_meta(meta, allele="HLA-DRB1*07:01", min_k=12, max_k=25) is None
+
+
+def test_validate_nmp_cache_meta_rejects_allele_mismatch():
+    meta = {"allele": "HLA-DRB1*04:01", "min_k": 12, "max_k": 25}
+    err = _validate_nmp_cache_meta(meta, allele="HLA-DRB1*07:01", min_k=12, max_k=25)
+    assert err is not None
+    assert "allele" in err.lower()
+    assert "07:01" in err and "04:01" in err
+
+
+def test_validate_nmp_cache_meta_rejects_narrower_k_range():
+    meta = {"allele": "HLA-DRB1*07:01", "min_k": 15, "max_k": 20}
+    err = _validate_nmp_cache_meta(meta, allele="HLA-DRB1*07:01", min_k=12, max_k=25)
+    assert err is not None
+    assert "k-range" in err
+    assert "[15,20]" in err
+    assert "[12,25]" in err
+
+
+def test_validate_nmp_cache_meta_empty_meta_passes():
+    """Cache with no sidecar metadata (older runs) is accepted — caller logs."""
+    assert _validate_nmp_cache_meta({}, allele="HLA-DRB1*07:01", min_k=12, max_k=25) is None
+
+
+def test_validate_nmp_cache_meta_ignores_nmp_mode_differences():
+    """nmp_mode is a soft-mismatch (warning, not error) — helper stays silent."""
+    meta = {
+        "allele": "HLA-DRB1*07:01",
+        "min_k": 12,
+        "max_k": 25,
+        "nmp_mode": "accelerated",
+    }
+    assert _validate_nmp_cache_meta(meta, allele="HLA-DRB1*07:01", min_k=12, max_k=25) is None
+
+
+def test_reuse_nmp_and_resume_from_cache_are_mutually_exclusive(tmp_path):
+    """Smoke: invoking the script with both flags must exit 1 before any heavy work."""
+    import os
+    import subprocess
+
+    cache_a = tmp_path / "a.parquet"
+    cache_b = tmp_path / "b.parquet"
+    cache_a.write_bytes(b"")  # placeholder so file-existence check passes
+    cache_b.write_bytes(b"")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "benchmark_iedb_test.py"),
+            "--protein-samples-parquet", "/dev/null",
+            "--test-ids", "/dev/null",
+            "--epitope-ckpt", "/dev/null",
+            "--netmhciipan-bin", "/dev/null",
+            "--allele", "HLA-DRB1*07:01",
+            "--output-json", str(tmp_path / "out.json"),
+            "--resume-from-cache", str(cache_a),
+            "--reuse-nmp-from-cache", str(cache_b),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(PROJECT_ROOT),
+        env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT)},
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "mutually exclusive" in result.stdout
