@@ -93,13 +93,16 @@ unmasked later in the generative process.
 
 Position-dependent conditional flow:
 
-$$p_{t|1}(x_t^i \mid x_1^i) = \kappa_i(t) \cdot \delta_{x_1^i}(x_t^i) + (1 - \kappa_i(t)) \cdot \delta_m(x_t^i)$$
+$$
+p_{t|1}(x_t^i \mid x_1^i) = \kappa_i(t) \cdot \delta_{x_1^i}(x_t^i) + (1 - \kappa_i(t)) \cdot \delta_m(x_t^i)
+$$
 
 At generation time $t$, position $i$ is unmasked with probability $\kappa_i(t) = \kappa_{\text{base}}(t)^{g_i}$.
 
 Since $\kappa_{\text{base}}(t) \in [0,1]$ and $g_i \geq 1$:
-
-$$g_i > g_j \implies \kappa_i(t) < \kappa_j(t) \quad \forall t \in (0,1)$$
+$$
+g_i > g_j \implies \kappa_i(t) < \kappa_j(t) \quad \forall t \in (0,1)
+$$
 
 Higher-risk positions have lower probability of being unmasked at any intermediate time.
 
@@ -107,15 +110,18 @@ Higher-risk positions have lower probability of being unmasked at any intermedia
 
 **Definition**. Let $T_i$ be the first time position $i$ becomes unmasked in the generative CTMC. Its CDF is $P(T_i \leq t) = \kappa_i(t)$.
 
-$$\mathbb{E}[T_i] = \int_0^1 P(T_i > t) \, dt = \int_0^1 \big(1 - \kappa_{\text{base}}(t)^{g_i}\big) \, dt$$
+$$
+\mathbb{E}[T_i] = \int_0^1 P(T_i > t) \, dt = \int_0^1 \big(1 - \kappa_{\text{base}}(t)^{g_i}\big) \, dt
+$$
 
 ### 1.3 Theorem (Ordering guarantee)
 
 **Theorem 1**. $\mathbb{E}[T_i]$ is strictly increasing in $g_i$ for any base schedule $\kappa_{\text{base}}$ with $\kappa_{\text{base}}(t) \in (0,1)$ on a set of positive measure.
 
 **Proof**.
-
-$$\frac{\partial}{\partial g_i} \mathbb{E}[T_i] = -\int_0^1 \kappa_{\text{base}}(t)^{g_i} \ln \kappa_{\text{base}}(t) \, dt$$
+$$
+\frac{\partial}{\partial g_i} \mathbb{E}[T_i] = -\int_0^1 \kappa_{\text{base}}(t)^{g_i} \ln \kappa_{\text{base}}(t) \, dt
+$$
 
 For $\kappa_{\text{base}}(t) \in (0,1)$: $\ln \kappa_{\text{base}}(t) < 0$, so the integrand $-\kappa_{\text{base}}(t)^{g_i} \ln \kappa_{\text{base}}(t) > 0$.
 
@@ -125,19 +131,25 @@ Therefore $\frac{\partial}{\partial g_i} \mathbb{E}[T_i] > 0$. $\square$
 
 The total unmasking rate at a masked position $i$ is:
 
-$$r_i(t) = \sum_{j \in \mathcal{V}} R_t^i(m, j) = \frac{\dot{\kappa}_i(t)}{1 - \kappa_i(t)}$$
+$$
+r_i(t) = \sum_{j \in \mathcal{V}} R_t^i(m, j) = \frac{\dot{\kappa}_i(t)}{1 - \kappa_i(t)}
+$$
 
 **Corollary 1**. This rate depends only on $\kappa_i(t)$, not on the model $p_\theta$.
 
 **Proof**. From [Gat.Eq.24] / [Campbell.Eq.32], the unconditional rate for masked $x_t^i = m$:
 
-$$R_t^i(m, j) = \frac{\dot{\kappa}_i(t)}{1 - \kappa_i(t)} \cdot p_\theta(x_1^i = j \mid x_t)$$
+$$
+R_t^i(m, j) = \frac{\dot{\kappa}_i(t)}{1 - \kappa_i(t)} \cdot p_\theta(x_1^i = j \mid x_t)
+$$
 
 Sum over $j \in \mathcal{V}$: $\sum_j p_\theta(x_1^i = j \mid x_t) = 1$, giving $r_i(t) = \frac{\dot{\kappa}_i(t)}{1-\kappa_i(t)}$.
 
 CTMC survival probability from $0$ to $t$:
 
-$$P(T_i > t) = \exp\!\Big({-\int_0^t \frac{\dot{\kappa}_i(s)}{1-\kappa_i(s)} ds}\Big) = \exp\!\big(\ln(1-\kappa_i(t))\big) = 1 - \kappa_i(t)$$
+$$
+P(T_i > t) = \exp\!\Big({-\int_0^t \frac{\dot{\kappa}_i(s)}{1-\kappa_i(s)} ds}\Big) = \exp\!\big(\ln(1-\kappa_i(t))\big) = 1 - \kappa_i(t)
+$$
 
 Same as the conditional process. $\square$
 
@@ -147,7 +159,9 @@ Same as the conditional process. $\square$
 
 Linear base schedule $\kappa_{\text{base}}(t) = t$:
 
-$$\mathbb{E}[T_i] = 1 - \frac{1}{g_i + 1} = \frac{g_i}{g_i + 1}$$
+$$
+\mathbb{E}[T_i] = 1 - \frac{1}{g_i + 1} = \frac{g_i}{g_i + 1}
+$$
 
 | $g_i$ | $\mathbb{E}[T_i]$ | Biological interpretation |
 |--------|--------------------|----|
@@ -205,11 +219,15 @@ This is plausible because non-hotspot positions have narrower conditional distri
 
 **Definition 2**. For position $i$ with hotspot score $h_i$:
 
-$$p_{t|1}(x_t^i \mid x_1^i) = \kappa_i(t) \cdot \delta_{x_1^i}(x_t^i) + (1-\kappa_i(t)) \cdot \delta_m(x_t^i) \qquad \kappa_i(t) = \kappa_{\text{base}}(t)^{g_i}$$
+$$
+p_{t|1}(x_t^i \mid x_1^i) = \kappa_i(t) \cdot \delta_{x_1^i}(x_t^i) + (1-\kappa_i(t)) \cdot \delta_m(x_t^i) \qquad \kappa_i(t) = \kappa_{\text{base}}(t)^{g_i}
+$$
 
 Joint (positions independent given $x_1$):
 
-$$p_{t|1}(x_t \mid x_1, h) = \prod_{i=1}^L p_{t|1}(x_t^i \mid x_1^i)$$
+$$
+p_{t|1}(x_t \mid x_1, h) = \prod_{i=1}^L p_{t|1}(x_t^i \mid x_1^i)
+$$
 
 **Validity**: instance of [Gat.Eq.9] with per-position scheduler [Gat.Eq.8]. Boundary conditions: $p_{0|1} = \delta_m^{\otimes L}$, $p_{1|1} = \delta_{x_1}$. ✓
 
@@ -217,13 +235,19 @@ $$p_{t|1}(x_t \mid x_1, h) = \prod_{i=1}^L p_{t|1}(x_t^i \mid x_1^i)$$
 
 By [Campbell.Eq.31] / [Gat.Thm.3], the minimal-jump rate matrix for masking:
 
-$$R_t^{*,i}(m, x_1^i \mid x_1^i) = \frac{\dot{\kappa}_i(t)}{1 - \kappa_i(t)}$$
+$$
+R_t^{*,i}(m, x_1^i \mid x_1^i) = \frac{\dot{\kappa}_i(t)}{1 - \kappa_i(t)}
+$$
 
 All other entries zero. Substituting $\kappa_i(t) = \kappa_{\text{base}}(t)^{g_i}$:
 
-$$\dot{\kappa}_i(t) = g_i \cdot \kappa_{\text{base}}(t)^{g_i - 1} \cdot \dot{\kappa}_{\text{base}}(t)$$
+$$
+\dot{\kappa}_i(t) = g_i \cdot \kappa_{\text{base}}(t)^{g_i - 1} \cdot \dot{\kappa}_{\text{base}}(t)
+$$
 
-$$R_t^{*,i} = \frac{g_i \cdot \kappa_{\text{base}}(t)^{g_i - 1} \cdot \dot{\kappa}_{\text{base}}(t)}{1 - \kappa_{\text{base}}(t)^{g_i}}$$
+$$
+R_t^{*,i} = \frac{g_i \cdot \kappa_{\text{base}}(t)^{g_i - 1} \cdot \dot{\kappa}_{\text{base}}(t)}{1 - \kappa_{\text{base}}(t)^{g_i}}
+$$
 
 **Regularity**: non-negative and finite for $t \in (0,1)$ when $\kappa_{\text{base}}(t) \in (0,1)$. Diverges as $t \to 1$ (standard; guarantees complete unmasking).
 
@@ -231,9 +255,13 @@ $$R_t^{*,i} = \frac{g_i \cdot \kappa_{\text{base}}(t)^{g_i - 1} \cdot \dot{\kapp
 
 By [Campbell.Prop.3.1] / [Gat.Thm.2]:
 
-$$R_t^{\theta,i}(m, j) = \frac{\dot{\kappa}_i(t)}{1 - \kappa_i(t)} \cdot p_\theta(x_1^i = j \mid x_t) \qquad j \in \mathcal{V}$$
+$$
+R_t^{\theta,i}(m, j) = \frac{\dot{\kappa}_i(t)}{1 - \kappa_i(t)} \cdot p_\theta(x_1^i = j \mid x_t) \qquad j \in \mathcal{V}
+$$
 
-$$R_t^{\theta,i}(v, j) = 0 \qquad v \neq m$$
+$$
+R_t^{\theta,i}(v, j) = 0 \qquad v \neq m
+$$
 
 Only masked positions transition. Unmasked positions are absorbing.
 
@@ -241,13 +269,17 @@ Only masked positions transition. Unmasked positions are absorbing.
 
 Following [Campbell.App.C.2.1] generalized to per-position $\kappa_i$:
 
-$$\mathcal{L}_{\text{NELBO}} = \mathbb{E}_{t, x_1, x_t}\!\left[\sum_{i=1}^L \mathbb{1}[x_t^i = m] \cdot \frac{\dot{\kappa}_i(t)}{1-\kappa_i(t)} \cdot \big(-\log p_\theta(x_1^i \mid x_t)\big)\right]$$
+$$
+\mathcal{L}_{\text{NELBO}} = \mathbb{E}_{t, x_1, x_t}\!\left[\sum_{i=1}^L \mathbb{1}[x_t^i = m] \cdot \frac{\dot{\kappa}_i(t)}{1-\kappa_i(t)} \cdot \big(-\log p_\theta(x_1^i \mid x_t)\big)\right]
+$$
 
 The weight $w_i(t) = \frac{\dot{\kappa}_i(t)}{1-\kappa_i(t)}$ is per-position and per-time.
 
 ### 2.5 Unweighted CE as training objective
 
-$$\mathcal{L}_{\text{CE}} = \mathbb{E}_{x_1, t, x_t}\!\left[-\sum_{i: x_t^i = m} \log p_\theta(x_1^i \mid x_t)\right]$$
+$$
+\mathcal{L}_{\text{CE}} = \mathbb{E}_{x_1, t, x_t}\!\left[-\sum_{i: x_t^i = m} \log p_\theta(x_1^i \mid x_t)\right]
+$$
 
 **Proposition 2**. $\mathcal{L}_{\text{CE}}$ and $\mathcal{L}_{\text{NELBO}}$ have the same minimizer: $p_\theta^*(x_1^i \mid x_t) = p_{\text{true}}(x_1^i \mid x_t)$ for all $i, t, x_t$.
 
@@ -259,7 +291,9 @@ Following [MDLM] and [Campbell]: use unweighted CE in practice.
 
 The expected training weight for position $i$ (fraction of time it is masked):
 
-$$\bar{w}_i = \int_0^1 (1 - \kappa_{\text{base}}(t)^{g_i}) \, dt$$
+$$
+\bar{w}_i = \int_0^1 (1 - \kappa_{\text{base}}(t)^{g_i}) \, dt
+$$
 
 **Proposition 3**. $\bar{w}_i$ is strictly increasing in $g_i$.
 
@@ -317,7 +351,9 @@ For a specific masking fraction $\rho$ (fraction masked):
 
 Because both distributions are products of Bernoulli marginals, the KL divergence is:
 
-$$D_{\text{KL}}(\mathcal{P}_{\text{sample}} \| \mathcal{P}_{\text{train}}) = \sum_i \Big[(1-\kappa_i) \ln \frac{1-\kappa_i}{1-\kappa_{\text{base}}} + \kappa_i \ln \frac{\kappa_i}{\kappa_{\text{base}}}\Big]$$
+$$
+D_{\text{KL}}(\mathcal{P}_{\text{sample}} \| \mathcal{P}_{\text{train}}) = \sum_i \Big[(1-\kappa_i) \ln \frac{1-\kappa_i}{1-\kappa_{\text{base}}} + \kappa_i \ln \frac{\kappa_i}{\kappa_{\text{base}}}\Big]
+$$
 
 This is the exact sum of per-position binary KL divergences. For moderate $g_i$ (1-3) and typical $\kappa_{\text{base}} \in [0.3, 0.7]$, this is small.
 
@@ -349,7 +385,9 @@ This is Task A's "implicit weighting" (Section 2.6) — only realized with retra
 
 At generation step $t$ with step size $\Delta t$, for masked position $i$:
 
-$$P(\text{unmask } i) = \min\!\Big(1,\; \frac{\dot{\kappa}_i(t)}{1-\kappa_i(t)} \cdot \Delta t\Big)$$
+$$
+P(\text{unmask } i) = \min\!\Big(1,\; \frac{\dot{\kappa}_i(t)}{1-\kappa_i(t)} \cdot \Delta t\Big)
+$$
 
 If unmasking: sample $x^i \sim p_\theta(x_1^i \mid x_t)$.
 
@@ -357,7 +395,9 @@ If unmasking: sample $x^i \sim p_\theta(x_1^i \mid x_t)$.
 
 For the Euler step to define a valid PMF [Gat.Eq.30]:
 
-$$\Delta t \leq \min_i \frac{1-\kappa_i(t)}{\dot{\kappa}_i(t)}$$
+$$
+\Delta t \leq \min_i \frac{1-\kappa_i(t)}{\dot{\kappa}_i(t)}
+$$
 
 For $\kappa_i(t) = \kappa_{\text{base}}(t)^{g_i}$, the binding constraint comes from the position with the LARGEST $\frac{\dot{\kappa}_i(t)}{1-\kappa_i(t)}$ — which is the
 $g_i = 1$ positions (non-hotspots) at most times.
@@ -420,7 +460,9 @@ Design choice: use higher $\eta_i$ at hotspot positions for more exploration. Th
 
 CFG modifies $p_\theta$ but not the sampling schedule. The position-dependent rates $\frac{\dot{\kappa}_i(t)}{1-\kappa_i(t)}$ are orthogonal to CFG. Both can be applied simultaneously:
 
-$$\tilde{p}(x_1^i \mid x_t) \propto p_\theta(x_1^i \mid x_t, h)^{1+w} \cdot p_\theta(x_1^i \mid x_t)^{-w}$$
+$$
+\tilde{p}(x_1^i \mid x_t) \propto p_\theta(x_1^i \mid x_t, h)^{1+w} \cdot p_\theta(x_1^i \mid x_t)^{-w}
+$$
 
 CFG controls HOW MUCH the model biases toward low-risk tokens. Position-dependent scheduling controls WHEN each position is resolved. These are independent axes.
 
@@ -518,27 +560,67 @@ These play different roles:
 This distinction should be preserved throughout the project. It prevents us from
 overloading one mechanism to do two logically different jobs.
 
-#### D3. Preferred first extension: online conditioning/logit steering
+#### D3. Preferred first extension: dynamic commit/revisit control
 
-The least invasive adaptive extension is to keep the schedule fixed at the static prior
-and update only the denoiser condition:
+The most natural adaptive extension is to keep the static schedule fixed and use the
+online hotspot field to decide whether an already proposed residue should be considered
+committed. In this view, the epitope head does not directly choose amino acids. It
+controls the **editable state** of the reverse process.
+
+Let $\ell_i(t)$ denote the denoiser confidence in the currently committed token at
+position $i$, for example its chosen-token log-probability. Define an excess dynamic
+risk term
 
 $$
-q_t^i(a) = p_\theta(x_1^i = a \mid x_t, S, t, u_t^{\text{cond}})
+e_i(t) =
+\mathrm{ReLU}\!\big(h_i^{\mathrm{dyn}}(t) - h_i^{(0)} - \tau\big)
 $$
 
-Optionally, the online hotspot field can further reweight token probabilities:
+and a controller-adjusted commit score
+
+$$
+s_i^{\mathrm{commit}}(t) = \ell_i(t) - \lambda_t e_i(t).
+$$
+
+Generic reparameterized decoding revisits low-confidence residues. The risk-aware
+controller revisits residues whose current identity is both insufficiently trusted by
+the structural denoiser and associated with newly elevated immunogenic risk. Operationally,
+the remask/revisit rule ranks committed residues by $s_i^{\mathrm{commit}}(t)$ rather
+than by $\ell_i(t)$ alone.
+
+This is different from external classifier guidance. The head is not used as a direct
+token-level energy that tells the model which amino acid to sample. Instead, it decides
+which residues should remain editable and lets the structure-conditioned denoiser
+re-propose amino acids. The controller therefore acts on **commitment**, not directly on
+the amino-acid distribution.
+
+If the online risk estimate is noisy, a persistent risk memory can be used:
+
+$$
+m_i(t) = \gamma m_i(t-\Delta t) + (1-\gamma)e_i(t)
+$$
+
+and $m_i(t)$ replaces $e_i(t)$ in the commit score. This EMA-style memory prevents a
+single noisy hotspot estimate from causing repeated remasking, while allowing persistent
+newly emerged risk to keep a residue editable.
+
+The residue-level field $h_i^{\mathrm{dyn}}(t)$ is already derived from window-level
+epitope evidence by the head, so the first formulation should operate directly at the
+residue level. Additional region/window smoothing can be treated as a later engineering
+variant rather than part of the base controller.
+
+#### D3b. Optional logit steering baseline
+
+An external logit-steering controller can still be useful as a baseline:
 
 $$
 \tilde{q}_t^i(a) \propto q_t^i(a)\,
-\exp\!\big(-\lambda_t \, \Delta \hat{R}_i(a; \bar{x}_t)\big)
+\exp\!\big(-\lambda_t \, \Delta \hat{R}_i(a; \bar{x}_t)\big),
 $$
 
-where $\Delta \hat{R}_i(a; \bar{x}_t)$ is an estimated change in risk if token $a$ were
-chosen at position $i$.
-
-This is the natural first adaptive controller for MHC-IF, because it changes WHAT is
-predicted without changing the underlying unmasking chronology.
+where $\Delta \hat{R}_i(a; \bar{x}_t)$ estimates the risk change if token $a$ were chosen
+at position $i$. However, this is closer to conventional classifier guidance. It should
+not be the primary generative mechanism unless the commit/revisit controller fails.
 
 #### D4. Optional schedule modulation
 
@@ -573,12 +655,13 @@ A dynamic scheduler alone cannot repair already-decided positions that become ri
 later. Once a site has unmasked and absorbed a token, changing future hazards elsewhere
 does not revisit that decision.
 
-Therefore the principled mechanism for handling newly emerged hotspots is an optional
-risk-aware revisit process:
+Therefore the principled mechanism for handling newly emerged hotspots is a risk-aware
+commit/revisit process:
 
 $$
 r_i^-(t) = \eta_t \cdot s\!\big(h_i^{\mathrm{dyn}}(t), c_i(t)\big)
 $$
+
 
 where $c_i(t)$ may encode uncertainty, local risk increase, or another confidence score.
 The exact choice of $s(\cdot)$ is a design decision, but conceptually:
@@ -588,8 +671,21 @@ The exact choice of $s(\cdot)$ is a design decision, but conceptually:
 
 For MHC-IF, revisit is the more meaningful aggressive extension.
 
-One concrete instantiation is to trigger revisit only when the online risk rises above
-the static prior by a meaningful margin:
+There is no theorem guaranteeing that arbitrary revisit policies converge to a stable
+sequence. Convergence must be enforced by the sampling protocol. Sufficient practical
+conditions are:
+
+- finite reverse horizon,
+- a revisit budget or revisit probability that decays to zero near $t=1$,
+- a final hard-commit step with no further remasking,
+- optional EMA/hysteresis so transient risk estimates do not cause oscillatory remasking.
+
+Under these conditions, the process has operational convergence: every position is
+eventually committed, although the final sequence is still a sample from the controlled
+reverse process rather than the minimizer of an explicit energy.
+
+One concrete high-level instantiation is to trigger revisit only when the online risk
+rises above the static prior by a meaningful margin:
 
 $$
 \eta_t^i = \eta_0 \cdot
@@ -598,8 +694,16 @@ $$
 
 and then use $\eta_t^i$ inside the corrector/revisit mechanism. This makes revisit fire
 only when the online controller detects a materially worse hotspot than expected from the
-prior. We keep the more schematic $s(\cdot)$ form above in the main formulation because
-other choices may incorporate uncertainty or confidence more explicitly.
+prior. In practice this risk term should be combined with a structural confidence term
+such as denoiser log-probability or entropy. This makes structure and immunogenicity
+interact through a transparent commit score rather than through an opaque fusion of
+incompatible objectives.
+
+If structure and immunogenicity conflict, the controller should expose the conflict
+rather than hide it. High structural confidence plus high immune risk means the residue
+is likely a real tradeoff and should only be revisited under a strong risk threshold.
+Low structural confidence plus high immune risk is the preferred target: the model is
+already uncertain, and the head indicates that keeping the residue committed is risky.
 
 ### 4.8 Recommended progression
 
@@ -607,8 +711,8 @@ The above discussion suggests a stable development order:
 
 1. **Base method**: static prior schedule only (C1/C2)
 2. **Second axis**: static hotspot conditioning (C3)
-3. **First adaptive controller**: online conditioning/logit steering with fixed schedule
-4. **Stronger adaptive controller**: risk-aware revisit/corrector
+3. **First adaptive controller**: dynamic risk-aware commit/revisit with fixed schedule
+4. **Optional comparator**: external logit steering
 5. **Most invasive extension**: dynamic scheduler updates
 
 This order matches the scientific need to keep the main mechanism interpretable:
@@ -639,7 +743,7 @@ The purpose is not to simulate the exact online controller, but to expose the mo
 family of imperfect conditions whose reliability varies with time.
 
 By contrast, if the adaptive controller acts only **outside** the denoiser, e.g. through
-external logit reweighting
+commit/revisit scoring or external logit reweighting
 
 $$
 \tilde{q}_t^i(a) \propto q_t^i(a)\,
@@ -653,7 +757,9 @@ The recommended interpretation is therefore:
 
 - **Static-prior schedule/conditioning**: main method, no extra training support needed
 - **Dynamic condition fed into denoiser**: requires training-side robustness support
-- **External logit steering**: no conditioning mismatch, but controller-quality mismatch
+- **Dynamic commit/revisit**: no conditioning mismatch, but requires convergence gates and
+  transparent structure-risk tradeoff reporting
+- **External logit steering**: no conditioning mismatch, but closer to conventional guidance
 - **Dynamic scheduler modulation**: additionally weakens the clean static-prior theorems
   and should be treated as a later-stage extension
 
@@ -667,13 +773,19 @@ The recommended interpretation is therefore:
 
 Let $\hat{g}_i = g_i + \delta_i$. The effect on the schedule and expected unmasking time:
 
-$$\frac{\partial \kappa_i(t)}{\partial g_i} = \kappa_{\text{base}}(t)^{g_i} \cdot \ln \kappa_{\text{base}}(t) < 0$$
+$$
+\frac{\partial \kappa_i(t)}{\partial g_i} = \kappa_{\text{base}}(t)^{g_i} \cdot \ln \kappa_{\text{base}}(t) < 0
+$$
 
-$$\frac{\partial \mathbb{E}[T_i]}{\partial g_i} = -\int_0^1 \kappa_{\text{base}}(t)^{g_i} \ln \kappa_{\text{base}}(t) \, dt > 0$$
+$$
+\frac{\partial \mathbb{E}[T_i]}{\partial g_i} = -\int_0^1 \kappa_{\text{base}}(t)^{g_i} \ln \kappa_{\text{base}}(t) \, dt > 0
+$$
 
 For linear base schedule $\kappa_{\text{base}}(t) = t$:
 
-$$\frac{\partial \mathbb{E}[T_i]}{\partial g_i} = \frac{1}{(g_i+1)^2}$$
+$$
+\frac{\partial \mathbb{E}[T_i]}{\partial g_i} = \frac{1}{(g_i+1)^2}
+$$
 
 **Quantitative check**: at $g_i = 2$, perturbation $\delta = 0.5$ shifts $\mathbb{E}[T_i]$ by $\approx 0.056$ (from 0.667 to 0.723). Response is smooth in $g_i$, not step-like.
 
@@ -683,7 +795,9 @@ Define the **ranking margin** $m_{ij} = |g_i - g_j|$.
 
 **Proposition 4 (Ranking preservation)**. If prediction errors satisfy
 
-$$|\hat{g}_i - g_i| < \frac{m_{ij}}{2} \quad \text{and} \quad |\hat{g}_j - g_j| < \frac{m_{ij}}{2}$$
+$$
+|\hat{g}_i - g_i| < \frac{m_{ij}}{2} \quad \text{and} \quad |\hat{g}_j - g_j| < \frac{m_{ij}}{2}
+$$
 
 then $\text{sign}(\hat{g}_i - \hat{g}_j) = \text{sign}(g_i - g_j)$, and the relative ordering of positions $i$ and $j$ in the generative process is preserved.
 
@@ -724,7 +838,9 @@ and failure mode.
 
 **Measurement**: edit distance from WT, stratified by hotspot status. Compute ratio
 
-$$\rho = \frac{\text{edits at hotspots}/N_{\text{hotspot}}}{\text{edits at non-hotspots}/N_{\text{non-hotspot}}}$$
+$$
+\rho = \frac{\text{edits at hotspots}/N_{\text{hotspot}}}{\text{edits at non-hotspots}/N_{\text{non-hotspot}}}
+$$
 
 Predict $\rho > 1$ and increasing with $c$ (amplification strength).
 
