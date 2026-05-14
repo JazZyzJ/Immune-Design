@@ -21,6 +21,7 @@ MODE="${MODE:-generate_refiner}"   # train_refiner | train_sidecar | generate_re
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
+INPUT_SOURCE="${INPUT_SOURCE:-if_test}" # if_test | cath
 
 # ── Paths (canonical Della layout from PROGRESS.md) ───────────────────────
 PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"
@@ -58,7 +59,7 @@ SIDECAR_CHECKPOINT="${SIDECAR_CHECKPOINT:-}"
 case "${MODE}" in
     train_refiner)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/refiner_train" ;;
     train_sidecar)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/sidecar_train" ;;
-    generate_refiner) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${ARM:-baseline}" ;;
+    generate_refiner) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${INPUT_SOURCE}/${ARM:-baseline}" ;;
     compare_ablation) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/compare" ;;
     *) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${MODE}" ;;
 esac
@@ -94,6 +95,8 @@ MASK_RATIO_CENTER="${MASK_RATIO_CENTER:-0.4}"
 MASK_RATIO_DEVIATION="${MASK_RATIO_DEVIATION:-0.2}"
 FUSION_TEMPERATURE="${FUSION_TEMPERATURE:-1.0}"
 LIMIT_PROTEINS="${LIMIT_PROTEINS:-}"
+CATH_SPLIT="${CATH_SPLIT:-test}"
+CATH_MAX_LENGTH="${CATH_MAX_LENGTH:-500}"
 
 # Compare-mode arm dirs (callers point these at completed run dirs)
 BASELINE_RUN="${BASELINE_RUN:-}"
@@ -146,6 +149,9 @@ echo "  SIDECAR_CHECKPOINT: ${SIDECAR_CHECKPOINT:-<none>}"
 echo "  CATH_ROOT         : ${CATH_ROOT}"
 echo "  TEST_SET_PARQUET  : ${TEST_SET_PARQUET}"
 echo "  PDB_ROOT          : ${PDB_ROOT}"
+echo "  INPUT_SOURCE      : ${INPUT_SOURCE}"
+echo "  CATH_SPLIT        : ${CATH_SPLIT}"
+echo "  CATH_MAX_LENGTH   : ${CATH_MAX_LENGTH}"
 echo "  OUTPUT_ROOT       : ${OUTPUT_ROOT}"
 echo "  ALLELE            : ${ALLELE}"
 echo "  ARM               : ${ARM:-<auto>}"
@@ -215,9 +221,22 @@ elif [ "${MODE}" = "train_sidecar" ]; then
         "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
 elif [ "${MODE}" = "generate_refiner" ]; then
     : "${CHECKPOINT:?set CHECKPOINT for generate_refiner}"
-    : "${TEST_SET_PARQUET:?set TEST_SET_PARQUET for generate_refiner}"
-    : "${PDB_ROOT:?set PDB_ROOT for generate_refiner}"
     EXTRA_FLAGS=()
+    EXTRA_FLAGS+=(--input-source "${INPUT_SOURCE}")
+    if [ "${INPUT_SOURCE}" = "if_test" ]; then
+        : "${TEST_SET_PARQUET:?set TEST_SET_PARQUET for INPUT_SOURCE=if_test}"
+        : "${PDB_ROOT:?set PDB_ROOT for INPUT_SOURCE=if_test}"
+        EXTRA_FLAGS+=(--test-set-parquet "${TEST_SET_PARQUET}")
+        EXTRA_FLAGS+=(--pdb-root "${PDB_ROOT}")
+    elif [ "${INPUT_SOURCE}" = "cath" ]; then
+        : "${CATH_ROOT:?set CATH_ROOT for INPUT_SOURCE=cath}"
+        EXTRA_FLAGS+=(--cath-root "${CATH_ROOT}")
+        EXTRA_FLAGS+=(--cath-split "${CATH_SPLIT}")
+        EXTRA_FLAGS+=(--cath-max-length "${CATH_MAX_LENGTH}")
+    else
+        echo "ERROR: INPUT_SOURCE='${INPUT_SOURCE}' (expected if_test|cath)" >&2
+        exit 2
+    fi
     [[ -n "${REFINER_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--refiner-checkpoint "${REFINER_CHECKPOINT}")
     [[ -n "${SIDECAR_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--sidecar-checkpoint "${SIDECAR_CHECKPOINT}")
     [[ -n "${ARM}" ]]                && EXTRA_FLAGS+=(--arm "${ARM}")
@@ -225,8 +244,6 @@ elif [ "${MODE}" = "generate_refiner" ]; then
     [[ -n "${LIMIT_PROTEINS}" ]]     && EXTRA_FLAGS+=(--limit-proteins "${LIMIT_PROTEINS}")
     python -u "${PROJECT_ROOT}/scripts/run_if_imp_refiner.py" \
         --checkpoint "${CHECKPOINT}" \
-        --test-set-parquet "${TEST_SET_PARQUET}" \
-        --pdb-root "${PDB_ROOT}" \
         --allele "${ALLELE}" \
         --output-root "${OUTPUT_ROOT}" \
         --n-designs-per-protein "${N_DESIGNS_PER_PROTEIN}" \

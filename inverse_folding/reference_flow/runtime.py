@@ -142,61 +142,152 @@ def resolve_structure_path(entry: pd.Series | dict[str, Any], pdb_root: str | Pa
     )
 
 
+def _coords_from_entry_or_structure(
+    row: dict[str, Any],
+    *,
+    pdb_root: str | Path,
+) -> tuple[Any, Path]:
+    """Return backbone coords from an in-memory CATH row or a PDB/CIF path."""
+    protein_id = str(row["protein_id"])
+    sequence_length = int(row["sequence_length"])
+
+    coords = row.get("coords")
+    if coords is not None:
+        if isinstance(coords, dict):
+            try:
+                coord_len = len(next(iter(coords.values())))
+            except StopIteration as exc:
+                raise ValueError(f"{protein_id}: empty coords dict") from exc
+        else:
+            coord_len = len(coords)
+        if int(coord_len) != sequence_length:
+            raise ValueError(
+                f"{protein_id}: in-memory coord length {coord_len} "
+                f"!= sequence_length {sequence_length}"
+            )
+        return coords, Path("CATH") / safe_file_id(protein_id)
+
+    structure_path = resolve_structure_path(row, pdb_root)
+    chain_id = str(row.get("if_chain_id") or row.get("chain") or "").strip()
+    if not chain_id:
+        chain_id = infer_chain_id(protein_id)
+    imports = _load_byprot_imports()
+    coords, structure_sequence = imports["load_coords"](
+        str(structure_path), chain=chain_id
+    )
+    if len(structure_sequence) != sequence_length:
+        raise ValueError(
+            f"{protein_id}: structure length {len(structure_sequence)} "
+            f"!= sequence_length {sequence_length}"
+        )
+    return coords, structure_path
+
+
 def prepare_backbone_batch(
     *,
     task: Any,
     entries: list[pd.Series | dict[str, Any]],
     pdb_root: str | Path,
     device: str,
-) -> tuple[dict[str, Any], list[int], list[Path]]:
+    skip_invalid: bool = True,
+) -> tuple[
+    dict[str, Any] | None,
+    list[int],
+    list[Path],
+    list[dict[str, Any]],
+    list[int],
+]:
     """Featurize a list of test-set rows into a single DPLM batch (B>1).
 
-    Returns ``(batch, sequence_lengths, structure_paths)`` so callers can
-    map decoded outputs back to (protein_id, design_idx). All sequences
-    are passed to the alphabet featurizer in one call; padding /
-    coord_mask handling matches the DPLM CATH path bit-for-bit because
-    the featurizer is shared.
+    Partial-safe by default: each entry is loaded inside its own ``try``,
+    failed entries are skipped and accumulated in ``prep_failures``, and
+    the returned batch is built only from the surviving rows. This
+    prevents a single broken PDB / coord-length mismatch from killing
+    an entire length-bucket.
+
+    Returns
+    -------
+    ``(batch, sequence_lengths, structure_paths, prep_failures, kept_indices)``
+
+    - ``batch``: featurized DPLM batch (None if no entry survived)
+    - ``sequence_lengths``: per-surviving-row int list, aligned with the
+      first dim of ``batch`` tensors
+    - ``structure_paths``: per-surviving-row resolved PDB/CIF path
+    - ``prep_failures``: ``[{"entry": row_dict, "reason": str}, ...]``
+      for every entry that failed before / during featurization
+    - ``kept_indices``: positions in the input ``entries`` list that
+      survived (so callers can map row_i → original entry / protein_id /
+      design_idx without keeping a parallel list)
+
+    With ``skip_invalid=False`` the first per-row failure raises, mirroring
+    the pre-partial-safe contract (used only by legacy callers / tests).
     """
     if not entries:
         raise ValueError("prepare_backbone_batch requires at least one entry")
 
-    imports = _load_byprot_imports()
     items: list[dict[str, Any]] = []
     sequence_lengths: list[int] = []
     structure_paths: list[Path] = []
+    prep_failures: list[dict[str, Any]] = []
+    kept_indices: list[int] = []
 
-    for entry in entries:
+    for idx, entry in enumerate(entries):
         row = dict(entry)
-        protein_id = str(row["protein_id"])
-        sequence = str(row["sequence"]).upper()
-        sequence_length = int(row["sequence_length"])
-        if len(sequence) != sequence_length:
-            raise ValueError(
-                f"{protein_id}: len(sequence)={len(sequence)} != "
-                f"sequence_length={sequence_length}"
+        try:
+            protein_id = str(row["protein_id"])
+            sequence = str(row["sequence"]).upper()
+            sequence_length = int(row["sequence_length"])
+            if len(sequence) != sequence_length:
+                raise ValueError(
+                    f"{protein_id}: len(sequence)={len(sequence)} != "
+                    f"sequence_length={sequence_length}"
+                )
+            coords, structure_path = _coords_from_entry_or_structure(
+                row, pdb_root=pdb_root
             )
-        structure_path = resolve_structure_path(row, pdb_root)
-        chain_id = str(row.get("if_chain_id") or row.get("chain") or "").strip()
-        if not chain_id:
-            chain_id = infer_chain_id(protein_id)
-        coords, structure_sequence = imports["load_coords"](
-            str(structure_path), chain=chain_id
-        )
-        if len(structure_sequence) != sequence_length:
-            raise ValueError(
-                f"{protein_id}: structure length {len(structure_sequence)} "
-                f"!= sequence_length {sequence_length}"
+        except Exception as exc:  # noqa: BLE001 - per-entry isolation
+            if not skip_invalid:
+                raise
+            prep_failures.append(
+                {
+                    "entry": row,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "stage": "prepare_backbone_batch",
+                }
             )
+            continue
+
         items.append({"name": protein_id, "seq": sequence, "coords": coords})
         sequence_lengths.append(sequence_length)
         structure_paths.append(structure_path)
+        kept_indices.append(idx)
+
+    if not items:
+        return None, [], [], prep_failures, []
 
     featurizer = task.alphabet.featurizer
-    batch = featurizer(items)
+    try:
+        batch = featurizer(items)
+    except Exception as exc:  # noqa: BLE001
+        if not skip_invalid:
+            raise
+        # The featurizer rarely fails after per-entry load succeeded; if
+        # it does, all surviving entries get marked as failed so the
+        # runner can fall back to per-protein retry.
+        for kept_i, entry in zip(kept_indices, items):
+            prep_failures.append(
+                {
+                    "entry": {"protein_id": entry["name"], "seq": entry["seq"]},
+                    "reason": f"featurizer error: {type(exc).__name__}: {exc}",
+                    "stage": "prepare_backbone_batch.featurizer",
+                }
+            )
+        return None, [], [], prep_failures, []
+
     for key, value in list(batch.items()):
         if torch.is_tensor(value):
             batch[key] = value.to(device)
-    return batch, sequence_lengths, structure_paths
+    return batch, sequence_lengths, structure_paths, prep_failures, kept_indices
 
 
 def prepare_backbone(
@@ -215,16 +306,7 @@ def prepare_backbone(
             f"{protein_id}: len(sequence)={len(sequence)} != sequence_length={sequence_length}"
         )
 
-    structure_path = resolve_structure_path(row, pdb_root)
-    chain_id = str(row.get("if_chain_id") or row.get("chain") or "").strip()
-    if not chain_id:
-        chain_id = infer_chain_id(protein_id)
-    imports = _load_byprot_imports()
-    coords, structure_sequence = imports["load_coords"](str(structure_path), chain=chain_id)
-    if len(structure_sequence) != sequence_length:
-        raise ValueError(
-            f"{protein_id}: structure length {len(structure_sequence)} != sequence_length {sequence_length}"
-        )
+    coords, structure_path = _coords_from_entry_or_structure(row, pdb_root=pdb_root)
 
     featurizer = task.alphabet.featurizer
     batch = featurizer([{"name": protein_id, "seq": sequence, "coords": coords}])

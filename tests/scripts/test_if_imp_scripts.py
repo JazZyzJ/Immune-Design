@@ -332,6 +332,99 @@ def test_length_buckets_sort_desc_and_chunk():
     assert [len(b) for b in buckets] == [2, 2, 1]
 
 
+def test_generate_rows_for_entries_batched_handles_per_row_failures():
+    """A batched_generator that returns None for some rows must produce
+    one ``failures`` entry per None and ``rows`` entries for the rest --
+    NOT mark the whole bucket as failed."""
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    import importlib
+
+    if "run_if_phase_c0" in sys.modules:
+        c0 = importlib.reload(sys.modules["run_if_phase_c0"])
+    else:
+        c0 = importlib.import_module("run_if_phase_c0")
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "protein_id": ["good_a", "bad_b", "good_c"],
+            "sequence_length": [4, 4, 4],
+            "sequence": ["AAAA", "CCCC", "DDDD"],
+        }
+    )
+
+    def fake_batched(entries, expected_lengths, design_idx, design_seed):
+        # bad_b fails to prepare; good_a + good_c succeed via batched generate.
+        seqs: list[str | None] = []
+        failures: list[dict] = []
+        for i, e in enumerate(entries):
+            if str(e["protein_id"]) == "bad_b":
+                seqs.append(None)
+                failures.append({"row_idx": i, "reason": "missing PDB file"})
+            else:
+                seqs.append(str(e["sequence"]))
+        return {
+            "sequences": seqs,
+            "failures": failures,
+            "wall_seconds": float(len(entries)),
+        }
+
+    rows, failures = c0.generate_rows_for_entries_batched(
+        df,
+        fake_batched,
+        n_designs_per_protein=1,
+        seed=42,
+        batch_size=4,
+        progress_every=0,
+    )
+    # 2 success + 1 failure -- NOT 0 success + 3 failures
+    assert len(rows) == 2
+    assert len(failures) == 1
+    assert {r["protein_id"] for r in rows} == {"good_a", "good_c"}
+    assert failures[0]["protein_id"] == "bad_b"
+    assert "missing PDB file" in failures[0]["reason"]
+
+
+def test_generate_rows_for_entries_batched_whole_bucket_exception_still_isolates_per_design():
+    """If batched_generator itself raises (catastrophic bucket failure),
+    runner falls back to marking each row in the bucket as failed --
+    the behavior before this fix. Per-row None-sequences are the
+    preferred path; this is the last-resort backstop."""
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    import importlib
+
+    if "run_if_phase_c0" in sys.modules:
+        c0 = importlib.reload(sys.modules["run_if_phase_c0"])
+    else:
+        c0 = importlib.import_module("run_if_phase_c0")
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "protein_id": ["a", "b", "c"],
+            "sequence_length": [4, 4, 4],
+            "sequence": ["AAAA", "CCCC", "DDDD"],
+        }
+    )
+
+    def exploding_batched(entries, expected_lengths, design_idx, design_seed):
+        raise RuntimeError("simulated CUDA OOM")
+
+    rows, failures = c0.generate_rows_for_entries_batched(
+        df,
+        exploding_batched,
+        n_designs_per_protein=1,
+        seed=42,
+        batch_size=4,
+        progress_every=0,
+    )
+    assert rows == []
+    assert len(failures) == 3
+    assert all("simulated CUDA OOM" in f["reason"] for f in failures)
+
+
 def test_generate_rows_for_entries_batched_dispatches_in_buckets():
     if str(SCRIPTS) not in sys.path:
         sys.path.insert(0, str(SCRIPTS))

@@ -42,9 +42,14 @@ def test_generate_reparam_decoding_keeps_current_decoder_predictions():
     residue positions as ``<mask>`` at the last step.
     """
     tree = ast.parse(DPLM_INVFOLD.read_text())
+    # ``ast.unparse`` does not preserve original quote style, so normalize
+    # to double-quoted form before comparing the kwarg source expressions.
+    def _norm(s: str) -> str:
+        return s.replace("'", '"')
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "_reparam_decoding":
-            kwargs = {kw.arg: ast.unparse(kw.value) for kw in node.keywords}
+            kwargs = {kw.arg: _norm(ast.unparse(kw.value)) for kw in node.keywords}
             if "decoding_strategy" in kwargs:
                 assert kwargs["output_tokens"] == 'prev_decoder_out["output_tokens"].clone()'
                 assert kwargs["output_scores"] == 'prev_decoder_out["output_scores"].clone()'

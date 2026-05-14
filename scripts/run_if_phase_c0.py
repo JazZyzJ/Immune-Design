@@ -211,17 +211,45 @@ def generate_rows_for_entries_batched(
             expected_lengths = [int(s["sequence_length"]) for s in sub]
             try:
                 result = batched_generator(sub, expected_lengths, design_idx, design_seed)
-                sequences = list(result["sequences"])
+                # Partial-safe contract:
+                #   sequences[i] is the decoded string for sub[i], or None
+                #     if that row failed (in prepare or in generate)
+                #   failures: list of {"row_idx": int, "reason": str} for
+                #     each None entry in sequences. row_idx indexes into
+                #     ``sub`` (i.e. the bucket), not the original entries
+                #     DataFrame.
+                sequences = list(result.get("sequences", []))
+                row_failures = list(result.get("failures", []))
                 wall_seconds = float(result["wall_seconds"])
                 if len(sequences) != len(sub):
                     raise RuntimeError(
                         f"batched_generator returned {len(sequences)} "
                         f"sequences for {len(sub)} rows"
                     )
-                per_row_wall = wall_seconds / float(len(sub))
+                n_success = sum(1 for s in sequences if s is not None)
+                per_row_wall = (
+                    wall_seconds / float(n_success) if n_success > 0 else 0.0
+                )
+                # Map row_idx -> failure reason for O(1) lookup
+                failure_by_idx = {
+                    int(f["row_idx"]): str(f.get("reason", "unknown"))
+                    for f in row_failures
+                    if "row_idx" in f
+                }
                 for row_i, (entry, sequence, expected_length) in enumerate(
                     zip(sub, sequences, expected_lengths)
                 ):
+                    if sequence is None:
+                        failures.append(
+                            {
+                                "protein_id": str(entry["protein_id"]),
+                                "design_idx": int(design_idx),
+                                "reason": failure_by_idx.get(
+                                    row_i, "batched_generator returned None"
+                                ),
+                            }
+                        )
+                        continue
                     sequence = str(sequence)
                     if len(sequence) != int(expected_length):
                         failures.append(
@@ -244,7 +272,7 @@ def generate_rows_for_entries_batched(
                             "wall_seconds": per_row_wall,
                         }
                     )
-            except Exception as exc:  # noqa: BLE001 - persisted for audit
+            except Exception as exc:  # noqa: BLE001 - last-resort: whole-bucket failure
                 for entry in sub:
                     failures.append(
                         {
@@ -401,14 +429,58 @@ def _build_batched_generator(
 ) -> Callable[
     [list[pd.Series], list[int], int, int], dict[str, Any]
 ]:
-    """Batched generator: one DPLM ``generate()`` call per length bucket."""
+    """Batched generator: one DPLM ``generate()`` call per length bucket.
+
+    Partial-safe: per-entry prepare failures are skipped (not raised);
+    a batch-wide generate failure triggers per-protein B=1 retry on the
+    surviving entries before being marked as a failure. Output contract::
+
+        {
+            "sequences": list[str | None] of length len(entries),
+            "failures": list[{"row_idx": int, "reason": str}],
+            "wall_seconds": float,
+        }
+    """
     from inverse_folding.reference_flow.runtime import (
+        generate_native_sequence,
         generate_native_sequences_batched,
         load_if_task,
+        prepare_backbone,
         prepare_backbone_batch,
     )
 
     task = load_if_task(checkpoint, device=device)
+
+    def _per_protein_retry(
+        entries: list[pd.Series],
+        sub_indices: list[int],
+        sequences: list[str | None],
+        failures: list[dict[str, Any]],
+        design_seed: int,
+    ) -> None:
+        """Fall back to B=1 generate for each entry at the given indices.
+        Mutates ``sequences`` and ``failures`` in place."""
+        for idx in sub_indices:
+            entry = entries[idx]
+            try:
+                prepared = prepare_backbone(
+                    task=task, entry=entry, pdb_root=pdb_root, device=device
+                )
+                seq = generate_native_sequence(
+                    task=task,
+                    prepared=prepared,
+                    max_iter=max_iter,
+                    temperature=temperature,
+                    seed=design_seed,
+                )
+                sequences[idx] = seq
+            except Exception as exc:  # noqa: BLE001 - per-row isolation
+                failures.append(
+                    {
+                        "row_idx": int(idx),
+                        "reason": f"per_protein_retry: {type(exc).__name__}: {exc}",
+                    }
+                )
 
     def _generator(
         entries: list[pd.Series],
@@ -418,25 +490,59 @@ def _build_batched_generator(
     ) -> dict[str, Any]:
         del design_idx
         started = time.time()
-        batch, seq_lengths, _ = prepare_backbone_batch(
-            task=task, entries=entries, pdb_root=pdb_root, device=device
-        )
-        # sanity: featurizer + load_coords must agree with the input entries
-        if seq_lengths != expected_lengths:
-            raise RuntimeError(
-                f"prepare_backbone_batch length mismatch: featurizer="
-                f"{seq_lengths} entries={expected_lengths}"
-            )
-        sequences = generate_native_sequences_batched(
+        sequences: list[str | None] = [None] * len(entries)
+        failures: list[dict[str, Any]] = []
+
+        batch, seq_lengths, _paths, prep_failures, kept_indices = prepare_backbone_batch(
             task=task,
-            batch=batch,
-            sequence_lengths=seq_lengths,
-            max_iter=max_iter,
-            temperature=temperature,
-            seed=design_seed,
+            entries=entries,
+            pdb_root=pdb_root,
+            device=device,
+            skip_invalid=True,
         )
+        # Map prep_failures back to entry positions in the input list.
+        kept_set = set(kept_indices)
+        prep_failure_iter = iter(prep_failures)
+        for idx in range(len(entries)):
+            if idx in kept_set:
+                continue
+            try:
+                pf = next(prep_failure_iter)
+                reason = pf.get("reason", "prep_failure")
+            except StopIteration:
+                reason = "prep_failure"
+            failures.append({"row_idx": int(idx), "reason": str(reason)})
+
+        if batch is not None and kept_indices:
+            try:
+                gen_sequences = generate_native_sequences_batched(
+                    task=task,
+                    batch=batch,
+                    sequence_lengths=seq_lengths,
+                    max_iter=max_iter,
+                    temperature=temperature,
+                    seed=design_seed,
+                )
+                for row_i, original_idx in enumerate(kept_indices):
+                    sequences[original_idx] = gen_sequences[row_i]
+            except Exception as exc:  # noqa: BLE001 - bucket-wide retry
+                print(
+                    f"[batched-generate] failure on bucket of "
+                    f"{len(kept_indices)} proteins ({type(exc).__name__}: {exc}); "
+                    f"falling back to per-protein B=1 retry.",
+                    flush=True,
+                )
+                _per_protein_retry(
+                    entries=entries,
+                    sub_indices=kept_indices,
+                    sequences=sequences,
+                    failures=failures,
+                    design_seed=design_seed,
+                )
+
         return {
             "sequences": sequences,
+            "failures": failures,
             "wall_seconds": time.time() - started,
         }
 

@@ -36,8 +36,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--checkpoint", required=True, help="Module K DPLM checkpoint (.ckpt).")
-    parser.add_argument("--test-set-parquet", required=True)
-    parser.add_argument("--pdb-root", required=True)
+    parser.add_argument(
+        "--input-source",
+        choices=("if_test", "cath"),
+        default="if_test",
+        help="Generate on the fixed IF test set or directly on a CATH split.",
+    )
+    parser.add_argument("--test-set-parquet", default=None)
+    parser.add_argument("--pdb-root", default=None)
+    parser.add_argument("--cath-root", default=None, help="CATH 4.3 root; required when --input-source cath.")
+    parser.add_argument("--cath-split", default="test", choices=("train", "validation", "valid", "test"))
+    parser.add_argument("--cath-max-length", type=int, default=500)
     parser.add_argument("--allele", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--refiner-checkpoint", default=None, help="Optional .pt produced by train_if_imp_refiner.py.")
@@ -113,8 +122,73 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--limit-proteins must be positive when provided")
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive")
+    if args.cath_max_length <= 0:
+        parser.error("--cath-max-length must be positive")
+    if args.input_source == "if_test":
+        if not args.test_set_parquet:
+            parser.error("--test-set-parquet is required when --input-source if_test")
+        if not args.pdb_root:
+            parser.error("--pdb-root is required when --input-source if_test")
+    elif args.input_source == "cath":
+        if not args.cath_root:
+            parser.error("--cath-root is required when --input-source cath")
 
     return args
+
+
+def load_cath_entries(
+    *,
+    cath_root: str | Path,
+    split: str,
+    max_length: int,
+) -> pd.DataFrame:
+    """Load a CATH split into the runner's generation entry schema."""
+    from byprot.datamodules.dataset.cath import CATH
+
+    dataset, _alphabet_set = CATH(
+        root=str(Path(cath_root).expanduser().resolve()),
+        split=(split,),
+        max_length=int(max_length),
+    )
+    if isinstance(dataset, list):
+        dataset = dataset[0]
+
+    rows: list[dict[str, Any]] = []
+    for idx in range(len(dataset)):
+        entry = dataset[idx]
+        sequence = str(entry["seq"]).upper()
+        rows.append(
+            {
+                "protein_id": str(entry["name"]),
+                "sequence": sequence,
+                "sequence_length": int(len(sequence)),
+                "coords": entry["coords"],
+                "source": f"cath_{split}",
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=["protein_id", "sequence", "sequence_length", "coords", "source"],
+    )
+
+
+def annotate_cath_recovery(rows: list[dict[str, Any]], entries: pd.DataFrame) -> None:
+    """Add native sequence and AA recovery for CATH-source generation rows."""
+    native_by_id = {
+        str(row["protein_id"]): str(row["sequence"])
+        for _, row in entries.iterrows()
+    }
+    for row in rows:
+        native = native_by_id.get(str(row["protein_id"]))
+        if native is None:
+            continue
+        sequence = str(row["sequence"])
+        row["native_sequence"] = native
+        if len(sequence) != len(native) or len(native) == 0:
+            row["aa_recovery"] = float("nan")
+        else:
+            n_match = sum(a == b for a, b in zip(sequence, native))
+            row["aa_recovery"] = float(n_match / len(native))
 
 
 def resolve_arm(args: argparse.Namespace) -> str:
@@ -355,45 +429,162 @@ def _build_generator(
         design_idx: int,
         design_seed: int,
     ) -> dict[str, Any]:
+        """Partial-safe batched generator with per-protein fallback.
+
+        Output contract::
+
+            {
+                "sequences": list[str | None] of length len(entries),
+                "failures": list[{"row_idx": int, "reason": str}],
+                "wall_seconds": float,
+            }
+
+        Diagnostics are fanned out to surviving entries via
+        ``kept_indices`` -- failed entries get no step_records.
+        """
         pending_step_records.clear()
         started = time.time()
-        batch, seq_lengths, _ = prepare_backbone_batch(
-            task=task, entries=entries, pdb_root=pdb_root, device=device
-        )
-        if seq_lengths != expected_lengths:
-            raise RuntimeError(
-                f"prepare_backbone_batch length mismatch: featurizer="
-                f"{seq_lengths} entries={expected_lengths}"
-            )
-        sequences = generate_native_sequences_batched(
+        sequences: list[str | None] = [None] * len(entries)
+        failures: list[dict[str, Any]] = []
+
+        batch, seq_lengths, _paths, prep_failures, kept_indices = prepare_backbone_batch(
             task=task,
-            batch=batch,
-            sequence_lengths=seq_lengths,
-            max_iter=max_iter,
-            temperature=temperature,
-            seed=design_seed,
-            logit_processor=logit_processor,
+            entries=entries,
+            pdb_root=pdb_root,
+            device=device,
+            skip_invalid=True,
         )
-        wall = time.time() - started
-        per_design_wall = wall / float(len(entries))
-        if args.ablation_mode:
-            per_row_steps = _fanout_per_row(pending_step_records, n_rows=len(entries))
-            for row_i, entry in enumerate(entries):
-                diagnostics_buffer.append(
-                    {
-                        "protein_id": str(entry["protein_id"]),
-                        "design_idx": int(design_idx),
-                        "arm": arm,
-                        "wall_seconds": float(per_design_wall),
-                        "n_residues": int(seq_lengths[row_i]),
-                        "step_records": per_row_steps[row_i],
-                    }
+        kept_set = set(kept_indices)
+        pf_iter = iter(prep_failures)
+        for idx in range(len(entries)):
+            if idx in kept_set:
+                continue
+            try:
+                pf = next(pf_iter)
+                reason = pf.get("reason", "prep_failure")
+            except StopIteration:
+                reason = "prep_failure"
+            failures.append({"row_idx": int(idx), "reason": str(reason)})
+
+        retried_indices: set[int] = set()
+
+        if batch is not None and kept_indices:
+            try:
+                gen_sequences = generate_native_sequences_batched(
+                    task=task,
+                    batch=batch,
+                    sequence_lengths=seq_lengths,
+                    max_iter=max_iter,
+                    temperature=temperature,
+                    seed=design_seed,
+                    logit_processor=logit_processor,
                 )
-        return {"sequences": sequences, "wall_seconds": wall}
+                for row_i, original_idx in enumerate(kept_indices):
+                    sequences[original_idx] = gen_sequences[row_i]
+            except Exception as exc:  # noqa: BLE001 - bucket-wide retry
+                print(
+                    f"[batched-generate] failure on bucket of "
+                    f"{len(kept_indices)} proteins ({type(exc).__name__}: {exc}); "
+                    f"falling back to per-protein B=1 retry.",
+                    flush=True,
+                )
+                # Diagnostics from the failed batched call would be partial /
+                # misaligned; drop them before per-protein retry repopulates.
+                pending_step_records.clear()
+                retried_indices.update(kept_indices)
+                for original_idx in kept_indices:
+                    entry = entries[original_idx]
+                    try:
+                        prepared = prepare_backbone(
+                            task=task,
+                            entry=entry,
+                            pdb_root=pdb_root,
+                            device=device,
+                        )
+                        seq = generate_native_sequence(
+                            task=task,
+                            prepared=prepared,
+                            max_iter=max_iter,
+                            temperature=temperature,
+                            seed=design_seed,
+                            logit_processor=logit_processor,
+                        )
+                        sequences[original_idx] = seq
+                    except Exception as inner_exc:  # noqa: BLE001
+                        failures.append(
+                            {
+                                "row_idx": int(original_idx),
+                                "reason": (
+                                    f"per_protein_retry: "
+                                    f"{type(inner_exc).__name__}: {inner_exc}"
+                                ),
+                            }
+                        )
+
+        wall = time.time() - started
+        n_success = sum(1 for s in sequences if s is not None)
+        per_design_wall = wall / float(n_success) if n_success > 0 else 0.0
+
+        if args.ablation_mode and n_success > 0:
+            # Branching by which path produced the step_records:
+            # - batched path (no fallback): records use row_idx into the
+            #   batched call, i.e. positions 0..len(kept_indices)-1.
+            # - fallback path: records were emitted per-protein with B=1,
+            #   one record per step PER PROTEIN, all carrying row_idx=0.
+            #   We rebuild per-protein step lists by stride.
+            if retried_indices:
+                surviving_kept = [
+                    idx for idx in kept_indices if sequences[idx] is not None
+                ]
+                if surviving_kept:
+                    n_per_protein = len(pending_step_records) // len(surviving_kept)
+                    if n_per_protein > 0 and n_per_protein * len(surviving_kept) == len(pending_step_records):
+                        for k_i, original_idx in enumerate(surviving_kept):
+                            slice_records = pending_step_records[
+                                k_i * n_per_protein : (k_i + 1) * n_per_protein
+                            ]
+                            per_row_steps = _fanout_per_row(
+                                slice_records, n_rows=1
+                            )
+                            diagnostics_buffer.append(
+                                {
+                                    "protein_id": str(entries[original_idx]["protein_id"]),
+                                    "design_idx": int(design_idx),
+                                    "arm": arm,
+                                    "wall_seconds": float(per_design_wall),
+                                    "n_residues": int(
+                                        entries[original_idx]["sequence_length"]
+                                    ),
+                                    "step_records": per_row_steps[0],
+                                }
+                            )
+            else:
+                per_row_steps = _fanout_per_row(
+                    pending_step_records, n_rows=len(kept_indices)
+                )
+                for row_i, original_idx in enumerate(kept_indices):
+                    if sequences[original_idx] is None:
+                        continue
+                    diagnostics_buffer.append(
+                        {
+                            "protein_id": str(entries[original_idx]["protein_id"]),
+                            "design_idx": int(design_idx),
+                            "arm": arm,
+                            "wall_seconds": float(per_design_wall),
+                            "n_residues": int(seq_lengths[row_i]),
+                            "step_records": per_row_steps[row_i],
+                        }
+                    )
+
+        return {
+            "sequences": sequences,
+            "failures": failures,
+            "wall_seconds": wall,
+        }
 
     refiner_meta: dict[str, Any] = {
         "arm": arm,
-        "refiner_enabled": logit_processor is not None,
+        "refiner_enabled": bool(logit_processor is not None and args.refiner_checkpoint),
         "sidecar_enabled": bool(sidecar_attached),
     }
     if logit_processor is not None and args.refiner_checkpoint:
@@ -424,8 +615,16 @@ def print_resolved_hyperparams(
 ) -> None:
     resolved = {
         "checkpoint": str(Path(args.checkpoint).resolve()),
-        "test_set_parquet": str(Path(args.test_set_parquet).resolve()),
-        "pdb_root": str(Path(args.pdb_root).resolve()),
+        "input_source": args.input_source,
+        "test_set_parquet": (
+            str(Path(args.test_set_parquet).resolve())
+            if args.test_set_parquet
+            else None
+        ),
+        "pdb_root": str(Path(args.pdb_root).resolve()) if args.pdb_root else None,
+        "cath_root": str(Path(args.cath_root).resolve()) if args.cath_root else None,
+        "cath_split": args.cath_split,
+        "cath_max_length": args.cath_max_length,
         "allele": args.allele,
         "output_root": str(Path(args.output_root).resolve()),
         "run_dir": str(run_dir),
@@ -500,13 +699,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    entries = load_test_entries(args.test_set_parquet)
+    if args.input_source == "cath":
+        entries = load_cath_entries(
+            cath_root=args.cath_root,
+            split=args.cath_split,
+            max_length=args.cath_max_length,
+        )
+    else:
+        entries = load_test_entries(args.test_set_parquet)
     if args.limit_proteins is not None:
         entries = entries.head(int(args.limit_proteins)).reset_index(drop=True)
 
     generator_b1, generator_batched, refiner_meta, diagnostics_buffer = _build_generator(
         checkpoint=args.checkpoint,
-        pdb_root=args.pdb_root,
+        pdb_root=args.pdb_root or "",
         device=args.device,
         max_iter=args.max_iter,
         temperature=args.temperature,
@@ -522,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
         run_name=run_id,
         config={
             "stage": "if_imp_runner",
+            "input_source": args.input_source,
             "arm": arm_tag,
             "allele": args.allele,
             "checkpoint": str(Path(args.checkpoint).resolve()),
@@ -558,12 +765,29 @@ def main(argv: list[str] | None = None) -> int:
             wandb_run=wandb_run,
         )
     total_wall_seconds = time.time() - run_start
+    if args.input_source == "cath":
+        annotate_cath_recovery(rows, entries)
+    cath_recoveries = [
+        float(row["aa_recovery"])
+        for row in rows
+        if "aa_recovery" in row and pd.notna(row["aa_recovery"])
+    ]
 
     run_config = {
         "mode": f"if_imp_{arm_tag}",
+        "input_source": args.input_source,
         "checkpoint": str(Path(args.checkpoint).resolve()),
-        "test_set_parquet": str(Path(args.test_set_parquet).resolve()),
-        "pdb_root": str(Path(args.pdb_root).resolve()),
+        "test_set_parquet": (
+            str(Path(args.test_set_parquet).resolve())
+            if args.test_set_parquet
+            else None
+        ),
+        "pdb_root": str(Path(args.pdb_root).resolve()) if args.pdb_root else None,
+        "cath": {
+            "root": str(Path(args.cath_root).resolve()) if args.cath_root else None,
+            "split": args.cath_split,
+            "max_length": args.cath_max_length,
+        },
         "allele": args.allele,
         "device": args.device,
         "sampler": {
@@ -577,6 +801,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = {
         "run_id": run_id,
         "mode": f"if_imp_{arm_tag}",
+        "input_source": args.input_source,
         "git_sha": git_sha(PROJECT_ROOT),
         "checkpoint_digest": checkpoint_digest(args.checkpoint),
         "refiner_checkpoint_digest": (
@@ -593,6 +818,10 @@ def main(argv: list[str] | None = None) -> int:
         "failures_path": "failures.json" if failures else None,
         "wall_clock_seconds": float(total_wall_seconds),
     }
+    if cath_recoveries:
+        manifest["mean_aa_recovery"] = float(
+            sum(cath_recoveries) / len(cath_recoveries)
+        )
 
     write_phase_c_outputs(run_dir, rows, run_config, manifest)
     if failures:
@@ -618,6 +847,11 @@ def main(argv: list[str] | None = None) -> int:
         f"wall={_fmt_hms(total_wall_seconds)} avg_per_design={avg_per_design:.2f}s "
         f"output_dir={run_dir}"
     )
+    if cath_recoveries:
+        print(
+            f"[cath] mean_aa_recovery={sum(cath_recoveries) / len(cath_recoveries):.4f} "
+            f"n={len(cath_recoveries)}"
+        )
     print("============================================================")
 
     if n_rows == 0 and n_failures > 0:
