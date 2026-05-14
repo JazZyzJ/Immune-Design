@@ -15,6 +15,7 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import torch
 
@@ -535,6 +536,68 @@ def _import_runner_module():
     if "run_if_imp_refiner" in sys.modules:
         return importlib.reload(sys.modules["run_if_imp_refiner"])
     return importlib.import_module("run_if_imp_refiner")
+
+
+def test_normalize_cath_entry_keeps_only_complete_backbone_positions():
+    runner = _import_runner_module()
+    entry = {
+        "name": "toy.A",
+        "seq": "ACDE",
+        "coords": {
+            "N": [[0.0, 0.0, 0.0], [float("nan"), 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+            "CA": [[0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0], [3.0, 1.0, 0.0]],
+            "C": [[0.0, 2.0, 0.0], [1.0, 2.0, 0.0], [2.0, 2.0, 0.0], [3.0, 2.0, 0.0]],
+            "O": [[0.0, 3.0, 0.0], [1.0, 3.0, 0.0], [2.0, 3.0, 0.0], [3.0, 3.0, 0.0]],
+        },
+    }
+
+    row = runner.normalize_cath_entry_for_if(entry, min_resolved_ratio=0.75)
+
+    assert row is not None
+    assert row["protein_id"] == "toy.A"
+    assert row["sequence"] == "ADE"
+    assert row["sequence_length"] == 3
+    assert row["raw_sequence_length"] == 4
+    assert row["resolved_sequence_length"] == 3
+    assert row["n_missing_backbone"] == 1
+    assert row["resolved_backbone_ratio"] == pytest.approx(0.75)
+    assert row["coords"]["N"].tolist() == [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
+
+
+def test_normalize_cath_entry_preserves_float32_coords_for_dplm_featurizer():
+    runner = _import_runner_module()
+    entry = {
+        "name": "dtype.A",
+        "seq": "AC",
+        "coords": {
+            atom: np.asarray(
+                [[0.0, atom_idx, 0.0], [1.0, atom_idx, 0.0]],
+                dtype=np.float32,
+            )
+            for atom_idx, atom in enumerate(("N", "CA", "C", "O"))
+        },
+    }
+
+    row = runner.normalize_cath_entry_for_if(entry, min_resolved_ratio=1.0)
+
+    assert row is not None
+    assert row["coords"]["N"].dtype == np.float32
+
+
+def test_normalize_cath_entry_filters_low_resolved_ratio():
+    runner = _import_runner_module()
+    entry = {
+        "name": "sparse.A",
+        "seq": "ACDE",
+        "coords": {
+            "N": [[0.0, 0.0, 0.0], [float("nan"), 0.0, 0.0], [float("nan"), 0.0, 0.0], [3.0, 0.0, 0.0]],
+            "CA": [[0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0], [3.0, 1.0, 0.0]],
+            "C": [[0.0, 2.0, 0.0], [1.0, 2.0, 0.0], [2.0, 2.0, 0.0], [3.0, 2.0, 0.0]],
+            "O": [[0.0, 3.0, 0.0], [1.0, 3.0, 0.0], [2.0, 3.0, 0.0], [3.0, 3.0, 0.0]],
+        },
+    }
+
+    assert runner.normalize_cath_entry_for_if(entry, min_resolved_ratio=0.75) is None
 
 
 def test_resolve_arm_baseline_when_no_checkpoints():

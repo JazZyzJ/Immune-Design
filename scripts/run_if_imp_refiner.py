@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
 
@@ -47,6 +49,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cath-root", default=None, help="CATH 4.3 root; required when --input-source cath.")
     parser.add_argument("--cath-split", default="test", choices=("train", "validation", "valid", "test"))
     parser.add_argument("--cath-max-length", type=int, default=500)
+    parser.add_argument(
+        "--cath-min-resolved-ratio",
+        type=float,
+        default=0.90,
+        help=(
+            "Minimum fraction of CATH sequence positions with complete "
+            "N/CA/C/O backbone coordinates after resolved-position normalization."
+        ),
+    )
     parser.add_argument("--allele", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--refiner-checkpoint", default=None, help="Optional .pt produced by train_if_imp_refiner.py.")
@@ -93,6 +104,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--progress-every", type=int, default=25)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--tag", default=None)
 
     from inverse_folding.observability import add_wandb_cli_args
 
@@ -124,6 +136,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--batch-size must be positive")
     if args.cath_max_length <= 0:
         parser.error("--cath-max-length must be positive")
+    if not (0.0 <= args.cath_min_resolved_ratio <= 1.0):
+        parser.error("--cath-min-resolved-ratio must be in [0, 1]")
     if args.input_source == "if_test":
         if not args.test_set_parquet:
             parser.error("--test-set-parquet is required when --input-source if_test")
@@ -136,11 +150,80 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+BACKBONE_ATOMS = ("N", "CA", "C", "O")
+
+
+def _finite_xyz(xyz: Any) -> bool:
+    try:
+        return all(math.isfinite(float(value)) for value in xyz)
+    except (TypeError, ValueError):
+        return False
+
+
+def normalize_cath_entry_for_if(
+    entry: dict[str, Any],
+    *,
+    min_resolved_ratio: float,
+) -> dict[str, Any] | None:
+    """Convert a raw CATH entry to resolved-backbone IF semantics.
+
+    CATH keeps full sequences even when some residues have NaN backbone
+    coordinates. In inverse folding those positions have no structural
+    condition, so IF_IMP generation/evaluation uses only residues with
+    complete N/CA/C/O coordinates.
+    """
+    sequence = str(entry["seq"]).upper()
+    coords = entry["coords"]
+    raw_length = len(sequence)
+    if raw_length == 0:
+        return None
+
+    for atom in BACKBONE_ATOMS:
+        if atom not in coords:
+            raise ValueError(f"{entry.get('name', '<unknown>')}: missing CATH atom {atom}")
+        if len(coords[atom]) != raw_length:
+            raise ValueError(
+                f"{entry.get('name', '<unknown>')}: coord length for atom {atom} "
+                f"{len(coords[atom])} != sequence length {raw_length}"
+            )
+
+    kept_indices = [
+        idx
+        for idx in range(raw_length)
+        if all(_finite_xyz(coords[atom][idx]) for atom in BACKBONE_ATOMS)
+    ]
+    resolved_length = len(kept_indices)
+    resolved_ratio = resolved_length / float(raw_length)
+    if resolved_ratio < float(min_resolved_ratio):
+        return None
+
+    resolved_sequence = "".join(sequence[idx] for idx in kept_indices)
+    resolved_coords = {
+        atom: np.asarray(
+            [coords[atom][idx] for idx in kept_indices],
+            dtype=np.float32,
+        )
+        for atom in BACKBONE_ATOMS
+    }
+    return {
+        "protein_id": str(entry["name"]),
+        "sequence": resolved_sequence,
+        "sequence_length": int(resolved_length),
+        "coords": resolved_coords,
+        "source": "cath_resolved",
+        "raw_sequence_length": int(raw_length),
+        "resolved_sequence_length": int(resolved_length),
+        "n_missing_backbone": int(raw_length - resolved_length),
+        "resolved_backbone_ratio": float(resolved_ratio),
+    }
+
+
 def load_cath_entries(
     *,
     cath_root: str | Path,
     split: str,
     max_length: int,
+    min_resolved_ratio: float = 0.90,
 ) -> pd.DataFrame:
     """Load a CATH split into the runner's generation entry schema."""
     from byprot.datamodules.dataset.cath import CATH
@@ -156,19 +239,27 @@ def load_cath_entries(
     rows: list[dict[str, Any]] = []
     for idx in range(len(dataset)):
         entry = dataset[idx]
-        sequence = str(entry["seq"]).upper()
-        rows.append(
-            {
-                "protein_id": str(entry["name"]),
-                "sequence": sequence,
-                "sequence_length": int(len(sequence)),
-                "coords": entry["coords"],
-                "source": f"cath_{split}",
-            }
+        row = normalize_cath_entry_for_if(
+            entry,
+            min_resolved_ratio=float(min_resolved_ratio),
         )
+        if row is None:
+            continue
+        row["source"] = f"cath_{split}_resolved"
+        rows.append(row)
     return pd.DataFrame(
         rows,
-        columns=["protein_id", "sequence", "sequence_length", "coords", "source"],
+        columns=[
+            "protein_id",
+            "sequence",
+            "sequence_length",
+            "coords",
+            "source",
+            "raw_sequence_length",
+            "resolved_sequence_length",
+            "n_missing_backbone",
+            "resolved_backbone_ratio",
+        ],
     )
 
 
@@ -625,6 +716,7 @@ def print_resolved_hyperparams(
         "cath_root": str(Path(args.cath_root).resolve()) if args.cath_root else None,
         "cath_split": args.cath_split,
         "cath_max_length": args.cath_max_length,
+        "cath_min_resolved_ratio": args.cath_min_resolved_ratio,
         "allele": args.allele,
         "output_root": str(Path(args.output_root).resolve()),
         "run_dir": str(run_dir),
@@ -642,6 +734,7 @@ def print_resolved_hyperparams(
         "mask_ratio_center": args.mask_ratio_center,
         "mask_ratio_deviation": args.mask_ratio_deviation,
         "fusion_temperature": args.fusion_temperature,
+        "tag": args.tag,
         **{f"refiner_meta__{k}": v for k, v in refiner_meta.items()},
     }
     print("============================================================")
@@ -658,7 +751,7 @@ def _build_run_id(args: argparse.Namespace) -> str:
         return str(args.run_id)
     arm = resolve_arm(args)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"if_imp_{arm}_{safe_allele_tag(args.allele)}_{stamp}"
+    return f"if_imp_{arm}_{safe_allele_tag(args.allele)}_{args.tag}_{stamp}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -704,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
             cath_root=args.cath_root,
             split=args.cath_split,
             max_length=args.cath_max_length,
+            min_resolved_ratio=args.cath_min_resolved_ratio,
         )
     else:
         entries = load_test_entries(args.test_set_parquet)
@@ -731,6 +825,7 @@ def main(argv: list[str] | None = None) -> int:
             "input_source": args.input_source,
             "arm": arm_tag,
             "allele": args.allele,
+            "cath_min_resolved_ratio": args.cath_min_resolved_ratio,
             "checkpoint": str(Path(args.checkpoint).resolve()),
             "n_input_proteins": int(len(entries)),
             "n_designs_per_protein": args.n_designs_per_protein,
@@ -787,6 +882,7 @@ def main(argv: list[str] | None = None) -> int:
             "root": str(Path(args.cath_root).resolve()) if args.cath_root else None,
             "split": args.cath_split,
             "max_length": args.cath_max_length,
+            "min_resolved_ratio": args.cath_min_resolved_ratio,
         },
         "allele": args.allele,
         "device": args.device,

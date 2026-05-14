@@ -1,14 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=if-imp
 #SBATCH --account=kaiyijiang
+#SBATCH --constraint="h200"
+#SBATCH --partition=ailab
 #SBATCH --qos=gpu-short
-#SBATCH --partition=mig
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
+#SBATCH --time=6:00:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_imp/if_imp_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_imp/if_imp_%j.err
 
@@ -97,7 +98,8 @@ FUSION_TEMPERATURE="${FUSION_TEMPERATURE:-1.0}"
 LIMIT_PROTEINS="${LIMIT_PROTEINS:-}"
 CATH_SPLIT="${CATH_SPLIT:-test}"
 CATH_MAX_LENGTH="${CATH_MAX_LENGTH:-500}"
-
+CATH_MIN_RESOLVED_RATIO="${CATH_MIN_RESOLVED_RATIO:-0.90}"
+TAG="${TAG:-}"
 # Compare-mode arm dirs (callers point these at completed run dirs)
 BASELINE_RUN="${BASELINE_RUN:-}"
 REFINER_RUN="${REFINER_RUN:-}"
@@ -152,6 +154,7 @@ echo "  PDB_ROOT          : ${PDB_ROOT}"
 echo "  INPUT_SOURCE      : ${INPUT_SOURCE}"
 echo "  CATH_SPLIT        : ${CATH_SPLIT}"
 echo "  CATH_MAX_LENGTH   : ${CATH_MAX_LENGTH}"
+echo "  CATH_MIN_RES_RATIO: ${CATH_MIN_RESOLVED_RATIO}"
 echo "  OUTPUT_ROOT       : ${OUTPUT_ROOT}"
 echo "  ALLELE            : ${ALLELE}"
 echo "  ARM               : ${ARM:-<auto>}"
@@ -233,6 +236,7 @@ elif [ "${MODE}" = "generate_refiner" ]; then
         EXTRA_FLAGS+=(--cath-root "${CATH_ROOT}")
         EXTRA_FLAGS+=(--cath-split "${CATH_SPLIT}")
         EXTRA_FLAGS+=(--cath-max-length "${CATH_MAX_LENGTH}")
+        EXTRA_FLAGS+=(--cath-min-resolved-ratio "${CATH_MIN_RESOLVED_RATIO}")
     else
         echo "ERROR: INPUT_SOURCE='${INPUT_SOURCE}' (expected if_test|cath)" >&2
         exit 2
@@ -256,6 +260,7 @@ elif [ "${MODE}" = "generate_refiner" ]; then
         --mask-ratio-center "${MASK_RATIO_CENTER}" \
         --mask-ratio-deviation "${MASK_RATIO_DEVIATION}" \
         --fusion-temperature "${FUSION_TEMPERATURE}" \
+        --tag "${TAG}" \
         "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
         "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
 elif [ "${MODE}" = "compare_ablation" ]; then

@@ -1,6 +1,6 @@
 # Princeton Della 使用指南（zc1519 / kaiyijiang）
 
-Snapshot 日期：2026-05-11。集群配置会变，过期时用文末命令重新生成。
+Snapshot 日期：2026-05-14。集群配置会变，过期时用文末命令重新生成。
 
 ## 1. 账户、配额、权限
 
@@ -29,7 +29,7 @@ Snapshot 日期：2026-05-11。集群配置会变，过期时用文末命令重�
 | `cpu`（默认）| 15 d | 166 | intel/amd | 纯 CPU |
 | `gpu` | 15 d | 89 | A100 混合 | **你主要用这个** |
 | `mig` | 15 d | 2 | `della-l01g[1-2]` 的 `1g.10gb` MIG 切片 | 极小切片，适合最快 smoke/inference |
-| `gputest` | 15 d | 111 | 所有 GPU 节点 | 仅 `gpu-test` QOS 可用，最多 2 并发 |
+| `gputest` | 15 d | 111 | 所有 GPU 节点 | 不要显式写 `--partition=gputest`；用 `--qos` / `--constraint` 让 Slurm 自动落入 |
 | `grace` | 15 d | 1 | GH200（ARM） | 特殊需求 |
 | `pli` | 15 d | 38 | H100×8 | **需要 PLI QOS，目前你没有** |
 | `pli-lc` | 3 d | 9 | H100×8 | 同上 |
@@ -67,51 +67,60 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 |-------|-----|------|------|-----------------|
 | `della-i14g[1-20]` | `gpu`, `gputest` | 2× A100 PCIe | **40 GB** 完整卡 | `a100&gpu40&nomig`；若写 `pcie` 可能同时匹配 MIG 节点 |
 | `della-i12g[1-2]` | `gputest` | 2× A100 | **40 GB** 完整卡 | `a100&gpu40&nomig`；当前不在常规 `gpu` partition |
-| `della-l01g[3-12]` | `gpu`, `gputest` | 8× A100 **MIG 3g.40gb** | 40 GB (3/7 算力) | `a100&gpu40&pcie` 会匹配；适合 smoke / inference，不适合重训练 |
+| `della-l01g[3-12]` | `gpu`, `gputest` | 8× A100 **MIG 3g.40gb** | 40 GB (3/7 算力) | `a100&gpu40&pcie` 会匹配；一般不要用作正式 GPU 任务 |
 | `della-l01g[13-16]...` | `gpu`, `gputest` | 4× A100 | **80 GB** 完整卡 | `a100&gpu80&nomig` |
 | `della-l07g[2-7]...` | `gputest` | 4× A100 SXM | 80 GB | `a100&gpu80&sxm`；当前不在常规 `gpu` partition |
 | `della-h19g*`, `della-h20g*`, `della-h21g*` | `all` / cryoem pool | 4× H100 SXM | 80 GB | 非日常 A100 路线；不要假设可用 |
 | `della-j*` | `pli`, `pli-lc` | 8× H100 | 80 GB | 需要 `pli-*` QOS，目前账号没有 |
 | `della-i19g*`–`della-i24g*` | `ailab` | 8× H200 | 141 GB | `--partition=ailab --constraint="h200"` |
 
-### constraint 选择速查
+### GPU 提交策略速查
 
 ```bash
-# 完整 A100 40 GB（排除 MIG）
+# 默认正式任务：完整 A100 40 GB，排除 MIG；适合 24h 内训练 / inference
+# 不要显式写 --partition=gpu，让 Slurm 根据 QOS/constraint 自动选择可用 partition
+#SBATCH --qos=gpu-short
 #SBATCH --constraint="a100&gpu40&nomig"
+#SBATCH --gres=gpu:1
+#SBATCH --time=23:50:00
 
-# 最快拿到 40 GB A100-like 资源，但可能是 3g.40gb MIG 切片，不适合重训练
-#SBATCH --constraint="a100&gpu40&pcie"
-
-# 完整 A100 80 GB（模型大时优先）
+# 显存更紧张时：完整 A100 80 GB；节点更少，可能排更久
+#SBATCH --qos=gpu-short
 #SBATCH --constraint="a100&gpu80&nomig"
+#SBATCH --gres=gpu:1
+#SBATCH --time=23:50:00
 
-# H100（8 卡 H100 需 PLI；当前账号没有 `pli-*` QOS）
-#SBATCH --constraint="h100"
+# 短 smoke/debug：看到某个完整 A100 idle 时可以临时绑节点
+# 只适合 30min-2h 小任务；24h 正式任务不要绑死节点
+#SBATCH --qos=gpu-short
+#SBATCH --nodelist=della-i12g1
+#SBATCH --constraint="a100&gpu40&nomig"
+#SBATCH --gres=gpu:1
+#SBATCH --time=00:30:00
 
 # H200（ailab）
 #SBATCH --partition=ailab
 #SBATCH --constraint="h200"
 
-# 1g.10gb MIG 切片（只跑小推理 / smoke）
+# 1g.10gb MIG 切片（只跑极小推理 / smoke）
 #SBATCH --partition=mig
 # 不要写 --constraint="mig"；当前 mig 节点 feature 只有 rh9
 ```
 
-> ⚠️  `--constraint="intel&gpu40"` **只匹配 `della-l01g[3-12]`，这是 MIG 3g.40gb 切片**（显存 40 GB 但算力只有 A100 的 3/7）。`"a100&gpu40&pcie"` 也会匹配这些 MIG 节点；它适合 smoke / inference，但不保证完整 A100。正式训练若需要整卡，优先用 `"a100&gpu40&nomig"` 或 `"a100&gpu80&nomig"`。当前 Della 会拒绝在脚本中显式写 `#SBATCH --partition=gpu`；常规 A100 job 建议只写 `--qos` + `--constraint`，让 Slurm 自动落到 `gpu` partition。
+> ⚠️  `--constraint="intel&gpu40"` **只匹配 `della-l01g[3-12]`，这是 MIG 3g.40gb 切片**（显存 40 GB 但算力只有 A100 的 3/7）。`"a100&gpu40&pcie"` 也会匹配这些 MIG 节点；一般不要作为正式任务 constraint。正式训练若需要整卡，优先用 `"a100&gpu40&nomig"` 或 `"a100&gpu80&nomig"`。当前 Della 会拒绝在脚本中显式写 `#SBATCH --partition=gpu` 或 `#SBATCH --partition=gputest`；常规 A100 job 建议只写 `--qos` + `--constraint`，让 Slurm 自动落到可用 partition。
 
-2026-05-11 实测 probe（1 GPU, 8 CPU, 32G）：
+2026-05-14 实测调度规律（1 GPU, 8 CPU, 32G）：
 
-- `gpu-short`, `23:50:00`, `a100&gpu40&pcie`: 最早，但调度到 `della-l01g11`，即 3g.40gb MIG。
-- `gpu-short`, `23:50:00`, `a100&gpu80&nomig`: 可调度到完整 A100 80G，约比 MIG probe 晚 10 分钟。
-- `gpu-short`, `23:50:00`, `a100&gpu40&nomig`: 可调度到完整 A100 40G，约比 MIG probe 晚 20 分钟。
-- `gpu-medium`, `48:00:00`: 当时所有 A100 constraint 都被 `ReqNodeNotAvail, Reserved for maintenance` 挡住；缩短到 `<24h` 更容易被 backfill。
+- `gpu-short`, `00:30:00`, `--nodelist=della-i12g1`, `a100&gpu40&nomig`: 可立刻 backfill 到 `della-i12g1`，适合短 smoke/debug。
+- `gpu-short`, `00:30:00`, `a100&gpu40&nomig`: 可自动调度到 `gputest` 上的 idle 完整 A100；不需要显式写 `--partition=gputest`。
+- `gpu-short`, `23:50:00`, `a100&gpu40&nomig`: 会进入正常队列；不要指定单个节点，保持宽 constraint 才有更多 backfill 机会。
+- `--partition=gputest`: 会被站点策略拒绝；不要在脚本里写。
 
 ## 3. QOS 限制
 
 | QOS | 时限 | MaxJobsPU | MaxSubmit | 备注 |
 |-----|------|-----------|-----------|------|
-| `gpu-test` | — | 3 | 25 | 优先级 8000，配 `gputest` 分区，调试用 |
+| `gpu-test` | — | 3 | 25 | 优先级 8000，调试用；不要显式写 `--partition=gputest` |
 | `gpu-short` | 1 d | 44 | 1100 | 优先级 5000，日常主力 |
 | `gpu-medium` | 3 d | 24 | 1100 | 优先级 2000 |
 | `gpu-long` | 6 d | 10 | 100 | 优先级 1000，node=16 上限 |
@@ -129,7 +138,7 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 #SBATCH --job-name=<name>
 #SBATCH --account=kaiyijiang                      # 显式声明
 #SBATCH --qos=gpu-short
-#SBATCH --constraint="a100&gpu80&nomig"           # 选真实节点型号
+#SBATCH --constraint="a100&gpu40&nomig"           # 默认完整 A100 40G；需要大显存时换 gpu80
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -176,13 +185,15 @@ timeout 8s squeue --start -u "$USER"
 # 看某个 pending/running job 的完整资源请求、constraint、预估节点
 timeout 8s scontrol show job <jobid>
 
-# 看 GPU / H200 / MIG 分区整体状态
-timeout 8s sinfo -p gpu,ailab,mig \
-  -o "%14P %8a %8D %18t %24f %30G"
+# 看整节点 idle 的 GPU 节点；重点看 feature 是否含 nomig
+timeout 8s sinfo -t idle -N \
+  -o "%20N %12P %10t %30f %25G" \
+  | grep -Ei "gpu|a100|h100|h200|gh200"
 
-# 看节点级别状态；mix 表示节点上还有作业，idle 表示整节点空闲
-timeout 8s sinfo -N -p gpu,ailab,mig \
-  -o "%20N %12P %18t %24f %30G"
+# 看所有 GPU 节点；mix 表示节点上还有作业，idle 表示整节点空闲
+timeout 8s sinfo -N \
+  -o "%20N %12P %10t %30f %25G" \
+  | grep -Ei "gpu|a100|h100|h200|gh200"
 
 # 已经知道 Slurm 分配/预估了哪个节点时，看节点详情
 timeout 8s scontrol show node <nodename> -o
@@ -202,42 +213,39 @@ watch -n 30 'timeout 8s squeue -u "$USER" -o "%.10i %.22j %.9T %.10M %.12l %.6D 
 如果命令确实卡住，先用 `timeout 8s <command>` 版本；不要开多个长时间挂住的 `squeue` / `sinfo`。判断“有没有空卡”时优先看 `sinfo -N` 的节点状态和 `scontrol show node <node> -o` 里的 `CfgTRES` / `AllocTRES`，但最终能不能启动仍由 QOS、constraint、time limit、reservation 和 fair-share 共同决定。
 
 ```bash
-# 只检查 SBATCH header / 资源请求，不实际提交运行：
-sbatch --test-only scripts/submit_if_phase_c.slurm
+# 只检查 SBATCH header / 资源请求，不实际提交运行
+timeout 8s sbatch --test-only scripts/submit_if_phase_c.slurm
 
-# 最快真实 smoke：1g.10gb MIG，小显存 inference / 脚本连通性测试
-#SBATCH --job-name=bench-head-nmp
-#SBATCH --partition=mig
-#SBATCH --qos=gpu-short
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
-#SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
-# 不要加 #SBATCH --constraint="mig"
+# 看到某个完整 A100 idle 后，测试短任务是否能立刻 backfill 到该节点
+timeout 8s sbatch --test-only -A kaiyijiang \
+  --qos=gpu-short \
+  --nodelist=della-i12g1 \
+  --constraint="a100&gpu40&nomig" \
+  --gres=gpu:1 \
+  --cpus-per-task=8 \
+  --mem=32G \
+  --time=00:30:00 \
+  --wrap 'hostname'
 
-# 快速但更强：ailab H200，适合 smoke run 可能超过 10 GB 显存的场景
-#SBATCH --job-name=smoke-h200
-#SBATCH --partition=ailab
-#SBATCH --constraint="h200"
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
+# 24h 左右正式任务的默认预测：不要绑节点，保持宽 constraint
+timeout 8s sbatch --test-only -A kaiyijiang \
+  --qos=gpu-short \
+  --constraint="a100&gpu40&nomig" \
+  --gres=gpu:1 \
+  --cpus-per-task=8 \
+  --mem=32G \
+  --time=23:50:00 \
+  --wrap 'hostname'
 
-# 常规 A100 快速测试：不要显式写 --partition=gpu
-#SBATCH --job-name=smoke-a100
-#SBATCH --qos=gpu-short
-#SBATCH --constraint="a100&gpu40&pcie"
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
+# 需要更大显存时再测完整 A100 80G
+timeout 8s sbatch --test-only -A kaiyijiang \
+  --qos=gpu-short \
+  --constraint="a100&gpu80&nomig" \
+  --gres=gpu:1 \
+  --cpus-per-task=8 \
+  --mem=64G \
+  --time=23:50:00 \
+  --wrap 'hostname'
 
 # CPU-only:
 #SBATCH --job-name=phasec-imm-cpu
@@ -276,8 +284,8 @@ sacct -u $USER -S $(date -d '3 days ago' +%F) \
 sshare -U -l
 sprio -u $USER
 
-# 交互式 GPU（A100 40G，1 小时）
-salloc --qos=gpu-test --constraint="a100&gpu40&pcie" \
+# 交互式 GPU（完整 A100 40G，1 小时；不要显式写 partition）
+salloc --qos=gpu-short --constraint="a100&gpu40&nomig" \
        --gres=gpu:1 --cpus-per-task=8 --mem=32G --time=1:00:00
 
 # 交互式 H200（ailab，1 小时）
