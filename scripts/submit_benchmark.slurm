@@ -1,14 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=benchmark
-#SBATCH --qos=short
-#SBATCH --partition=cpu
+#SBATCH --qos=gpu-short
+#SBATCH --partition=mig
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH --time=23:50:00
-#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.out
-#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.err
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
+#SBATCH --gres=gpu:1
+#SBATCH --time=00:30:00
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epitope/benchmark_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epitope/benchmark_%j.err
 
 # for imm mode: 
 # #SBATCH --job-name=benchmark
@@ -37,6 +38,8 @@
 
 
 set -euo pipefail
+: "${PS1:=}"
+export PS1
 
 # ── Mode switch ──────────────────────────────────────────────────────────
 # MODE=fasta : head vs NMP on a FASTA (no ground truth). Uses accelerated NMP.
@@ -148,7 +151,7 @@ elif [ "${MODE}" = "iedb" ]; then
     # IEDB mode: head + NMP vs ground truth. Original NMP (no acceleration) by default.
     PROFILE="${PROFILE:-strict}"
     MANIFEST_ROOT="${MANIFEST_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests}"
-    ALLELE_SUBDIR="${ALLELE_SUBDIR:-}"  # e.g. drb0401 (leave empty for default 0701 manifest)
+    ALLELE_SUBDIR="${ALLELE_SUBDIR:-drb0701}"  # e.g. drb0401 (leave empty for default 0701 manifest)
     NMP_MODE_ARG="${NMP_MODE:-original}"
     NEAR_MISS_ANALYSIS="${NEAR_MISS_ANALYSIS:-0}"
     # Windows cache (write/read). Set WINDOWS_CACHE to write a cache after

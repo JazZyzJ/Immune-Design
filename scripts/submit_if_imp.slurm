@@ -5,14 +5,16 @@
 #SBATCH --partition=mig
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_imp/if_imp_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_imp/if_imp_%j.err
 
 set -euo pipefail
+: "${PS1:=}"
+export PS1
 
 # ── Mode selection ────────────────────────────────────────────────────────
 MODE="${MODE:-generate_refiner}"   # train_refiner | train_sidecar | generate_refiner | compare_ablation
@@ -42,7 +44,7 @@ else
     echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
     exit 2
 fi
-TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/if_ready/test_proteins_if_ready_${ALLELE_FILE_TAG}.parquet}"
+TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/if_ready/fast/test_proteins_if_ready_fast_${ALLELE_FILE_TAG}.parquet}"
 PDB_ROOT="${PDB_ROOT:-${WORK_DIR}/if_test_set/pdbs_if_ready/${ALLELE_SHORT}}"
 
 # CATH 4.3 split (PROGRESS.md §Cluster — `work/immune-design/cath_4.3/`)
@@ -85,7 +87,7 @@ ARM="${ARM:-}"
 ABLATION_MODE="${ABLATION_MODE:-1}"   # default ON for the if_imp launcher
 GEN_BATCH_SIZE="${GEN_BATCH_SIZE:-8}" # K3-style batched DPLM generate; >1 enables length-bucketed batching
 N_DESIGNS_PER_PROTEIN="${N_DESIGNS_PER_PROTEIN:-1}"
-MAX_ITER="${MAX_ITER:-10}"
+MAX_ITER="${MAX_ITER:-100}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 MC_DROPOUT_PASSES="${MC_DROPOUT_PASSES:-1}"
 MASK_RATIO_CENTER="${MASK_RATIO_CENTER:-0.4}"

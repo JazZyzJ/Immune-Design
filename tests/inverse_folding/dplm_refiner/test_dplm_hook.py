@@ -32,3 +32,23 @@ def test_forward_decoder_accepts_logit_processor_and_batch():
 def test_generate_accepts_logit_processor():
     args = _get_function_args("DPLMInvFold", "generate")
     assert "logit_processor" in args, args
+
+
+def test_generate_reparam_decoding_keeps_current_decoder_predictions():
+    """The inverse-folding generate path must match DPLM's reparam contract.
+
+    ``output_tokens`` is the previous state being updated; ``cur_tokens`` is
+    the decoder prediction from the current step. Reversing these leaves final
+    residue positions as ``<mask>`` at the last step.
+    """
+    tree = ast.parse(DPLM_INVFOLD.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "_reparam_decoding":
+            kwargs = {kw.arg: ast.unparse(kw.value) for kw in node.keywords}
+            if "decoding_strategy" in kwargs:
+                assert kwargs["output_tokens"] == 'prev_decoder_out["output_tokens"].clone()'
+                assert kwargs["output_scores"] == 'prev_decoder_out["output_scores"].clone()'
+                assert kwargs["cur_tokens"] == "output_tokens.clone()"
+                assert kwargs["cur_scores"] == "output_scores.clone()"
+                return
+    raise AssertionError("_reparam_decoding call not found in DPLMInvFold.generate")

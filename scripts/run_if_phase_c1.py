@@ -53,6 +53,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fail-pct-threshold", type=float, default=0.05)
     parser.add_argument("--resume-from", default=None)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--flag-name", default=None)
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -127,7 +128,7 @@ def _build_run_id(args: argparse.Namespace) -> str:
     # not "c1_c1_null_DRB1_07_01_<stamp>")
     if config_stem.startswith("c1_"):
         config_stem = config_stem[len("c1_"):]
-    return f"c1_{config_stem}_{safe_allele_tag(args.allele)}_{stamp}"
+    return f"c1_{config_stem}_{safe_allele_tag(args.allele)}_{args.flag_name}_{stamp}"
 
 
 def _select_h_values(

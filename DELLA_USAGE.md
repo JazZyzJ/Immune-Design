@@ -1,6 +1,6 @@
 # Princeton Della 使用指南（zc1519 / kaiyijiang）
 
-Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重新生成。
+Snapshot 日期：2026-05-11。集群配置会变，过期时用文末命令重新生成。
 
 ## 1. 账户、配额、权限
 
@@ -9,8 +9,8 @@ Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重�
 | 用户名 | `zc1519` |
 | Account (`-A`) | `kaiyijiang` |
 | 主组 | `kaiyijiang` (gid 30707) |
-| Home | `/home/zc1519` — 50 GiB，约 2 M inode |
-| Scratch（组共享） | `/scratch/gpfs/KAIYIJIANG` — 上限 100 TiB（已用 2.3 TiB） |
+| Home | `/home/zc1519` — 50 GiB，约 2 M inode；当前已用 6.5 GiB / 90.8 K inode |
+| Scratch（组共享） | `/scratch/gpfs/KAIYIJIANG` — 上限 100 TiB（组已用 22.4 TiB；`zc1519` 已用 80.3 GiB / 269.4 K files） |
 | TigerData | `/tigerdata/Jiang_Lab/MLPE` — 100 TB，冷存储 |
 
 可用 QOS（来自 `sacctmgr show assoc user=zc1519`）：
@@ -29,7 +29,7 @@ Snapshot 日期：2026-04-13。集群配置会变，过期时用文末命令重�
 | `cpu`（默认）| 15 d | 166 | intel/amd | 纯 CPU |
 | `gpu` | 15 d | 89 | A100 混合 | **你主要用这个** |
 | `mig` | 15 d | 2 | `della-l01g[1-2]` 的 `1g.10gb` MIG 切片 | 极小切片，适合最快 smoke/inference |
-| `gputest` | 15 d | 112 | 所有 GPU 节点 | 仅 `gpu-test` QOS 可用，最多 2 并发 |
+| `gputest` | 15 d | 111 | 所有 GPU 节点 | 仅 `gpu-test` QOS 可用，最多 2 并发 |
 | `grace` | 15 d | 1 | GH200（ARM） | 特殊需求 |
 | `pli` | 15 d | 38 | H100×8 | **需要 PLI QOS，目前你没有** |
 | `pli-lc` | 3 d | 9 | H100×8 | 同上 |
@@ -61,28 +61,32 @@ CPU job 只需要 `--partition=cpu` + CPU QOS（`test` / `short` / `medium` / `v
 
 Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEVICE=cpu`。其中 head predictor 支持 CPU；主要瓶颈通常是 NetMHCIIpan，因此 `NMP_WORKERS` 建议与 `--cpus-per-task` 对齐。
 
-### `gpu` 分区里的节点型号
+### GPU 节点型号
 
-| 节点 | GPU | 显存 | CPU | 主机 RAM | 推荐 constraint |
-|-------|-----|------|-----|----------|-----------------|
-| `della-i14g[1-20]` | 2× A100 PCIe | **40 GB** 完整卡 | 128 | 768 G | `amd,rome,a100,pcie,gpu40` |
-| `della-i12g[1-2]` | 2× A100 | 40 GB 完整卡 | 128 | 512 G | `amd,rome,a100,gpu40,nomig` |
-| `della-l01g[3-12]` | 8× A100 **MIG 3g.40gb** | 40 GB (3/7 算力) | 48 | 1024 G | `intel,icelake,a100,gpu40,pcie` |
-| `della-l01g[13-16]…` | 4× A100 | **80 GB** 完整卡 | 48 | 1024 G | `intel,icelake,a100,gpu80,nomig` |
-| `della-l07g[2-7]…` | 4× A100 SXM | 80 GB | 48 | 1024 G | `amd,a100,gpu80,sxm,cryoem` |
-| `della-h19g[1-4]…` | 4× H100 SXM | 80 GB | 64 | 1024 G | `intel,h100,gpu80,sxm,cryoem` |
-| `della-i19g[1-3]` 等 | 8× H200 | 141 G | 64 | 1500 G | `h200,gpu8`（`ailab` partition） |
+| 当前可见池子 | Partition | GPU | 显存 | 推荐 constraint / 备注 |
+|-------|-----|------|------|-----------------|
+| `della-i14g[1-20]` | `gpu`, `gputest` | 2× A100 PCIe | **40 GB** 完整卡 | `a100&gpu40&nomig`；若写 `pcie` 可能同时匹配 MIG 节点 |
+| `della-i12g[1-2]` | `gputest` | 2× A100 | **40 GB** 完整卡 | `a100&gpu40&nomig`；当前不在常规 `gpu` partition |
+| `della-l01g[3-12]` | `gpu`, `gputest` | 8× A100 **MIG 3g.40gb** | 40 GB (3/7 算力) | `a100&gpu40&pcie` 会匹配；适合 smoke / inference，不适合重训练 |
+| `della-l01g[13-16]...` | `gpu`, `gputest` | 4× A100 | **80 GB** 完整卡 | `a100&gpu80&nomig` |
+| `della-l07g[2-7]...` | `gputest` | 4× A100 SXM | 80 GB | `a100&gpu80&sxm`；当前不在常规 `gpu` partition |
+| `della-h19g*`, `della-h20g*`, `della-h21g*` | `all` / cryoem pool | 4× H100 SXM | 80 GB | 非日常 A100 路线；不要假设可用 |
+| `della-j*` | `pli`, `pli-lc` | 8× H100 | 80 GB | 需要 `pli-*` QOS，目前账号没有 |
+| `della-i19g*`–`della-i24g*` | `ailab` | 8× H200 | 141 GB | `--partition=ailab --constraint="h200"` |
 
 ### constraint 选择速查
 
 ```bash
-# 完整 A100 40 GB（最多、排队最快）
+# 完整 A100 40 GB（排除 MIG）
+#SBATCH --constraint="a100&gpu40&nomig"
+
+# 最快拿到 40 GB A100-like 资源，但可能是 3g.40gb MIG 切片，不适合重训练
 #SBATCH --constraint="a100&gpu40&pcie"
 
 # 完整 A100 80 GB（模型大时优先）
 #SBATCH --constraint="a100&gpu80&nomig"
 
-# H100（`gpu` 分区里的 h19g 可用；8 卡 H100 需 PLI）
+# H100（8 卡 H100 需 PLI；当前账号没有 `pli-*` QOS）
 #SBATCH --constraint="h100"
 
 # H200（ailab）
@@ -94,7 +98,14 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 # 不要写 --constraint="mig"；当前 mig 节点 feature 只有 rh9
 ```
 
-> ⚠️  `--constraint="intel&gpu40"` **只匹配 `della-l01g[3-12]`，这是 MIG 3g.40gb 切片**（显存 40 GB 但算力只有 A100 的 3/7）。推理够用但训练会很慢。改成 `"a100&gpu40&pcie"` 就能拿完整 A100-40G。当前 Della 会拒绝在脚本中显式写 `#SBATCH --partition=gpu`；常规 A100 job 建议只写 `--qos` + `--constraint`，让 Slurm 自动落到 `gpu` partition。
+> ⚠️  `--constraint="intel&gpu40"` **只匹配 `della-l01g[3-12]`，这是 MIG 3g.40gb 切片**（显存 40 GB 但算力只有 A100 的 3/7）。`"a100&gpu40&pcie"` 也会匹配这些 MIG 节点；它适合 smoke / inference，但不保证完整 A100。正式训练若需要整卡，优先用 `"a100&gpu40&nomig"` 或 `"a100&gpu80&nomig"`。当前 Della 会拒绝在脚本中显式写 `#SBATCH --partition=gpu`；常规 A100 job 建议只写 `--qos` + `--constraint`，让 Slurm 自动落到 `gpu` partition。
+
+2026-05-11 实测 probe（1 GPU, 8 CPU, 32G）：
+
+- `gpu-short`, `23:50:00`, `a100&gpu40&pcie`: 最早，但调度到 `della-l01g11`，即 3g.40gb MIG。
+- `gpu-short`, `23:50:00`, `a100&gpu80&nomig`: 可调度到完整 A100 80G，约比 MIG probe 晚 10 分钟。
+- `gpu-short`, `23:50:00`, `a100&gpu40&nomig`: 可调度到完整 A100 40G，约比 MIG probe 晚 20 分钟。
+- `gpu-medium`, `48:00:00`: 当时所有 A100 constraint 都被 `ReqNodeNotAvail, Reserved for maintenance` 挡住；缩短到 `<24h` 更容易被 backfill。
 
 ## 3. QOS 限制
 
@@ -150,6 +161,46 @@ srun python -u <script>.py <args>
 
 ## 5. 常用命令
 
+### 排队 / 空余资源速查
+
+Della 的 Slurm 查询偶尔会因为 controller 响应慢而卡住。日常建议给查询命令包一层 `timeout`：
+
+```bash
+# 看自己的 job：STATE + 已跑时间 + 时限 + pending 原因
+timeout 8s squeue -u "$USER" \
+  -o "%.10i %.22j %.9T %.10M %.12l %.6D %R"
+
+# 看预计启动时间（Slurm backfill 估计，不保证准确）
+timeout 8s squeue --start -u "$USER"
+
+# 看某个 pending/running job 的完整资源请求、constraint、预估节点
+timeout 8s scontrol show job <jobid>
+
+# 看 GPU / H200 / MIG 分区整体状态
+timeout 8s sinfo -p gpu,ailab,mig \
+  -o "%14P %8a %8D %18t %24f %30G"
+
+# 看节点级别状态；mix 表示节点上还有作业，idle 表示整节点空闲
+timeout 8s sinfo -N -p gpu,ailab,mig \
+  -o "%20N %12P %18t %24f %30G"
+
+# 已经知道 Slurm 分配/预估了哪个节点时，看节点详情
+timeout 8s scontrol show node <nodename> -o
+
+# 每 30 秒刷新一次自己的队列；Ctrl-C 退出
+watch -n 30 'timeout 8s squeue -u "$USER" -o "%.10i %.22j %.9T %.10M %.12l %.6D %R"'
+```
+
+`PENDING` 的 `NODELIST(REASON)` 常见含义：
+
+- `Priority`: 只是优先级还没轮到，继续等。
+- `Resources`: 优先级可能够了，但匹配的 GPU/CPU/内存暂时不够。
+- `ReqNodeNotAvail, Reserved for maintenance`: 匹配到的节点被维护/预留挡住；通常需要等维护窗口结束，或放宽 `--constraint` / 缩短 `--time` 让 backfill 找到别的节点。
+- `QOSMaxWallDurationPerJobLimit`: `--time` 超过当前 QOS 上限。
+- `AssocGrpGRESMinutesLimit`: 组/账号 GPU 分钟数或 fair-share 限制挡住。
+
+如果命令确实卡住，先用 `timeout 8s <command>` 版本；不要开多个长时间挂住的 `squeue` / `sinfo`。判断“有没有空卡”时优先看 `sinfo -N` 的节点状态和 `scontrol show node <node> -o` 里的 `CfgTRES` / `AllocTRES`，但最终能不能启动仍由 QOS、constraint、time limit、reservation 和 fair-share 共同决定。
+
 ```bash
 # 只检查 SBATCH header / 资源请求，不实际提交运行：
 sbatch --test-only scripts/submit_if_phase_c.slurm
@@ -202,12 +253,14 @@ sbatch --test-only scripts/submit_if_phase_c.slurm
 ALLELE="HLA-DRB1*04:01" sbatch scripts/submit_epi_benchmark.slurm
 
 # 队列实时状态
-squeue -u $USER
-squeue -u $USER -o "%.10i %.20j %.8T %.10M %.10l %.6D %R"
+timeout 8s squeue -u "$USER"
+timeout 8s squeue -u "$USER" -o "%.10i %.20j %.8T %.10M %.10l %.6D %R"
+timeout 8s squeue --start -u "$USER"
 
 # 为什么我的 job 在 PENDING？
-scontrol show job <jobid> | grep -E "Reason|TRES|NodeList"
+timeout 8s scontrol show job <jobid>
 # 常见原因：Priority（排队中）、Resources（等资源）、
+#          ReqNodeNotAvail（节点不可用/维护预留）、
 #          AssocGrpGRESMinutesLimit（fair-share）、QOSMaxWallDurationPerJobLimit
 
 # 取消

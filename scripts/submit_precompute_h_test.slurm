@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=B2-hmaps-test
 #SBATCH --qos=gpu-short
-#SBATCH --account=kaiyijiang
 #SBATCH --partition=mig
+#SBATCH --account=kaiyijiang
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
@@ -13,6 +13,8 @@
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval/h_maps_test_%j.err
 
 set -euo pipefail
+: "${PS1:=}"
+export PS1
 
 # Paths
 PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"

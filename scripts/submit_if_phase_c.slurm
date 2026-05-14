@@ -13,6 +13,8 @@
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_phase_c/phase_c_%j.err
 
 set -euo pipefail
+: "${PS1:=}"
+export PS1
 
 PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"
 WORK_DIR="${WORK_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design}"
@@ -57,6 +59,7 @@ CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/inverse_folding/reference_flow/confi
 FAIL_PCT_THRESHOLD="${FAIL_PCT_THRESHOLD:-0.05}"
 SAVE_TRAJECTORIES="${SAVE_TRAJECTORIES:-0}"
 H_CORPUS_STATS="${H_CORPUS_STATS:-}"
+FLAG="${FLAG:-}"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -143,6 +146,7 @@ case "${MODE}" in
             --max-iter "${MAX_ITER}" \
             --temperature "${TEMPERATURE}" \
             --device "${DEVICE}" \
+            --flag-name "${FLAG}" \
             "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;
     reference_flow)
@@ -186,6 +190,7 @@ case "${MODE}" in
             --output-root "${OUTPUT_ROOT}" \
             --device "${DEVICE}" \
             --fail-pct-threshold "${FAIL_PCT_THRESHOLD}" \
+            --flag-name "${FLAG}"
             "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
             "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;

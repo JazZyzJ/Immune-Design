@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=if-baselines
 #SBATCH --account=kaiyijiang
-#SBATCH --qos=gpu-short
+#SBATCH --qos=gpu-medium
 #SBATCH --partition=mig
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_baselines/baseline_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_baselines/baseline_%j.err
 #
@@ -24,6 +24,8 @@
 #       --mem=16G --time=01:00:00 scripts/submit_if_baselines.slurm
 
 set -euo pipefail
+: "${PS1:=}"
+export PS1
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"

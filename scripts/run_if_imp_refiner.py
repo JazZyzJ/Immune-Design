@@ -620,6 +620,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("============================================================")
 
+    if n_rows == 0 and n_failures > 0:
+        print(
+            "[error] all IF_IMP generation attempts failed; first failures:",
+            file=sys.stderr,
+        )
+        for failure in failures[:10]:
+            print(
+                "  "
+                f"protein_id={failure.get('protein_id')} "
+                f"design_idx={failure.get('design_idx')} "
+                f"reason={failure.get('reason')}",
+                file=sys.stderr,
+            )
+        set_summary(
+            wandb_run,
+            {
+                "summary/n_input_proteins": int(len(entries)),
+                "summary/n_total_designs": n_total_designs,
+                "summary/n_rows_generated": n_rows,
+                "summary/n_failures": n_failures,
+                "summary/failure_rate": failure_rate,
+                "summary/wall_seconds": float(total_wall_seconds),
+                "summary/avg_seconds_per_design": float(avg_per_design),
+                **{f"summary/refiner__{k}": v for k, v in refiner_meta.items()},
+            },
+        )
+        finish_wandb(wandb_run)
+        return 1
+
     set_summary(
         wandb_run,
         {

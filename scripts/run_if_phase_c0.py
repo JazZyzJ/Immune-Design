@@ -47,6 +47,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--run-id", default=None, help="Optional explicit run_id.")
+    parser.add_argument("--flag-name", default=None, help="Optional flag name.")
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -352,7 +353,7 @@ def _build_run_id(args: argparse.Namespace) -> str:
     from inverse_folding.reference_flow.runtime import safe_allele_tag
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"c0_{safe_allele_tag(args.allele)}_{stamp}"
+    return f"c0_{safe_allele_tag(args.allele)}_{args.flag_name}_{stamp}"
 
 
 def _build_generator(
