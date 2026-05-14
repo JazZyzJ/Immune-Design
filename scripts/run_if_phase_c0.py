@@ -35,6 +35,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-iter", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help=(
+            "Number of proteins processed per DPLM generate() call. "
+            "Entries are length-bucketed (sort by sequence_length desc, "
+            "chunk by batch_size) before batching. >1 trades exact "
+            "per-design seed determinism for GPU utilization."
+        ),
+    )
     parser.add_argument("--run-id", default=None, help="Optional explicit run_id.")
     parser.add_argument(
         "--progress-every",
@@ -62,6 +73,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--temperature must be positive")
     if args.progress_every < 0:
         parser.error("--progress-every must be non-negative")
+    if args.batch_size <= 0:
+        parser.error("--batch-size must be positive")
     return args
 
 
@@ -142,6 +155,136 @@ def generate_rows_for_entries(
                     },
                     step=entry_idx,
                 )
+    return rows, failures
+
+
+def _length_buckets(
+    entries: pd.DataFrame, batch_size: int
+) -> list[list[int]]:
+    """Sort entry indices by sequence_length desc and chunk into groups
+    of ``batch_size``. Returns a list of index lists into ``entries``."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    order = (
+        entries["sequence_length"]
+        .astype(int)
+        .sort_values(ascending=False, kind="stable")
+        .index.tolist()
+    )
+    return [order[i : i + batch_size] for i in range(0, len(order), batch_size)]
+
+
+def generate_rows_for_entries_batched(
+    entries: pd.DataFrame,
+    batched_generator: Callable[
+        [list[pd.Series], list[int], int, int], dict[str, Any]
+    ],
+    *,
+    n_designs_per_protein: int,
+    seed: int,
+    batch_size: int,
+    progress_every: int = 25,
+    wandb_run: Any = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Length-bucketed batched generation. ``batched_generator`` receives
+    ``(entries_list, design_indices, design_idx_global, design_seed)`` and
+    must return ``{"sequences": [str, ...], "wall_seconds": float, ...}``.
+
+    The dict may carry an arbitrary ``"meta"`` for the caller's hooks
+    (e.g. ablation diagnostics emission).
+    """
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+
+    total_entries = int(len(entries))
+    total_designs = total_entries * int(n_designs_per_protein)
+    run_start = time.time()
+    proteins_done = 0
+    buckets = _length_buckets(entries, batch_size)
+
+    for design_idx in range(n_designs_per_protein):
+        design_seed = int(seed) + int(design_idx)
+        for bucket in buckets:
+            sub = [entries.loc[i] for i in bucket]
+            protein_ids = [str(s["protein_id"]) for s in sub]
+            expected_lengths = [int(s["sequence_length"]) for s in sub]
+            try:
+                result = batched_generator(sub, expected_lengths, design_idx, design_seed)
+                sequences = list(result["sequences"])
+                wall_seconds = float(result["wall_seconds"])
+                if len(sequences) != len(sub):
+                    raise RuntimeError(
+                        f"batched_generator returned {len(sequences)} "
+                        f"sequences for {len(sub)} rows"
+                    )
+                per_row_wall = wall_seconds / float(len(sub))
+                for row_i, (entry, sequence, expected_length) in enumerate(
+                    zip(sub, sequences, expected_lengths)
+                ):
+                    sequence = str(sequence)
+                    if len(sequence) != int(expected_length):
+                        failures.append(
+                            {
+                                "protein_id": str(entry["protein_id"]),
+                                "design_idx": int(design_idx),
+                                "reason": (
+                                    f"length mismatch: generated="
+                                    f"{len(sequence)} expected={expected_length}"
+                                ),
+                            }
+                        )
+                        continue
+                    rows.append(
+                        {
+                            "protein_id": str(entry["protein_id"]),
+                            "design_idx": int(design_idx),
+                            "sequence": sequence,
+                            "seed": design_seed,
+                            "wall_seconds": per_row_wall,
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001 - persisted for audit
+                for entry in sub:
+                    failures.append(
+                        {
+                            "protein_id": str(entry["protein_id"]),
+                            "design_idx": int(design_idx),
+                            "reason": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+
+            proteins_done = proteins_done + len(sub) if design_idx == 0 else proteins_done
+
+            if progress_every > 0 and (
+                len(rows) % progress_every == 0
+                or (len(rows) + len(failures)) == total_designs
+            ):
+                _emit_progress(
+                    entry_idx=min(proteins_done, total_entries),
+                    total_entries=total_entries,
+                    protein_id=protein_ids[-1],
+                    n_rows=len(rows),
+                    n_failures=len(failures),
+                    total_designs=total_designs,
+                    run_start=run_start,
+                )
+                if wandb_run is not None:
+                    from inverse_folding.observability import log_metrics
+
+                    elapsed = time.time() - run_start
+                    done = len(rows) + len(failures)
+                    avg = elapsed / float(done) if done > 0 else 0.0
+                    log_metrics(
+                        wandb_run,
+                        {
+                            "progress/proteins_done": min(proteins_done, total_entries),
+                            "progress/rows_generated": len(rows),
+                            "progress/failures": len(failures),
+                            "progress/elapsed_seconds": elapsed,
+                            "progress/avg_seconds_per_design": avg,
+                        },
+                        step=min(proteins_done, total_entries),
+                    )
     return rows, failures
 
 
@@ -247,6 +390,58 @@ def _build_generator(
     return _generator
 
 
+def _build_batched_generator(
+    *,
+    checkpoint: str,
+    pdb_root: str,
+    device: str,
+    max_iter: int,
+    temperature: float,
+) -> Callable[
+    [list[pd.Series], list[int], int, int], dict[str, Any]
+]:
+    """Batched generator: one DPLM ``generate()`` call per length bucket."""
+    from inverse_folding.reference_flow.runtime import (
+        generate_native_sequences_batched,
+        load_if_task,
+        prepare_backbone_batch,
+    )
+
+    task = load_if_task(checkpoint, device=device)
+
+    def _generator(
+        entries: list[pd.Series],
+        expected_lengths: list[int],
+        design_idx: int,
+        design_seed: int,
+    ) -> dict[str, Any]:
+        del design_idx
+        started = time.time()
+        batch, seq_lengths, _ = prepare_backbone_batch(
+            task=task, entries=entries, pdb_root=pdb_root, device=device
+        )
+        # sanity: featurizer + load_coords must agree with the input entries
+        if seq_lengths != expected_lengths:
+            raise RuntimeError(
+                f"prepare_backbone_batch length mismatch: featurizer="
+                f"{seq_lengths} entries={expected_lengths}"
+            )
+        sequences = generate_native_sequences_batched(
+            task=task,
+            batch=batch,
+            sequence_lengths=seq_lengths,
+            max_iter=max_iter,
+            temperature=temperature,
+            seed=design_seed,
+        )
+        return {
+            "sequences": sequences,
+            "wall_seconds": time.time() - started,
+        }
+
+    return _generator
+
+
 def print_resolved_hyperparams(args: argparse.Namespace, *, run_dir: Path, n_entries: int) -> None:
     resolved = {
         "checkpoint": str(Path(args.checkpoint).resolve()),
@@ -260,6 +455,7 @@ def print_resolved_hyperparams(args: argparse.Namespace, *, run_dir: Path, n_ent
         "max_iter": args.max_iter,
         "temperature": args.temperature,
         "device": args.device,
+        "batch_size": args.batch_size,
         "progress_every": args.progress_every,
         "overwrite": args.overwrite,
         "n_input_proteins": n_entries,
@@ -323,21 +519,39 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     run_start = time.time()
-    generator = _build_generator(
-        checkpoint=args.checkpoint,
-        pdb_root=args.pdb_root,
-        device=args.device,
-        max_iter=args.max_iter,
-        temperature=args.temperature,
-    )
-    rows, failures = generate_rows_for_entries(
-        entries,
-        generator,
-        n_designs_per_protein=args.n_designs_per_protein,
-        seed=args.seed,
-        progress_every=args.progress_every,
-        wandb_run=wandb_run,
-    )
+    if int(args.batch_size) > 1:
+        batched_generator = _build_batched_generator(
+            checkpoint=args.checkpoint,
+            pdb_root=args.pdb_root,
+            device=args.device,
+            max_iter=args.max_iter,
+            temperature=args.temperature,
+        )
+        rows, failures = generate_rows_for_entries_batched(
+            entries,
+            batched_generator,
+            n_designs_per_protein=args.n_designs_per_protein,
+            seed=args.seed,
+            batch_size=int(args.batch_size),
+            progress_every=args.progress_every,
+            wandb_run=wandb_run,
+        )
+    else:
+        generator = _build_generator(
+            checkpoint=args.checkpoint,
+            pdb_root=args.pdb_root,
+            device=args.device,
+            max_iter=args.max_iter,
+            temperature=args.temperature,
+        )
+        rows, failures = generate_rows_for_entries(
+            entries,
+            generator,
+            n_designs_per_protein=args.n_designs_per_protein,
+            seed=args.seed,
+            progress_every=args.progress_every,
+            wandb_run=wandb_run,
+        )
     total_wall_seconds = time.time() - run_start
 
     run_config = {
@@ -352,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
             "temperature": args.temperature,
             "n_designs_per_protein": args.n_designs_per_protein,
             "seed": args.seed,
+            "batch_size": int(args.batch_size),
         },
     }
     manifest = {

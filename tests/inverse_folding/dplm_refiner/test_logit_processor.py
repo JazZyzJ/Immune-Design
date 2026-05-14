@@ -54,9 +54,13 @@ def test_logit_processor_emits_diagnostics_when_sink_provided():
 
     assert len(captured) == 1
     rec = captured[0]
+    assert rec["step"] == 3
+    assert rec["max_step"] == 10
+    assert "per_row" in rec
+    assert len(rec["per_row"]) == 1
+    row = rec["per_row"][0]
     for key in (
-        "step",
-        "max_step",
+        "row_idx",
         "n_residues",
         "n_selected",
         "base_entropy_mean",
@@ -66,10 +70,10 @@ def test_logit_processor_emits_diagnostics_when_sink_provided():
         "fused_entropy_q90",
         "mask_ratio",
     ):
-        assert key in rec, f"missing diagnostic key: {key}"
-    assert rec["step"] == 3
-    assert rec["max_step"] == 10
-    assert rec["n_residues"] >= 1
+        assert key in row, f"missing per-row diagnostic key: {key}"
+    assert row["row_idx"] == 0
+    assert row["n_residues"] >= 1
+    assert row["probe_only"] is False
 
 
 def test_logit_processor_only_changes_valid_high_entropy_residue_positions():

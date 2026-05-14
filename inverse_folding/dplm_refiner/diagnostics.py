@@ -93,29 +93,39 @@ class DPLMBaseEntropyProbe:
             base_log_probs = torch.log_softmax(base_aa_logits, dim=-1)
             entropy = mapdiff_entropy_from_log_probs(base_log_probs)  # [B, L]
 
-            seq_count = max(int(seq_mask.sum().item()), 1)
-            base_mean = float(
-                (entropy * seq_mask.float()).sum().item() / seq_count
-            )
-            base_q90 = (
-                float(entropy[seq_mask].quantile(0.9).item())
-                if bool(seq_mask.any())
-                else float("nan")
-            )
-
+            per_row = []
+            B = int(seq_mask.shape[0])
+            for b in range(B):
+                row_mask = seq_mask[b]
+                row_count = int(row_mask.sum().item())
+                safe_count = max(row_count, 1)
+                base_m = float(
+                    (entropy[b] * row_mask.float()).sum().item() / safe_count
+                )
+                base_q90 = (
+                    float(entropy[b, row_mask].quantile(0.9).item())
+                    if row_count > 0
+                    else float("nan")
+                )
+                per_row.append(
+                    {
+                        "row_idx": b,
+                        "n_residues": row_count,
+                        "n_selected": None,
+                        "base_entropy_mean": base_m,
+                        "fused_entropy_mean": None,
+                        "refiner_entropy_mean": None,
+                        "base_entropy_q90": base_q90,
+                        "fused_entropy_q90": None,
+                        "mask_ratio": None,
+                        "probe_only": True,
+                    }
+                )
             self.diagnostics_sink(
                 {
                     "step": int(step),
                     "max_step": int(max_step),
-                    "n_residues": int(seq_count),
-                    "n_selected": None,  # probe never selects
-                    "base_entropy_mean": base_mean,
-                    "fused_entropy_mean": None,
-                    "refiner_entropy_mean": None,
-                    "base_entropy_q90": base_q90,
-                    "fused_entropy_q90": None,
-                    "mask_ratio": None,
-                    "probe_only": True,
+                    "per_row": per_row,
                 }
             )
         return logits

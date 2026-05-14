@@ -142,6 +142,63 @@ def resolve_structure_path(entry: pd.Series | dict[str, Any], pdb_root: str | Pa
     )
 
 
+def prepare_backbone_batch(
+    *,
+    task: Any,
+    entries: list[pd.Series | dict[str, Any]],
+    pdb_root: str | Path,
+    device: str,
+) -> tuple[dict[str, Any], list[int], list[Path]]:
+    """Featurize a list of test-set rows into a single DPLM batch (B>1).
+
+    Returns ``(batch, sequence_lengths, structure_paths)`` so callers can
+    map decoded outputs back to (protein_id, design_idx). All sequences
+    are passed to the alphabet featurizer in one call; padding /
+    coord_mask handling matches the DPLM CATH path bit-for-bit because
+    the featurizer is shared.
+    """
+    if not entries:
+        raise ValueError("prepare_backbone_batch requires at least one entry")
+
+    imports = _load_byprot_imports()
+    items: list[dict[str, Any]] = []
+    sequence_lengths: list[int] = []
+    structure_paths: list[Path] = []
+
+    for entry in entries:
+        row = dict(entry)
+        protein_id = str(row["protein_id"])
+        sequence = str(row["sequence"]).upper()
+        sequence_length = int(row["sequence_length"])
+        if len(sequence) != sequence_length:
+            raise ValueError(
+                f"{protein_id}: len(sequence)={len(sequence)} != "
+                f"sequence_length={sequence_length}"
+            )
+        structure_path = resolve_structure_path(row, pdb_root)
+        chain_id = str(row.get("if_chain_id") or row.get("chain") or "").strip()
+        if not chain_id:
+            chain_id = infer_chain_id(protein_id)
+        coords, structure_sequence = imports["load_coords"](
+            str(structure_path), chain=chain_id
+        )
+        if len(structure_sequence) != sequence_length:
+            raise ValueError(
+                f"{protein_id}: structure length {len(structure_sequence)} "
+                f"!= sequence_length {sequence_length}"
+            )
+        items.append({"name": protein_id, "seq": sequence, "coords": coords})
+        sequence_lengths.append(sequence_length)
+        structure_paths.append(structure_path)
+
+    featurizer = task.alphabet.featurizer
+    batch = featurizer(items)
+    for key, value in list(batch.items()):
+        if torch.is_tensor(value):
+            batch[key] = value.to(device)
+    return batch, sequence_lengths, structure_paths
+
+
 def prepare_backbone(
     *,
     task: Any,
@@ -180,6 +237,74 @@ def prepare_backbone(
         structure_path=structure_path,
         sequence_length=sequence_length,
     )
+
+
+def generate_native_sequences_batched(
+    *,
+    task: Any,
+    batch: dict[str, Any],
+    sequence_lengths: list[int],
+    max_iter: int,
+    temperature: float,
+    seed: int,
+    logit_processor: Any = None,
+) -> list[str]:
+    """Batched B>1 version of ``generate_native_sequence``.
+
+    Runs DPLM's ``generate`` once on a featurizer-batched input, then
+    splits the output tokens back into per-row sequences. The same
+    seed is applied once before the batched generate call; per-row
+    determinism within a batch is therefore not bit-equivalent to a
+    sequence of B=1 generations, but reproducibility ACROSS runs with
+    the same ``(batch composition, seed)`` is preserved.
+
+    ``logit_processor`` (if provided) is applied at every decoder step
+    on the full ``[B, L, V]`` logits, exactly as in the B=1 path.
+    """
+    if not sequence_lengths:
+        raise ValueError("generate_native_sequences_batched needs >=1 row")
+
+    _seed_all(seed)
+    batch = clone_batch(batch)
+    tokens = batch["tokens"]
+    coord_mask = batch["coord_mask"]
+    prev_tokens, prev_token_mask = task.inject_noise(
+        tokens, coord_mask, noise="full_mask"
+    )
+    batch["prev_tokens"] = prev_tokens
+    batch["prev_token_mask"] = prev_token_mask
+
+    generate_kwargs: dict[str, Any] = dict(
+        batch=batch,
+        max_iter=max_iter,
+        sampling_strategy="argmax",
+        temperature=temperature,
+        use_draft_seq=bool(task.hparams.generator.use_draft_seq),
+    )
+    if logit_processor is not None:
+        generate_kwargs["logit_processor"] = logit_processor
+    output_tokens, _ = task.model.generate(**generate_kwargs)
+
+    special_sym_mask = (
+        tokens.eq(task.alphabet.padding_idx)
+        | tokens.eq(task.alphabet.cls_idx)
+        | tokens.eq(task.alphabet.eos_idx)
+    )
+    output_tokens.masked_scatter_(special_sym_mask, tokens[special_sym_mask])
+    residue_mask = coord_mask & ~special_sym_mask  # [B, L]
+
+    sequences: list[str] = []
+    for b, expected_len in enumerate(sequence_lengths):
+        row_mask = residue_mask[b]
+        row_tokens = output_tokens[b, row_mask].cpu()
+        if int(row_tokens.numel()) != int(expected_len):
+            raise RuntimeError(
+                f"batched generate: row {b} produced {row_tokens.numel()} "
+                f"residue tokens but expected {expected_len}; check the "
+                f"featurizer / coord_mask alignment"
+            )
+        sequences.append(decode_residue_tokens(task, row_tokens))
+    return sequences
 
 
 def generate_native_sequence(

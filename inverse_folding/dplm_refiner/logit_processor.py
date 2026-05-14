@@ -176,42 +176,58 @@ class DPLMRefinerLogitProcessor:
             fused_aa_logits, template_logits=logits
         )
 
-        # Ablation diagnostics: cheap scalar summaries per call.
+        # Ablation diagnostics: per-row records so batched generation
+        # (B > 1) preserves per-design granularity. Each call emits one
+        # sink record carrying a ``per_row`` list of length B; the runner
+        # maps row_idx -> (protein_id, design_idx) using its batch
+        # composition.
         if self.diagnostics_sink is not None:
             with torch.no_grad():
                 fused_log_probs = torch.log_softmax(fused_aa_logits, dim=-1)
                 fused_entropy = mapdiff_entropy_from_log_probs(fused_log_probs)
                 refiner_log_probs = torch.log_softmax(refiner_aa_logits, dim=-1)
                 refiner_entropy = mapdiff_entropy_from_log_probs(refiner_log_probs)
-                seq_count = max(int(seq_mask.sum().item()), 1)
-                selected_count = int(selected.sum().item())
-                base_entropy_mean = float(
-                    (entropy * seq_mask.float()).sum().item() / seq_count
-                )
-                fused_entropy_mean = float(
-                    (fused_entropy * seq_mask.float()).sum().item() / seq_count
-                )
-                refiner_entropy_mean = float(
-                    (refiner_entropy * seq_mask.float()).sum().item() / seq_count
-                )
-                base_entropy_top_q = float(
-                    entropy[seq_mask].quantile(0.9).item()
-                ) if seq_count > 0 and bool(seq_mask.any()) else 0.0
-                fused_entropy_top_q = float(
-                    fused_entropy[seq_mask].quantile(0.9).item()
-                ) if seq_count > 0 and bool(seq_mask.any()) else 0.0
+                per_row = []
+                B = int(seq_mask.shape[0])
+                for b in range(B):
+                    row_mask = seq_mask[b]
+                    row_count = int(row_mask.sum().item())
+                    safe_count = max(row_count, 1)
+                    n_sel = int(selected[b].sum().item())
+                    base_m = float(
+                        (entropy[b] * row_mask.float()).sum().item() / safe_count
+                    )
+                    fused_m = float(
+                        (fused_entropy[b] * row_mask.float()).sum().item() / safe_count
+                    )
+                    refiner_m = float(
+                        (refiner_entropy[b] * row_mask.float()).sum().item() / safe_count
+                    )
+                    if row_count > 0:
+                        base_q90 = float(entropy[b, row_mask].quantile(0.9).item())
+                        fused_q90 = float(fused_entropy[b, row_mask].quantile(0.9).item())
+                    else:
+                        base_q90 = float("nan")
+                        fused_q90 = float("nan")
+                    per_row.append(
+                        {
+                            "row_idx": b,
+                            "n_residues": row_count,
+                            "n_selected": n_sel,
+                            "base_entropy_mean": base_m,
+                            "fused_entropy_mean": fused_m,
+                            "refiner_entropy_mean": refiner_m,
+                            "base_entropy_q90": base_q90,
+                            "fused_entropy_q90": fused_q90,
+                            "mask_ratio": float(ratios[b].item()),
+                            "probe_only": False,
+                        }
+                    )
                 self.diagnostics_sink(
                     {
                         "step": int(step),
                         "max_step": int(max_step),
-                        "n_residues": seq_count,
-                        "n_selected": selected_count,
-                        "base_entropy_mean": base_entropy_mean,
-                        "fused_entropy_mean": fused_entropy_mean,
-                        "refiner_entropy_mean": refiner_entropy_mean,
-                        "base_entropy_q90": base_entropy_top_q,
-                        "fused_entropy_q90": fused_entropy_top_q,
-                        "mask_ratio": float(ratios.mean().item()),
+                        "per_row": per_row,
                     }
                 )
 

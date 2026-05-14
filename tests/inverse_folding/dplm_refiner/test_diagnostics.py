@@ -41,17 +41,42 @@ def test_base_entropy_probe_is_passthrough_and_records_real_entropy():
     assert torch.equal(out, logits)
     assert len(captured) == 1
     rec = captured[0]
-    assert rec["probe_only"] is True
     assert rec["step"] == 2
     assert rec["max_step"] == 10
-    assert rec["n_selected"] is None
-    assert rec["fused_entropy_mean"] is None
-    assert rec["refiner_entropy_mean"] is None
-    assert rec["mask_ratio"] is None
-    # Position 0 has sharp logits (low entropy); positions 1-3 uniform (high entropy)
-    # Mean should be > 0 and finite
-    assert rec["base_entropy_mean"] > 0.0
-    assert rec["base_entropy_q90"] >= rec["base_entropy_mean"]
+    assert "per_row" in rec
+    assert len(rec["per_row"]) == 1
+    row = rec["per_row"][0]
+    assert row["probe_only"] is True
+    assert row["row_idx"] == 0
+    assert row["n_selected"] is None
+    assert row["fused_entropy_mean"] is None
+    assert row["refiner_entropy_mean"] is None
+    assert row["mask_ratio"] is None
+    assert row["base_entropy_mean"] > 0.0
+    assert row["base_entropy_q90"] >= row["base_entropy_mean"]
+
+
+def test_base_entropy_probe_emits_per_row_for_batched_input():
+    captured = []
+    probe = DPLMBaseEntropyProbe(
+        alphabet=DummyAlphabet(),
+        diagnostics_sink=lambda rec: captured.append(rec),
+    )
+    logits = torch.zeros((2, 4, 40))
+    logits[0, 0, 4] = 10.0  # row 0 position 0 sharp
+    logits[1, :, 4] = 10.0  # row 1 all sharp
+    tokens = torch.tensor([[10, 11, 12, 13], [14, 15, 16, 17]])
+    coords = torch.randn((2, 4, 4, 3))
+    coord_mask = torch.tensor([[True, True, True, True], [True, True, True, True]])
+    batch = {"coords": coords, "coord_mask": coord_mask, "tokens": tokens}
+
+    probe(logits=logits, output_tokens=tokens, batch=batch, step=1, max_step=5)
+
+    assert len(captured) == 1
+    rec = captured[0]
+    assert len(rec["per_row"]) == 2
+    # Row 1 is uniformly sharp -> lower mean entropy than row 0 (3/4 uniform)
+    assert rec["per_row"][1]["base_entropy_mean"] < rec["per_row"][0]["base_entropy_mean"]
 
 
 def test_base_entropy_probe_requires_sink():

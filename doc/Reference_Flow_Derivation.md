@@ -69,8 +69,9 @@ The current project should be read as four progressively stronger objects:
 - **C3 (static conditioning)**: fixed prior field enters the denoiser explicitly.  
   This changes WHAT the model predicts, while the reference flow changes WHEN positions
   are decided.
-- **Task D (optional adaptive controller)**: online hotspot refresh, logit steering,
-  and/or revisit of already-decided positions.  
+- **Task D (optional adaptive controller)**: online hotspot refresh, active-block
+  hard counterfactual logit guidance, and residue-level revisit of already-decided
+  positions.  
   This is not required for the core claim. It is an extension for handling newly emerged
   hotspots during generation.
 
@@ -495,228 +496,220 @@ part of the minimal formulation.
 
 ### 4.7 Optional adaptive controlled reverse process (Task D)
 
-The fixed-prior method above is the core mechanism. However, during generation, newly
-emerged hotspot regions may appear that were not salient in the WT prior. To handle this
-we define an **optional controller** on top of the base reverse process.
+The fixed-prior method above is the core theorem object. However, during generation,
+new hotspot regions may emerge that were not salient in the WT prior. Task D is an
+optional controller for this case. It should keep the static reference-flow schedule
+intact and act on two separate surfaces:
 
-#### D1. Online hotspot refresh
+- **logits / candidate direction**: which amino-acid alternatives become more likely;
+- **commitment / revisit state**: which already proposed residues should remain editable.
 
-Let the current denoiser output be
+This separation is important. The head should not be treated as a second structure
+model, and the static schedule should not be redefined every time the online risk field
+changes.
 
-$$
-q_t^i(a) = p_\theta(x_1^i = a \mid x_t, S, t, u_t^{\text{cond}})
-$$
+#### D1. Reliability-gated online refresh and active blocks
 
-Construct a temporary full sequence using a completion operator:
-
-$$
-\bar{x}_t = C(x_t, q_t)
-$$
-
-and evaluate the online hotspot field
+At a controller refresh step, let the structure-conditioned denoiser produce
 
 $$
-h_i^{\mathrm{dyn}}(t) = H_i(\bar{x}_t)
+q_t^i(a) = p_\theta(x_1^i = a \mid x_t, S, t).
 $$
 
-This refresh need not happen at every step. A natural gated policy is:
+Construct a temporary hard completion
+
+$$
+\bar{x}_t = C(x_t, q_t),
+$$
+
+where $C$ fills currently unresolved positions using the current denoiser distribution
+for external scoring only, for example by argmax, top-$k$ sampling, or temperature
+sampling. Already resolved positions are kept fixed in the temporary sequence. The
+completion is not itself a new training target or a new theorem object.
+
+Evaluate the online hotspot field:
+
+$$
+h_i^{\mathrm{dyn}}(t) = H_i(\bar{x}_t).
+$$
+
+Refresh is delayed and sparse:
 
 $$
 h^{\mathrm{dyn}}(t)\ \text{updates only if}\ t \ge t_{\mathrm{start}}
-\ \text{and}\ k \equiv 0 \pmod K
+\quad\text{and}\quad k \equiv 0 \pmod K,
 $$
 
-where $k$ is the reverse-step index. This treats online refresh as a stabilizer rather
-than a mandatory part of the core sampler.
+where $k$ is the reverse-step index. The purpose of $t_{\mathrm{start}}$ is reliability
+control. Early in reverse time, $\bar{x}_t$ is mostly a local completion heuristic and
+may lie far from the sequence manifold seen by the epitope head. Later, local windows are
+more self-consistent and the head becomes more meaningful.
 
-The role of $t_{\mathrm{start}}$ is reliability control. Early in reverse time,
-$\bar{x}_t$ is dominated by local completion heuristics and need not lie close to the
-protein manifold seen by the epitope head. In that regime $H(\bar{x}_t)$ may be a very
-noisy proxy for the eventual sequence-level risk landscape. Later in reverse time,
-$\bar{x}_t$ is typically more self-consistent and closer to the target manifold, so
-$H(\bar{x}_t)$ becomes more trustworthy. Delayed activation at $t \ge t_{\mathrm{start}}$
-is therefore justified as a confidence gate, not merely a heuristic.
-
-In practice one may further strengthen this gate using a confidence term based on
-remaining mask fraction, predictive entropy, or agreement across multiple completions.
-
-#### D2. Split the controller into two axes
-
-Define two control fields:
-
-$$
-u_i^{\text{cond}}(t) = (1-\beta_t)\, h_i^{(0)} + \beta_t\, h_i^{\mathrm{dyn}}(t)
-$$
-
-$$
-u_i^{\text{sched}}(t) = (1-\alpha_t)\, h_i^{(0)} + \alpha_t\, h_i^{\mathrm{dyn}}(t)
-$$
-
-These play different roles:
-
-- $u^{\text{cond}}$: WHAT-to-predict controller
-- $u^{\text{sched}}$: WHEN-to-decide controller
-
-This distinction should be preserved throughout the project. It prevents us from
-overloading one mechanism to do two logically different jobs.
-
-#### D3. Preferred first extension: dynamic commit/revisit control
-
-The most natural adaptive extension is to keep the static schedule fixed and use the
-online hotspot field to decide whether an already proposed residue should be considered
-committed. In this view, the epitope head does not directly choose amino acids. It
-controls the **editable state** of the reverse process.
-
-Let $\ell_i(t)$ denote the denoiser confidence in the currently committed token at
-position $i$, for example its chosen-token log-probability. Define an excess dynamic
-risk term
+Define excess online risk relative to the static prior:
 
 $$
 e_i(t) =
-\mathrm{ReLU}\!\big(h_i^{\mathrm{dyn}}(t) - h_i^{(0)} - \tau\big)
+\mathrm{ReLU}\!\big(h_i^{\mathrm{dyn}}(t) - h_i^{(0)} - \tau\big).
 $$
 
-and a controller-adjusted commit score
+An **active block** is a contiguous high-risk region discovered from $e_i(t)$ at a
+refresh step, for example a connected component of residues with $e_i(t)>0$ after
+applying practical caps such as top-$B$ blocks, maximum block length, or local completion
+reliability. Because $h_i^{\mathrm{dyn}}$ is already derived from window-level epitope
+evidence, active blocks are an evaluation scope rather than an additional smoothing
+model.
+
+#### D2. Preferred logit layer: hard counterfactual active-block update
+
+The scientifically clean way to use the head for logits is not to subtract the same
+residue risk from every amino acid. A scalar $h_i^{\mathrm{dyn}}$ says where the current
+sequence is risky, but it does not say which amino acid should replace it. Logit guidance
+requires a token-conditional counterfactual risk.
+
+For an active block $B$, select a small editable subset $A_B \subseteq B$, such as the
+top-$M$ residues by excess risk, high entropy, or low structural confidence. For each
+$i\in A_B$, restrict candidate amino acids to the top-$K$ tokens under the current
+structure logits. Construct a finite set of hard block candidates
+$\mathcal{A}_B=\{a_B^{(1)},\ldots,a_B^{(K_B)}\}$ by sampling or enumerating from this
+restricted set. The controller does **not** enumerate all positions and all 20 amino
+acids across the full sequence.
+
+For each hard candidate, evaluate the head on the resulting completed sequence:
 
 $$
-s_i^{\mathrm{commit}}(t) = \ell_i(t) - \lambda_t e_i(t).
+\Delta R_B(a_B) =
+R_H\!\big(C(\bar{x}_t; x_B=a_B)\big) - R_H(\bar{x}_t).
+$$
+
+Here $C(\bar{x}_t; x_B=a_B)$ means replacing the chosen block positions in the temporary
+completion by $a_B$ while leaving the rest of $\bar{x}_t$ unchanged. A structure-aware
+candidate score is then
+
+$$
+J_B(a_B) =
+\sum_{i\in A_B} \log p_{\theta}^{\mathrm{struct}}(a_i \mid x_t,S,t)
+- \beta_t \Delta R_B(a_B).
+$$
+
+The preferred use is to project the block-level scores back to residue-level token
+preferences:
+
+$$
+w_B(a_B) \propto \exp(J_B(a_B)/T_B),
+$$
+
+$$
+q_{B,i}^{\mathrm{imm}}(a) =
+\sum_{a_B\in\mathcal{A}_B} w_B(a_B)\,\mathbf{1}[a_i=a],
+$$
+
+and apply a local logit correction for $i\in A_B$:
+
+$$
+\tilde{\ell}_i(a,t) =
+\ell_i^{\mathrm{struct}}(a,t)
++ \eta_t \rho_B(t)\log\!\big(q_{B,i}^{\mathrm{imm}}(a)+\epsilon\big).
+$$
+
+$\ell_i^{\mathrm{struct}}$ may already include DPLM plus a structure refiner. The immune
+term is added after the structural logits are formed, so the head supplies a local
+energy correction rather than replacing the structure-conditioned model. $\rho_B(t)$ is
+a reliability gate based on late time, local completion, and/or local entropy. In early
+or unreliable states $\rho_B(t)$ should be near zero.
+
+This hard-counterfactual design keeps the head on hard amino-acid sequences, which is
+closer to its training distribution than soft-gradient guidance. Its cost is controlled
+by late activation, active-block selection, top-$M$ residue selection, top-$K$ amino-acid
+restriction, refresh intervals, and batched head evaluation.
+
+A more aggressive alternative is to directly choose or sample a full block candidate
+from $w_B(a_B)$ and write it into the current sequence as a local proposal. This may be
+useful as a later comparator or local-search variant, but it is more invasive than the
+preferred logits projection because it bypasses part of the denoiser's usual token-level
+sampling interface.
+
+#### D3. Residue-level EMA commit/revisit control
+
+The second controller surface is commitment. Even with better logits, a sampled residue
+may later create a new hotspot after neighboring residues are resolved. Revisit should
+therefore remain residue-level and should not automatically remask an entire active
+block.
+
+Let $\ell_i^{\mathrm{cur}}(t)$ denote the current structural confidence in the residue
+already proposed at position $i$, for example its chosen-token log-probability under the
+latest structural logits. Maintain a persistent risk memory
+
+$$
+m_i(t) = \gamma m_i(t-\Delta t) + (1-\gamma)e_i(t).
+$$
+
+Define a controller-adjusted commit score
+
+$$
+s_i^{\mathrm{commit}}(t) =
+z\!\big(\ell_i^{\mathrm{cur}}(t)\big) - \lambda_t z\!\big(m_i(t)\big).
 $$
 
 Generic reparameterized decoding revisits low-confidence residues. The risk-aware
-controller revisits residues whose current identity is both insufficiently trusted by
-the structural denoiser and associated with newly elevated immunogenic risk. Operationally,
-the remask/revisit rule ranks committed residues by $s_i^{\mathrm{commit}}(t)$ rather
-than by $\ell_i(t)$ alone.
+controller ranks committed residues by $s_i^{\mathrm{commit}}(t)$ instead of structural
+confidence alone. Lower scores are more likely to be remasked. If a mutation reduces
+online risk for several refreshes, $m_i(t)$ decays and the residue becomes easier to
+commit; if risk remains persistently high, the residue remains editable.
 
-This is different from external classifier guidance. The head is not used as a direct
-token-level energy that tells the model which amino acid to sample. Instead, it decides
-which residues should remain editable and lets the structure-conditioned denoiser
-re-propose amino acids. The controller therefore acts on **commitment**, not directly on
-the amino-acid distribution.
+This keeps the two roles distinct:
 
-If the online risk estimate is noisy, a persistent risk memory can be used:
+- block-level hard counterfactual evaluation supplies **direction** to logits;
+- residue-level EMA recommit supplies **reversibility** after sampling.
 
-$$
-m_i(t) = \gamma m_i(t-\Delta t) + (1-\gamma)e_i(t)
-$$
+The EMA prevents single-step head noise from causing oscillatory remasking. Convergence
+must still be enforced by the sampling protocol: finite horizon, decaying revisit budget
+or probability near the end, final hard commit, and optional hysteresis between revisit
+and accept thresholds.
 
-and $m_i(t)$ replaces $e_i(t)$ in the commit score. This EMA-style memory prevents a
-single noisy hotspot estimate from causing repeated remasking, while allowing persistent
-newly emerged risk to keep a residue editable.
+If structure and immunogenicity conflict, diagnostics should expose the conflict rather
+than hide it. High structural confidence plus high immune risk means a real tradeoff and
+should require a strong risk threshold before revisit. Low structural confidence plus
+high immune risk is the preferred target, because the denoiser is already uncertain and
+the head says that keeping the residue is risky.
 
-The residue-level field $h_i^{\mathrm{dyn}}(t)$ is already derived from window-level
-epitope evidence by the head, so the first formulation should operate directly at the
-residue level. Additional region/window smoothing can be treated as a later engineering
-variant rather than part of the base controller.
-
-#### D3b. Optional logit steering baseline
-
-An external logit-steering controller can still be useful as a baseline:
-
-$$
-\tilde{q}_t^i(a) \propto q_t^i(a)\,
-\exp\!\big(-\lambda_t \, \Delta \hat{R}_i(a; \bar{x}_t)\big),
-$$
-
-where $\Delta \hat{R}_i(a; \bar{x}_t)$ estimates the risk change if token $a$ were chosen
-at position $i$. However, this is closer to conventional classifier guidance. It should
-not be the primary generative mechanism unless the commit/revisit controller fails.
-
-#### D4. Optional schedule modulation
+#### D4. Dynamic schedule modulation remains a later extension
 
 If desired, the scheduler can also be updated online:
 
 $$
 \kappa_i(t; u^{\text{sched}}) =
-\kappa_{\text{base}}(t)^{g(u_i^{\text{sched}}(t))}
+\kappa_{\text{base}}(t)^{g(u_i^{\text{sched}}(t))}.
 $$
 
-with corresponding hazard
+However, once $\kappa_i$ depends on the evolving state, Theorem 1 no longer applies
+directly. The original ordering guarantee relied on $\kappa_i(t)$ being a function of
+time alone, so that the first unmasking time had CDF $\kappa_i(t)$. Under dynamic
+schedule modulation, the process is state-dependent and only a conditional/local
+ordering interpretation remains: holding the current controller state fixed, larger
+$g(u_i^{\text{sched}}(t))$ still delays local unmasking pressure. Recovering a global
+ordering statement would require additional assumptions, for example eventual
+stabilization or monotonicity of the controller state.
 
-$$
-r_i^+(t) =
-\frac{\partial_t \kappa_i(t; u^{\text{sched}})}{1-\kappa_i(t; u^{\text{sched}})}
-$$
-
-Important caveat: once $\kappa_i$ depends on the evolving state through$u_i^{\text{sched}}(t)$, Theorem 1 no longer applies directly. The original ordering guarantee relied on $\kappa_i(t)$ being a function of time alone, so that the first unmasking time had CDF $\kappa_i(t)$. Under dynamic schedule modulation, the process is
-state-dependent and only a **conditional/local ordering interpretation** remains:
-holding the current controller state fixed, larger $g(u_i^{\text{sched}}(t))$ still
-delays local unmasking pressure. Recovering a global ordering statement would require
-additional assumptions, for example eventual stabilization or monotonicity of the
-controller state.
-
-However, this should **not** be the default first controller. Dynamic scheduler updates
-are more invasive, create additional train/sample mismatch concerns, and only affect
+Dynamic scheduler updates are therefore not the default adaptive controller. They are
+more invasive, create additional train/sample mismatch concerns, and only affect
 positions that are still masked.
-
-#### D5. Why revisit/corrector matters more than dynamic scheduler
-
-A dynamic scheduler alone cannot repair already-decided positions that become risky
-later. Once a site has unmasked and absorbed a token, changing future hazards elsewhere
-does not revisit that decision.
-
-Therefore the principled mechanism for handling newly emerged hotspots is a risk-aware
-commit/revisit process:
-
-$$
-r_i^-(t) = \eta_t \cdot s\!\big(h_i^{\mathrm{dyn}}(t), c_i(t)\big)
-$$
-
-
-where $c_i(t)$ may encode uncertainty, local risk increase, or another confidence score.
-The exact choice of $s(\cdot)$ is a design decision, but conceptually:
-
-- dynamic schedule controls **future masked sites**
-- revisit/corrector controls **already-decided risky sites**
-
-For MHC-IF, revisit is the more meaningful aggressive extension.
-
-There is no theorem guaranteeing that arbitrary revisit policies converge to a stable
-sequence. Convergence must be enforced by the sampling protocol. Sufficient practical
-conditions are:
-
-- finite reverse horizon,
-- a revisit budget or revisit probability that decays to zero near $t=1$,
-- a final hard-commit step with no further remasking,
-- optional EMA/hysteresis so transient risk estimates do not cause oscillatory remasking.
-
-Under these conditions, the process has operational convergence: every position is
-eventually committed, although the final sequence is still a sample from the controlled
-reverse process rather than the minimizer of an explicit energy.
-
-One concrete high-level instantiation is to trigger revisit only when the online risk
-rises above the static prior by a meaningful margin:
-
-$$
-\eta_t^i = \eta_0 \cdot
-\mathrm{ReLU}\!\big(h_i^{\mathrm{dyn}}(t) - h_i^{(0)} - \tau\big)
-$$
-
-and then use $\eta_t^i$ inside the corrector/revisit mechanism. This makes revisit fire
-only when the online controller detects a materially worse hotspot than expected from the
-prior. In practice this risk term should be combined with a structural confidence term
-such as denoiser log-probability or entropy. This makes structure and immunogenicity
-interact through a transparent commit score rather than through an opaque fusion of
-incompatible objectives.
-
-If structure and immunogenicity conflict, the controller should expose the conflict
-rather than hide it. High structural confidence plus high immune risk means the residue
-is likely a real tradeoff and should only be revisited under a strong risk threshold.
-Low structural confidence plus high immune risk is the preferred target: the model is
-already uncertain, and the head indicates that keeping the residue committed is risky.
 
 ### 4.8 Recommended progression
 
 The above discussion suggests a stable development order:
 
 1. **Base method**: static prior schedule only (C1/C2)
-2. **Second axis**: static hotspot conditioning (C3)
-3. **First adaptive controller**: dynamic risk-aware commit/revisit with fixed schedule
-4. **Optional comparator**: external logit steering
-5. **Most invasive extension**: dynamic scheduler updates
+2. **Second static axis**: static hotspot conditioning if the denoiser is retrained (C3)
+3. **First adaptive direction layer**: late-gated hard counterfactual logits update on
+   active blocks, with the static schedule held fixed
+4. **Adaptive reversibility layer**: residue-level EMA commit/revisit using online risk
+   memory and structural confidence
+5. **Comparators / later variants**: direct block candidate write-back or simpler
+   single-site logit steering
+6. **Most invasive extension**: dynamic scheduler updates
 
 This order matches the scientific need to keep the main mechanism interpretable:
-reference flow first, adaptive controller second.
+reference flow first, adaptive controller second, dynamic schedule last.
 
 ### 4.9 Training-side support for adaptive control
 
@@ -756,10 +749,14 @@ generalization to controller approximation error.
 The recommended interpretation is therefore:
 
 - **Static-prior schedule/conditioning**: main method, no extra training support needed
+- **Hard counterfactual logits update outside the denoiser**: no conditioning mismatch for
+  the model, because DPLM/refiner still produce the structural logits; the main risks are
+  controller approximation error, head exploitation, and extra inference cost
+- **Residue-level EMA commit/revisit**: no conditioning mismatch, but requires convergence
+  gates and transparent structure-risk tradeoff reporting
+- **Soft-gradient guidance through the head**: not the first choice unless the head is
+  trained or calibrated on soft/corrupted sequence states
 - **Dynamic condition fed into denoiser**: requires training-side robustness support
-- **Dynamic commit/revisit**: no conditioning mismatch, but requires convergence gates and
-  transparent structure-risk tradeoff reporting
-- **External logit steering**: no conditioning mismatch, but closer to conventional guidance
 - **Dynamic scheduler modulation**: additionally weakens the clean static-prior theorems
   and should be treated as a later-stage extension
 

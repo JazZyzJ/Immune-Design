@@ -64,6 +64,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-iter", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help=(
+            "Number of proteins processed per DPLM generate() call. "
+            "Entries are length-bucketed before batching. >1 trades "
+            "exact per-design seed determinism for GPU utilization. "
+            "Per-step ablation diagnostics are fanned out per row via "
+            "the logit-processor sink."
+        ),
+    )
     parser.add_argument("--mc-dropout-passes", type=int, default=1)
     parser.add_argument("--mask-ratio-center", type=float, default=0.4)
     parser.add_argument("--mask-ratio-deviation", type=float, default=0.2)
@@ -99,6 +111,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--progress-every must be non-negative")
     if args.limit_proteins is not None and args.limit_proteins <= 0:
         parser.error("--limit-proteins must be positive when provided")
+    if args.batch_size <= 0:
+        parser.error("--batch-size must be positive")
 
     return args
 
@@ -234,29 +248,37 @@ def _build_generator(
     args: argparse.Namespace,
 ) -> tuple[
     Callable[[pd.Series, int, int], dict[str, Any]],
+    Callable[[list[pd.Series], list[int], int, int], dict[str, Any]],
     dict[str, Any],
     list[dict[str, Any]],
 ]:
-    """Build the per-design generator; returns (generator, meta, diagnostics_buffer).
+    """Build per-design + batched generators; returns:
 
-    The diagnostics_buffer is shared across calls; the returned generator
-    appends per-design summary rows when ablation_mode is enabled.
+    ``(generator_b1, generator_batched, meta, diagnostics_buffer)``.
+
+    The diagnostics_buffer is shared across calls. The generators fan
+    out per-row processor records into per-design entries so batched
+    runs preserve per-protein granularity.
     """
     from inverse_folding.reference_flow.runtime import (
         generate_native_sequence,
+        generate_native_sequences_batched,
         load_if_task,
         prepare_backbone,
+        prepare_backbone_batch,
     )
 
     task = load_if_task(checkpoint, device=device)
     sidecar_attached = _maybe_attach_sidecar(args, task=task)
 
     diagnostics_buffer: list[dict[str, Any]] = []
-    per_design_steps: list[dict[str, Any]] = []
+    # raw per-step records emitted by the logit processor; the wrappers
+    # below drain and fan them out into per-row diagnostics buffers.
+    pending_step_records: list[dict[str, Any]] = []
 
     def _step_sink(record: dict[str, Any]) -> None:
         if args.ablation_mode:
-            per_design_steps.append(dict(record))
+            pending_step_records.append(dict(record))
 
     logit_processor = _maybe_build_logit_processor(
         args,
@@ -264,9 +286,6 @@ def _build_generator(
         diagnostics_sink=_step_sink if args.ablation_mode else None,
     )
 
-    # Ablation mode without a refiner: install a passthrough base-entropy
-    # probe so baseline / sidecar-only arms still emit real entropy
-    # measurements that are directly comparable to the refiner arms.
     if logit_processor is None and args.ablation_mode:
         from inverse_folding.dplm_refiner.diagnostics import (
             DPLMBaseEntropyProbe,
@@ -278,8 +297,31 @@ def _build_generator(
 
     arm = resolve_arm(args)
 
-    def _generator(entry: pd.Series, design_idx: int, design_seed: int) -> dict[str, Any]:
-        per_design_steps.clear()
+    def _fanout_per_row(
+        steps: list[dict[str, Any]], n_rows: int
+    ) -> list[list[dict[str, Any]]]:
+        """Convert step-level batched records into n_rows lists of
+        per-step per-row dicts."""
+        per_row_steps: list[list[dict[str, Any]]] = [[] for _ in range(n_rows)]
+        for step_rec in steps:
+            rows = step_rec.get("per_row", [])
+            for entry in rows:
+                idx = int(entry["row_idx"])
+                if not (0 <= idx < n_rows):
+                    continue
+                per_row_steps[idx].append(
+                    {
+                        "step": int(step_rec["step"]),
+                        "max_step": int(step_rec["max_step"]),
+                        **{k: v for k, v in entry.items() if k != "row_idx"},
+                    }
+                )
+        return per_row_steps
+
+    def _generator_b1(
+        entry: pd.Series, design_idx: int, design_seed: int
+    ) -> dict[str, Any]:
+        pending_step_records.clear()
         started = time.time()
         prepared = prepare_backbone(
             task=task, entry=entry, pdb_root=pdb_root, device=device
@@ -294,6 +336,7 @@ def _build_generator(
         )
         wall = time.time() - started
         if args.ablation_mode:
+            per_row_steps = _fanout_per_row(pending_step_records, n_rows=1)
             diagnostics_buffer.append(
                 {
                     "protein_id": str(entry["protein_id"]),
@@ -301,20 +344,59 @@ def _build_generator(
                     "arm": arm,
                     "wall_seconds": float(wall),
                     "n_residues": int(prepared.sequence_length),
-                    "step_records": list(per_design_steps),
+                    "step_records": per_row_steps[0],
                 }
             )
-        return {
-            "sequence": sequence,
-            "wall_seconds": wall,
-        }
+        return {"sequence": sequence, "wall_seconds": wall}
+
+    def _generator_batched(
+        entries: list[pd.Series],
+        expected_lengths: list[int],
+        design_idx: int,
+        design_seed: int,
+    ) -> dict[str, Any]:
+        pending_step_records.clear()
+        started = time.time()
+        batch, seq_lengths, _ = prepare_backbone_batch(
+            task=task, entries=entries, pdb_root=pdb_root, device=device
+        )
+        if seq_lengths != expected_lengths:
+            raise RuntimeError(
+                f"prepare_backbone_batch length mismatch: featurizer="
+                f"{seq_lengths} entries={expected_lengths}"
+            )
+        sequences = generate_native_sequences_batched(
+            task=task,
+            batch=batch,
+            sequence_lengths=seq_lengths,
+            max_iter=max_iter,
+            temperature=temperature,
+            seed=design_seed,
+            logit_processor=logit_processor,
+        )
+        wall = time.time() - started
+        per_design_wall = wall / float(len(entries))
+        if args.ablation_mode:
+            per_row_steps = _fanout_per_row(pending_step_records, n_rows=len(entries))
+            for row_i, entry in enumerate(entries):
+                diagnostics_buffer.append(
+                    {
+                        "protein_id": str(entry["protein_id"]),
+                        "design_idx": int(design_idx),
+                        "arm": arm,
+                        "wall_seconds": float(per_design_wall),
+                        "n_residues": int(seq_lengths[row_i]),
+                        "step_records": per_row_steps[row_i],
+                    }
+                )
+        return {"sequences": sequences, "wall_seconds": wall}
 
     refiner_meta: dict[str, Any] = {
         "arm": arm,
         "refiner_enabled": logit_processor is not None,
         "sidecar_enabled": bool(sidecar_attached),
     }
-    if logit_processor is not None:
+    if logit_processor is not None and args.refiner_checkpoint:
         refiner_meta.update(
             {
                 "refiner_checkpoint": str(
@@ -330,7 +412,7 @@ def _build_generator(
         refiner_meta["sidecar_checkpoint"] = str(
             Path(args.sidecar_checkpoint).expanduser().resolve()
         )
-    return _generator, refiner_meta, diagnostics_buffer
+    return _generator_b1, _generator_batched, refiner_meta, diagnostics_buffer
 
 
 def print_resolved_hyperparams(
@@ -399,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     from scripts.run_if_phase_c0 import (
         _fmt_hms,
         generate_rows_for_entries,
+        generate_rows_for_entries_batched,
         write_phase_c_outputs,
     )
 
@@ -421,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit_proteins is not None:
         entries = entries.head(int(args.limit_proteins)).reset_index(drop=True)
 
-    generator, refiner_meta, diagnostics_buffer = _build_generator(
+    generator_b1, generator_batched, refiner_meta, diagnostics_buffer = _build_generator(
         checkpoint=args.checkpoint,
         pdb_root=args.pdb_root,
         device=args.device,
@@ -455,14 +538,25 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     run_start = time.time()
-    rows, failures = generate_rows_for_entries(
-        entries,
-        generator,
-        n_designs_per_protein=args.n_designs_per_protein,
-        seed=args.seed,
-        progress_every=args.progress_every,
-        wandb_run=wandb_run,
-    )
+    if int(args.batch_size) > 1:
+        rows, failures = generate_rows_for_entries_batched(
+            entries,
+            generator_batched,
+            n_designs_per_protein=args.n_designs_per_protein,
+            seed=args.seed,
+            batch_size=int(args.batch_size),
+            progress_every=args.progress_every,
+            wandb_run=wandb_run,
+        )
+    else:
+        rows, failures = generate_rows_for_entries(
+            entries,
+            generator_b1,
+            n_designs_per_protein=args.n_designs_per_protein,
+            seed=args.seed,
+            progress_every=args.progress_every,
+            wandb_run=wandb_run,
+        )
     total_wall_seconds = time.time() - run_start
 
     run_config = {

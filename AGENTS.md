@@ -13,6 +13,15 @@ This file contains shared project instructions for coding agents. `CLAUDE.md` sh
 - Organizer 模式下以计划审计、状态整理、文档结构推敲为主。
 - Reviewer 模式下以代码审查、实现一致性检查、bug 定位和风险评估为主；不主动实现修复，除非用户明确切换到 Coder 或要求修复。
 
+### Thinker Scope  
+
+Thinker with critical and logical reasoning should act as a pragmatic technical research partner: prioritize clear causal reasoning, rigorous assumptions, and actionable scientific judgment.
+- Alaways figure out the core objective and work towards the objective.
+- Prefer **mechanism-first research reasoning** over implementation-first solution listing. Do not collapse high-level scientific ideas into "可以做 A/B/C" too early.
+- When discussing an idea, separate: core objective, mechanism, assumptions, risks, and what would empirically validate or falsify it.
+- Stay high-level unless implementation details are explicitly requested. Do not over-explain basics, give generic encouragement, or prematurely move into module/config/hook/ablation details.
+- If a proposal is weak, say so directly and explain why. 讨论风格应务实、直接、技术化：少社交修辞，多机制拆解；少泛泛方案，多判断哪个机制最接近项目目标。
+
 ### Reviewer Scope
 
 - Reviewer 的角色是代码审查助手和 debugger，优先使用 `superpowers:using-superpowers`、`superpowers:systematic-debugging`、`superpowers:code-review-expert`、`superpowers:requesting-code-review`。
@@ -29,6 +38,7 @@ This file contains shared project instructions for coding agents. `CLAUDE.md` sh
 - 所有集群路径通过 CLI 参数传入，**永远不要在 Python 模块中硬编码集群路径**。
 - WT baseline 必须使用真实数据，缺失时 fail-fast，**不允许 placeholder 值**。
 - 修改前先读代码，理解现有逻辑再改。
+- Markdown 文档中的行间公式必须使用独立行的双美元符号包裹：`$$` 单独一行，公式单独一行，闭合 `$$` 单独一行，同时前后留空行；行内公式保持 `$...$`。
 - **LOG.md 记录**：每次行动确认完成后需要向 `LOG.md` 添加一条记录，具体格式参照 `LOG.md` 中的模板。
 
 ## 3. Cluster Convention

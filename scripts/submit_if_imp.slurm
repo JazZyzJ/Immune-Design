@@ -83,6 +83,7 @@ SIDECAR_OUTPUT_DIM="${SIDECAR_OUTPUT_DIM:-512}"
 # Refiner generation overrides
 ARM="${ARM:-}"
 ABLATION_MODE="${ABLATION_MODE:-1}"   # default ON for the if_imp launcher
+GEN_BATCH_SIZE="${GEN_BATCH_SIZE:-8}" # K3-style batched DPLM generate; >1 enables length-bucketed batching
 N_DESIGNS_PER_PROTEIN="${N_DESIGNS_PER_PROTEIN:-1}"
 MAX_ITER="${MAX_ITER:-10}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
@@ -231,6 +232,7 @@ elif [ "${MODE}" = "generate_refiner" ]; then
         --max-iter "${MAX_ITER}" \
         --temperature "${TEMPERATURE}" \
         --device "${DEVICE}" \
+        --batch-size "${GEN_BATCH_SIZE}" \
         --mc-dropout-passes "${MC_DROPOUT_PASSES}" \
         --mask-ratio-center "${MASK_RATIO_CENTER}" \
         --mask-ratio-deviation "${MASK_RATIO_DEVIATION}" \

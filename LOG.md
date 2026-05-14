@@ -2386,3 +2386,78 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `doc/Reference_Flow_Derivation.md` §4.3.1
   - DPLM README inverse-folding evaluation block (line 466-469)
+
+
+### L0081
+- timestamp: 2026-05-11T12:30:00+08:00
+- type: IMPLEMENTATION
+- module: C
+- trigger: User flagged that Phase C + IF_IMP per-protein loops are MUCH slower than K3 (`scripts/validate_if_baseline.py` via DPLM `test.py` predict path) because the K3 path leverages DPLM's native batched generate while our wrappers built B=1 batches per protein. With L0080's bump to `max_iter=100`, this gap is amplified 10×.
+- change_summary: Added length-bucketed batched DPLM sampling to `inverse_folding.reference_flow.runtime` (`prepare_backbone_batch` + `generate_native_sequences_batched`) and wired `--batch-size` into `run_if_phase_c0.py` and `run_if_imp_refiner.py`. Refactored `DPLMRefinerLogitProcessor` / `DPLMBaseEntropyProbe` diagnostics to emit per-row `per_row` records so batched ablation runs preserve per-(protein, design) granularity. SLURM `submit_if_imp.slurm` defaults to `GEN_BATCH_SIZE=8`. Reference-flow `run_if_phase_c1.py` is NOT batched in this commit — its custom denoiser + per-position κ schedule needs a separate batched-aware sampler pass.
+- rationale: DPLM's `forward_encoder`/`forward_decoder` already handle B>1 (training is batched); only our `prepare_backbone` + `generate_native_sequence` wrappers assumed B=1. The cheapest, lowest-risk path is to keep DPLM internals untouched and add parallel batched wrappers that share the same featurizer (`task.alphabet.featurizer`). Length-bucketing (sort sequence_length desc, chunk by batch_size) keeps padded compute near optimum without changing output parquet ordering. Diagnostics had to move from scalar batch-means to per-row records because the ablation Indicators 1-4 require per-design granularity for paired deltas; the IF_IMP runner's `_fanout_per_row` then splits each step's batched record into one step-list per protein in the bucket.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/runtime.py` (new `prepare_backbone_batch`, `generate_native_sequences_batched`)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/logit_processor.py` (per-row diagnostics emission)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/diagnostics.py` (per-row probe diagnostics)
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_phase_c0.py` (`--batch-size`, `_length_buckets`, `generate_rows_for_entries_batched`, `_build_batched_generator`)
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_imp_refiner.py` (`--batch-size`, batched generator with per-row diagnostic fan-out)
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_imp.slurm` (`GEN_BATCH_SIZE=8` default; passes `--batch-size` to runner)
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_if_imp_scripts.py` (3 new tests: length bucket order; batched dispatch by bucket; per-row diagnostic fan-out contract)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_diagnostics.py` (new batched per-row probe test)
+- evidence:
+  - 51/51 relevant tests pass: `PYTHONPATH=inverse_folding/dplm/src pytest tests/inverse_folding/dplm_refiner tests/scripts/test_if_imp_scripts.py tests/scripts/test_run_if_phase_c0_script.py tests/inverse_folding/test_reference_flow_runtime.py`.
+  - `bash -n scripts/submit_if_imp.slurm` clean.
+  - `test_length_buckets_sort_desc_and_chunk` confirms length-desc ordering with stable tie-breaking and chunk sizes ([2,2,1] for 5 proteins / batch_size=2).
+  - `test_generate_rows_for_entries_batched_dispatches_in_buckets` confirms protein ordering inside buckets follows length-desc.
+  - `test_base_entropy_probe_emits_per_row_for_batched_input` confirms B=2 probe call yields two per-row records with row 1 (uniformly sharp) lower mean entropy than row 0 (mostly uniform).
+- impact:
+  - scope: Phase C0 native sampler and IF_IMP runner now run length-bucketed B>1 DPLM generate when `--batch-size > 1`. `run_if_phase_c0.py` default stays `--batch-size 1` (back-compat with existing C0 native runs); `run_if_imp_refiner.py` SLURM default is `GEN_BATCH_SIZE=8`. Reference-flow `run_if_phase_c1.py` not batched in this commit — flagged as L0082 follow-up.
+  - risk: medium — within a bucket, a single torch seed is applied once before the batched generate call; per-design seed determinism within a batch is therefore not bit-equivalent to a sequence of B=1 generations (documented in the function docstring + CLI help). C0 baseline (1 design / protein) is unaffected; only `n_designs_per_protein > 1` in IF_IMP carries this caveat.
+  - confidence: 0.85
+- status: done
+- next_action: On Della, smoke `run_if_phase_c0.py --batch-size 8` against the L0075 fast 500-protein subset and compare wall-time vs `--batch-size 1` to confirm the K3-style speedup. Then re-run the 4 IF_IMP ablation arms with `GEN_BATCH_SIZE=8` and `ABLATION_MODE=1`. Open a follow-up L#### entry if Phase C1 reference-flow batching is needed (deferred because the custom denoiser + per-position κ schedule needs distinct batched-aware sampler plumbing).
+- refs:
+  - L0078
+  - L0080 (max_iter=100 alignment — motivated the batching priority)
+  - `scripts/validate_if_baseline.py` (K3 prediction path that established the batched precedent)
+
+### L0082
+- timestamp: 2026-05-11T20:56:52+08:00
+- type: THEORY_UPDATE
+- module: PHASE_C
+- trigger: User asked how the proposed dynamic recommit mechanism avoids opaque structure/head conflicts, whether repeated recommit converges, whether residue-level control is sufficient without extra smoothing, and whether EMA should be included at the theory level.
+- change_summary: Updated `doc/Reference_Flow_Derivation.md` Task D to make dynamic commit/revisit the preferred adaptive controller, demote external logit steering to a comparator, add a transparent structure-risk commit score, add EMA persistent-risk memory, and state practical convergence gates for revisit policies.
+- rationale: The dynamic controller should not directly choose amino acids like conventional classifier guidance. It should control whether a residue remains editable while leaving amino-acid proposal to the structure-conditioned denoiser. This keeps structure and immune signals visible in one commit score and avoids hiding tradeoffs in opaque objective fusion.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/doc/Reference_Flow_Derivation.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only update; no runtime tests executed.
+- impact:
+  - scope: High-level theory/design framing for optional adaptive Reference Flow controller.
+  - risk: low
+  - confidence: 0.88
+- status: done
+- next_action: When implementation planning starts, translate the commit/revisit framing into explicit controller ablations: generic reparam, risk-aware commit score, EMA on/off, logit-steering comparator, and dynamic scheduler held out as a later extension.
+- refs:
+  - `doc/Reference_Flow_Derivation.md` §4.7-4.9
+
+
+### L0083
+- timestamp: 2026-05-12T18:28:33+08:00
+- type: THEORY_UPDATE
+- module: PHASE_C
+- trigger: User asked to update the Reference Flow proposal with the refined dynamic controller design: late-stage active-block head refresh, hard counterfactual logits guidance, and residue-level recommit, while keeping direct block write-back as a secondary option.
+- change_summary: Reworked `doc/Reference_Flow_Derivation.md` §4.7-4.9 so Task D is now a continuous controller design rather than a fragmented D1-D5 list. The updated proposal defines active blocks from online excess risk, uses hard block counterfactual candidates to produce residue-level immune-aware logit corrections, keeps recommit residue-level with EMA risk memory, and demotes dynamic schedule modulation to a later invasive extension.
+- rationale: The adaptive controller should use the epitope head to provide token-direction information through hard counterfactual risk estimates, not by subtracting a scalar residue risk from all amino-acid logits. Block-level evaluation captures local epitope/window interactions, while residue-level recommit preserves the DPLM-style reparameterized decoding semantics and avoids over-remasking whole regions.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/doc/Reference_Flow_Derivation.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only update; no runtime tests executed.
+- impact:
+  - scope: High-level theory/design framing for optional adaptive Reference Flow controller.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: When implementation planning starts, translate the controller into explicit ablations: hard counterfactual logits only, EMA recommit only, combined controller, direct block write-back comparator, and dynamic scheduler held out as a later extension.
+- refs:
+  - `doc/Reference_Flow_Derivation.md` §4.7-4.9
