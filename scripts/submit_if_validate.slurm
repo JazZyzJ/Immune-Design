@@ -18,6 +18,7 @@ DATA_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design"
 DPLM_ROOT="${PROJECT_ROOT}/inverse_folding/dplm"
 OUTPUT_ROOT="/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding"
 LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/inverse_folding"
+GENERATED_PARQUET="${GENERATED_PARQUET:-}"
 
 # ── FILL IN: checkpoint and experiment paths ──────────────────────────────
 # EXPERIMENT_PATH: the training run directory (contains .hydra/)
@@ -25,7 +26,20 @@ EXPERIMENT_PATH="${OUTPUT_ROOT}/dplm_v1_adapter/seed42_20260319_094244"
 # CKPT_PATH: the best checkpoint file
 CKPT_PATH="${EXPERIMENT_PATH}/checkpoints/best.ckpt"        
 
-mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
+if [[ -n "${GENERATED_PARQUET}" ]]; then
+    GENERATED_INPUT="${GENERATED_PARQUET%/}"
+    if [[ -d "${GENERATED_INPUT}" ]]; then
+        GENERATED_RUN_DIR="${GENERATED_INPUT}"
+    else
+        GENERATED_RUN_DIR="$(dirname "${GENERATED_INPUT}")"
+    fi
+    GENERATED_RUN_NAME="$(basename "${GENERATED_RUN_DIR}")"
+    VALIDATION_OUTPUT_DIR="${VALIDATION_OUTPUT_DIR:-${OUTPUT_ROOT}/if_imp/validation/${GENERATED_RUN_NAME}}"
+else
+    VALIDATION_OUTPUT_DIR="${VALIDATION_OUTPUT_DIR:-${EXPERIMENT_PATH}}"
+fi
+
+mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}" "${VALIDATION_OUTPUT_DIR}"
 
 # ── Environment ───────────────────────────────────────────────────────────
 module purge
@@ -53,6 +67,8 @@ echo "  Data dir     : ${DATA_DIR}"
 echo "  DPLM root    : ${DPLM_ROOT}"
 echo "  Experiment   : ${EXPERIMENT_PATH}"
 echo "  Checkpoint   : ${CKPT_PATH}"
+echo "  Generated in : ${GENERATED_PARQUET:-<run DPLM generation>}"
+echo "  Output dir   : ${VALIDATION_OUTPUT_DIR}"
 echo "  Python       : $(python --version 2>&1)"
 echo "  PyTorch      : $(python -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'not found')"
 echo "  CUDA avail   : $(python -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null || echo 'N/A')"
@@ -63,15 +79,24 @@ echo "============================================================"
 # ── Launch ────────────────────────────────────────────────────────────────
 NUM_GPUS="${SLURM_GPUS_ON_NODE:-1}"
 
-python "${PROJECT_ROOT}/scripts/validate_if_baseline.py" \
-    --dplm-root "${DPLM_ROOT}" \
-    --experiment-path "${EXPERIMENT_PATH}" \
-    --ckpt-path "${CKPT_PATH}" \
-    --experiment "dplm/cond_dplm_650m" \
-    --data-dir "${DATA_DIR}" \
-    --output-dir "${EXPERIMENT_PATH}" \
-    --max-iter 10 \
-    --temperature 1.0 \
-    --num-gpus "${NUM_GPUS}"
+if [[ -n "${GENERATED_PARQUET}" ]]; then
+    python "${PROJECT_ROOT}/scripts/validate_if_baseline.py" \
+        --generated-parquet "${GENERATED_PARQUET}" \
+        --data-dir "${DATA_DIR}" \
+        --output-dir "${VALIDATION_OUTPUT_DIR}" \
+        --temperature 1.0 \
+        --num-gpus "${NUM_GPUS}"
+else
+    python "${PROJECT_ROOT}/scripts/validate_if_baseline.py" \
+        --dplm-root "${DPLM_ROOT}" \
+        --experiment-path "${EXPERIMENT_PATH}" \
+        --ckpt-path "${CKPT_PATH}" \
+        --experiment "dplm/cond_dplm_650m" \
+        --data-dir "${DATA_DIR}" \
+        --output-dir "${VALIDATION_OUTPUT_DIR}" \
+        --max-iter 10 \
+        --temperature 1.0 \
+        --num-gpus "${NUM_GPUS}"
+fi
 
 echo "K3 baseline validation finished."

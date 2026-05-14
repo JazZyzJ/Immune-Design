@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -52,16 +53,28 @@ def parse_args() -> argparse.Namespace:
     )
 
     p.add_argument(
-        "--dplm-root", required=True,
-        help="Path to DPLM repo root (contains test.py)",
+        "--dplm-root",
+        default=None,
+        help="Path to DPLM repo root (contains test.py). Required unless --generated-parquet is set.",
     )
     p.add_argument(
-        "--experiment-path", required=True,
-        help="Path to the training experiment folder (contains .hydra/)",
+        "--experiment-path",
+        default=None,
+        help="Path to the training experiment folder (contains .hydra/). Required for original K3 generation mode.",
     )
     p.add_argument(
-        "--ckpt-path", required=True,
-        help="Path to the checkpoint file (.ckpt) to evaluate",
+        "--ckpt-path",
+        default=None,
+        help="Path to the checkpoint file (.ckpt) to evaluate. Required for original K3 generation mode.",
+    )
+    p.add_argument(
+        "--generated-parquet",
+        default=None,
+        help=(
+            "Existing IF_IMP generated.parquet, or a run directory containing "
+            "generated.parquet. When set, DPLM generation is skipped and only "
+            "ESMFold/self-consistency metrics are computed."
+        ),
     )
     p.add_argument(
         "--data-dir", default=None,
@@ -98,7 +111,25 @@ def parse_args() -> argparse.Namespace:
         help="Print the test command without executing it",
     )
 
-    return p.parse_args()
+    args = p.parse_args()
+
+    if args.generated_parquet:
+        if args.data_dir is None and args.experiment_path is None:
+            p.error("--generated-parquet requires --data-dir or --experiment-path to resolve CATH native backbones")
+    else:
+        missing = [
+            flag
+            for flag, value in (
+                ("--dplm-root", args.dplm_root),
+                ("--experiment-path", args.experiment_path),
+                ("--ckpt-path", args.ckpt_path),
+            )
+            if not value
+        ]
+        if missing:
+            p.error("original K3 generation mode requires " + ", ".join(missing))
+
+    return args
 
 
 def build_test_command(
@@ -197,6 +228,60 @@ def parse_output_fasta(fasta_path: str) -> List[Dict]:
             entry["sequence"] = "".join(current_seq_parts)
             results.append(entry)
 
+    return results
+
+
+def resolve_generated_parquet(path: str) -> str:
+    """Resolve --generated-parquet as either a file or an IF_IMP run dir."""
+    candidate = Path(path).expanduser().resolve()
+    if candidate.is_dir():
+        candidate = candidate / "generated.parquet"
+    if not candidate.is_file():
+        raise FileNotFoundError(f"generated parquet not found: {candidate}")
+    return str(candidate)
+
+
+def load_generated_parquet_results(generated_parquet: str) -> List[Dict]:
+    """Convert IF_IMP generated.parquet rows into validation result dicts."""
+    import pandas as pd
+
+    df = pd.read_parquet(generated_parquet)
+    required = {"protein_id", "sequence"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"{generated_parquet} missing required column(s): {sorted(missing)}"
+        )
+
+    results: List[Dict] = []
+    for _, row in df.iterrows():
+        protein_id = str(row["protein_id"])
+        design_idx = int(row["design_idx"]) if "design_idx" in df.columns else 0
+        sequence = str(row["sequence"])
+        native_sequence = (
+            str(row["native_sequence"])
+            if "native_sequence" in df.columns and not pd.isna(row["native_sequence"])
+            else None
+        )
+        if "aa_recovery" in df.columns and not pd.isna(row["aa_recovery"]):
+            recovery = float(row["aa_recovery"])
+        elif native_sequence is not None and len(native_sequence) == len(sequence):
+            recovery = sum(a == b for a, b in zip(sequence, native_sequence)) / max(
+                len(native_sequence), 1
+            )
+        else:
+            recovery = 0.0
+
+        results.append(
+            {
+                "name": f"{protein_id}__design_{design_idx:04d}",
+                "native_name": protein_id,
+                "design_idx": design_idx,
+                "sequence": sequence,
+                "L": len(sequence),
+                "AAR": float(recovery),
+            }
+        )
     return results
 
 
@@ -315,7 +400,12 @@ def run_self_consistency(
 
     cath_dir = resolve_cath_dir(data_dir, experiment_path)
     references = load_reference_backbones(
-        cath_dir, {r["name"] for r in results if "name" in r}
+        cath_dir,
+        {
+            str(r.get("native_name", r["name"]))
+            for r in results
+            if "name" in r
+        },
     )
 
     print("\nRunning stage-2 self-consistency with ESMFold...")
@@ -329,8 +419,9 @@ def run_self_consistency(
     with torch.no_grad():
         for idx, result in enumerate(results, start=1):
             name = result["name"]
+            ref_name = str(result.get("native_name", name))
             pred_seq = result["sequence"]
-            reference = references[name]
+            reference = references[ref_name]
             ref_coords = reference["coords"]
             ref_mask = reference["mask"]
 
@@ -478,10 +569,29 @@ def compute_validation_summary(
 
 def main() -> int:
     args = parse_args()
-    output_dir = args.output_dir or args.experiment_path
+    generated_parquet = (
+        resolve_generated_parquet(args.generated_parquet)
+        if args.generated_parquet
+        else None
+    )
+    if args.output_dir:
+        output_dir = args.output_dir
+    elif generated_parquet:
+        output_dir = os.path.join(os.path.dirname(generated_parquet), "esmfold_validation")
+    else:
+        output_dir = args.experiment_path
 
     # ── Step 1: Run DPLM generation only ─────────────────────────────────
-    if not args.skip_generation:
+    if generated_parquet:
+        print("=" * 60)
+        print("IF_IMP Generated-Result Validation")
+        print(f"  Generated parquet: {generated_parquet}")
+        print(f"  Output dir       : {output_dir}")
+        print("=" * 60)
+        if args.dry_run:
+            print("[dry-run] Skipping ESMFold validation.")
+            return 0
+    elif not args.skip_generation:
         cmd = build_test_command(args, eval_sc=False)
 
         print("=" * 60)
@@ -508,28 +618,37 @@ def main() -> int:
         print("Skipping generation (--skip-generation).")
 
     # ── Step 2: Parse generated FASTA ─────────────────────────────────────
-    fasta_path = find_output_fasta(
-        args.dplm_root, args.experiment_path, output_dir, args.temperature
-    )
-    if fasta_path is None:
-        print(f"\nERROR: Output FASTA not found. Searched:")
-        print(f"  {args.dplm_root}")
-        print(f"  {args.experiment_path}")
-        print(f"  {output_dir}")
-        print("\nHint: DPLM writes output to the CWD of test.py.")
-        print("Try running with --skip-generation and check the DPLM root directory.")
-        return 1
+    if generated_parquet:
+        print(f"\nParsing IF_IMP generated parquet: {generated_parquet}")
+        results = load_generated_parquet_results(generated_parquet)
+        print(f"  Parsed {len(results)} generated designs")
+    else:
+        fasta_path = find_output_fasta(
+            args.dplm_root, args.experiment_path, output_dir, args.temperature
+        )
+        if fasta_path is None:
+            print(f"\nERROR: Output FASTA not found. Searched:")
+            print(f"  {args.dplm_root}")
+            print(f"  {args.experiment_path}")
+            print(f"  {output_dir}")
+            print("\nHint: DPLM writes output to the CWD of test.py.")
+            print("Try running with --skip-generation and check the DPLM root directory.")
+            return 1
 
-    print(f"\nParsing output FASTA: {fasta_path}")
-    results = parse_output_fasta(fasta_path)
-    print(f"  Parsed {len(results)} protein entries")
+        print(f"\nParsing output FASTA: {fasta_path}")
+        results = parse_output_fasta(fasta_path)
+        print(f"  Parsed {len(results)} protein entries")
 
     if not results:
         print("ERROR: No entries parsed from output FASTA.")
         return 1
 
     # ── Step 3: Run stage-2 self-consistency ──────────────────────────────
-    sc_metrics = run_self_consistency(results, args.data_dir, args.experiment_path)
+    sc_metrics = run_self_consistency(
+        results,
+        args.data_dir,
+        args.experiment_path,
+    )
     results = merge_sc_metrics(results, sc_metrics)
 
     # ── Step 4: Compute validation summary ────────────────────────────────
@@ -538,12 +657,17 @@ def main() -> int:
     )
 
     # Add checkpoint provenance
-    summary["checkpoint"] = os.path.abspath(args.ckpt_path)
-    summary["experiment_path"] = os.path.abspath(args.experiment_path)
+    if args.ckpt_path:
+        summary["checkpoint"] = os.path.abspath(args.ckpt_path)
+    if args.experiment_path:
+        summary["experiment_path"] = os.path.abspath(args.experiment_path)
+    if generated_parquet:
+        summary["generated_parquet"] = generated_parquet
 
     # ── Step 5: Write baseline_validation.json ────────────────────────────
     os.makedirs(output_dir, exist_ok=True)
-    validation_path = os.path.join(output_dir, "baseline_validation.json")
+    validation_name = "if_imp_validation.json" if generated_parquet else "baseline_validation.json"
+    validation_path = os.path.join(output_dir, validation_name)
     with open(validation_path, "w") as f:
         json.dump(summary, f, indent=2)
 
@@ -552,7 +676,7 @@ def main() -> int:
 
     # ── Step 6: Print summary ─────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print("K3 Validation Results")
+    print("IF_IMP Validation Results" if generated_parquet else "K3 Validation Results")
     print("=" * 60)
     agg = summary["aggregate"]
     print(f"  Proteins evaluated:  {summary['n_proteins']}")
@@ -580,7 +704,7 @@ def main() -> int:
         print(f"\n  Structural collapse: {n_fail} proteins with scTM <= {SMOKE_SCTM_THRESHOLD}")
 
     print(f"\nArtifacts written to: {output_dir}")
-    print(f"  baseline_validation.json")
+    print(f"  {validation_name}")
     print(f"  per_protein_metrics.csv")
 
     return 0

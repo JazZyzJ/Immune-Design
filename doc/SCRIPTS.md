@@ -91,12 +91,12 @@ Mutation-based augmentation pipeline for Epitope Head training data.
 Infrastructure and unconditional IF baseline (DPLM v1 + GVP adapter).
 
 1. `scripts/train_if_v1.py` — CLI entry point for DPLM v1 adapter training with local smoke test and cluster support.
-2. `scripts/validate_if_baseline.py` — Generate sequences and measure structural quality (scTM, scRMSD, pLDDT) for K3 baseline validation.
+2. `scripts/validate_if_baseline.py` — Generate sequences and measure structural quality (scTM, scRMSD, pLDDT) for K3 baseline validation. Also supports `--generated-parquet PATH`, where `PATH` may be an IF_IMP run directory or `generated.parquet`; this skips DPLM generation and computes ESMFold/self-consistency metrics directly from existing generated sequences.
 
 ### SLURM
 
 1. `scripts/submit_if_train.slurm` — DPLM v1 adapter training (48hr, 2 GPUs, 64GB).
-2. `scripts/submit_if_validate.slurm` — K3 baseline validation (12hr, 1 GPU, 64GB).
+2. `scripts/submit_if_validate.slurm` — K3 baseline validation (12hr, 1 GPU, 64GB). Set `GENERATED_PARQUET=/path/to/if_imp/run_or_generated.parquet` to validate existing IF_IMP CATH-generation results; outputs default to `run/inverse_folding/if_imp/validation/<run-name>/`.
 
 ---
 
