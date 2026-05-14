@@ -100,6 +100,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mask-ratio-center", type=float, default=0.4)
     parser.add_argument("--mask-ratio-deviation", type=float, default=0.2)
     parser.add_argument("--fusion-temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--apply-steps",
+        choices=("all", "last_2", "final_only"),
+        default="all",
+        help=(
+            "Inference-time refiner gating: 'all' applies every step, "
+            "'last_2' applies only the last two decoder iterations, "
+            "'final_only' applies only the final iteration (step == max_step)."
+        ),
+    )
+    parser.add_argument(
+        "--fusion-mode",
+        choices=("entropy", "residual"),
+        default="entropy",
+        help=(
+            "How to blend base and refiner logits at selected positions. "
+            "'entropy' (default) is MapDiff's entropy-weighted softmax; "
+            "'residual' is (1 - fusion_alpha) * base + fusion_alpha * refiner, "
+            "more conservative when the refiner is overconfident."
+        ),
+    )
+    parser.add_argument(
+        "--fusion-alpha",
+        type=float,
+        default=0.25,
+        help="Residual-fusion coefficient in [0, 1]; only used when --fusion-mode residual.",
+    )
     parser.add_argument("--limit-proteins", type=int, default=None)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--progress-every", type=int, default=25)
@@ -128,6 +155,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--mask-ratio-center + --mask-ratio-deviation must be <= 1")
     if args.fusion_temperature <= 0.0:
         parser.error("--fusion-temperature must be positive")
+    if not (0.0 <= args.fusion_alpha <= 1.0):
+        parser.error("--fusion-alpha must be in [0, 1]")
     if args.progress_every < 0:
         parser.error("--progress-every must be non-negative")
     if args.limit_proteins is not None and args.limit_proteins <= 0:
@@ -350,6 +379,9 @@ def _maybe_build_logit_processor(
         mask_ratio_deviation=float(args.mask_ratio_deviation),
         fusion_temperature=float(args.fusion_temperature),
         mc_dropout_passes=int(args.mc_dropout_passes),
+        apply_steps=str(args.apply_steps),
+        fusion_mode=str(args.fusion_mode),
+        fusion_alpha=float(args.fusion_alpha),
     )
     cli_config.validate()
     processor = DPLMRefinerLogitProcessor(
@@ -688,6 +720,9 @@ def _build_generator(
                 "mask_ratio_deviation": float(args.mask_ratio_deviation),
                 "fusion_temperature": float(args.fusion_temperature),
                 "mc_dropout_passes": int(args.mc_dropout_passes),
+                "apply_steps": str(args.apply_steps),
+                "fusion_mode": str(args.fusion_mode),
+                "fusion_alpha": float(args.fusion_alpha),
             }
         )
     if sidecar_attached:
@@ -734,6 +769,9 @@ def print_resolved_hyperparams(
         "mask_ratio_center": args.mask_ratio_center,
         "mask_ratio_deviation": args.mask_ratio_deviation,
         "fusion_temperature": args.fusion_temperature,
+        "apply_steps": args.apply_steps,
+        "fusion_mode": args.fusion_mode,
+        "fusion_alpha": args.fusion_alpha,
         "tag": args.tag,
         **{f"refiner_meta__{k}": v for k, v in refiner_meta.items()},
     }

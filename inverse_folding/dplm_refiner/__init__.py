@@ -28,6 +28,9 @@ from inverse_folding.dplm_refiner.checkpoint import (
     save_refiner_checkpoint,
     save_sidecar_checkpoint,
 )
+from inverse_folding.dplm_refiner.diagnostic_probe import (
+    DPLMArmDiagnosticProcessor,
+)
 from inverse_folding.dplm_refiner.diagnostics import DPLMBaseEntropyProbe
 from inverse_folding.dplm_refiner.encoder_wrapper import SidecarAttachedEncoder
 from inverse_folding.dplm_refiner.ipa.refiner import DPLMIPARefiner
@@ -41,6 +44,7 @@ __all__ = [
     "CB_BOND_LENGTH",
     "CB_DIHEDRAL",
     "CB_PLANAR_ANGLE",
+    "DPLMArmDiagnosticProcessor",
     "DPLMBaseEntropyProbe",
     "DPLMGeometrySidecar",
     "DPLMIPARefiner",

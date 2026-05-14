@@ -20,14 +20,20 @@ from typing import Any
 
 import torch
 
-from inverse_folding.dplm_refiner.config import DPLMRefinerConfig
+from inverse_folding.dplm_refiner.config import (
+    DPLMRefinerConfig,
+    should_apply_refiner,
+)
 from inverse_folding.dplm_refiner.entropy import (
     enable_dropout_modules,
     mapdiff_entropy_from_log_probs,
     select_entropy_mask,
     sine_mask_ratio,
 )
-from inverse_folding.dplm_refiner.fusion import fuse_logits_by_entropy
+from inverse_folding.dplm_refiner.fusion import (
+    fuse_logits_by_entropy,
+    residual_fuse_logits,
+)
 from inverse_folding.dplm_refiner.geometry import dplm_coords_to_ipa_positions
 from inverse_folding.dplm_refiner.tokens import DPLMTokenBridge
 
@@ -78,6 +84,54 @@ class DPLMRefinerLogitProcessor:
         match = tokens.unsqueeze(-1) == ids.view(*([1] * tokens.dim()), -1)
         return match.any(dim=-1)
 
+    def _emit_gated_diagnostics(
+        self,
+        *,
+        step: int,
+        max_step: int,
+        seq_mask: torch.Tensor,
+        entropy: torch.Tensor,
+    ) -> None:
+        """Emit a probe-only-shaped per-row record on a gated step.
+
+        Mirrors ``DPLMBaseEntropyProbe`` row schema so downstream sinks
+        see a uniform shape across active / gated steps.
+        """
+        if self.diagnostics_sink is None:
+            return
+        per_row = []
+        B = int(seq_mask.shape[0])
+        for b in range(B):
+            row_mask = seq_mask[b]
+            row_count = int(row_mask.sum().item())
+            safe_count = max(row_count, 1)
+            base_m = float(
+                (entropy[b] * row_mask.float()).sum().item() / safe_count
+            )
+            base_q90 = (
+                float(entropy[b, row_mask].quantile(0.9).item())
+                if row_count > 0
+                else float("nan")
+            )
+            per_row.append(
+                {
+                    "row_idx": b,
+                    "n_residues": row_count,
+                    "n_selected": None,
+                    "base_entropy_mean": base_m,
+                    "fused_entropy_mean": None,
+                    "refiner_entropy_mean": None,
+                    "base_entropy_q90": base_q90,
+                    "fused_entropy_q90": None,
+                    "mask_ratio": None,
+                    "probe_only": True,
+                    "gated": True,
+                }
+            )
+        self.diagnostics_sink(
+            {"step": int(step), "max_step": int(max_step), "per_row": per_row}
+        )
+
     def __call__(
         self,
         *,
@@ -113,6 +167,15 @@ class DPLMRefinerLogitProcessor:
         base_aa_logits = self.bridge.to_aa_logits(logits)  # [B, L, 20]
         base_log_probs = torch.log_softmax(base_aa_logits, dim=-1)
         entropy = mapdiff_entropy_from_log_probs(base_log_probs)  # [B, L]
+
+        # Inference-time gating: if this step is gated off, skip the
+        # refiner forward / fusion entirely and emit a probe-only-shape
+        # diagnostic record so downstream sinks see uniform coverage.
+        if not should_apply_refiner(int(step), int(max_step), self.config.apply_steps):
+            self._emit_gated_diagnostics(
+                step=step, max_step=max_step, seq_mask=seq_mask, entropy=entropy
+            )
+            return logits
 
         B = logits.shape[0]
         beta_t_bar = torch.full(
@@ -161,15 +224,27 @@ class DPLMRefinerLogitProcessor:
         assert refiner_logits_sum is not None
         refiner_aa_logits = refiner_logits_sum / float(passes)
 
-        # Refiner-vs-base entropy fusion only over selected & valid
-        # positions; elsewhere keep base logits untouched.
+        # Fusion only over selected & valid positions; elsewhere keep
+        # base logits untouched. ``fusion_mode="entropy"`` is the
+        # MapDiff-style entropy-weighted fusion; ``"residual"`` is the
+        # conservative ``(1 - alpha) * base + alpha * refiner`` mix
+        # used by the refiner sweep when entropy fusion gives an
+        # overconfident refiner too much weight.
         fusion_mask = selected & seq_mask
-        fused_aa_logits = fuse_logits_by_entropy(
-            base_aa_logits,
-            refiner_aa_logits,
-            valid_mask=fusion_mask,
-            temperature=self.config.fusion_temperature,
-        )
+        if self.config.fusion_mode == "residual":
+            fused_aa_logits = residual_fuse_logits(
+                base_aa_logits,
+                refiner_aa_logits,
+                valid_mask=fusion_mask,
+                alpha=self.config.fusion_alpha,
+            )
+        else:
+            fused_aa_logits = fuse_logits_by_entropy(
+                base_aa_logits,
+                refiner_aa_logits,
+                valid_mask=fusion_mask,
+                temperature=self.config.fusion_temperature,
+            )
 
         # Scatter back to DPLM vocab; special tokens get re-banned to -inf.
         out = self.bridge.scatter_aa_logits(

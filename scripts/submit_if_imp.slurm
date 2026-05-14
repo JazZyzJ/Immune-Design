@@ -18,7 +18,7 @@ set -euo pipefail
 export PS1
 
 # ── Mode selection ────────────────────────────────────────────────────────
-MODE="${MODE:-generate_refiner}"   # train_refiner | train_sidecar | generate_refiner | compare_ablation
+MODE="${MODE:-generate_refiner}"   # train_refiner | train_sidecar | generate_refiner | compare_ablation | diag_arms
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
@@ -62,6 +62,7 @@ case "${MODE}" in
     train_sidecar)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/sidecar_train" ;;
     generate_refiner) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${INPUT_SOURCE}/${ARM:-baseline}" ;;
     compare_ablation) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/compare" ;;
+    diag_arms)        OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/diag" ;;
     *) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${MODE}" ;;
 esac
 OUTPUT_ROOT="${OUTPUT_ROOT:-${OUTPUT_ROOT_DEFAULT}}"
@@ -95,6 +96,9 @@ MC_DROPOUT_PASSES="${MC_DROPOUT_PASSES:-1}"
 MASK_RATIO_CENTER="${MASK_RATIO_CENTER:-0.4}"
 MASK_RATIO_DEVIATION="${MASK_RATIO_DEVIATION:-0.2}"
 FUSION_TEMPERATURE="${FUSION_TEMPERATURE:-1.0}"
+APPLY_STEPS="${APPLY_STEPS:-all}"               # all | last_2 | final_only
+FUSION_MODE="${FUSION_MODE:-entropy}"           # entropy | residual
+FUSION_ALPHA="${FUSION_ALPHA:-0.25}"             # only used when FUSION_MODE=residual
 LIMIT_PROTEINS="${LIMIT_PROTEINS:-}"
 CATH_SPLIT="${CATH_SPLIT:-test}"
 CATH_MAX_LENGTH="${CATH_MAX_LENGTH:-500}"
@@ -107,6 +111,13 @@ SIDECAR_RUN="${SIDECAR_RUN:-}"
 COMBINED_RUN="${COMBINED_RUN:-}"
 ALLOW_UNPAIRED="${ALLOW_UNPAIRED:-0}"
 OVERWRITE="${OVERWRITE:-}"
+
+# Diagnostic-arms mode overrides (MODE=diag_arms)
+DIAG_N_PROTEINS="${DIAG_N_PROTEINS:-200}"
+DIAG_ARMS="${DIAG_ARMS:-baseline sidecar refiner sidecar_refiner}"
+DIAG_EMIT_PER_POSITION="${DIAG_EMIT_PER_POSITION:-0}"
+DIAG_RUN_ID="${DIAG_RUN_ID:-}"
+DIAG_PROGRESS_EVERY="${DIAG_PROGRESS_EVERY:-10}"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -260,9 +271,44 @@ elif [ "${MODE}" = "generate_refiner" ]; then
         --mask-ratio-center "${MASK_RATIO_CENTER}" \
         --mask-ratio-deviation "${MASK_RATIO_DEVIATION}" \
         --fusion-temperature "${FUSION_TEMPERATURE}" \
+        --apply-steps "${APPLY_STEPS}" \
+        --fusion-mode "${FUSION_MODE}" \
+        --fusion-alpha "${FUSION_ALPHA}" \
         --tag "${TAG}" \
         "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
         "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
+elif [ "${MODE}" = "diag_arms" ]; then
+    : "${CHECKPOINT:?set CHECKPOINT for diag_arms}"
+    : "${CATH_ROOT:?set CATH_ROOT for diag_arms}"
+    EXTRA_FLAGS=()
+    [[ -n "${REFINER_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--refiner-checkpoint "${REFINER_CHECKPOINT}")
+    [[ -n "${SIDECAR_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--sidecar-checkpoint "${SIDECAR_CHECKPOINT}")
+    [[ -n "${DIAG_RUN_ID}" ]]        && EXTRA_FLAGS+=(--run-id "${DIAG_RUN_ID}")
+    [[ -n "${OVERWRITE}" ]]          && EXTRA_FLAGS+=(--overwrite)
+    [[ "${DIAG_EMIT_PER_POSITION}" = "1" ]] && EXTRA_FLAGS+=(--emit-per-position)
+    # shellcheck disable=SC2086  # we WANT DIAG_ARMS to word-split
+    python -u "${PROJECT_ROOT}/scripts/diag_if_imp_arms.py" \
+        --checkpoint "${CHECKPOINT}" \
+        --cath-root "${CATH_ROOT}" \
+        --cath-split "${CATH_SPLIT}" \
+        --cath-max-length "${CATH_MAX_LENGTH}" \
+        --cath-min-resolved-ratio "${CATH_MIN_RESOLVED_RATIO}" \
+        --n-proteins "${DIAG_N_PROTEINS}" \
+        --seed "${SEED}" \
+        --max-iter "${MAX_ITER}" \
+        --temperature "${TEMPERATURE}" \
+        --mc-dropout-passes "${MC_DROPOUT_PASSES}" \
+        --mask-ratio-center "${MASK_RATIO_CENTER}" \
+        --mask-ratio-deviation "${MASK_RATIO_DEVIATION}" \
+        --fusion-temperature "${FUSION_TEMPERATURE}" \
+        --apply-steps "${APPLY_STEPS}" \
+        --fusion-mode "${FUSION_MODE}" \
+        --fusion-alpha "${FUSION_ALPHA}" \
+        --device "${DEVICE}" \
+        --arms ${DIAG_ARMS} \
+        --progress-every "${DIAG_PROGRESS_EVERY}" \
+        --output-dir "${OUTPUT_ROOT}" \
+        "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
 elif [ "${MODE}" = "compare_ablation" ]; then
     EXTRA_FLAGS=()
     [[ -n "${BASELINE_RUN}" ]] && EXTRA_FLAGS+=(--baseline-run "${BASELINE_RUN}")
@@ -275,7 +321,7 @@ elif [ "${MODE}" = "compare_ablation" ]; then
         --output-dir "${OUTPUT_ROOT}" \
         "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
 else
-    echo "ERROR: unknown MODE='${MODE}' (expected train_refiner|train_sidecar|generate_refiner|compare_ablation)" >&2
+    echo "ERROR: unknown MODE='${MODE}' (expected train_refiner|train_sidecar|generate_refiner|compare_ablation|diag_arms)" >&2
     exit 2
 fi
 
