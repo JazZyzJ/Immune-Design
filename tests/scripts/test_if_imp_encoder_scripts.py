@@ -51,6 +51,10 @@ def test_train_if_imp_encoder_help_lists_key_flags():
         "--ipa-hidden-dim",
         "--update-coors",
         "--use-updated-coord-bias",
+        "--val-batch-size",
+        "--val-eval-every-epochs",
+        "--pretrain-aux-only-epochs",
+        "--pretrain-target",
     ):
         assert flag in result.stdout, f"missing flag {flag}"
 
@@ -276,3 +280,102 @@ def test_run_if_imp_refiner_calls_maybe_replace_encoder():
     text = (ROOT / "scripts/run_if_imp_refiner.py").read_text()
     assert "_maybe_replace_encoder" in text
     assert "load_geo_encoder_checkpoint" in text
+
+
+def test_train_step_bypasses_task_model_forward_and_uses_native_target():
+    """PLAN_IF_ENCODER.md Task E7 source-level guards.
+
+    The training step must:
+    1. NOT route through ``task.model(...)`` with
+       ``output_encoder_logits=True`` — that path rewrites the
+       diffusion input from native to encoder.argmax.
+    2. Call ``decoder.compute_loss(..., tokens=None, ...)`` so the
+       returned target AND the internal ``x_t`` / ``loss_mask`` derive
+       from native tokens.
+    3. Compute aux CE on ``seq_mask`` / ``encoder_attention_mask`` —
+       NOT on ``loss_mask`` (the diffusion-masked subset).
+    """
+    text = (ROOT / "scripts/train_if_imp_encoder.py").read_text()
+
+    # Locate train_step body specifically (excludes train_step_aux_only).
+    train_step_marker = "def train_step(\n"
+    aux_only_marker = "def train_step_aux_only("
+    assert train_step_marker in text
+    start = text.index(train_step_marker)
+    end = text.index(aux_only_marker)
+    body = text[start:end]
+
+    # Drop the docstring before checking — it intentionally explains
+    # the old broken pattern and mentions ``output_encoder_logits=True``.
+    code_only = body.split('"""', 2)[-1]
+
+    # The forbidden CALL pattern (not docstring mention) is going
+    # through ``task.model(...)`` rather than ``task.model.encoder(...)``.
+    assert "task.model(" not in code_only.replace(
+        "task.model.encoder(", ""
+    ).replace("task.model.decoder", ""), (
+        "train_step still routes through task.model(...) — PLAN E7 "
+        "requires bypassing forward"
+    )
+    assert "output_encoder_logits=True" not in code_only, (
+        "train_step's code body still references output_encoder_logits "
+        "(only the docstring may mention it explaining the old bug)"
+    )
+    assert "task.model.encoder(" in code_only, (
+        "train_step must call task.model.encoder(...) directly"
+    )
+    assert "tokens=None" in code_only, (
+        "decoder.compute_loss must be called with tokens=None to keep "
+        "the diffusion target/input on native batch[\"tokens\"]"
+    )
+    assert "compute_loss(" in code_only
+    # Aux CE must be derived from the encoder's seq_mask, not loss_mask.
+    assert "_aux_loss_and_recovery" in code_only
+    assert "seq_mask = encoder_out[\"encoder_attention_mask\"]" in code_only
+
+
+def test_aux_loss_helper_uses_seq_mask_not_loss_mask():
+    """The aux-loss helper that both train_step and train_step_aux_only
+    delegate to must compute CE over seq_mask, not loss_mask."""
+    text = (ROOT / "scripts/train_if_imp_encoder.py").read_text()
+    helper = "_aux_loss_and_recovery"
+    assert helper in text
+    start = text.index(f"def {helper}(")
+    # End at the next top-level def.
+    end = text.index("\n\ndef ", start + len(helper))
+    helper_body = text[start:end]
+    assert "encoder_logits[seq_mask]" in helper_body
+    assert "native_tokens[seq_mask]" in helper_body
+    assert "loss_mask" not in helper_body, (
+        "_aux_loss_and_recovery must NOT reference loss_mask — that "
+        "would re-introduce the sparse-supervision bug PLAN E7 fixes"
+    )
+
+
+def test_train_step_aux_only_does_not_call_decoder():
+    """The pre-stage aux-only step must not invoke the DPLM decoder
+    (decoder stays frozen during pretrain)."""
+    text = (ROOT / "scripts/train_if_imp_encoder.py").read_text()
+    aux_only_marker = "def train_step_aux_only("
+    val_marker = "def val_step("
+    assert aux_only_marker in text
+    start = text.index(aux_only_marker)
+    end = text.index(val_marker)
+    body = text[start:end]
+    assert "compute_loss(" not in body, (
+        "train_step_aux_only must not invoke decoder.compute_loss"
+    )
+    assert "task.model.decoder" not in body, (
+        "train_step_aux_only must not touch task.model.decoder"
+    )
+
+
+def test_main_loop_writes_encoder_best_and_runs_val_step():
+    """Main loop must save encoder_best.pt on val improvement and
+    call val_step at the configured cadence."""
+    text = (ROOT / "scripts/train_if_imp_encoder.py").read_text()
+    assert "encoder_best.pt" in text
+    assert "val_step(" in text
+    # The pretrain early-exit on --pretrain-target must be present.
+    assert "pretrain_target" in text
+    assert "pretrain early-exit" in text.lower() or "pretrain-target" in text

@@ -343,3 +343,191 @@ This plan is complete when:
 - Keep all new graph code torch-native. Replace MapDiff's SciPy `cdist` usage with `torch.cdist`.
 - Keep `use_draft_seq=true` support because current DPLM configs rely on encoder draft initialization.
 - If torch-geometric is unavailable in the active environment, fail fast with an actionable message naming the missing package and the command/environment where it is expected.
+
+---
+
+## Task E7: Training-Loop Self-Distillation Fix (post-L0091)
+
+**Goal:** Fix the encoder training loop so main DPLM CE and aux draft CE both supervise against native `batch["tokens"]`, not the encoder's own argmax. Single-stage joint training with reinit; no pre-training stage.
+
+### Why this exists
+
+The L0091 GeoEGNN-IPA training run achieved `final_recovery=0.39` / `draft_init_recovery=0.31`, both below the frozen-GVP baseline (≈0.43 draft). Accurate root-cause trace (verified against `dplm_adapter.py:122-171`):
+
+1. `inverse_folding/dplm/src/byprot/models/dplm/dplm_invfold.py:131-137` — `task.model.forward(..., output_encoder_logits=True)` passes `tokens=init_pred` (where `init_pred = encoder_logits.argmax(-1)`) into `decoder.compute_loss`.
+2. `dplm_adapter.py:131` — `compute_loss` sets local `target = batch["tokens"] if tokens is None else tokens`. With step 1 the local `target` becomes `init_pred`.
+3. `dplm_adapter.py:142-152` — `q_sample_coupled(target=init_pred, ...)` builds `x_t` (the noised input the decoder sees) and `loss_mask` from `init_pred`, NOT from native. So the decoder is trained on partially-masked **encoder predictions**, and `loss_mask` is derived via `get_non_special_sym_mask(init_pred, ...)` — early in training, if `init_pred` predicts a special-token id at a residue position, that position is silently excluded from the loss.
+4. `dplm_adapter.py:171` — function returns `(logits, batch["tokens"].repeat(2,1), loss_mask, weight)`. The RETURNED target IS native. So both main CE and aux CE in `train_step` see native labels, but only on the sparse `loss_mask` subset (k of L positions per protein).
+
+Net effect — NOT pure self-distillation, but two distinct pathologies:
+
+- **Diffusion input pollution**: decoder is trained to denoise from a `x_t` derived from bad `init_pred`, not from native. Train/inference distribution mismatch + risk of `loss_mask` corruption when `init_pred` lands on special-token ids.
+- **Sparse encoder supervision**: aux CE only supervises encoder draft head on the diffusion-masked subset (~k positions). The encoder never sees native labels on the other L-k residues, so the draft head can't learn the full structure-to-sequence mapping fast enough.
+
+Why K's frozen-GVP "worked" with the same code path: GVP is `freeze=True` and its 0.43 baseline comes from ESM-IF pretraining. The pre-trained encoder produces good `init_pred` from step 0, so the diffusion-input pollution becomes "decoder denoises from a slightly noised but correct draft" — basically benign. Our random-init GeoEGNN-IPA produces garbage `init_pred` early on, and the same pipeline keeps feeding garbage back to itself.
+
+### Design — single-stage joint training (primary path)
+
+The two pathologies above both go away once we (a) call `decoder.compute_loss(..., tokens=None, ...)` so `x_t` and `loss_mask` are derived from native, and (b) compute aux CE on every valid residue rather than the diffusion-masked subset. So a single-stage joint training run with these two fixes is the primary path.
+
+- **Main DPLM CE:** call `decoder.compute_loss(..., tokens=None, ...)` so `target = batch["tokens"]` AND `x_t` / `loss_mask` are also derived from native. Never pass `init_pred` as `tokens=`.
+- **Aux encoder draft CE:** native target on ALL valid residues (`seq_mask = coord_mask & ~special_sym_mask`, already returned as `encoder_out["encoder_attention_mask"]`). Not the diffusion-masked subset.
+- **Reinit encoder.** L0091 weights inherited an EGNN/IPA representation shaped under the polluted x_t + sparse-aux regime; warm-starting requires un-learning that drift first. Reinit is cleaner and avoids confounded comparisons.
+- **`lambda_aux=1.0` default** (raise from current 0.15). Both losses are mean-reduced per-position; aux carrying full-residue density is the dense gradient signal we need to bootstrap native-AA capability.
+
+### Fallback path — aux-only pre-stage (if primary fails)
+
+If after running the primary path `val/draft_recovery` still ≤ 0.40, the bottleneck is most likely **encoder bootstrap speed** rather than EGNN/IPA capacity. The right next step is an aux-only pre-stage, NOT immediately bumping architecture size:
+
+- Add CLI flag `--pretrain-aux-only-epochs N` (default `0` = primary path; user opts into the fallback).
+- During the pre-stage (first N epochs): trainable = encoder shared trunk + draft_head; frozen = adapter + DPLM backbone; loss = `aux_loss` only (no decoder forward, no main CE).
+- After N epochs OR when `val/draft_recovery >= --pretrain-target` (default 0.30): unfreeze adapter, switch to the joint loss above.
+
+This is left as an opt-in fallback because the primary path's analysis says it should be sufficient. If we have to fall back, the pre-stage's outcome itself becomes a diagnostic — see acceptance signals.
+
+### Acceptance signals
+
+| Observation | Diagnosis | Next action |
+|---|---|---|
+| `val/draft_recovery` ≥ 0.40 within primary-path budget | Encoder learning native AA; main mechanism works | Proceed to E6 ablation matrix |
+| `val/draft_recovery` stuck at 0.30–0.40 in primary path | Encoder bootstrap too slow under joint signal | Switch to fallback: `--pretrain-aux-only-epochs 3` then resume joint |
+| Fallback pre-stage stuck at ≈ 0.35 | EGNN+IPA capacity / graph feature insufficient | Inspect `train/feats_std`; consider bumping EGNN depth or hidden dim |
+| `val/draft_recovery` ≥ 0.40 but generation final ≤ 0.40 | Adapter / cross-attention integration is the bottleneck | Drop `lambda_aux` to 0.25–0.5; or revisit adapter shape (last-4 gated) |
+| Both draft and final ≥ 0.45 in generation | Main mechanism works | Proceed to ablation matrix |
+| `train/feats_std` shrinks toward 0 | Feats collapsing — norm / fusion issue | Check `_CoorsNorm` scale; consider `norm_coors=False` |
+
+### Files
+
+- Modify: `scripts/train_if_imp_encoder.py`
+- Modify: `tests/scripts/test_if_imp_encoder_scripts.py`
+- No changes to encoder package / SLURM / `dplm_invfold.py` — all plumbing from E0–E5 is already in place.
+
+### Implementation rules (Step 1: rewrite `train_step`)
+
+- [ ] Bypass `task.model.forward()` entirely. The new path:
+
+  ```python
+  encoder_logits, encoder_out = task.model.encoder(fwd_batch, output_logits=True)
+  seq_mask = encoder_out["encoder_attention_mask"].bool()
+
+  # Aux: native CE on ALL valid residues.
+  aux_loss = F.cross_entropy(encoder_logits[seq_mask], native[seq_mask])
+
+  # Main: native target via tokens=None.
+  encoder_out_for_dec = dict(encoder_out)
+  encoder_out_for_dec["feats"] = encoder_out["feats"].repeat(2, 1, 1)
+  encoder_out_for_dec["encoder_attention_mask"] = seq_mask.repeat(2, 1)
+  logits, target, loss_mask, weight = task.model.decoder.compute_loss(
+      batch=fwd_batch, weighting="linear",
+      encoder_out=encoder_out_for_dec, tokens=None,
+  )
+  per_pos = F.cross_entropy(logits[loss_mask], target[loss_mask], reduction="none")
+  main_loss = (per_pos * weight[loss_mask]).sum() / weight[loss_mask].sum().clamp(min=1)
+
+  loss = main_loss + lambda_aux * aux_loss
+  ```
+
+- [ ] `seq_mask` is read from `encoder_out["encoder_attention_mask"]` (the encoder already builds it as `coord_mask & ~special_sym_mask` — no recomputation needed).
+- [ ] Do NOT pass `init_pred` as `tokens=` to `compute_loss`. `tokens=None` ensures BOTH (a) `target = batch["tokens"]` AND (b) `x_t` / `loss_mask` are derived from native (fixes the diffusion-input pollution).
+- [ ] Reinit encoder weights for this run; do not load L0091 `encoder_last.pt`.
+- [ ] Lambda_aux default 1.0; CLI `--lambda-aux` already exists, just bump default.
+- [ ] Wire `--pretrain-aux-only-epochs N` (default `0`) and `--pretrain-target T` (default `0.30`). When `N > 0`, run a separate `train_step_aux_only` for the first N epochs (or until val_draft_recovery >= T, whichever comes first), then switch to the joint `train_step`. This keeps the fallback one CLI flag away without changing the default behavior of the primary path.
+
+### Diagnostics (Step 2)
+
+- [ ] Per `--log-every` step (train):
+  - `train/draft_recovery = (encoder_logits.argmax(-1) == native)[seq_mask].float().mean()`
+  - `train/main_loss`, `train/aux_loss`
+  - `train/feats_std = encoder_out["feats"][seq_mask].std()` — collapse sentinel
+
+- [ ] Per `--val-eval-every-epochs` (val, default 1):
+  - Fixed held-out CATH `validation` split batch (first `--val-batch-size` proteins, deterministic order, no shuffle)
+  - `val/draft_recovery` — same metric as train, on val batch
+  - Save `encoder_best.pt` (via existing `save_geo_encoder_checkpoint(decoder=...)`) whenever `val/draft_recovery` strictly improves
+
+- [ ] CLI: add `--val-batch-size` (default 8) and `--val-eval-every-epochs` (default 1).
+- [ ] All metrics flow through the existing `log_metrics(...)` call (writes both `metrics.jsonl` and wandb).
+
+### Non-goals (deliberately out of scope)
+
+- Warm-start from L0091 checkpoint (it inherits polluted-x_t drift).
+- Scheduling `lambda_aux` (mid-run curriculum / ramp).
+- Changing encoder / IPA architecture — this task is **purely the loss fix**.
+
+Note: an aux-only pre-stage is **NOT** a non-goal; it is the documented fallback above. The primary path is single-stage, but `--pretrain-aux-only-epochs N` is wired in from the start so we can flip to the fallback without re-coding if needed.
+
+### Verification
+
+- [ ] Source-level guards (cheap, no PyG needed) in `tests/scripts/test_if_imp_encoder_scripts.py`:
+  - `train_step` no longer calls `task.model(...)` with `output_encoder_logits=True`.
+  - `decoder.compute_loss(..., tokens=None, ...)` is present.
+  - Aux CE uses `seq_mask` / `encoder_attention_mask`, not `loss_mask`.
+  - `--val-batch-size`, `--val-eval-every-epochs`, `--pretrain-aux-only-epochs` flags exposed.
+
+- [ ] **Behavior test** in `tests/inverse_folding/dplm_refiner/test_train_step_contract.py`. Source-level grep alone is too weak — an implementer could pass the grep but still pick the wrong mask. Construct a fake encoder + fake decoder where `loss_mask` and `seq_mask` are demonstrably different, then assert the loss math uses the correct one:
+
+  ```python
+  class _FakeEncoder:
+      def __call__(self, batch, output_logits=False, **kw):
+          B, L = batch["coords"].shape[:2]
+          # seq_mask covers 4 of 6 positions (all valid residues).
+          seq_mask = torch.zeros(B, L, dtype=torch.bool)
+          seq_mask[:, :4] = True
+          encoder_out = {"feats": torch.zeros(B, L, 16),
+                         "encoder_attention_mask": seq_mask,
+                         "coord_mask": batch["coord_mask"]}
+          if output_logits:
+              return torch.zeros(B, L, 33), encoder_out
+          return encoder_out
+
+  class _FakeDecoder:
+      compute_loss_calls = []
+      def compute_loss(self, **kwargs):
+          self.compute_loss_calls.append(kwargs)
+          # Return loss_mask covering only 1 position — strictly narrower than seq_mask.
+          target = kwargs["batch"]["tokens"].repeat(2, 1)
+          loss_mask = torch.zeros_like(target, dtype=torch.bool)
+          loss_mask[:, 0] = True
+          return (torch.zeros(*target.shape, 33), target,
+                  loss_mask, torch.ones_like(target, dtype=torch.float))
+
+  def test_train_step_aux_uses_seq_mask_not_loss_mask_and_decoder_gets_native_target():
+      task = _build_fake_task(_FakeEncoder(), _FakeDecoder())
+      batch = _build_synthetic_batch(B=1, L=6, n_valid=4)
+      _ = train_step(task=task, optimizer=..., batch=batch, ...)
+
+      # 1. decoder.compute_loss was called with tokens=None
+      assert _FakeDecoder.compute_loss_calls[-1]["tokens"] is None
+
+      # 2. aux loss was averaged over 4 positions (seq_mask), not 1 (loss_mask)
+      # Probe via captured aux gradient or a counter inside fake encoder.
+      # Concrete: aux's CE input size should equal seq_mask.sum() == 4.
+      ...
+  ```
+
+  This test must FAIL on any implementation that uses `target[loss_mask]` (or any subset of `loss_mask`) for aux, even if the source-level grep passes.
+
+- [ ] 2-batch CPU smoke:
+
+  ```bash
+  LIMIT_BATCHES=4 ENCODER_EPOCHS=2 DEVICE=cpu MODE=train_encoder \
+    ENCODER_LAMBDA_AUX=1.0 sbatch scripts/submit_if_imp.slurm
+  ```
+  Expected: `train/draft_recovery` ≥ 0.10 within 4 batches (vs ≈0.05 random baseline); `aux_loss` strictly decreasing.
+
+- [ ] Full GPU run (~10 epoch budget):
+
+  ```bash
+  MODE=train_encoder ENCODER_EPOCHS=10 ENCODER_LAMBDA_AUX=1.0 \
+    sbatch scripts/submit_if_imp.slurm
+  ```
+  Acceptance: `val/draft_recovery` ≥ 0.40 by end. If not, classify via the readout table above.
+
+### LOG.md entry after verification
+
+Append `L00XX` with:
+- type: VERIFICATION
+- module: IF_ENCODER
+- before/after draft + final recovery numbers
+- which acceptance-signals row matched
+- next action per that row
