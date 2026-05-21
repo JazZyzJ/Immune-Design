@@ -3,7 +3,7 @@ pytorch_lightning==2.2.0
 lightning==2.2.0
 torchmetrics
 torch_geometric
-# torch_scatter
+torch_scatter  # required by GeoEGNN-IPA encoder (see PLAN_IF_ENCODER.md Task E2)
 # torchtext==0.17.0  # deprecated since PyTorch 2.5, unused by DPLM
 
 # --------- hydra --------- #

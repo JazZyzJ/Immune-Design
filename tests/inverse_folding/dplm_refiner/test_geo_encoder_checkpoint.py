@@ -375,19 +375,26 @@ def test_checkpoint_adapter_shape_mismatch_fails_fast_by_default(tmp_path):
     # Fake decoder with a realistic ESM-like structure: net.esm.encoder
     # .layer is a ModuleList of layers, where some are "AdapterLayer"
     # (class name matching is how the guard introspects).
+    #
+    # NB: parameters must be ``adapter_*``-prefixed because
+    # ``_filter_adapter_state`` only saves keys containing ``adapter`` —
+    # an earlier draft of this test used ``self.dummy`` and the saved
+    # adapter state came out empty, masking the very mismatch we want
+    # to assert.
     class _AdapterLayer(nn.Module):
         adapter_gated = False
 
         def __init__(self):
             super().__init__()
-            self.dummy = nn.Linear(2, 2)
+            self.adapter_proj = nn.Linear(2, 2)
 
     class _GatedAdapterLayer(nn.Module):
         adapter_gated = True
 
         def __init__(self):
             super().__init__()
-            self.dummy = nn.Linear(2, 2)
+            self.adapter_proj = nn.Linear(2, 2)
+            self.adapter_gate = nn.Parameter(torch.zeros(1))
 
     # IMPORTANT: __name__ must literally be "AdapterLayer" to match the
     # checkpoint guard's class-name introspection.

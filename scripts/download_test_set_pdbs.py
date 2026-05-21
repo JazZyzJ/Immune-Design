@@ -38,10 +38,15 @@ import pandas as pd
 
 RCSB_PDB_URL = "https://files.rcsb.org/download/{}.pdb"
 RCSB_CIF_URL = "https://files.rcsb.org/download/{}.cif"
+AFDB_PDB_URL = "https://alphafold.ebi.ac.uk/files/AF-{}-F1-model_v6.pdb"
+AFDB_CIF_URL = "https://alphafold.ebi.ac.uk/files/AF-{}-F1-model_v6.cif"
 
 # PDB chain ID pattern: 4 alphanumeric (first char digit) + _ + 1-3 char chain
 # e.g., 1ABC_A, 7H9K_A, 6T8S_AAA
 _PDB_ID_RE = re.compile(r"^[0-9][A-Za-z0-9]{3}_[A-Za-z0-9]{1,3}$")
+
+# UniProt accession (with optional version suffix, e.g. "A0PJX4.1"). Strip version.
+_UNIPROT_RE = re.compile(r"^[A-NR-Z][0-9][A-Z0-9]{3}[0-9](?:\.\d+)?$|^[OPQ][0-9][A-Z0-9]{3}[0-9](?:\.\d+)?$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,6 +87,12 @@ def parse_args() -> argparse.Namespace:
         help="Structure file format to download (default: pdb).",
     )
     p.add_argument(
+        "--source", choices=["rcsb", "afdb"], default="rcsb",
+        help="Structure source: 'rcsb' (RCSB experimental, requires PDB-chain "
+             "protein_id like '1ABC_A') or 'afdb' (AlphaFold DB, requires "
+             "UniProt accession protein_id like 'A0A0C4DH25'). Default: rcsb.",
+    )
+    p.add_argument(
         "--workers", type=int, default=4,
         help="Number of parallel download threads (default: 4).",
     )
@@ -112,6 +123,12 @@ def is_pdb_chain_id(protein_id: str) -> bool:
 def extract_pdb_code(protein_id: str) -> str:
     """Extract 4-char PDB code from protein_id (e.g., '1ABC_A' → '1ABC')."""
     return protein_id.split("_")[0].upper()
+
+
+def strip_uniprot_version(protein_id: str) -> str:
+    """'A0PJX4.1' → 'A0PJX4'. UniProt accessions in IEDB sometimes carry a
+    version suffix; AFDB URLs only accept the bare accession."""
+    return protein_id.split(".")[0]
 
 
 def _normalize_json_records(payload: object, records_key: str | None) -> list[dict]:
@@ -178,13 +195,24 @@ def download_one_pdb(
     cache_dir: str,
     fmt: str,
     max_retries: int,
+    source: str = "rcsb",
 ) -> tuple[str, str | None]:
-    """Download a single PDB file to cache_dir.
+    """Download a single structure file to cache_dir.
+
+    For source='rcsb', `pdb_code` is the 4-char PDB code (lower-cased in URL).
+    For source='afdb', `pdb_code` is a UniProt accession with version suffix
+    already stripped (e.g. 'A0A0C4DH25').
 
     Returns (pdb_code, error_message_or_None).
     """
-    url_template = RCSB_PDB_URL if fmt == "pdb" else RCSB_CIF_URL
-    url = url_template.format(pdb_code.lower())
+    if source == "rcsb":
+        url_template = RCSB_PDB_URL if fmt == "pdb" else RCSB_CIF_URL
+        url = url_template.format(pdb_code.lower())
+    elif source == "afdb":
+        url_template = AFDB_PDB_URL if fmt == "pdb" else AFDB_CIF_URL
+        url = url_template.format(pdb_code)  # UniProt accession is case-sensitive
+    else:
+        return pdb_code, f"unknown source: {source}"
     dest = os.path.join(cache_dir, f"{pdb_code}.{fmt}")
 
     if os.path.isfile(dest) and os.path.getsize(dest) > 0:
@@ -226,23 +254,39 @@ def main() -> int:
 
     all_protein_ids = df["protein_id"].unique().tolist()
 
-    # Separate PDB-format IDs from non-PDB (e.g., UniProt accessions for Tier 3)
-    pdb_protein_ids = [pid for pid in all_protein_ids if is_pdb_chain_id(pid)]
-    non_pdb_ids = [pid for pid in all_protein_ids if not is_pdb_chain_id(pid)]
+    if args.source == "afdb":
+        # AFDB mode: every protein_id is treated as a UniProt accession.
+        # Strip optional ".v" version suffix; URL keys are bare accessions.
+        # No PDB-code-based deduplication (1 UniProt = 1 download).
+        pdb_protein_ids = list(all_protein_ids)
+        non_pdb_ids: list[str] = []
+        pdb_codes = sorted({strip_uniprot_version(pid) for pid in pdb_protein_ids})
+        code_to_pids: dict[str, list[str]] = {}
+        for pid in pdb_protein_ids:
+            code = strip_uniprot_version(pid)
+            code_to_pids.setdefault(code, []).append(pid)
+    else:
+        # RCSB mode: separate PDB-format IDs from non-PDB
+        pdb_protein_ids = [pid for pid in all_protein_ids if is_pdb_chain_id(pid)]
+        non_pdb_ids = [pid for pid in all_protein_ids if not is_pdb_chain_id(pid)]
 
-    pdb_codes = sorted(set(extract_pdb_code(pid) for pid in pdb_protein_ids))
+        pdb_codes = sorted(set(extract_pdb_code(pid) for pid in pdb_protein_ids))
 
-    # Map PDB code → list of protein_ids that need it
-    code_to_pids: dict[str, list[str]] = {}
-    for pid in pdb_protein_ids:
-        code = extract_pdb_code(pid)
-        code_to_pids.setdefault(code, []).append(pid)
+        # Map PDB code → list of protein_ids that need it
+        code_to_pids = {}
+        for pid in pdb_protein_ids:
+            code = extract_pdb_code(pid)
+            code_to_pids.setdefault(code, []).append(pid)
 
     # ── Check what already exists ────────────────────────────────────────
     fmt = args.format
     os.makedirs(args.output_dir, exist_ok=True)
     cache_dir = os.path.join(args.output_dir, ".pdb_cache")
     os.makedirs(cache_dir, exist_ok=True)
+
+    code_extractor = (
+        strip_uniprot_version if args.source == "afdb" else extract_pdb_code
+    )
 
     if args.skip_existing:
         already_done = set()
@@ -252,7 +296,7 @@ def main() -> int:
                 already_done.add(pid)
         remaining_pids = [p for p in pdb_protein_ids if p not in already_done]
         remaining_codes = sorted(set(
-            extract_pdb_code(pid) for pid in remaining_pids
+            code_extractor(pid) for pid in remaining_pids
         ))
     else:
         already_done = set()
@@ -273,6 +317,7 @@ def main() -> int:
     print("=" * 60)
     print("B1: Download PDB Structures for IF Test Set")
     print(f"  Input          : {input_path}")
+    print(f"  Source         : {args.source}")
     print(f"  Format         : {fmt}")
     print(f"  Output dir     : {args.output_dir}")
     print(f"  Workers        : {args.workers}")
@@ -322,7 +367,7 @@ def main() -> int:
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(
-                download_one_pdb, code, cache_dir, fmt, args.max_retries,
+                download_one_pdb, code, cache_dir, fmt, args.max_retries, args.source,
             ): code
             for code in remaining_codes
         }
@@ -344,7 +389,7 @@ def main() -> int:
     link_failures = []
 
     for pid in remaining_pids:
-        code = extract_pdb_code(pid)
+        code = code_extractor(pid)
         src = os.path.join(cache_dir, f"{code}.{fmt}")
         dest = os.path.join(args.output_dir, f"{pid}.{fmt}")
 

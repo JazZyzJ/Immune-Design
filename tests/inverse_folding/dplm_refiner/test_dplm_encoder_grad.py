@@ -51,13 +51,27 @@ class _FakeEncoder(nn.Module):
 
 class _FakeDecoder(nn.Module):
     """Mimics ``DPLMWithConditionalAdatper.compute_loss`` just enough to
-    propagate ``encoder_out["feats"]`` into the returned logits."""
+    propagate ``encoder_out["feats"]`` into the returned logits.
+
+    ``dummy`` is a trainable leaf so backward has at least one
+    grad-bearing path even when ``encoder_out["feats"]`` arrives
+    detached — without it, the whole loss graph is grad-free under
+    ``detach=True`` and ``loss.backward()`` raises ``RuntimeError:
+    element 0 of tensors does not require grad``. The encoder-gradient
+    contract is still tested correctly: with detach=True the encoder
+    params receive None / zero grad (gradient flows only through the
+    decoder dummy).
+    """
 
     pad_id = 0
     mask_id = 1
     bos_id = 2
     eos_id = 3
     x_id = 4
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.zeros(1))
 
     def compute_loss(
         self,
@@ -68,7 +82,10 @@ class _FakeDecoder(nn.Module):
         return_outputs,
     ):
         feats = encoder_out["feats"]  # [2B, L, H]; possibly detached
-        logits = feats.sum(dim=-1, keepdim=True).expand(-1, -1, 33).clone()
+        logits = (
+            feats.sum(dim=-1, keepdim=True).expand(-1, -1, 33).clone()
+            + self.dummy
+        )
         target = batch["tokens"].repeat(2, 1)
         loss_mask = torch.ones_like(target, dtype=torch.bool)
         weight = torch.ones_like(target, dtype=torch.float)

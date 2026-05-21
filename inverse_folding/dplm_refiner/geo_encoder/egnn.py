@@ -330,6 +330,26 @@ class EGNNSparseLayer(MessagePassing):
     def message(self, x_i, x_j, edge_attr):  # type: ignore[override]
         return self.message_mlp(torch.cat([x_i, x_j, edge_attr], dim=-1))
 
+    @staticmethod
+    def _inspector_collect(inspector, name, coll_dict):
+        """PyG compatibility shim.
+
+        PyG 2.5+ renamed ``Inspector.distribute`` to
+        ``collect_param_data``; some 2.3-era checkouts also exposed
+        ``collect``. Try the modern name first, then fall back so this
+        layer works across the cluster's pinned PyG version and any
+        future bumps.
+        """
+        for method_name in ("collect_param_data", "distribute", "collect"):
+            method = getattr(inspector, method_name, None)
+            if method is not None:
+                return method(name, coll_dict)
+        raise AttributeError(
+            "torch_geometric.Inspector exposes none of "
+            "{collect_param_data, distribute, collect}; PyG version is "
+            "incompatible with EGNNSparseLayer.propagate"
+        )
+
     def propagate(self, edge_index, size=None, **kwargs):  # type: ignore[override]
         try:
             size = self._check_input(edge_index, size)
@@ -340,9 +360,15 @@ class EGNNSparseLayer(MessagePassing):
                 self.__user_args__, edge_index, size, kwargs
             )
 
-        msg_kwargs = self.inspector.distribute("message", coll_dict)
-        aggr_kwargs = self.inspector.distribute("aggregate", coll_dict)
-        update_kwargs = self.inspector.distribute("update", coll_dict)
+        msg_kwargs = self._inspector_collect(
+            self.inspector, "message", coll_dict
+        )
+        aggr_kwargs = self._inspector_collect(
+            self.inspector, "aggregate", coll_dict
+        )
+        update_kwargs = self._inspector_collect(
+            self.inspector, "update", coll_dict
+        )
 
         m_ij = self.message(**msg_kwargs)
 
