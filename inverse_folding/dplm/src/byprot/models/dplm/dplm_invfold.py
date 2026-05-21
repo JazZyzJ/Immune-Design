@@ -34,6 +34,7 @@ class DPLMInvFoldConfig:
     encoder: GVPTransEncoderConfig = field(default_factory=GVPTransEncoderConfig)
     decoder: DPLMWithAdapterConfig = field(default_factory=DPLMWithAdapterConfig)
     init_pred_where: bool = True
+    detach_encoder_feats: bool = True
 
 
 @register_model("dplm_invfold")
@@ -115,9 +116,18 @@ class DPLMInvFold(nn.Module):
         else:
             encoder_out = self.encoder(batch, output_logits=False, **kwargs)
 
-        encoder_out["feats"] = encoder_out["feats"].repeat(2, 1, 1).detach()
+        repeated_feats = encoder_out["feats"].repeat(2, 1, 1)
+        if getattr(self.cfg, "detach_encoder_feats", True):
+            repeated_feats = repeated_feats.detach()
+        encoder_out["feats"] = repeated_feats
 
-        encoder_out["encoder_attention_mask"] = batch["tokens"].ne(self.pad_id)
+        # Preserve an encoder-supplied attention mask if present (e.g.
+        # GeoEGNN-IPA emits a strict valid-residue mask). Only fall back
+        # to ``tokens.ne(pad_id)`` when the encoder doesn't set one
+        # (legacy GVP path). The 2x repeat lines up with the coupled
+        # diffusion targets.
+        if "encoder_attention_mask" not in encoder_out:
+            encoder_out["encoder_attention_mask"] = batch["tokens"].ne(self.pad_id)
         encoder_out["encoder_attention_mask"] = encoder_out[
             "encoder_attention_mask"
         ].repeat(2, 1)
@@ -162,12 +172,17 @@ class DPLMInvFold(nn.Module):
             encoder_out = self.encoder(
                 batch, return_feats=True, output_logits=False
             )
+        if "coord_mask" not in encoder_out:
             encoder_out["coord_mask"] = batch["coord_mask"]
-        encoder_out["encoder_attention_mask"] = (
-            batch["motif_mask"]
-            if "motif_mask" in batch
-            else batch["prev_tokens"].ne(self.pad_id)
-        )
+        # Preserve encoder-supplied attention mask if any (GeoEGNN-IPA
+        # provides a strict residue mask). Motif mode and the legacy
+        # GVP path fall through to the per-position non-pad fallback.
+        if "encoder_attention_mask" not in encoder_out:
+            encoder_out["encoder_attention_mask"] = (
+                batch["motif_mask"]
+                if "motif_mask" in batch
+                else batch["prev_tokens"].ne(self.pad_id)
+            )
         return encoder_out
 
     def get_non_special_sym_mask(self, output_tokens, partial_masks=None):

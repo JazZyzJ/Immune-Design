@@ -18,7 +18,7 @@ set -euo pipefail
 export PS1
 
 # ── Mode selection ────────────────────────────────────────────────────────
-MODE="${MODE:-generate_refiner}"   # train_refiner | train_sidecar | generate_refiner | compare_ablation | diag_arms
+MODE="${MODE:-generate_refiner}"   # train_refiner | train_sidecar | generate_refiner | compare_ablation | diag_arms | train_encoder | generate_encoder | diag_encoder
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
 DEVICE="${DEVICE:-cuda}"
 SEED="${SEED:-42}"
@@ -60,12 +60,30 @@ SIDECAR_CHECKPOINT="${SIDECAR_CHECKPOINT:-}"
 case "${MODE}" in
     train_refiner)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/refiner_train" ;;
     train_sidecar)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/sidecar_train" ;;
+    train_encoder)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/encoder_train" ;;
     generate_refiner) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${INPUT_SOURCE}/${ARM:-baseline}" ;;
+    generate_encoder) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${INPUT_SOURCE}/encoder" ;;
     compare_ablation) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/compare" ;;
     diag_arms)        OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/diag" ;;
+    diag_encoder)     OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/diag_encoder" ;;
     *) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${MODE}" ;;
 esac
 OUTPUT_ROOT="${OUTPUT_ROOT:-${OUTPUT_ROOT_DEFAULT}}"
+
+# Encoder-mode overrides (MODE=train_encoder | generate_encoder | diag_encoder)
+ENCODER_CHECKPOINT="${ENCODER_CHECKPOINT:-}"
+ENCODER_KIND="${ENCODER_KIND:-geoegnn_ipa}"          # geoegnn_ipa | gvp (default for legacy)
+ENCODER_BATCH_SIZE="${ENCODER_BATCH_SIZE:-2}"
+ENCODER_EPOCHS="${ENCODER_EPOCHS:-5}"
+ENCODER_LR="${ENCODER_LR:-1e-4}"
+ENCODER_D_MODEL="${ENCODER_D_MODEL:-512}"
+ENCODER_EGNN_DEPTH="${ENCODER_EGNN_DEPTH:-3}"
+ENCODER_EGNN_HIDDEN_DIM="${ENCODER_EGNN_HIDDEN_DIM:-128}"
+ENCODER_IPA_DEPTH="${ENCODER_IPA_DEPTH:-6}"
+ENCODER_IPA_HIDDEN_DIM="${ENCODER_IPA_HIDDEN_DIM:-128}"
+ENCODER_LAMBDA_AUX="${ENCODER_LAMBDA_AUX:-1.0}"
+ENCODER_UPDATE_COORS="${ENCODER_UPDATE_COORS:-0}"     # 1 enables --update-coors
+ENCODER_USE_UPDATED_BIAS="${ENCODER_USE_UPDATED_BIAS:-0}"
 
 # Refiner training overrides
 SPLIT="${SPLIT:-train}"
@@ -320,8 +338,79 @@ elif [ "${MODE}" = "compare_ablation" ]; then
     python -u "${PROJECT_ROOT}/scripts/compare_if_imp_ablation.py" \
         --output-dir "${OUTPUT_ROOT}" \
         "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
+elif [ "${MODE}" = "train_encoder" ]; then
+    : "${CHECKPOINT:?set CHECKPOINT for train_encoder}"
+    : "${CATH_ROOT:?set CATH_ROOT for train_encoder}"
+    EXTRA_FLAGS=()
+    [[ -n "${LIMIT_BATCHES}" ]] && EXTRA_FLAGS+=(--limit-batches "${LIMIT_BATCHES}")
+    [[ "${ENCODER_UPDATE_COORS}" = "1" ]] && EXTRA_FLAGS+=(--update-coors)
+    [[ "${ENCODER_USE_UPDATED_BIAS}" = "1" ]] && EXTRA_FLAGS+=(--use-updated-coord-bias)
+    python -u "${PROJECT_ROOT}/scripts/train_if_imp_encoder.py" \
+        --cath-root "${CATH_ROOT}" \
+        --checkpoint "${CHECKPOINT}" \
+        --output-dir "${OUTPUT_ROOT}" \
+        --split "${SPLIT}" \
+        --max-length "${MAX_LENGTH}" \
+        --batch-size "${ENCODER_BATCH_SIZE}" \
+        --epochs "${ENCODER_EPOCHS}" \
+        --lr "${ENCODER_LR}" \
+        --device "${DEVICE}" \
+        --seed "${SEED}" \
+        --num-workers "${NUM_WORKERS}" \
+        --lambda-aux "${ENCODER_LAMBDA_AUX}" \
+        --d-model "${ENCODER_D_MODEL}" \
+        --egnn-depth "${ENCODER_EGNN_DEPTH}" \
+        --egnn-hidden-dim "${ENCODER_EGNN_HIDDEN_DIM}" \
+        --ipa-depth "${ENCODER_IPA_DEPTH}" \
+        --ipa-hidden-dim "${ENCODER_IPA_HIDDEN_DIM}" \
+        "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
+elif [ "${MODE}" = "generate_encoder" ]; then
+    : "${CHECKPOINT:?set CHECKPOINT for generate_encoder}"
+    : "${ENCODER_CHECKPOINT:?set ENCODER_CHECKPOINT for generate_encoder}"
+    # Reuse the refiner runner with the new --encoder-checkpoint flag.
+    EXTRA_FLAGS=()
+    [[ -n "${REFINER_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--refiner-checkpoint "${REFINER_CHECKPOINT}")
+    [[ -n "${SIDECAR_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--sidecar-checkpoint "${SIDECAR_CHECKPOINT}")
+    [[ -n "${LIMIT_PROTEINS}" ]]    && EXTRA_FLAGS+=(--limit-proteins "${LIMIT_PROTEINS}")
+    python -u "${PROJECT_ROOT}/scripts/run_if_imp_refiner.py" \
+        --checkpoint "${CHECKPOINT}" \
+        --encoder-checkpoint "${ENCODER_CHECKPOINT}" \
+        --encoder-kind "${ENCODER_KIND}" \
+        --input-source "${INPUT_SOURCE}" \
+        --test-set-parquet "${TEST_SET_PARQUET}" \
+        --pdb-root "${PDB_ROOT}" \
+        --cath-root "${CATH_ROOT}" \
+        --cath-split "${CATH_SPLIT}" \
+        --allele "${ALLELE}" \
+        --output-root "${OUTPUT_ROOT}" \
+        --seed "${SEED}" \
+        --max-iter "${MAX_ITER}" \
+        --device "${DEVICE}" \
+        "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
+elif [ "${MODE}" = "diag_encoder" ]; then
+    : "${CHECKPOINT:?set CHECKPOINT for diag_encoder}"
+    : "${CATH_ROOT:?set CATH_ROOT for diag_encoder}"
+    : "${ENCODER_CHECKPOINT:?set ENCODER_CHECKPOINT for diag_encoder}"
+    EXTRA_FLAGS=()
+    [[ -n "${REFINER_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--refiner-checkpoint "${REFINER_CHECKPOINT}")
+    [[ -n "${SIDECAR_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--sidecar-checkpoint "${SIDECAR_CHECKPOINT}")
+    [[ "${DIAG_EMIT_PER_POSITION}" = "1" ]] && EXTRA_FLAGS+=(--emit-per-position)
+    # shellcheck disable=SC2086
+    python -u "${PROJECT_ROOT}/scripts/diag_if_imp_arms.py" \
+        --checkpoint "${CHECKPOINT}" \
+        --encoder-checkpoint "${ENCODER_CHECKPOINT}" \
+        --encoder-kind "${ENCODER_KIND}" \
+        --cath-root "${CATH_ROOT}" \
+        --cath-split "${CATH_SPLIT}" \
+        --n-proteins "${DIAG_N_PROTEINS}" \
+        --seed "${SEED}" \
+        --max-iter "${MAX_ITER}" \
+        --device "${DEVICE}" \
+        --arms ${DIAG_ARMS} \
+        --output-dir "${OUTPUT_ROOT}" \
+        "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
 else
-    echo "ERROR: unknown MODE='${MODE}' (expected train_refiner|train_sidecar|generate_refiner|compare_ablation|diag_arms)" >&2
+    echo "ERROR: unknown MODE='${MODE}' (expected train_refiner|train_sidecar|train_encoder|generate_refiner|generate_encoder|compare_ablation|diag_arms|diag_encoder)" >&2
     exit 2
 fi
 

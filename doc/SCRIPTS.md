@@ -176,6 +176,18 @@ MapDiff-grounded DPLM inverse-folding improvement path: IPA refiner + IPA geomet
 
 ---
 
+## Inverse Folding -- IF Encoder Replacement (PLAN_IF_ENCODER.md)
+
+GeoEGNN-IPA structure encoder that replaces DPLM-IF's frozen GVP encoder. The encoder builds a per-protein backbone kNN graph, runs sparse EGNN message passing (PyG `MessagePassing`), and refines residue hidden states with dense IPA over the original `N/CA/C` rigid frames. DPLM weights stay frozen; trainable parameters are the new encoder + draft head + configured adapter layers. Default behavior of all upstream scripts is unchanged unless `--encoder-kind=geoegnn_ipa` is set.
+
+1. `scripts/train_if_imp_encoder.py` -- Train the GeoEGNN-IPA encoder + adapter parameters on CATH backbones. Loads DPLM via `load_if_task`, swaps `task.model.encoder` for a fresh `GeoEGNNIPAEncoder`, sets `cfg.detach_encoder_feats=False`, freezes everything in DPLM that's not adapter-named, and optimizes `diff_loss + lambda_aux * encoder_loss`. Saves `encoder_last.pt` (via `save_geo_encoder_checkpoint`), `run_config.yaml`, `metrics.jsonl`, `manifest.json`. Knobs include `--egnn-depth`, `--egnn-hidden-dim`, `--ipa-depth`, `--ipa-hidden-dim`, `--update-coors`, `--use-updated-coord-bias`, `--lambda-aux`.
+
+### SLURM
+
+1. `scripts/submit_if_imp.slurm` (extended) -- Three new modes: `MODE=train_encoder` runs `train_if_imp_encoder.py` (env: `ENCODER_BATCH_SIZE`, `ENCODER_EPOCHS`, `ENCODER_LR`, `ENCODER_D_MODEL`, `ENCODER_EGNN_DEPTH`, `ENCODER_EGNN_HIDDEN_DIM`, `ENCODER_IPA_DEPTH`, `ENCODER_IPA_HIDDEN_DIM`, `ENCODER_LAMBDA_AUX`, `ENCODER_UPDATE_COORS`, `ENCODER_USE_UPDATED_BIAS`). `MODE=generate_encoder` calls `run_if_imp_refiner.py` with `--encoder-kind=geoegnn_ipa --encoder-checkpoint=$ENCODER_CHECKPOINT` to generate using the trained encoder. `MODE=diag_encoder` calls `diag_if_imp_arms.py` with the same encoder swap so the 4-arm paired diagnostic compares the new encoder against baseline/refiner/sidecar.
+
+---
+
 ## Inverse Folding — Module M: Classifier Guidance (PLAN_IF.md)
 
 Inference-time epitope-aware steering with eta sweep.

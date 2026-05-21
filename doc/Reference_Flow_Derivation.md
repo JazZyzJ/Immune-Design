@@ -545,19 +545,59 @@ control. Early in reverse time, $\bar{x}_t$ is mostly a local completion heurist
 may lie far from the sequence manifold seen by the epitope head. Later, local windows are
 more self-consistent and the head becomes more meaningful.
 
-Define excess online risk relative to the static prior:
+Define the window-level risk of the head as $r_W(x_W)$ for each peptide/window $W$.
+For any window set $\Omega$, the default local head objective is log-mean-exp
+aggregation of window risks:
 
 $$
-e_i(t) =
-\mathrm{ReLU}\!\big(h_i^{\mathrm{dyn}}(t) - h_i^{(0)} - \tau\big).
+R_{H,\mathrm{LME}}^\Omega(x) = \tau_R \log\!\left( \frac{1}{|\Omega|} \sum_{W \in \Omega} \exp\!\big(r_W(x_W) / \tau_R\big) \right),
 $$
 
-An **active block** is a contiguous high-risk region discovered from $e_i(t)$ at a
-refresh step, for example a connected component of residues with $e_i(t)>0$ after
-applying practical caps such as top-$B$ blocks, maximum block length, or local completion
-reliability. Because $h_i^{\mathrm{dyn}}$ is already derived from window-level epitope
-evidence, active blocks are an evaluation scope rather than an additional smoothing
-model.
+with temperature $\tau_R > 0$. This is the smooth-max approximation that recovers
+$\max_W r_W$ as $\tau_R \to 0$ and the arithmetic mean as $\tau_R \to \infty$. The
+natural default $\tau_R = 1$ matches the convention already used to project window
+scores to the residue-level field $h_i$ (log-sum-exp minus $\log|\Omega|$), so the
+static prior and the dynamic counterfactual share aggregation semantics.
+
+A comparator ablation is hard max:
+
+$$
+R_{H,\max}^\Omega(x) = \max_{W \in \Omega} r_W(x_W).
+$$
+
+The window score $r_W$ must use a single fixed scale across all uses of the head
+within one experiment (e.g., raw logit or z-score, but not both). $\beta_t$ in §D2
+absorbs the absolute scale, but mixing scales within a single run would break that
+absorption and make $\Delta R_B$ values incomparable across refreshes.
+
+The residue-level field $h_i$ is a projection of these window scores and is useful
+for diagnostics and scheduling, but active block boundaries should be anchored to the
+head's window **receptive field** rather than cut directly by a residue threshold.
+
+Define excess online window risk relative to the static prior:
+
+$$
+d_W(t) =
+\mathrm{ReLU}\!\big(r_W^{\mathrm{dyn}}(t) - r_W^{(0)} - \tau_W\big).
+$$
+
+An **active block** is the residue union of active windows, followed by connected
+component merging:
+
+$$
+B = \bigcup_{W\in\mathcal{W}_{\mathrm{active}}} W.
+$$
+
+Here $\mathcal{W}_{\mathrm{active}}$ can be selected by $d_W(t)>0$, by top-$N$ window
+excess risk, or by a capped hybrid of both. Thus $\tau_W$ gates whether a window is
+active; it is not the tool that cuts biological block boundaries. If only residue-level
+$h_i$ is available, the safer approximation is to detect risk peaks and expand them back
+to the head receptive-field width, rather than taking arbitrary connected components of
+$h_i>\tau$.
+
+Let $\Omega(B)$ be the set of head windows used to score block $B$. Active blocks whose
+$\Omega(B)$ overlap should be merged before counterfactual scoring, so that separate
+block updates do not independently modify shared epitope windows.
 
 #### D2. Preferred logit layer: hard counterfactual active-block update
 
@@ -567,9 +607,13 @@ sequence is risky, but it does not say which amino acid should replace it. Logit
 requires a token-conditional counterfactual risk.
 
 For an active block $B$, select a small editable subset $A_B \subseteq B$, such as the
-top-$M$ residues by excess risk, high entropy, or low structural confidence. For each
-$i\in A_B$, restrict candidate amino acids to the top-$K$ tokens under the current
-structure logits. Construct a finite set of hard block candidates
+top-$M$ residues by excess window responsibility, editability, or low current commitment.
+For each $i\in A_B$, choose a candidate token support $\mathcal{K}_i$. The default
+**structure-conservative** mode uses the top-$K$ amino acids under the current structure
+logits. A later **risk-exploratory** mode may broaden $\mathcal{K}_i$, but it must keep a
+fixed candidate budget or restrict $|A_B|$ so that block enumeration does not explode.
+
+Construct a finite set of hard block candidates
 $\mathcal{A}_B=\{a_B^{(1)},\ldots,a_B^{(K_B)}\}$ by sampling or enumerating from this
 restricted set. The controller does **not** enumerate all positions and all 20 amino
 acids across the full sequence.
@@ -578,44 +622,102 @@ For each hard candidate, evaluate the head on the resulting completed sequence:
 
 $$
 \Delta R_B(a_B) =
-R_H\!\big(C(\bar{x}_t; x_B=a_B)\big) - R_H(\bar{x}_t).
+R_H^{\Omega(B)}\!\big(C(\bar{x}_t; x_B=a_B)\big)
+- R_H^{\Omega(B)}(\bar{x}_t).
 $$
 
 Here $C(\bar{x}_t; x_B=a_B)$ means replacing the chosen block positions in the temporary
-completion by $a_B$ while leaving the rest of $\bar{x}_t$ unchanged. A structure-aware
-candidate score is then
+completion by $a_B$ while leaving the rest of $\bar{x}_t$ unchanged. Define the structural
+proposal over the finite candidate set as
 
 $$
-J_B(a_B) =
-\sum_{i\in A_B} \log p_{\theta}^{\mathrm{struct}}(a_i \mid x_t,S,t)
-- \beta_t \Delta R_B(a_B).
+Q_B(a_B) \propto
+\prod_{i\in A_B} p_{\theta}^{\mathrm{struct}}(a_i \mid x_t,S,t),
+\qquad a_B\in\mathcal{A}_B.
 $$
 
-The preferred use is to project the block-level scores back to residue-level token
-preferences:
+The immune-reweighted local target is
 
 $$
-w_B(a_B) \propto \exp(J_B(a_B)/T_B),
+\pi_B(a_B) \propto Q_B(a_B)\exp(-\beta_t \Delta R_B(a_B)).
 $$
 
+This is a block-level reweighted proposal, similar in spirit to a local MCMC or
+importance-reweighting move. The preferred use is not to hard-accept a block candidate,
+but to project the reweighted block proposal back to residue-level token marginals:
+
 $$
-q_{B,i}^{\mathrm{imm}}(a) =
-\sum_{a_B\in\mathcal{A}_B} w_B(a_B)\,\mathbf{1}[a_i=a],
+\pi_{B,i}(a) =
+\sum_{a_B\in\mathcal{A}_B} \pi_B(a_B)\,\mathbf{1}[a_i=a],
+\qquad
+Q_{B,i}(a) =
+\sum_{a_B\in\mathcal{A}_B} Q_B(a_B)\,\mathbf{1}[a_i=a].
 $$
 
-and apply a local logit correction for $i\in A_B$:
+To avoid double-counting structural likelihood, the logit correction should use a
+posterior/proposal ratio:
 
 $$
 \tilde{\ell}_i(a,t) =
 \ell_i^{\mathrm{struct}}(a,t)
-+ \eta_t \rho_B(t)\log\!\big(q_{B,i}^{\mathrm{imm}}(a)+\epsilon\big).
++ \eta_t \rho_B(t)
+\left[
+\log\!\big(\pi_{B,i}(a)+\epsilon\big)
+- \log\!\big(Q_{B,i}(a)+\epsilon\big)
+\right],
+\qquad a\in\mathcal{K}_i.
 $$
+
+For tokens outside the candidate support, or tokens with no empirical support when
+$\mathcal{A}_B$ is sampled, the default is no correction:
+
+$$
+\tilde{\ell}_i(a,t)=\ell_i^{\mathrm{struct}}(a,t),
+\qquad a\notin\mathcal{K}_i.
+$$
+
+If $\beta_t=0$, then $\pi_B=Q_B$ and the correction is zero. This is the desired null:
+without immune information, the controller does not perturb the structural denoiser.
 
 $\ell_i^{\mathrm{struct}}$ may already include DPLM plus a structure refiner. The immune
 term is added after the structural logits are formed, so the head supplies a local
-energy correction rather than replacing the structure-conditioned model. $\rho_B(t)$ is
-a reliability gate based on late time, local completion, and/or local entropy. In early
-or unreliable states $\rho_B(t)$ should be near zero.
+energy correction rather than replacing the structure-conditioned model.
+
+A default reliability gate should be multiplicative:
+
+$$
+\rho_B(t)=g_{\mathrm{time}}(t)\,
+g_{\mathrm{comp}}(B,t)\,
+g_{\mathrm{ent}}(B,t)\,
+g_{\mathrm{ESS}}(B,t),
+$$
+
+with each factor in $[0,1]$. A typical baseline is
+
+$$
+g_{\mathrm{time}}(t)=\sigma(k_t(t-t_{\mathrm{start}})),\quad
+g_{\mathrm{comp}}(B,t)=\mathrm{frac\_resolved}(B),\quad
+g_{\mathrm{ent}}(B,t)=\exp(-\bar{H}_{\mathrm{struct}}(B)/H_0).
+$$
+
+The entropy sign is intentional. In the logit layer, low structural entropy means the
+structural proposal $Q_B$ is well-defined enough for a risk ratio correction to be
+meaningful. This differs from the commit layer below, where low structural confidence in
+an already proposed residue is a reason to revisit it.
+
+If $\mathcal{A}_B$ is sampled rather than enumerated, the block marginals are Monte Carlo
+estimates. The controller should monitor effective sample size
+
+$$
+\mathrm{ESS}_B=\frac{(\sum_k w_k)^2}{\sum_k w_k^2}
+$$
+
+for the unnormalized candidate weights. If $\mathrm{ESS}_B$ is too low relative to the
+candidate budget, $g_{\mathrm{ESS}}$ should reduce or disable the logit correction rather
+than letting a single high-weight candidate dominate the logits. Here $w_k$ denotes the
+unnormalized reweighting factor used to form $\pi_B$ for candidate $a_B^{(k)}$, with the
+exact expression depending on whether $\mathcal{A}_B$ was enumerated or sampled from
+$Q_B$.
 
 This hard-counterfactual design keeps the head on hard amino-acid sequences, which is
 closer to its training distribution than soft-gradient guidance. Its cost is controlled
@@ -623,9 +725,10 @@ by late activation, active-block selection, top-$M$ residue selection, top-$K$ a
 restriction, refresh intervals, and batched head evaluation.
 
 A more aggressive alternative is to directly choose or sample a full block candidate
-from $w_B(a_B)$ and write it into the current sequence as a local proposal. This may be
-useful as a later comparator or local-search variant, but it is more invasive than the
-preferred logits projection because it bypasses part of the denoiser's usual token-level
+from $\pi_B(a_B)$ and write it into the current sequence as a local proposal. This is the
+hard block write-back version of the same reweighted proposal idea. It may be useful as a
+later comparator or local-search variant, but it is more invasive than the preferred
+soft logit reweighting because it bypasses part of the denoiser's usual token-level
 sampling interface.
 
 #### D3. Residue-level EMA commit/revisit control
@@ -637,11 +740,17 @@ block.
 
 Let $\ell_i^{\mathrm{cur}}(t)$ denote the current structural confidence in the residue
 already proposed at position $i$, for example its chosen-token log-probability under the
-latest structural logits. Maintain a persistent risk memory
+latest structural logits. Convert window excess risk back to a residue-level signal
+$e_i(t)$ using the same fixed projection used for $h_i$. Maintain a persistent risk
+memory
 
 $$
-m_i(t) = \gamma m_i(t-\Delta t) + (1-\gamma)e_i(t).
+m_i(t) = \gamma_t m_i(t-\Delta t) + (1-\gamma_t)e_i(t).
 $$
+
+The EMA coefficient can depend on reliability. Earlier or low-confidence refreshes
+should use larger $\gamma_t$ to suppress noise; later high-reliability refreshes can use
+smaller $\gamma_t$ so that recent online risk is trusted more.
 
 Define a controller-adjusted commit score
 
@@ -649,6 +758,30 @@ $$
 s_i^{\mathrm{commit}}(t) =
 z\!\big(\ell_i^{\mathrm{cur}}(t)\big) - \lambda_t z\!\big(m_i(t)\big).
 $$
+
+$z(\cdot)$ is a per-protein, per-step cross-sectional normalization over eligible
+committed residues. This matches reparameterized decoding, which remasks by relative
+rank within the current sequence and current reverse step.
+
+**Same-refresh grace rule**. Let $\mathcal{A}_t = \bigcup_B A_B$ be the set of
+residues whose logits received the D2 immune correction at the current refresh
+step $t$. For these residues, $m_i(t)$ still reflects the pre-sample stale $e_i$,
+while their identity has just been re-proposed under immune-aware logits.
+Applying the immune penalty in the same refresh would risk remasking a residue
+that D2 has just steered away from a high-risk identity. The penalty is therefore
+delayed by exactly one refresh:
+$$
+s_i^{\mathrm{commit}}(t) =
+\begin{cases}
+z\big(\ell_i^{\mathrm{cur}}(t)\big), & i \in \mathcal{A}_t, \\
+z\big(\ell_i^{\mathrm{cur}}(t)\big) - \lambda_t z\big(m_i(t)\big), & i \notin \mathcal{A}_t.
+\end{cases}
+$$
+
+At the next refresh, $m_i$ is updated with the post-sample $e_i$ and the immune
+term re-enters the commit score. The grace lasts exactly one refresh — extending
+it would suppress legitimate post-sample regression detection, where the new
+identity is structurally fine but immunologically worse.
 
 Generic reparameterized decoding revisits low-confidence residues. The risk-aware
 controller ranks committed residues by $s_i^{\mathrm{commit}}(t)$ instead of structural
@@ -694,6 +827,17 @@ Dynamic scheduler updates are therefore not the default adaptive controller. The
 more invasive, create additional train/sample mismatch concerns, and only affect
 positions that are still masked.
 
+#### D5. Required controller diagnostics
+
+Adaptive control should be evaluated as a process, not only by final sequence metrics.
+The implementation should record at least the following per refresh step: active block
+count and length, active window risk, $\rho_B(t)$ and its gate factors, candidate budget,
+ESS, $\Delta R_B$ distribution, logit correction norm, KL between corrected and structural
+token distributions, remask reason, EMA memory, repeated-remask counts, and the
+structural-confidence versus immune-risk conflict quadrant. These diagnostics are needed
+to distinguish true immune-aware guidance from generic perturbation, head exploitation,
+or unstable local search.
+
 ### 4.8 Recommended progression
 
 The above discussion suggests a stable development order:
@@ -701,11 +845,12 @@ The above discussion suggests a stable development order:
 1. **Base method**: static prior schedule only (C1/C2)
 2. **Second static axis**: static hotspot conditioning if the denoiser is retrained (C3)
 3. **First adaptive direction layer**: late-gated hard counterfactual logits update on
-   active blocks, with the static schedule held fixed
+   active blocks, with the static schedule held fixed and structure-conservative
+   candidate support as the default
 4. **Adaptive reversibility layer**: residue-level EMA commit/revisit using online risk
    memory and structural confidence
-5. **Comparators / later variants**: direct block candidate write-back or simpler
-   single-site logit steering
+5. **Comparators / later variants**: direct block candidate write-back, risk-exploratory
+   candidate support, or simpler single-site logit steering
 6. **Most invasive extension**: dynamic scheduler updates
 
 This order matches the scientific need to keep the main mechanism interpretable:

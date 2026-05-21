@@ -2461,3 +2461,202 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - next_action: When implementation planning starts, translate the controller into explicit ablations: hard counterfactual logits only, EMA recommit only, combined controller, direct block write-back comparator, and dynamic scheduler held out as a later extension.
 - refs:
   - `doc/Reference_Flow_Derivation.md` §4.7-4.9
+
+
+### L0084
+- timestamp: 2026-05-15T02:30:18+08:00
+- type: THEORY_UPDATE
+- module: PHASE_C
+- trigger: User reviewed the dynamic controller proposal and surfaced stability issues around active-block boundaries, entropy-gate semantics, top-K correction support, Monte Carlo candidate variance, exploratory candidate explosion, local risk scope, z-score normalization, EMA lag, and process-level monitoring.
+- change_summary: Updated `doc/Reference_Flow_Derivation.md` §4.7-4.8 to anchor active blocks to head receptive-field windows, define local head objective `R_H^\Omega`, merge blocks with overlapping scoring windows, replace direct structural-score reuse with posterior/proposal ratio logit correction, explicitly leave out-of-support amino acids unchanged, add multiplicative reliability gates including ESS, clarify the entropy sign difference between logit correction and commit revisit, add structure-conservative vs risk-exploratory candidate modes, define per-protein per-step z-normalization, allow reliability-dependent EMA, and add required controller diagnostics.
+- rationale: The dynamic controller should remain scientifically interpretable under finite candidate budgets. Window-anchored blocks avoid threshold-driven boundary artifacts; posterior/proposal ratio correction avoids double-counting structural likelihood; ESS and diagnostics prevent noisy candidate reweighting from masquerading as immune-aware guidance.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/doc/Reference_Flow_Derivation.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only update; no runtime tests executed.
+- impact:
+  - scope: High-level theory/design framing and future implementation constraints for optional adaptive Reference Flow controller.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: When implementation planning starts, convert these notes into explicit controller telemetry and ablations: window-anchored block discovery, conservative candidate support, ESS-gated correction, EMA recommit, risk-exploratory candidate support, and direct block write-back comparator.
+- refs:
+  - `doc/Reference_Flow_Derivation.md` §4.7-4.8
+
+
+### L0085
+- timestamp: 2026-05-20T11:28:18+08:00
+- type: PLAN_UPDATE
+- module: PHASE_C
+- trigger: User asked to turn the D-phase dynamic controller discussion into a dedicated PLAN-level monitor, metric, and ablation section, including recommit telemetry, logit intervention direction, dynamic hotspot updates, budget normalization, paired seeds, regression rate, and trajectory diagnostics.
+- change_summary: Added `PLAN_IF.md` Phase C Task D0, freezing the dynamic controller diagnostic contract around four layers: opportunity/precondition, mechanism, attribution/budget normalization, and external validity/anti-gaming.
+- rationale: D-phase experiments need to diagnose why the controller succeeds or fails, not only whether final head scores improve. The plan now separates D2 logit direction, D3 recommit behavior, dynamic hotspot discovery, controller budget, causal attribution, and external NetMHCIIpan validation before implementation starts.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_IF.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only plan update; no runtime tests executed. Markdown formula formatting was manually checked in the modified PLAN section.
+- impact:
+  - scope: Phase C/D execution planning only; no production code or experiment artifacts changed.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: When coding starts, translate Task D0 into telemetry fields in the generation artifact before running large-scale D2/D3/full ablations.
+- refs:
+  - `PLAN_IF.md` Phase C Task D0
+
+
+### L0086
+- timestamp: 2026-05-20T11:33:02+08:00
+- type: PLAN_UPDATE
+- module: PHASE_C
+- trigger: User corrected that `PLAN_IF.md` is no longer the active Reference Flow stage plan and requested the D-phase monitor/metric/ablation contract be moved into `PLAN_RF.md`.
+- change_summary: Removed the previously added RF/D0 section from `PLAN_IF.md`, restored its open-decision wording, and moved the dynamic controller monitor/metric/ablation contract into `PLAN_RF.md` under Task D.
+- rationale: Reference Flow execution planning now belongs in `PLAN_RF.md`; keeping the D-phase contract in `PLAN_IF.md` would create duplicate and stale planning sources.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_IF.md`
+  - `/Users/jerry/Project/MHC-IF/PLAN_RF.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only plan relocation; no runtime tests executed. `PLAN_IF.md` diff now excludes the D0 section and `PLAN_RF.md` contains the moved contract.
+- impact:
+  - scope: Plan-document organization only; no production code or experiment artifacts changed.
+  - risk: low
+  - confidence: 0.95
+- status: done
+- next_action: Use `PLAN_RF.md` as the source of truth for subsequent Reference Flow D-phase controller implementation planning.
+- refs:
+  - `PLAN_RF.md` Task D0
+  - correction to `LOG.md` L0085
+
+
+### L0087
+- timestamp: 2026-05-21T01:13:48+08:00
+- type: PLAN_UPDATE
+- module: PHASE_C
+- trigger: User asked for preread-based D1 planning for Reliability-gated online refresh and active blocks, with emphasis on head API adaptation, faster batch scoring, active-block state caching, and a handoff plan for a future coder.
+- change_summary: Added `PLAN_RF.md` Task D1 as a monitor-only implementation plan grounded in current code reality. The plan specifies a sampler controller hook, a stable epitope-head batch scoring adapter, lazy static WT window-score caching, active-window-to-active-block discovery, reliability gate calculation, D1 telemetry artifacts, runner/SLURM integration points, and targeted unit/script tests.
+- rationale: D1 should first establish the online refresh and active-block state/telemetry layer without perturbing C1's static reference-flow schedule, logits, or remask semantics. Current h-map artifacts lack static window logits, so D1 needs an explicit window-score cache before active blocks can be defined correctly from excess window risk.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_RF.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only plan update based on read-only preread of `doc/Reference_Flow_Derivation.md`, `inverse_folding/reference_flow/*`, `scripts/run_if_phase_c1.py`, `epitope_head/inference/predictor.py`, and related test/script contracts. No runtime tests executed.
+- impact:
+  - scope: Reference Flow D1 implementation planning only; no production code or experiment artifacts changed.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: Future coder should implement D1 in monitor-only mode first and prove that generated sequences are identical to no-controller C1 before adding D2 logit correction or D3 recommit behavior.
+- refs:
+  - `PLAN_RF.md` Task D1
+
+
+### L0088
+- timestamp: 2026-05-21T01:47:43+08:00
+- type: PLAN_UPDATE
+- module: IF_IMP
+- trigger: User accepted treating `update_coors` as an ablation knob and asked to update `doc/IF_IMP.md` with the full GeoEGNN-IPA encoder replacement scheme.
+- change_summary: Updated `doc/IF_IMP.md` to pivot from sidecar/refiner sweeps toward a GeoEGNN-IPA structure encoder replacement. The new plan defines EGNN graph/contact message passing, IPA dense rigid-frame refinement, original-frame anchoring with optional updated-coordinate pair bias, late-layer gated DPLM adapters, a low-weight auxiliary AA head, and required ablations for `update_coors`, adapter depth, auxiliary supervision, and structure feature sets.
+- rationale: Current IF-IMP sidecar/refiner readouts are real but weak; the higher-leverage causal bottleneck is the structure-conditioning path rather than more sampling-time refiner hyperparameter sweeps. The new design preserves DPLM as the frozen sequence prior while replacing the GVP feature generator with stronger MapDiff-inspired geometry conditioning.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/doc/IF_IMP.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only update based on the existing DPLM encoder/adapter contract and MapDiff encoder/prior inspection; no runtime tests executed.
+- impact:
+  - scope: IF-IMP planning and future encoder replacement implementation constraints only; no production code or experiment artifacts changed.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: Future coder should implement the GeoEGNN-IPA encoder replacement against the `encoder_out["feats"]` contract, then run the minimum CATH ablations before moving to IF-ready immune-design evaluation.
+- refs:
+  - `doc/IF_IMP.md` Phase B
+
+
+### L0089
+- timestamp: 2026-05-21T01:58:06+08:00
+- type: PLAN_UPDATE
+- module: IF_ENCODER
+- trigger: User requested subagent-assisted codebase implementation analysis for the GeoEGNN-IPA proposal and asked for a more accurate concise PLAN file.
+- change_summary: Added `PLAN_IF_ENCODER.md` as a dedicated coding plan for GeoEGNN-IPA DPLM encoder replacement. The plan freezes the encoder contract, identifies the current `encoder_out["feats"].detach()` training blocker, defines graph/EGNN/IPA package boundaries, specifies last-N gated adapter changes, requires `update_coors` ablation, avoids MapDiff runtime imports and external structural annotations, and routes execution through a new encoder training script plus existing `submit_if_imp.slurm` modes.
+- rationale: The old `PLAN_IF_IMP.md` is a completed refiner/sidecar implementation plan and is not the right source of truth for encoder replacement. The new plan isolates the engineering surface needed for a clean replacement: DPLM-compatible `[B, L, 512]` features, trainable encoder gradients, backward-compatible adapters, and minimal MapDiff-derived geometry code.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_IF_ENCODER.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only update based on read-only subagent inspection of DPLM encoder/adapter contracts, IF-IMP sidecar/refiner code, and MapDiff EGNN/IPA/graph feature implementation. No runtime tests executed.
+- impact:
+  - scope: Future GeoEGNN-IPA encoder replacement implementation planning only; no production code or experiment artifacts changed.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: Future coding agent should follow `PLAN_IF_ENCODER.md`, starting with Task E0 adapter/gradient contract before implementing graph or EGNN code.
+- refs:
+  - `PLAN_IF_ENCODER.md`
+
+
+### L0090
+- timestamp: 2026-05-21T03:30:00+08:00
+- type: VERIFICATION
+- module: IF_ENCODER
+- trigger: Executed `PLAN_IF_ENCODER.md` tasks E0–E5 end-to-end (E0 adapter/gradient contract, E1 graph builder, E2 EGNN backbone, E3 IPA + encoder contract, E4 checkpoint/config integration, E5 training + launcher scripts). E6 cluster smoke + ablations queued separately.
+- change_summary: Implemented the GeoEGNN-IPA encoder package at `inverse_folding/dplm_refiner/geo_encoder/` (config / graph / egnn / ipa / encoder / checkpoint) plus the byprot registry wrapper at `inverse_folding/dplm/src/byprot/models/dplm/modules/geoegnn_ipa_encoder.py`. Added `adapter_num_layers/adapter_gated/adapter_gate_init` to `DPLMWithAdapterConfig`, a module-level `install_adapters` helper for loop replacement, and `detach_encoder_feats` to `DPLMInvFoldConfig` with a conditional detach in `DPLMInvFold.forward()`. `forward_encoder` now ensures `coord_mask` is set in both `use_draft_seq` branches. Added `scripts/train_if_imp_encoder.py`, three new SLURM modes (`train_encoder/generate_encoder/diag_encoder`) in `scripts/submit_if_imp.slurm`, `--encoder-checkpoint/--encoder-kind` flags + encoder swap in `scripts/run_if_imp_refiner.py` and `scripts/diag_if_imp_arms.py`, the Hydra override `cond_dplm_650m_geoegnn.yaml`, uncommented `torch_scatter` in `inverse_folding/dplm/requirements.txt`, and a new H2 in `doc/SCRIPTS.md` registering the encoder script + modes.
+- rationale: PLAN_IF_ENCODER.md required a drop-in GVP replacement that preserves the `encoder_out` contract, lets main DPLM CE backpropagate into the encoder, exposes `update_coors` as a real ablation knob, and never imports MapDiff at runtime. Splitting the work into E0 (gradient gate) and E1–E3 (geometry pipeline) kept default GVP behavior bit-equivalent; E4–E5 made the new path Hydra-instantiable and cluster-launchable.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/geo_encoder/`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/src/byprot/models/dplm/modules/geoegnn_ipa_encoder.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/src/byprot/models/dplm/modules/dplm_adapter.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/src/byprot/models/dplm/dplm_invfold.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/configs/experiment/dplm/cond_dplm_650m_geoegnn.yaml`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/requirements.txt`
+  - `/Users/jerry/Project/MHC-IF/scripts/train_if_imp_encoder.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_imp.slurm`
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_imp_refiner.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/diag_if_imp_arms.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_dplm_adapter_layers.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_dplm_encoder_grad.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_geo_graph.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_geo_egnn.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_geo_encoder_contract.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_geo_encoder_checkpoint.py`
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_if_imp_encoder_scripts.py`
+- evidence: Local pytest run (Python 3.11, no PyG / no omegaconf installed): `tests/inverse_folding/dplm_refiner/ tests/scripts/test_if_imp_encoder_scripts.py tests/scripts/test_diag_if_imp_arms.py` → 115 passed, 31 skipped (PyG- / omegaconf-gated), 4 warnings. Full suite excluding pre-existing broken collection (`test_evaluate_phase_c_script.py`, ImportError for `resolve_nmp_runtime_params`) → 963 passed, 4 pre-existing failures unrelated to this work (3 `epitope_head/training/test_module_e_contract` ESM tokenizer tests + 1 `test_analysis_structural_features` `Bio` import). All 8 new script tests in `tests/scripts/test_if_imp_encoder_scripts.py` pass (help-text wiring, SLURM mode dispatch, doc/SCRIPTS.md registration, `_maybe_replace_encoder` hook).
+- impact:
+  - scope: Inverse-folding encoder path. Default GVP behavior remains bit-equivalent because `detach_encoder_feats` defaults to True and `adapter_num_layers` / `adapter_gated` default to the existing single-layer ungated configuration. The Hydra `_target_=geoegnn_ipa_encoder` override is opt-in via `cond_dplm_650m_geoegnn.yaml`.
+  - risk: medium (cluster smoke + ablations not yet executed; H1/H2 risks from review — PyG MessagePassing vs hand-scatter, Hydra `_target_` registry resolution — were resolved in the plan but runtime confirmation needs cluster execution).
+  - confidence: 0.85
+- status: done
+- next_action: On Della with `immune-design` env active and `torch_scatter` installed, run E6 smokes: (1) two-batch CPU smoke via `LIMIT_BATCHES=2 DEVICE=cpu MODE=train_encoder sbatch scripts/submit_if_imp.slurm`; (2) `python -c "from byprot import utils; from omegaconf import OmegaConf; m = utils.instantiate_from_config(OmegaConf.create({'_target_': 'geoegnn_ipa_encoder', 'd_model': 32}), group='model'); print(type(m).__name__)"` to verify Hydra `_target_` resolution; (3) submit the 6 minimum CATH ablations (GVP baseline / `update_coors` on-off / last-1 vs last-4 gated adapters / `lambda_aux ∈ {0.05, 0.10}`) and only treat the GeoEGNN-IPA replacement as mechanistically meaningful if final DPLM recovery improves by ≥2 absolute percentage points over the current CATH baseline without foldability degradation.
+- refs:
+  - `PLAN_IF_ENCODER.md` Tasks E0–E5
+  - `L0089`
+
+
+### L0091
+- timestamp: 2026-05-21T05:10:00+08:00
+- type: VERIFICATION
+- module: IF_ENCODER
+- trigger: Code-review pass on the L0090 GeoEGNN-IPA implementation surfaced ten concrete defects spanning correctness (encoder special-mask, SLURM flag wiring, adapter checkpoint loss, IPA pair-dim mismatch, checkpoint field completeness), unimplemented PLAN items (residue positional encoding), and contract drift (encoder_attention_mask override, kNN strict-cutoff semantics, seq-distance over compact indices, Hydra DictConfig coercion).
+- change_summary: P0.1 — dropped `<mask>` (id=32) and `<unk>` (id=3) from default `special_token_ids`; encoder now prefers `batch["tokens"]` over `batch["prev_tokens"]` so generation at denoising step 0 doesn't drop every real residue. P0.2 — `submit_if_imp.slurm` `MODE=generate_encoder` now passes `--output-root` and `--allele` instead of the nonexistent `--output-dir`. P1.3 — `save_geo_encoder_checkpoint` now accepts `decoder=` and writes `adapter_state_dict`; `load_geo_encoder_checkpoint(..., decoder=...)` restores adapter-named params; the training script passes `decoder=task.model.decoder` on save and the two inference scripts pass `decoder=task.model.decoder` on load. P1.4 — `IPADenseRefinement._EdgePairEncoder` is built with `ipa_pairwise_dim`, not `ipa_dim`. P1.5 — `GeoEGNNIPAEncoder` stores `self._constructor_kwargs` covering all 19 non-graph fields (egnn_message_dim, update_global, norm_coors, ipa_pairwise_dim, ipa_heads, ipa_qk_points, ipa_v_points, dropout rates, etc.); `FORMAT_VERSION` bumped 1→2 and the load report adds adapter-key fields. P2.6 — residue positional encoding implemented as sinusoidal `pos_enc_dim` (default 16) on `token_positions`, contributing to `node_feat_dim`. P2.7 — both `DPLMInvFold.forward()` and `forward_encoder()` now conditionally set `encoder_attention_mask` only when the encoder didn't supply one. P2.8 — `closest_neighbor_fallback` is now a separate `GraphConfig` flag; `seq_fallback=False, closest_neighbor_fallback=False` produces a truly strict-cutoff graph. P2.9 — `_build_protein_data` takes `token_positions` and uses them for both seq-distance edge features and positional encoding so internal gaps (special tokens / NaN-coord residues) aren't collapsed. P2.10 — `GeoEGNNIPAEncoder._coerce_graph_config` accepts GraphConfig / dict / OmegaConf DictConfig.
+- rationale: Several defects were silently masked by tests that exercised only the default config path (e.g. `ipa_pairwise_dim == ipa_hidden_dim`, no internal gaps, GraphConfig-typed graph_config). New tests cover non-default dimensions, internal-gap seq-distance, DictConfig coercion, adapter round-trip, and the explicit semantics of each kNN fallback flag.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/geo_encoder/encoder.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/geo_encoder/graph.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/geo_encoder/config.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/geo_encoder/ipa.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm_refiner/geo_encoder/checkpoint.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/dplm/src/byprot/models/dplm/dplm_invfold.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_imp.slurm`
+  - `/Users/jerry/Project/MHC-IF/scripts/train_if_imp_encoder.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_imp_refiner.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/diag_if_imp_arms.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_geo_graph.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_geo_encoder_contract.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/dplm_refiner/test_geo_encoder_checkpoint.py`
+- evidence: Local pytest (Python 3.11, no PyG / no omegaconf): `tests/inverse_folding/dplm_refiner/ tests/scripts/test_if_imp_encoder_scripts.py tests/scripts/test_diag_if_imp_arms.py` → 118 passed, 37 skipped (PyG / omegaconf gated), 4 warnings. New regression tests cover `test_build_geo_graph_seq_distance_uses_original_token_positions`, `test_build_knn_edges_strict_cutoff_with_both_fallbacks_off`, `test_checkpoint_round_trip_preserves_non_default_dims`, `test_checkpoint_adapter_state_round_trip_preserves_adapter_deltas`, `test_graph_config_accepts_dict_and_dictconfig_at_encoder_construction`, `test_encoder_prefers_tokens_over_prev_tokens_in_forward`, `test_encoder_constructor_kwargs_captures_non_default_fields`, `test_sinusoidal_positional_encoding_shape_and_finite`.
+- impact:
+  - scope: GeoEGNN-IPA encoder path. P0 fixes are correctness blockers — without them generation produces empty graphs (P0.1) or fails at sbatch (P0.2) or silently drops the adapter fine-tune (P1.3). Default GVP path remains bit-equivalent because `detach_encoder_feats=True` default and conditional mask overrides preserve legacy behavior.
+  - risk: medium (cluster smoke + ablations still pending; runtime tests for the new paths are PyG-gated and will exercise on Della).
+  - confidence: 0.9
+- status: done
+- next_action: Same as L0090 — run cluster smoke + 6 ablations on Della. After cluster smoke confirms the encoder path runs end-to-end, treat the bugfix sweep as fully validated.
+- refs:
+  - `PLAN_IF_ENCODER.md`
+  - `L0090`

@@ -89,6 +89,9 @@ Important implementation details from code:
 
 - `Prior_Diff.forward()` trains both base EGNN loss and prior-mask loss; total training loss in `trainer/trainer.py` is `base_loss + mask_loss`.
 - `Prior_Diff.sample_p_zs_given_zt()` computes EGNN base logits, entropy, an entropy mask, IPA prior logits, then fuses base and prior logits by entropy-weighted logit fusion.
+- `EGNN_NET.forward()` consumes PyG graph fields `x`, `extra_x`, `pos`, `edge_index`, `edge_attr`, `ss`, and `batch`, applies coordinate-aware graph message passing, and returns per-residue 20-way amino-acid logits.
+- `MapDiff/conf/model/egnn.yaml` enables `update_edge: True`, `update_coors: True`, `update_global: True`, `norm_coors: True`, 6 EGNN layers, 128 hidden dimensions, and 128 embedding dimensions.
+- MapDiff graph construction uses CA-neighbor topology, sequence-distance features, inter-residue distance/contact features, local-frame orientation features, secondary-structure features, and `mu_r_norm` neighborhood-direction statistics.
 - `sin_mask_ratio_adapter()` computes mask ratio as `center + sin(beta_t_bar * pi / 2) * max_deviation`.
 - Code default `min_mask_ratio=0.4`, `dev_mask_ratio=0.2`.
 - Code default `noise_type: marginal`, but the paper reports both uniform and marginal prior variants.
@@ -203,11 +206,35 @@ Failure interpretation:
 - If entropy-refinement improves recovery but hurts scTM, the refiner is overfitting native residue identity rather than preserving foldability.
 - If entropy-refinement has no effect, the bottleneck is likely upstream structure encoding or DPLM adapter integration, not local refinement.
 
-## Phase B: Replace Or Augment The Structure Encoder
+## Current Readout And Pivot Rule
+
+The first implemented MapDiff-inspired add-ons should be treated as diagnostic rather than successful final mechanisms.
+
+Observed CATH recovery readout from the current local runs:
+
+- Baseline: 0.5290.
+- Sidecar: 0.5307.
+- Sidecar scale sweep best near `sidecar_scale=0.5`: 0.5308.
+- Entropy-aware refiner: approximately baseline-level at 0.5290.
+- Refiner without DPLM-entropy alignment: 0.5247.
+- Weak residual refiner sweep: effectively no-op at the final sequence level.
+
+Interpretation:
+
+- The sidecar is not a no-op, but its improvement is too small and too shallow to support a strong mechanism claim.
+- Entropy alignment prevents the refiner from becoming harmful, but the refiner still does not beat the DPLM baseline.
+- Further broad sweeps over sidecar scale, mask ratio, fusion weight, or apply-step windows are lower leverage than changing the structure-conditioning path itself.
+
+Pivot rule:
+
+- Keep sidecar/refiner as context and optional ablation arms.
+- Make the next main mechanism a direct replacement of the frozen GVP structure encoder and the shallow final-layer adapter path.
+
+## Phase B: GeoEGNN-IPA Structure Encoder Replacement
 
 ### Scientific Question
 
-Is the frozen ESM-IF1 GVP encoder plus one late adapter the limiting factor for DPLM-IF?
+Is the frozen ESM-IF1 GVP encoder plus one late adapter the limiting factor for DPLM-IF, and can a MapDiff-inspired geometry encoder provide a stronger structure memory for the frozen DPLM denoising prior?
 
 ### Rationale
 
@@ -220,15 +247,138 @@ DPLM's current structure path is narrow:
 
 MapDiff's result suggests that stronger geometric modeling matters. Its EGNN uses coordinate-aware message passing with global-aware updates, and its IPA refiner uses rigid frames plus pairwise distance representations.
 
+The replacement should not copy MapDiff's full diffusion loop. MapDiff's EGNN is the denoiser body and returns 20-way amino-acid logits. DPLM already has a pretrained sequence prior and a mask-denoising decoder. The portable idea is therefore:
+
+- use EGNN for local topology/contact message passing,
+- use IPA for dense rigid-frame geometric refinement,
+- expose the result as DPLM-compatible structure memory, not as the final sequence predictor.
+
 ### Proposed Design
 
-Compare three encoder variants while keeping DPLM fixed as much as possible:
+Replace the GVP feature generator with a GeoEGNN-IPA encoder and deepen the adapter path:
 
-1. **GVP baseline**: existing ESM-IF1 GVP encoder.
-2. **GVP + MapDiff geometry sidecar**: keep GVP features, add a lightweight EGNN/IPA-derived geometry feature stream, project to adapter dimension, and concatenate or sum before adapter cross-attention.
-3. **MapDiff-style encoder replacement**: replace GVP features with a trained EGNN encoder/draft predictor derived from `MapDiff/model/egnn_pytorch/egnn_net.py`.
+```text
+backbone coords
+  -> kNN graph and local-frame structure features
+  -> EGNN-lite message passing
+  -> dense residue hidden [B, L, H]
+  -> IPA refinement with backbone frames and pair geometry
+  -> projection + LayerNorm to [B, L, 512]
+  -> late-layer gated DPLM adapters
+```
 
-The sidecar is the safest first implementation because it preserves the current working DPLM path and tests whether extra geometry helps without fully discarding GVP.
+Role separation:
+
+- EGNN handles graph/topology/contact message passing over sparse CA-neighbor edges.
+- IPA maps the EGNN hidden states back into a dense rigid-frame geometry representation.
+- DPLM remains the frozen sequence prior and denoising decoder.
+- The adapter path injects the structure memory into DPLM hidden states; it is no longer only a one-layer final correction.
+
+This is a replacement, not a residual sidecar. GVP can remain only as the baseline and optional compatibility fallback.
+
+### Encoder Inputs
+
+The first implementation should use backbone-safe features only.
+
+Required node features:
+
+- backbone dihedral sin/cos features derived from `N/CA/C/O`;
+- coordinate-validity mask;
+- relative residue index or positional encoding;
+- optional `mu_r_norm` neighborhood-direction statistics if easy to compute from the same kNN graph.
+
+Required edge features:
+
+- CA kNN or cutoff graph;
+- clipped sequence-distance one-hot or embedding;
+- CA-distance RBF/contact feature;
+- local-frame orientation features derived from backbone frames.
+
+Intentionally excluded from the first implementation:
+
+- true amino-acid identity as encoder input;
+- SASA;
+- B-factor;
+- DSSP or external secondary-structure labels.
+
+Reason: the first replacement should test whether stronger geometry conditioning improves DPLM. Extra annotations can be added later only if the geometry-only arm establishes a meaningful signal.
+
+### Coordinate Update Policy
+
+`update_coors` is a required ablation knob, not a conceptual prohibition.
+
+MapDiff enables coordinate update inside EGNN even though it is also an inverse-folding model. This means coordinate update should be interpreted as an internal latent geometric state, not as changing the target backbone.
+
+Supported modes:
+
+- `update_coors=false`: conservative graph feature passing with fixed coordinates.
+- `update_coors=true`: EGNN updates a latent coordinate channel during message passing.
+
+Interface rule:
+
+- The final task condition remains the original backbone.
+- IPA should always keep the original `N/CA/C` rigid frames as the anchor.
+- If `update_coors=true`, the updated CA coordinates may be used as an additional pair-bias source, for example original pair RBF plus updated-CA pair RBF, but should not replace the original backbone frame.
+
+If `update_coors=true` improves recovery, the interpretation is that latent coordinate relaxation helps construct a sequence-compatible geometric representation. It is not evidence that the model is solving a different structure-generation task.
+
+### IPA Refinement And Output Contract
+
+The IPA block should consume:
+
+- dense EGNN residue hidden states `[B, L, H]`;
+- original rigid frames from `N/CA/C`;
+- pair features from original atom distances, relative position, and optional updated-coordinate pair bias.
+
+The output contract must match the current DPLM encoder contract:
+
+- `encoder_out["feats"]`: `[B, L, 512]`;
+- `encoder_attention_mask`: valid residue mask compatible with DPLM adapter cross-attention;
+- optional encoder draft logits when `output_logits=True`.
+
+If draft logits are required for `use_draft_seq=True`, they should come from a small auxiliary AA head over the encoder hidden state. This head is a training and compatibility head; it is not the final sampler.
+
+### Adapter Usage
+
+The current final-layer-only adapter is likely too shallow for a new geometry encoder.
+
+Replace or extend it with late-layer gated adapters:
+
+- default target: last 4 DPLM layers;
+- keep the DPLM backbone frozen;
+- train only the GeoEGNN-IPA encoder, projection layers, gates, adapter cross-attention, and adapter FFN parameters;
+- initialize gates at zero or a small value so the initial model is close to the frozen DPLM baseline;
+- preserve the original one-layer adapter as an ablation.
+
+This keeps the core claim clean: same DPLM prior and decoder, stronger structure conditioning and deeper structure injection.
+
+### Training Objective
+
+Main loss:
+
+- original DPLM inverse-folding CE under the existing masked-diffusion training path.
+
+Auxiliary loss:
+
+- add a low-weight amino-acid prediction head from EGNN hidden or post-IPA hidden;
+- train it with native AA labels on valid residues;
+- do not feed native AA identity into the encoder input;
+- drop the auxiliary head at inference except when draft logits are explicitly requested.
+
+Default combined objective:
+
+```text
+loss = loss_dplm_if + lambda_aux * loss_aux_aa
+```
+
+Recommended starting values:
+
+- `lambda_aux=0.05` and `lambda_aux=0.10`;
+- EGNN dropout 0.1;
+- IPA dropout 0.2;
+- 6 EGNN layers, hidden dimension 128;
+- 6 IPA layers, hidden dimension 128, 4 attention heads;
+- last-layer adapter and last-4-layer gated adapter comparison.
 
 ### Implementation Notes
 
@@ -239,15 +389,21 @@ Candidate model interfaces:
   - optional `logits`: draft sequence logits when `output_logits=True`.
   - `coord_mask` or compatible attention mask.
 - Keep `encoder_attention_mask` semantics identical to existing DPLM code.
-- If adding sidecar features, introduce a projection layer to keep adapter input dimension stable.
+- The graph builder should be derived from the DPLM batch `coords` at runtime or in a cache keyed by protein/sequence, not from MapDiff's pre-generated `.pt` graph corpus.
+- The encoder must not require DSSP, SASA, B-factor, or external structure annotation for the first replacement arm.
+- The implementation should expose `update_coors`, `adapter_layers`, `lambda_aux`, and feature-set selection as config fields.
 
 MapDiff source files to inspect during implementation:
 
 - `MapDiff/model/egnn_pytorch/egnn_net.py`
 - `MapDiff/model/egnn_pytorch/egnn_pyg.py`
 - `MapDiff/model/egnn_pytorch/utils.py`
+- `MapDiff/dataloader/cath_dataset.py`
 - `MapDiff/dataloader/collator.py`
 - `MapDiff/dataloader/utils.py`
+- `MapDiff/model/ipa/ipa_net.py`
+- `MapDiff/model/ipa/ipa_attn.py`
+- `MapDiff/model/ipa/rigid_utils.py`
 
 Current DPLM files likely affected:
 
@@ -261,9 +417,14 @@ Current DPLM files likely affected:
 Minimum ablation set:
 
 - GVP baseline.
-- GVP + sidecar, train sidecar + adapter only.
-- EGNN replacement, train encoder + adapter only.
-- Optional: unfreeze last N DPLM layers only if the above saturates.
+- GeoEGNN-IPA replacement with `update_coors=false`.
+- GeoEGNN-IPA replacement with `update_coors=true` and original-frame IPA anchoring.
+- Last-layer adapter only.
+- Last-4-layer gated adapters.
+- Auxiliary AA head off.
+- Auxiliary AA head on with `lambda_aux in {0.05, 0.10}`.
+- Minimal geometry features only.
+- Minimal geometry plus local-frame orientation and `mu_r_norm`.
 
 Metrics:
 
@@ -271,18 +432,24 @@ Metrics:
 - Draft sequence recovery from the encoder path.
 - Downstream DPLM recovery after iterative denoising.
 - Encoder-only vs final DPLM improvement gap.
+- Auxiliary head accuracy, reported separately from final DPLM recovery.
+- Adapter gate magnitudes and adapter-attention entropy as diagnostics.
 
 Expected positive signal:
 
-- Encoder draft recovery improves.
-- DPLM final recovery improves beyond draft recovery, showing DPLM is using the better condition rather than merely copying the draft.
+- DPLM final recovery improves by at least 2 absolute percentage points over the current CATH baseline before treating the replacement as mechanistically meaningful.
+- A 3-5 point recovery improvement is the target range for a convincing paper narrative.
+- Final DPLM improvement is not explained only by draft copying.
+- Last-4-layer gated adapters outperform the last-layer-only adapter if adapter depth is the current bottleneck.
 - scTM pass rates remain at least baseline-level.
 
 Failure interpretation:
 
-- If draft improves but final DPLM does not, adapter integration is the bottleneck.
+- If auxiliary or draft recovery improves but final DPLM does not, adapter integration is still the bottleneck.
 - If neither draft nor final improves, CATH preprocessing or graph feature construction is likely mismatched.
 - If final recovery improves but scTM drops, the model is improving native identity without preserving robust foldability.
+- If `update_coors=true` helps, latent coordinate relaxation is useful for structure conditioning.
+- If `update_coors=true` hurts, keep fixed-coordinate EGNN or restrict updated-coordinate usage to a weak pair-bias term.
 
 ## Phase C: Open Slot
 
@@ -318,14 +485,16 @@ Fairness constraints:
 
 ## Near-Term Execution Order
 
-1. Freeze a reproducible CATH baseline manifest from the existing DPLM checkpoint.
-2. Port MapDiff's entropy/mask/fusion utilities into a small tested local module.
-3. Port/adapt IPA masked designer as a DPLM-compatible refiner.
-4. Train IPA refiner on CATH 4.3 using DPLM base predictions as input context.
-5. Evaluate Phase A ablations on CATH.
-6. If Phase A positive, integrate the refiner into project IF-ready evaluation.
-7. If Phase A weak or limited to recovery-only gains, start Phase B sidecar encoder.
-8. Fill Phase C only after Phase A/B readout.
+1. Preserve the current CATH baseline and the completed sidecar/refiner readouts as context arms.
+2. Implement a DPLM-compatible GeoEGNN-IPA encoder that returns `encoder_out["feats"]` with shape `[B, L, 512]`.
+3. Implement runtime or cached kNN graph construction from DPLM `coords`, with no dependency on DSSP, SASA, or B-factor.
+4. Add configurable late-layer gated adapters while keeping the DPLM backbone frozen.
+5. Add the auxiliary AA head and combined loss with configurable `lambda_aux`.
+6. Train the primary GeoEGNN-IPA replacement on CATH 4.3.
+7. Run the minimum ablations: `update_coors`, adapter depth, auxiliary head, and feature-set selection.
+8. Evaluate the best CATH arm with the same recovery/scTM/pLDDT/scRMSD schema as the Module K baseline.
+9. Move to project IF-ready immune-design evaluation only after the CATH arm exceeds the replacement success threshold.
+10. Fill Phase C only after the encoder replacement readout clarifies whether any further sampling-time control is still necessary.
 
 ## Completion Criteria
 
@@ -337,8 +506,9 @@ Phase A is considered successful if:
 
 Phase B is considered successful if:
 
-- GVP + sidecar or EGNN replacement improves final DPLM recovery,
-- final DPLM improvement exceeds encoder draft improvement alone,
+- GeoEGNN-IPA replacement improves final DPLM recovery by at least 2 absolute percentage points over the current CATH baseline,
+- final DPLM improvement is not merely draft-head improvement copied through `use_draft_seq`,
+- late-layer gated adapters show a measurable benefit over the last-layer-only adapter or the last-layer-only result already exceeds the recovery threshold,
 - foldability remains at least baseline-level.
 
 The overall improvement program is successful if it produces a DPLM-IF variant that improves CATH recovery without losing the structural-quality profile that made the current baseline usable.

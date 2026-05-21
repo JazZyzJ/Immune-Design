@@ -67,6 +67,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Sidecar .pt (omit to skip arms that need a sidecar).",
     )
     parser.add_argument(
+        "--encoder-checkpoint",
+        default=None,
+        help=(
+            "Optional .pt produced by train_if_imp_encoder.py. Used with "
+            "--encoder-kind=geoegnn_ipa to swap the GVP encoder before "
+            "running diagnostics (PLAN_IF_ENCODER.md Task E5)."
+        ),
+    )
+    parser.add_argument(
+        "--encoder-kind",
+        default="gvp",
+        choices=("gvp", "geoegnn_ipa"),
+        help=(
+            "Encoder family. ``gvp`` keeps the default GVP encoder; "
+            "``geoegnn_ipa`` requires --encoder-checkpoint."
+        ),
+    )
+    parser.add_argument(
         "--arms",
         nargs="+",
         choices=ALL_ARMS,
@@ -359,6 +377,35 @@ def _load_models(args: argparse.Namespace):
     from inverse_folding.reference_flow.runtime import load_if_task
 
     task = load_if_task(args.checkpoint, device=args.device)
+    if args.encoder_kind == "geoegnn_ipa":
+        if not args.encoder_checkpoint:
+            raise ValueError(
+                "--encoder-kind=geoegnn_ipa requires --encoder-checkpoint"
+            )
+        from omegaconf import OmegaConf
+
+        from inverse_folding.dplm_refiner.geo_encoder.checkpoint import (
+            load_geo_encoder_checkpoint,
+        )
+
+        encoder, report = load_geo_encoder_checkpoint(
+            args.encoder_checkpoint,
+            decoder=task.model.decoder,
+            map_location=args.device,
+            strict_state=False,
+        )
+        encoder.to(args.device)
+        encoder.eval()
+        task.model.encoder = encoder
+        OmegaConf.set_struct(task.model.cfg, False)
+        task.model.cfg.detach_encoder_feats = False
+        print(
+            f"[encoder swap] GeoEGNN-IPA encoder loaded from "
+            f"{args.encoder_checkpoint} "
+            f"(missing={len(report.missing_keys)}, "
+            f"unexpected={len(report.unexpected_keys)}, "
+            f"adapter_unexpected={len(report.adapter_unexpected_keys)})"
+        )
 
     refiner_model = None
     refiner_config = None

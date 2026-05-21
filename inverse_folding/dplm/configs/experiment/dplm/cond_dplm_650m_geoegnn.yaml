@@ -1,0 +1,42 @@
+# @package _global_
+#
+# GeoEGNN-IPA encoder override of cond_dplm_650m.yaml.
+# Run with: python train.py experiment=dplm/cond_dplm_650m_geoegnn
+#
+# Preserves all defaults from cond_dplm_650m EXCEPT the encoder block,
+# which is swapped from gvp_trans_encoder to geoegnn_ipa_encoder, plus
+# the DPLMInvFold detach_encoder_feats flag and adapter knobs that
+# control how the encoder gradient reaches the DPLM trunk.
+
+defaults:
+  - /experiment/dplm/cond_dplm_650m
+  - _self_
+
+model:
+  detach_encoder_feats: false   # let main CE backprop into the encoder
+  decoder:
+    adapter_num_layers: 1       # bump to 4 in the gated-adapter ablation
+    adapter_gated: false
+    adapter_gate_init: 0.0
+  encoder:
+    _target_: geoegnn_ipa_encoder
+    d_model: 512
+    output_logits: ${task.learning.output_encoder_logits}
+    vocab_size: 33
+    egnn_depth: 3
+    egnn_hidden_dim: 128
+    egnn_message_dim: 16
+    update_coors: false         # E6 ablation flips this on
+    update_global: true
+    norm_coors: true
+    egnn_dropout: 0.1
+    ipa_depth: 6
+    ipa_hidden_dim: 128
+    ipa_pairwise_dim: 128
+    ipa_heads: 4
+    ipa_qk_points: 4
+    ipa_v_points: 8
+    ipa_dropout: 0.2
+    use_updated_coord_bias: false
+    # graph_config fields are picked up by GraphConfig defaults; override
+    # selectively here, e.g. graph_config.k_neighbors=15

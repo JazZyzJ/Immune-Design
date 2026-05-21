@@ -63,6 +63,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--refiner-checkpoint", default=None, help="Optional .pt produced by train_if_imp_refiner.py.")
     parser.add_argument("--sidecar-checkpoint", default=None, help="Optional .pt produced by train_if_imp_sidecar.py; enables Arm 3/4.")
     parser.add_argument(
+        "--encoder-checkpoint",
+        default=None,
+        help=(
+            "Optional .pt produced by train_if_imp_encoder.py. When set, "
+            "replaces the GVP encoder with the trained GeoEGNN-IPA encoder "
+            "before generation (PLAN_IF_ENCODER.md Task E5)."
+        ),
+    )
+    parser.add_argument(
+        "--encoder-kind",
+        default="gvp",
+        choices=("gvp", "geoegnn_ipa"),
+        help=(
+            "Encoder family. ``gvp`` keeps the default GVP encoder; "
+            "``geoegnn_ipa`` requires --encoder-checkpoint and swaps it in."
+        ),
+    )
+    parser.add_argument(
         "--arm",
         choices=("baseline", "refiner", "sidecar", "sidecar_refiner"),
         default=None,
@@ -393,6 +411,48 @@ def _maybe_build_logit_processor(
     return processor
 
 
+def _maybe_replace_encoder(args: argparse.Namespace, *, task: Any) -> bool:
+    """If --encoder-kind=geoegnn_ipa is set, load --encoder-checkpoint
+    and swap ``task.model.encoder``. Returns True if the swap happened.
+
+    The GVP default (``--encoder-kind=gvp``) is a no-op so existing
+    refiner / sidecar / baseline runs are unaffected.
+    """
+    if getattr(args, "encoder_kind", "gvp") != "geoegnn_ipa":
+        return False
+    if not getattr(args, "encoder_checkpoint", None):
+        raise ValueError(
+            "--encoder-kind=geoegnn_ipa requires --encoder-checkpoint"
+        )
+    from omegaconf import OmegaConf
+
+    from inverse_folding.dplm_refiner.geo_encoder.checkpoint import (
+        load_geo_encoder_checkpoint,
+    )
+
+    encoder, report = load_geo_encoder_checkpoint(
+        args.encoder_checkpoint,
+        decoder=task.model.decoder,
+        map_location=args.device,
+        strict_state=False,
+    )
+    encoder.to(args.device)
+    encoder.eval()
+    task.model.encoder = encoder
+    # Make sure forward_encoder no longer detaches when callers actually
+    # exercise the gradient path (harmless at inference too).
+    OmegaConf.set_struct(task.model.cfg, False)
+    task.model.cfg.detach_encoder_feats = False
+    print(
+        f"[encoder swap] loaded GeoEGNN-IPA encoder from "
+        f"{args.encoder_checkpoint} "
+        f"(missing={len(report.missing_keys)}, "
+        f"unexpected={len(report.unexpected_keys)}, "
+        f"adapter_unexpected={len(report.adapter_unexpected_keys)})"
+    )
+    return True
+
+
 def _maybe_attach_sidecar(args: argparse.Namespace, *, task: Any) -> bool:
     """If --sidecar-checkpoint is set, wrap task.model.encoder. Returns
     True if sidecar was attached."""
@@ -466,6 +526,7 @@ def _build_generator(
     )
 
     task = load_if_task(checkpoint, device=device)
+    _maybe_replace_encoder(args, task=task)
     sidecar_attached = _maybe_attach_sidecar(args, task=task)
 
     diagnostics_buffer: list[dict[str, Any]] = []

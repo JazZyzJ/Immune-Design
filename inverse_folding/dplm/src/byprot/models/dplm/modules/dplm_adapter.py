@@ -32,6 +32,38 @@ class DPLMWithAdapterConfig:
     encoder_d_model: int = field(default=512)
     dplm_name: str = field(default="")
     net: NetConfig = field(default_factory=NetConfig)
+    adapter_num_layers: int = field(default=1)
+    adapter_gated: bool = field(default=False)
+    adapter_gate_init: float = field(default=0.0)
+
+
+def install_adapters(net, cfg, adapter_num_layers: int = 1) -> None:
+    """Replace the last ``adapter_num_layers`` of ``net.esm.encoder.layer``
+    with :class:`AdapterLayer` instances loaded from the original layer
+    state. Gated behavior is read from ``cfg`` by :class:`AdapterLayer`.
+
+    Extracted as a module-level helper so the replacement logic is
+    testable without instantiating the full 650M DPLM.
+    """
+    esm_layers = net.esm.encoder.layer
+    total = len(esm_layers)
+    if adapter_num_layers < 1:
+        raise ValueError(
+            f"adapter_num_layers must be >= 1, got {adapter_num_layers}"
+        )
+    if adapter_num_layers > total:
+        raise ValueError(
+            f"adapter_num_layers={adapter_num_layers} exceeds available "
+            f"layer count {total}"
+        )
+    config_template = deepcopy(net.config)
+    for offset in range(adapter_num_layers):
+        idx = total - 1 - offset
+        source_layer = esm_layers[idx]
+        adapter = AdapterLayer(cfg, deepcopy(config_template))
+        adapter.load_state_dict(source_layer.state_dict(), strict=False)
+        esm_layers[idx] = adapter
+        del source_layer
 
 
 class DPLMWithConditionalAdatper(nn.Module):
@@ -41,13 +73,8 @@ class DPLMWithConditionalAdatper(nn.Module):
     def from_pretrained(cls, cfg):
         net = DiffusionProteinLanguageModel.from_pretrained(cfg.dplm_name).net
 
-        # change net.last_layer to AdapterLayer
-        # by default based on the esm model
-        adapter = AdapterLayer(cfg, deepcopy(net.config))
-        net_last_layer = net.esm.encoder.layer[-1]
-        adapter.load_state_dict(net_last_layer.state_dict(), strict=False)
-        net.esm.encoder.layer[-1] = adapter
-        del net_last_layer
+        adapter_num_layers = int(getattr(cfg, "adapter_num_layers", 1))
+        install_adapters(net, cfg, adapter_num_layers=adapter_num_layers)
 
         dplm_adapter = cls(cfg, net)
 
@@ -210,6 +237,13 @@ class AdapterLayer(nn.Module):
             config.hidden_size, eps=config.layer_norm_eps
         )
 
+        self.adapter_gated = bool(getattr(cfg, "adapter_gated", False))
+        if self.adapter_gated:
+            gate_init = float(getattr(cfg, "adapter_gate_init", 0.0))
+            self.adapter_gate = nn.Parameter(
+                torch.tensor(gate_init, dtype=torch.float32)
+            )
+
     def forward(
         self,
         hidden_states,
@@ -267,7 +301,10 @@ class AdapterLayer(nn.Module):
         )
         cross_attention_output = cross_attention_outputs[0]
         ffn_output = self.adapter_feed_forward_chunk(cross_attention_output)
-        ffn_output += residual
+        if self.adapter_gated:
+            ffn_output = residual + self.adapter_gate * ffn_output
+        else:
+            ffn_output += residual
 
         outputs = (ffn_output,) + outputs
 
