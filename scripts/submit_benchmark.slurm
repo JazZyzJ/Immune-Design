@@ -1,15 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=benchmark
-#SBATCH --qos=gpu-short
-#SBATCH --partition=mig
+#SBATCH --qos=medium
+#SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
-#SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
-#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epitope/benchmark_%j.out
-#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epitope/benchmark_%j.err
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --time=47:00:00
+#SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.out
+#SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/benchmark_%j.err
 
 # for imm mode: 
 # #SBATCH --job-name=benchmark
@@ -47,6 +46,11 @@ export PS1
 #              NMP_MODE controls original vs accelerated (default: original).
 # MODE=phase_c: evaluate Phase C generated.parquet into schema-aligned
 #               immunogenicity / structural tables.
+#               Set IMM_FULL=1 to additionally emit per-residue hotspot
+#               (imm_head_residues.parquet) and per-peptide NMP
+#               (imm_nmp_peptides.parquet) long tables alongside the
+#               aggregated imm_head/imm_nmp parquets. Default off
+#               preserves prior Phase C behavior.
 MODE="${MODE:-iedb}"
 
 # ── Shared parameters (override via env) ─────────────────────────────────
@@ -65,7 +69,7 @@ ALLELE_TAG="$(echo "${ALLELE}" | tr -c '[:alnum:]' '_' | sed 's/_*$//')"
 
 if [ -z "${EPITOPE_CKPT:-}" ]; then
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
-        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt"
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0701_seed42/runs/LC1/seed_42/best.pt"
     elif [ "${ALLELE}" = "HLA-DRB1*04:01" ]; then
         EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
     else
@@ -242,6 +246,7 @@ elif [ "${MODE}" = "phase_c" ]; then
     STRONG_BINDER_THRESHOLD="${STRONG_BINDER_THRESHOLD:-2.0}"
     TMALIGN_BIN="${TMALIGN_BIN:-TMalign}"
     TAG="${TAG:-}"
+    IMM_FULL="${IMM_FULL:-0}"
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
         TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
         PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0701}"
@@ -279,8 +284,12 @@ elif [ "${MODE}" = "phase_c" ]; then
     fi
     echo "  NMP timeout       : ${NMP_TIMEOUT}s"
     echo "  Strong threshold  : ${STRONG_BINDER_THRESHOLD}%"
+    echo "  IMM_FULL          : ${IMM_FULL} (1 = also emit per-residue + per-peptide long tables)"
 
     EXTRA_ARGS=()
+    if [ "${IMM_FULL}" = "1" ]; then
+        EXTRA_ARGS+=(--imm-full)
+    fi
     if [ -n "${RUN_ID:-}" ]; then
         EXTRA_ARGS+=(--run-id "${RUN_ID}")
     fi

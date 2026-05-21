@@ -81,6 +81,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--sidecar-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Multiplier on the sidecar residual before it is added to the "
+            "base encoder feats: new_feats = feats + scale * sidecar_feats. "
+            "scale=0 collapses to baseline; default 1.0 preserves prior behavior."
+        ),
+    )
+    parser.add_argument(
         "--arm",
         choices=("baseline", "refiner", "sidecar", "sidecar_refiner"),
         default=None,
@@ -173,8 +183,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--mask-ratio-center + --mask-ratio-deviation must be <= 1")
     if args.fusion_temperature <= 0.0:
         parser.error("--fusion-temperature must be positive")
-    if not (0.0 <= args.fusion_alpha <= 1.0):
-        parser.error("--fusion-alpha must be in [0, 1]")
+    if args.sidecar_scale < 0.0:
+        parser.error("--sidecar-scale must be non-negative")
     if args.progress_every < 0:
         parser.error("--progress-every must be non-negative")
     if args.limit_proteins is not None and args.limit_proteins <= 0:
@@ -488,7 +498,10 @@ def _maybe_attach_sidecar(args: argparse.Namespace, *, task: Any) -> bool:
         )
 
     task.model.encoder = SidecarAttachedEncoder(
-        task.model.encoder, sidecar, get_special_sym_mask=_ssm
+        task.model.encoder,
+        sidecar,
+        get_special_sym_mask=_ssm,
+        scale=float(args.sidecar_scale),
     )
     if args.device != "cpu":
         task.model.encoder = task.model.encoder.to(args.device)
@@ -790,6 +803,7 @@ def _build_generator(
         refiner_meta["sidecar_checkpoint"] = str(
             Path(args.sidecar_checkpoint).expanduser().resolve()
         )
+        refiner_meta["sidecar_scale"] = float(args.sidecar_scale)
     return _generator_b1, _generator_batched, refiner_meta, diagnostics_buffer
 
 

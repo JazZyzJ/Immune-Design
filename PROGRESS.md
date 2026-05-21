@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-04-27T00:47:26+08:00
+> **Last synced**: 2026-05-20T00:00:00+08:00
 > **Branch**: dev_head
 
 ---
@@ -12,31 +12,46 @@
 
 - **Code**: complete
 - **Cluster**: trained, checkpoint frozen
-  - best run: `LC1_lite_aug` (runtime mutation augmentation, p_aug=0.20)
-  - checkpoint: `/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt`
-  - config: `/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/resolved_config.yaml`
+  - best run: `cnn_himp_v1_npoff_drb0701_seed42` (himp v1 variant, `npoff` mechanism)
+  - checkpoint: `/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0701_seed42/runs/LC1/seed_42/best.pt`
+  - config: `/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0701_seed42/runs/LC1/seed_42/resolved_config.yaml`
   - allele: HLA-DRB1*07:01 (single allele, v1 scope)
-- **Key Data** (LC1_lite_aug, best epoch 21 / 36 total, early-stopped):
-  - held-out pp_ap (PR-AUC): **0.3027**
-  - held-out pp_auc (ROC-AUC): **0.9636**
-  - per_protein_auc: 0.9492
-  - pp_recall@50: 0.7133, pp_recall@100: 0.7880
-  - encoder ablation: not run yet
-  - NetMHCIIpan benchmark comparison: not run yet
-- **Run comparison** (all LC1 / seed_42):
+- **Key Data** (cnn_himp_v1_npoff_drb0701_seed42, best epoch 45 / 50 total, no early stopping):
+  - held-out pp_ap (PR-AUC): **0.3497**
+  - held-out pp_auc (ROC-AUC): **0.9532**
+  - per_protein_auc: 0.9371
+  - pp_recall@50: 0.7017, pp_recall@100: 0.7849
+  - training data: 1,056 proteins / 1,537 chunks; val: 126 proteins / 204 chunks
+  - encoder ablation: **done** (Module H, E1 winner — see ablation block below)
+  - NetMHCIIpan benchmark comparison: **done** on prior `cnn_enhance_v2/LC1` checkpoint (see Benchmark block below); not re-run on npoff variant yet
+- **Run comparison** (all LC1 / seed_42, sorted by pp_ap):
   | Run | pp_ap | pp_auc | Epochs | Date |
   |-----|-------|--------|--------|------|
-  | LC1_lite_aug | **0.3027** | 0.9636 | 21/36 | 2026-03-23 |
+  | cnn_himp_v1_npoff_drb0701 | **0.3497** | 0.9532 | 45/50 | 2026-04-25 |
+  | LC1_lite_aug | 0.3027 | 0.9636 | 21/36 | 2026-03-23 |
   | cnn_strict_full | 0.2874 | 0.9571 | 32/47 | 2026-03-05 |
   | LC1_lite | 0.2520 | — | —/— | 2026-03-19 |
   | cnn_balanced_full | 0.1359 | — | —/— | 2026-03-05 |
+- **Encoder ablation** (Module H, `run/ablation/encoder_v2/`, 3 seeds, strict val):
+  | Encoder | pp_AUC | pp_AP | Recall@50 | Recall@100 | Latency L=512 |
+  |---------|--------|-------|-----------|------------|---------------|
+  | E0 | 0.853±0.008 | 0.041±0.011 | 0.239 | 0.313 | 150 ms |
+  | **E1 (CNN, winner)** | **0.972±0.002** | **0.272±0.018** | **0.705** | **0.773** | 2.9 ms |
+  | E2 | 0.763±0.011 | 0.018±0.004 | 0.104 | 0.158 | 4.5 ms |
+- **NetMHCIIpan benchmark** (`run/benchmark/epi/`, HLA-DRB1*07:01, strict val, 126 proteins, on prior `cnn_enhance_v2/LC1` checkpoint):
+  - head (ours): pp_auc=0.9587, pp_ap=0.3033, recall@50=0.706, recall@100=0.742
+  - NMP (NetMHCIIpan): pp_auc=0.9802, pp_ap=0.3450, recall@50=0.777, recall@100=0.833
+  - NMP > head on this checkpoint; npoff variant (pp_ap=0.3497) now exceeds NMP — re-run NMP comparison on npoff before claiming
 - **Artifacts**: `InferencePredictor` verified, `predict_protein()` API stable
-- **Multi-allele extension**: **done** (training complete)
-  - DRB1*04:01: checkpoint at `run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt` — pp_ap=**0.2962**, pp_auc=**0.9492** (epoch 26/48, p_aug=0.20, 1490 training entries)
-  - DRB1*15:01: checkpoint at `run/epitope_head/LC1_drb1501_aug/runs/LC1/seed_42/best.pt` — pp_ap=**0.1721**, pp_auc=**0.8492** (epoch 32/18, p_aug=0.0, 1236 training entries)
-  - manifests: `outputs/manifests/drb0401/` (1865 proteins), `outputs/manifests/drb1501/` (1536 proteins)
-  - Note: DRB1501 performance significantly lower — smaller training set (1236 vs 1490 vs 1056) and augmentation was off
-- **Open**: encoder ablation (Module H, PLAN_enco_abl.md) — not started
+- **Multi-allele extension**: **done** (npoff alignment for DRB0401; DRB1501 pending npoff re-train)
+  - DRB1*07:01: see above — `cnn_himp_v1_npoff_drb0701_seed42`, pp_ap=**0.3497**, pp_auc=**0.9532** (epoch 45/50, 1,056 training proteins)
+  - DRB1*04:01: checkpoint at `run/epitope_head/cnn_himp_v1_npoff_drb0401_seed42/runs/LC1/seed_42/best.pt` — pp_ap=**0.3165**, pp_auc=**0.9627**, per_protein_auc=0.9714 (epoch 42/50, 1,490 training proteins / 2,191 chunks, p_aug=0.20 effective_fraction≈0.097)
+  - DRB1*15:01: **still on `LC1_drb1501_aug`** — pp_ap=**0.1721**, pp_auc=**0.8492** (epoch 32, p_aug=0.0, 1,236 training entries); npoff variant **not yet trained**, methodology misaligned with 0701/0401
+  - manifests: `outputs/manifests/drb0401/` (1,865 proteins), `outputs/manifests/drb1501/` (1,536 proteins)
+  - Note: DRB1501 lag likely driven by smaller training set + augmentation off; npoff re-train should close at least the methodology gap
+- **Open**:
+  - DRB1501 `cnn_himp_v1_npoff_drb1501_seed42` not yet trained — needed to keep three-allele comparison apples-to-apples
+  - NetMHCIIpan benchmark re-run on `cnn_himp_v1_npoff_drb0701` to update head-vs-NMP comparison with the new SOTA head
 - **final_scripts**: `scripts/submit_cnn_enhance.slurm`, `scripts/submit_train_v2_cnn.slurm`, `scripts/submit_mutation_augmentation.slurm`
 
 ---
@@ -245,15 +260,17 @@
 
 | Artifact | Path | Status |
 |----------|------|--------|
-| Epitope head checkpoint (best) | `run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.3027 |
+| Epitope head checkpoint (best, DRB0701) | `run/epitope_head/cnn_himp_v1_npoff_drb0701_seed42/runs/LC1/seed_42/best.pt` | pp_ap=0.3497, pp_auc=0.9532 |
+| Epitope head checkpoint (legacy DRB0701 aug) | `run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.3027 (superseded by npoff) |
 | Epitope head checkpoint (strict) | `run/epitope_head/cnn_strict_full/runs/LC1/seed_42/best.pt` | pp_ap=0.2874 |
 | DPLM adapter checkpoint | `run/inverse_folding/dplm_v1_adapter/seed42_20260319_094244/checkpoints/best.ckpt` | validated |
 | DPLM validation results | `run/inverse_folding/dplm_v1_adapter/seed42_20260319_094244/baseline_validation.json` | complete |
 | CATH dataset (4.3) | `work/immune-design/cath_4.3/` | train/val/test |
 | Augmentation registry | `work/immune-design/augmentation/mutation_registry_strict.parquet` | used by LC1_lite_aug |
 | Manifests | `work/immune-design/manifests/` | epitope head training |
-| Epitope head DRB0401 | `run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.2962, pp_auc=0.9492 |
-| Epitope head DRB1501 | `run/epitope_head/LC1_drb1501_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.1721, pp_auc=0.8492 |
+| Epitope head DRB0401 (npoff, current) | `run/epitope_head/cnn_himp_v1_npoff_drb0401_seed42/runs/LC1/seed_42/best.pt` | pp_ap=0.3165, pp_auc=0.9627 |
+| Epitope head DRB0401 (legacy aug) | `run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.2962, pp_auc=0.9492 (superseded) |
+| Epitope head DRB1501 | `run/epitope_head/LC1_drb1501_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.1721, pp_auc=0.8492 — npoff variant not yet trained |
 | Tier 1 candidates | `work/immune-design/if_test_set/tier1_candidates.json` | 15 candidates, user review pending |
 | Tier 2 merged FASTA | `work/immune-design/if_test_set/tier2_candidates_merged.fasta` | 226k chains |
 | IF test set (0701) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` | 3,141 proteins (T1:15 T2:3000 T3:126) |

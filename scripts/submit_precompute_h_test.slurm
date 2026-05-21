@@ -18,8 +18,8 @@ export PS1
 
 # Paths
 PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"
-DATA_DIR="${DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready}"
-OUTPUT_DIR="${OUTPUT_DIR:-${DATA_DIR}/h_maps}"
+DATA_DIR="${DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/fast}"
+OUTPUT_DIR="${OUTPUT_DIR:-${DATA_DIR}/h_maps_v2}"
 LOG_DIR="${LOG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval}"
 
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
@@ -32,17 +32,17 @@ CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-500}"
 if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_07_01"
     ALLELE_TAG="DRB1_07_01"
-    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt}"
+    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0701_seed42/runs/LC1/seed_42/best.pt}"
 elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_04_01"
     ALLELE_TAG="DRB1_04_01"
-    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt}"
+    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0401_seed42/runs/LC1/seed_42/best.pt}"
 else
     echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
     exit 2
 fi
     
-INPUT_PARQUET="${INPUT_PARQUET:-${DATA_DIR}/test_proteins_if_ready_${ALLELE_FILE_TAG}.parquet}"
+INPUT_PARQUET="${INPUT_PARQUET:-${DATA_DIR}/test_proteins_if_ready_fast_${ALLELE_FILE_TAG}.parquet}"
 OUTPUT_PARQUET="${OUTPUT_PARQUET:-${OUTPUT_DIR}/h_maps_${ALLELE_TAG}.parquet}"
 OUTPUT_META="${OUTPUT_META:-${OUTPUT_DIR}/h_maps_${ALLELE_TAG}.meta.json}"
 INFERENCE_CONFIG="${INFERENCE_CONFIG:-${PROJECT_ROOT}/epitope_head/configs/inference.yaml}"

@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --time=6:00:00
+#SBATCH --time=00:30:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_imp/if_imp_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_imp/if_imp_%j.err
 
@@ -102,6 +102,8 @@ SIDECAR_LR="${SIDECAR_LR:-1e-4}"
 SIDECAR_HIDDEN_DIM="${SIDECAR_HIDDEN_DIM:-128}"
 SIDECAR_IPA_DEPTH="${SIDECAR_IPA_DEPTH:-6}"
 SIDECAR_OUTPUT_DIM="${SIDECAR_OUTPUT_DIM:-512}"
+# Generation-time sidecar residual strength: feats + SIDECAR_SCALE * sidecar_feats
+SIDECAR_SCALE="${SIDECAR_SCALE:-1.0}"
 
 # Refiner generation overrides
 ARM="${ARM:-}"
@@ -177,6 +179,7 @@ echo "  PROJECT_ROOT      : ${PROJECT_ROOT}"
 echo "  CHECKPOINT        : ${CHECKPOINT}"
 echo "  REFINER_CHECKPOINT: ${REFINER_CHECKPOINT:-<none>}"
 echo "  SIDECAR_CHECKPOINT: ${SIDECAR_CHECKPOINT:-<none>}"
+echo "  SIDECAR_SCALE     : ${SIDECAR_SCALE}"
 echo "  CATH_ROOT         : ${CATH_ROOT}"
 echo "  TEST_SET_PARQUET  : ${TEST_SET_PARQUET}"
 echo "  PDB_ROOT          : ${PDB_ROOT}"
@@ -272,6 +275,7 @@ elif [ "${MODE}" = "generate_refiner" ]; then
     fi
     [[ -n "${REFINER_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--refiner-checkpoint "${REFINER_CHECKPOINT}")
     [[ -n "${SIDECAR_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--sidecar-checkpoint "${SIDECAR_CHECKPOINT}")
+    EXTRA_FLAGS+=(--sidecar-scale "${SIDECAR_SCALE}")
     [[ -n "${ARM}" ]]                && EXTRA_FLAGS+=(--arm "${ARM}")
     [[ "${ABLATION_MODE}" = "1" ]]   && EXTRA_FLAGS+=(--ablation-mode)
     [[ -n "${LIMIT_PROTEINS}" ]]     && EXTRA_FLAGS+=(--limit-proteins "${LIMIT_PROTEINS}")

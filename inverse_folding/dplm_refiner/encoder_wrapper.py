@@ -26,6 +26,7 @@ class SidecarAttachedEncoder(nn.Module):
         sidecar: nn.Module,
         *,
         get_special_sym_mask: Any = None,
+        scale: float = 1.0,
     ) -> None:
         """Wrap ``base_encoder`` so its ``feats`` carry a sidecar residual.
 
@@ -34,11 +35,16 @@ class SidecarAttachedEncoder(nn.Module):
         from the DPLM batch. If ``None``, the mask is conservatively
         derived from ``batch.get("prev_tokens")`` against a default
         set; callers should usually plumb the right callback through.
+
+        ``scale`` multiplies the sidecar residual before it is added to
+        the base encoder's ``feats``. ``scale=0`` collapses the wrapper
+        to a pass-through (equivalent to no sidecar at all).
         """
         super().__init__()
         self.base_encoder = base_encoder
         self.sidecar = sidecar
         self._get_special_sym_mask = get_special_sym_mask
+        self.scale = float(scale)
 
     @property
     def out_proj(self):
@@ -90,7 +96,7 @@ class SidecarAttachedEncoder(nn.Module):
                 f"feats {tuple(feats.shape)}"
             )
 
-        new_feats = feats + sidecar_feats
+        new_feats = feats + self.scale * sidecar_feats
         encoder_out["feats"] = new_feats
 
         if output_logits:

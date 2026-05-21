@@ -62,6 +62,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--epitope-config-dir", default=None)
     parser.add_argument("--epitope-variant-id", default="LC1")
     parser.add_argument("--netmhciipan-bin", default=None)
+    parser.add_argument(
+        "--nmp-mode",
+        choices=["original", "accelerated"],
+        default="accelerated",
+        help=(
+            "NetMHCIIpan invocation mode. 'accelerated' uses the explicit "
+            "--nmp-batch-size / --nmp-max-lengths-per-call / --nmp-workers "
+            "values (default for Phase C). 'original' overrides them to the "
+            "naive baseline (batch_size=1, max_lengths_per_call=14, "
+            "workers=1) to match the IEDB benchmark contract."
+        ),
+    )
     parser.add_argument("--nmp-batch-size", type=int, default=8)
     parser.add_argument("--nmp-workers", type=int, default=1)
     parser.add_argument("--nmp-timeout", type=int, default=600)
@@ -74,6 +86,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Per-residue hotspot threshold for n_hotspot_positions count.",
     )
 
+    parser.add_argument(
+        "--imm-full",
+        action="store_true",
+        help=(
+            "Additionally write per-residue hotspot and per-peptide NMP "
+            "long-tables (imm_head_residues.parquet, imm_nmp_peptides.parquet) "
+            "alongside the existing aggregated imm_head/imm_nmp parquets. "
+            "Default off preserves prior Phase C behavior."
+        ),
+    )
     parser.add_argument("--pdb-root", default=None)
     parser.add_argument("--refold-model", choices=("esmfold", "af3"), default="esmfold")
     parser.add_argument("--tmalign-bin", default="TMalign")
@@ -94,7 +116,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--nmp-batch-size must be positive")
     if args.nmp_workers <= 0:
         parser.error("--nmp-workers must be positive")
+    if args.nmp_mode == "original":
+        # Naive baseline: one protein × all lengths per subprocess, no parallelism.
+        # Matches benchmark_iedb_test.py's --nmp-mode original semantics so that
+        # Phase C aggregates are directly comparable to the IEDB benchmark.
+        args.nmp_batch_size = 1
+        args.nmp_max_lengths_per_call = 14
+        args.nmp_workers = 1
+    args.device = _resolve_device(args.device)
     return args
+
+
+def _resolve_device(requested: str) -> str:
+    """Fall back to CPU when a CUDA device is requested but unavailable.
+
+    Lets the same command line work on both GPU and CPU partitions without
+    forcing callers to override --device manually on CPU-only nodes.
+    """
+    req = str(requested).strip()
+    if not req.startswith("cuda"):
+        return req
+    try:
+        import torch  # local import: keep argparse cold path light
+    except ImportError:
+        print(
+            f"[device] torch not importable; falling back from {req!r} to 'cpu'",
+            file=sys.stderr,
+            flush=True,
+        )
+        return "cpu"
+    if torch.cuda.is_available():
+        return req
+    print(
+        f"[device] CUDA unavailable on this node; falling back from {req!r} to 'cpu'",
+        file=sys.stderr,
+        flush=True,
+    )
+    return "cpu"
 
 
 def build_run_id(args: argparse.Namespace) -> str:
@@ -109,7 +167,12 @@ def build_run_id(args: argparse.Namespace) -> str:
 
 def load_generated_designs(generated_parquet: str | Path) -> pd.DataFrame:
     df = pd.read_parquet(generated_parquet).copy()
-    required = {"protein_id", "design_idx", "sequence", "seed", "wall_seconds"}
+    # Only the three columns below are actually consumed downstream
+    # (protein_id / design_idx for identity, sequence for scoring).
+    # seed / wall_seconds were vestigial Phase C contract fields tracked
+    # by in-house DPLM-based generators; external baselines like
+    # ProteinMPNN don't carry them, so we no longer require them.
+    required = {"protein_id", "design_idx", "sequence"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"generated parquet missing required columns: {sorted(missing)}")
@@ -201,10 +264,19 @@ def evaluate_immunogenicity_rows(
     nmp_batch_size: int = 8,
     progress_every: int = 25,
     hotspot_threshold: float = 0.5,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, Any]]]:
+    full: bool = False,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    list[dict[str, Any]],
+    pd.DataFrame,
+    pd.DataFrame,
+]:
     head_rows: list[dict[str, Any]] = []
     nmp_rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    residue_rows: list[dict[str, Any]] = []
+    peptide_rows: list[dict[str, Any]] = []
 
     total = len(generated_df)
     started = time.time()
@@ -229,6 +301,22 @@ def evaluate_immunogenicity_rows(
                     "n_hotspot_positions": int((hotspot > hotspot_threshold).sum()),
                 }
             )
+            if full:
+                hotspot_arr = hotspot.detach().cpu().numpy() if hasattr(hotspot, "detach") else hotspot
+                sequence_str = str(row.sequence)
+                for residue_idx, value in enumerate(hotspot_arr):
+                    residue_rows.append(
+                        {
+                            "protein_id": str(row.protein_id),
+                            "design_id": str(row.design_id),
+                            "design_idx": int(row.design_idx),
+                            "residue_idx": int(residue_idx),
+                            "residue_aa": sequence_str[residue_idx]
+                            if residue_idx < len(sequence_str)
+                            else "",
+                            "hotspot": float(value),
+                        }
+                    )
         except Exception as exc:  # noqa: BLE001
             failures.append(_failure_row(row, stage="imm_head", reason=f"{type(exc).__name__}:{exc}"))
         if progress_every > 0 and (row_idx % progress_every == 0 or row_idx == total):
@@ -289,6 +377,24 @@ def evaluate_immunogenicity_rows(
                     **agg,
                 }
             )
+            if full and not scores_df.empty:
+                pid = str(row["protein_id"])
+                did = f"design_{int(row['design_idx']):04d}"
+                dix = int(row["design_idx"])
+                for record in scores_df.to_dict("records"):
+                    peptide_rows.append(
+                        {
+                            "protein_id": pid,
+                            "design_id": did,
+                            "design_idx": dix,
+                            "pep_length": int(record["pep_length"]),
+                            "pos": int(record["pos"]),
+                            "peptide": str(record["peptide"]),
+                            "core": str(record["core"]),
+                            "rank_EL": float(record["rank_EL"]),
+                            "el_score": float(record["el_score"]),
+                        }
+                    )
 
         done = min(chunk_start + nmp_batch_size, len(row_records))
         if progress_every > 0 and (done % progress_every == 0 or done == len(row_records)):
@@ -303,7 +409,9 @@ def evaluate_immunogenicity_rows(
 
     head_df = pd.DataFrame(head_rows)
     nmp_df = pd.DataFrame(nmp_rows)
-    return head_df, nmp_df, failures
+    residues_df = pd.DataFrame(residue_rows)
+    peptides_df = pd.DataFrame(peptide_rows)
+    return head_df, nmp_df, failures, residues_df, peptides_df
 
 
 def evaluate_structural_rows(
@@ -523,6 +631,10 @@ def build_manifest(
         "head_ckpt_digest": sha256_file(args.epitope_ckpt) if args.epitope_ckpt else None,
         "nmp_binary_path": str(Path(args.netmhciipan_bin).resolve()) if args.netmhciipan_bin else None,
         "nmp_version_string": probe_nmp_version(args.netmhciipan_bin) if args.netmhciipan_bin else None,
+        "nmp_mode": getattr(args, "nmp_mode", None),
+        "nmp_batch_size": int(args.nmp_batch_size),
+        "nmp_max_lengths_per_call": int(args.nmp_max_lengths_per_call),
+        "nmp_workers": int(args.nmp_workers),
         "git_sha": git_sha(PROJECT_ROOT),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "n_input_designs": int(len(generated_df)),
@@ -566,6 +678,8 @@ def output_paths(run_dir: str | Path) -> dict[str, Path]:
     return {
         "imm_head": run_dir / "imm_head.parquet",
         "imm_nmp": run_dir / "imm_nmp.parquet",
+        "imm_head_residues": run_dir / "imm_head_residues.parquet",
+        "imm_nmp_peptides": run_dir / "imm_nmp_peptides.parquet",
         "structural": run_dir / "structural.parquet",
         "manifest": run_dir / "manifest.json",
         "failures": run_dir / "failures.json",
@@ -640,7 +754,7 @@ def _temp_design_key(protein_id: str, design_idx: int) -> str:
 
 def _scores_by_len_to_dataframe(by_len: dict[int, list[Any]]) -> pd.DataFrame:
     rows = []
-    for scores in by_len.values():
+    for pep_length, scores in by_len.items():
         for score in scores:
             rows.append(
                 {
@@ -649,6 +763,7 @@ def _scores_by_len_to_dataframe(by_len: dict[int, list[Any]]) -> pd.DataFrame:
                     "pos": score.pos,
                     "core": score.core,
                     "el_score": score.el_score,
+                    "pep_length": int(pep_length),
                 }
             )
     return pd.DataFrame(rows)
@@ -718,7 +833,7 @@ def run_mode_imm(
         max_lengths_per_call=args.nmp_max_lengths_per_call,
     )
     started = time.time()
-    head_df, nmp_df, failures = evaluate_immunogenicity_rows(
+    head_df, nmp_df, failures, residues_df, peptides_df = evaluate_immunogenicity_rows(
         generated_df,
         predictor=predictor,
         nmp_runner=nmp_runner,
@@ -727,6 +842,7 @@ def run_mode_imm(
         nmp_batch_size=args.nmp_batch_size,
         progress_every=args.progress_every,
         hotspot_threshold=args.hotspot_threshold,
+        full=bool(getattr(args, "imm_full", False)),
     )
     failed_keys = {
         (row["protein_id"], int(row["design_idx"]))
@@ -743,6 +859,17 @@ def run_mode_imm(
     validate_dataframe(nmp_df, IMMUNOGENICITY_NMP_COLUMNS)
     head_df.to_parquet(paths["imm_head"], index=False)
     nmp_df.to_parquet(paths["imm_nmp"], index=False)
+    if bool(getattr(args, "imm_full", False)):
+        # Long-tables are best-effort: emit even if empty so callers can
+        # detect the run was --imm-full vs aggregate-only.
+        residues_df.to_parquet(paths["imm_head_residues"], index=False)
+        peptides_df.to_parquet(paths["imm_nmp_peptides"], index=False)
+        print(
+            f"[imm-full] wrote {len(residues_df)} residue rows -> "
+            f"{paths['imm_head_residues'].name}, {len(peptides_df)} peptide rows -> "
+            f"{paths['imm_nmp_peptides'].name}",
+            flush=True,
+        )
     return len(head_df), time.time() - started, failures
 
 

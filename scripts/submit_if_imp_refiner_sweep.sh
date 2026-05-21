@@ -33,6 +33,8 @@
 #       bash scripts/submit_if_imp_refiner_sweep.sh
 
 set -euo pipefail
+: "${PS1:=}"
+export PS1
 
 : "${CHECKPOINT:?set CHECKPOINT to the DPLM Module K .ckpt}"
 : "${REFINER_CHECKPOINT:?set REFINER_CHECKPOINT to the trained refiner .pt}"
