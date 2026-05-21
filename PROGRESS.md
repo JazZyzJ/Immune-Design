@@ -169,23 +169,33 @@
 
 ## Phase C: Core Contribution — Reference Flow (NEW, 2026-04-07)
 
-- **Status**: C0/C1 **code ready, cluster not run**. C2/C3 still stubbed.
-- **Math foundation**: `doc/Reference_Flow_Derivation.md` — Tasks 0, A, C complete; Task B framework complete; §4.3.1 added 2026-05-08 documenting that the inference-time reparam refinement is *not* part of the DFM derivation
-- **Planned tiers**: C0 (unguided baseline) → C1 (sampling-only) → C2 (retrain) → C3 (FiLM+CFG)
+- **Status**: C0/C1 **code ready, cluster not run**. C2/C3 still stubbed. **D1 monitor-only controller code ready (2026-05-21)**, cluster smoke pending.
+- **Math foundation**: `doc/Reference_Flow_Derivation.md` — Tasks 0, A, C complete; Task B framework complete; §4.3.1 added 2026-05-08 documenting that the inference-time reparam refinement is *not* part of the DFM derivation; §4.7 D1-D5 reworked 2026-05-11/12 (L0082, L0083) so Task D is a continuous controller design (active blocks + hard counterfactual logits + residue-level EMA recommit).
+- **Planned tiers**: C0 (unguided baseline) → C1 (sampling-only) → C2 (retrain) → C3 (FiLM+CFG). **Phase D** layers on top: D1 monitor-only (now implemented) → D2 hard counterfactual logits → D3 EMA commit/revisit → D4 dyn-schedule (deferred).
 - **Implemented now**:
   - `inverse_folding/reference_flow/` package: YAML-validated config schema, base schedules + derivatives, amplification forms (`constant_one`, `linear_clamp`, `sigmoid`, `power`), per-protein h-shuffle control, denoiser-agnostic `PositionDependentDFMSampler`, and (2026-05-08) optional DPLM-style reparam re-mask refinement (`SamplerConfig.remask`)
   - preset YAML scaffolds: `c1_null`, `c1_linclamp`, `c1_sigmoid`, `c1_power`, `c1_shuffle` — all on n_steps=100 + remask=true (2026-05-08, aligned with DPLM paper inverse-folding eval default)
   - C0/C1 drivers: `scripts/run_if_phase_c0.py`, `scripts/run_if_phase_c1.py` (C1 now does h_maps↔test-set md5 alignment check at startup, fail-fast)
   - shared Phase C SLURM: `scripts/submit_if_phase_c.slurm` (`MODE=native|reference_flow`); MAX_ITER default 100 (was 50)
   - h_maps schema includes `sequence_md5` column (2026-05-08); old h_map parquets must be regenerated
-  - tests: schedule / amplification / sampler / config / remask / md5 alignment / C0 artifact contract (**45 passing in reference_flow + h_maps + c1 helper suites**)
+  - **D1 monitor-only controller (2026-05-21, L0092)**:
+    - `inverse_folding/reference_flow/controller_config.py` — strict D1 YAML schema with `controller_config_hash` provenance helper; preset `configs/d1_monitor.yaml`
+    - `inverse_folding/reference_flow/head_scoring.py` — `OnlineHeadScorer` + `StaticWindowCache` (parquet + sidecar meta), fail-fast on `(seq_md5, allele, checkpoint_digest, head_config_hash, score_scale, window_k_min, window_k_max)` drift
+    - `inverse_folding/reference_flow/controller.py` — `D1MonitorController` with refresh gating (`t_start`, `refresh_interval`), hard completion, window→block geometry (single / overlap / transitive merge), reliability factors (`g_time × g_comp × g_ent × g_ESS`)
+    - `inverse_folding/reference_flow/sampler.py` — accepts optional `controller`; hook called between NaN check and unmask sampling; `controller=None` reproduces existing per-step trajectory bit-for-bit
+    - `epitope_head/inference/predictor.py` — added `predict_proteins(records, allele_idx, window_batch_size)` ordered batch facade reusing one model
+    - `scripts/run_if_phase_c1.py` extended with `--controller-config` + `--head-*` flags; emits `refresh_log.jsonl`, `controller_events.parquet`, `per_protein_summary.json`, `static_window_cache.{parquet,meta.json}` when D1 enabled; manifest gains 12 controller + head provenance fields. C1 generated.parquet schema unchanged.
+    - `scripts/submit_if_phase_c.slurm` exposes `CONTROLLER_CONFIG`, `HEAD_CHECKPOINT`, `HEAD_CONFIG_DIR`, `HEAD_VARIANT_ID`, `HEAD_DEVICE`, `HEAD_WINDOW_BATCH_SIZE`, `HEAD_ALLELE_IDX` (also fixed a pre-existing missing line-continuation that was silently dropping EXTRA_FLAGS / WANDB_ARGS in reference_flow mode)
+  - tests: schedule / amplification / sampler / config / remask / md5 alignment / C0 artifact contract + **D1 contract suites (controller_config, head_scoring, d1_controller, sampler_controller, batch_predictor, run_if_phase_c1_d1)** — **83 passing in reference_flow + epitope_head + scripts suites, 50 of them new for D1**
 - **Acceptance status**:
   - TDD gates for C0/C1 contract layer: **pass**
-  - Existing Phase B + Module L contract suites: still green after Phase C changes (**46 passing**)
-  - End-to-end allele run on Della: **pending — must regenerate h_maps with sequence_md5 first**
+  - TDD gates for D1 monitor-only controller (T1-T6): **pass** (50/50)
+  - Existing Phase B + Module L contract suites: still green after D1 changes (**83 passing across reference_flow + epitope_head + script tests**)
+  - End-to-end allele run on Della: **pending — must regenerate h_maps with sequence_md5 first; D1 also needs cluster smoke against a real epitope-head checkpoint to confirm the head decode path under DPLM tokenizer**
 - **Operational note**:
   - C0 can run immediately on the assembled IF test set + B1 structures.
   - C1 actual experiment runs still depend on B2 test-set h-maps being materialized for the target allele; `h_normalized_corpus` arms additionally need B3 corpus stats sidecar.
+  - **D1 monitor-only is enabled by passing `CONTROLLER_CONFIG=inverse_folding/reference_flow/configs/d1_monitor.yaml` plus `HEAD_CHECKPOINT=<best.pt>` / `HEAD_VARIANT_ID=<v>` to `scripts/submit_if_phase_c.slurm` under `MODE=reference_flow`. Empty `CONTROLLER_CONFIG` falls back to vanilla C1 (bit-equivalent to pre-D1).**
   - **2026-05-08 schema bump**: every existing h_maps parquet must be re-generated to include `sequence_md5` before C1 will load it; the c1 driver fails fast on missing or mismatching md5.
 
 ### Experimental results (TBD — fill per run after cluster completes)

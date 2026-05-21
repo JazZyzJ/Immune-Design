@@ -38,6 +38,9 @@ class PositionDependentDFMSampler:
         struct: Any = None,
         save_trajectories: bool = False,
         shuffle_seed: int | None = None,
+        controller: Any | None = None,
+        protein_id: str = "",
+        design_idx: int = 0,
     ) -> SamplerOutput:
         if sequence_length <= 0:
             raise ValueError("sequence_length must be positive")
@@ -79,6 +82,24 @@ class PositionDependentDFMSampler:
                 )
             if torch.isnan(logits).any():
                 raise FloatingPointError(f"NaN logits encountered at step={step} t={t:.6f}")
+
+            if controller is not None:
+                # Local import to avoid pulling controller deps when unused.
+                from .controller import SamplerStepContext
+
+                ctx = SamplerStepContext(
+                    x_t=x_t.detach().clone(),
+                    logits=logits,
+                    scores=scores.copy(),
+                    step=step,
+                    t=t,
+                    mask_token_id=self.mask_token_id,
+                    protein_id=protein_id,
+                    design_idx=design_idx,
+                    sequence_length=sequence_length,
+                )
+                result = controller.step(ctx)
+                logits = result.logits
 
             last_logits = logits.detach().cpu()
             probs = positionwise_unmask_probabilities(

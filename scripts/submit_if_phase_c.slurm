@@ -61,6 +61,17 @@ SAVE_TRAJECTORIES="${SAVE_TRAJECTORIES:-0}"
 H_CORPUS_STATS="${H_CORPUS_STATS:-}"
 FLAG="${FLAG:-}"
 
+# Phase D1 controller wiring (optional; only consumed by MODE=reference_flow).
+# CONTROLLER_CONFIG empty → controller is disabled and the head flags are
+# ignored.
+CONTROLLER_CONFIG="${CONTROLLER_CONFIG:-}"
+HEAD_CHECKPOINT="${HEAD_CHECKPOINT:-}"
+HEAD_CONFIG_DIR="${HEAD_CONFIG_DIR:-${PROJECT_ROOT}/epitope_head/configs}"
+HEAD_VARIANT_ID="${HEAD_VARIANT_ID:-}"
+HEAD_DEVICE="${HEAD_DEVICE:-cpu}"
+HEAD_WINDOW_BATCH_SIZE="${HEAD_WINDOW_BATCH_SIZE:-}"
+HEAD_ALLELE_IDX="${HEAD_ALLELE_IDX:-0}"
+
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
 module purge
@@ -160,6 +171,15 @@ case "${MODE}" in
         echo "  N steps         : ${N_STEPS:-<from config>}"
         echo "  h corpus stats  : ${H_CORPUS_STATS:-<none>}"
         echo "  Resume from     : ${RESUME_FROM:-<fresh run>}"
+        echo "  Controller YAML : ${CONTROLLER_CONFIG:-<disabled>}"
+        if [[ -n "${CONTROLLER_CONFIG}" ]]; then
+            echo "  Head checkpoint : ${HEAD_CHECKPOINT:-<missing>}"
+            echo "  Head config dir : ${HEAD_CONFIG_DIR}"
+            echo "  Head variant    : ${HEAD_VARIANT_ID:-<missing>}"
+            echo "  Head device     : ${HEAD_DEVICE}"
+            echo "  Head WBS        : ${HEAD_WINDOW_BATCH_SIZE:-<predictor default>}"
+            echo "  Head allele idx : ${HEAD_ALLELE_IDX}"
+        fi
         EXTRA_FLAGS=()
         if [[ -n "${H_CORPUS_STATS}" ]]; then
             EXTRA_FLAGS+=(--h-corpus-stats "${H_CORPUS_STATS}")
@@ -179,6 +199,21 @@ case "${MODE}" in
         if [[ -n "${N_STEPS:-}" ]]; then
             EXTRA_FLAGS+=(--n-steps "${N_STEPS}")
         fi
+        if [[ -n "${CONTROLLER_CONFIG}" ]]; then
+            EXTRA_FLAGS+=(--controller-config "${CONTROLLER_CONFIG}")
+            if [[ -n "${HEAD_CHECKPOINT}" ]]; then
+                EXTRA_FLAGS+=(--head-checkpoint "${HEAD_CHECKPOINT}")
+            fi
+            EXTRA_FLAGS+=(--head-config-dir "${HEAD_CONFIG_DIR}")
+            if [[ -n "${HEAD_VARIANT_ID}" ]]; then
+                EXTRA_FLAGS+=(--head-variant-id "${HEAD_VARIANT_ID}")
+            fi
+            EXTRA_FLAGS+=(--head-device "${HEAD_DEVICE}")
+            EXTRA_FLAGS+=(--head-allele-idx "${HEAD_ALLELE_IDX}")
+            if [[ -n "${HEAD_WINDOW_BATCH_SIZE}" ]]; then
+                EXTRA_FLAGS+=(--head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}")
+            fi
+        fi
 
         python -u "${PROJECT_ROOT}/scripts/run_if_phase_c1.py" \
             --checkpoint "${CHECKPOINT}" \
@@ -190,7 +225,7 @@ case "${MODE}" in
             --output-root "${OUTPUT_ROOT}" \
             --device "${DEVICE}" \
             --fail-pct-threshold "${FAIL_PCT_THRESHOLD}" \
-            --flag-name "${FLAG}"
+            --flag-name "${FLAG}" \
             "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
             "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;

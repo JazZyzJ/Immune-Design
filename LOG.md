@@ -2660,3 +2660,47 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN_IF_ENCODER.md`
   - `L0090`
+
+
+### L0092
+- timestamp: 2026-05-21T15:30:00+08:00
+- type: FEATURE
+- module: PHASE_D
+- trigger: PLAN_RF.md Phase D Task D1 (monitor-only reliability-gated online refresh + active blocks) was upgraded from STUB to a full implementation contract; D0 telemetry schema frozen. User instructed coder to implement strictly per the plan, working directly on `dev_head` (worktree path was tried and abandoned mid-T1 per user preference).
+- change_summary: Built the Phase D1 monitor-only adaptive controller scaffold without touching C1 logits, schedule, or remask ranking. Seven sub-tasks (T1-T7), each driven by RED→GREEN TDD:
+  - T1 `inverse_folding/reference_flow/controller_config.py` + `configs/d1_monitor.yaml` — YAML schema with strict D1 validators (mode==monitor_only, completion==argmax, score_scale==raw_logit, selection==threshold_then_top_n, max_windows>0, t_start in [0,1], refresh_interval>0), `enabled=false` short-circuit, deterministic `controller_config_hash`.
+  - T2 `epitope_head/inference/predictor.py` — added optional `window_batch_size` to `predict_protein`, plus `predict_proteins(records, allele_idx, window_batch_size)` ordered batch facade reusing one model instance.
+  - T3 `inverse_folding/reference_flow/head_scoring.py` — `WindowRiskRecord` / `HeadScore` / `BatchHeadScores` / `OnlineHeadScorer` + `StaticWindowCache`. Static cache keyed by `(protein_id, sequence_md5, allele, head_checkpoint_digest, head_config_hash, score_scale, window_k_min, window_k_max)`; parquet + sidecar `meta.json` schema mirrors B2 h-map; fail-fast on any meta drift; cache hit avoids double head call.
+  - T4 `inverse_folding/reference_flow/controller.py` — `D1MonitorController` with refresh gating (`t_start`, `refresh_interval`), hard completion (committed kept; masked → argmax), window-level excess `max(0, z_dyn - z_static - τ_W)`, threshold-then-top-N active window selection, connected-component span merge (transitive overlap), reliability factors (`g_time` sigmoid ramp, `g_comp` with `min_completion_fraction` cutoff, `g_ent = exp(-mean_entropy/h0)`, `g_ESS = 1.0` in D1), `WindowMismatchError` on `(start,end,k)` drift, telemetry buffers for refresh records and monitor event rows.
+  - T5 `inverse_folding/reference_flow/sampler.py` — added optional `controller`, `protein_id`, `design_idx` kwargs. Hook called between NaN check and unmask sampling; receives `x_t.clone()` so a mutating controller cannot corrupt sampler state; `controller=None` reproduces existing per-step trajectory bit-for-bit.
+  - T6 `scripts/run_if_phase_c1.py` — `ControllerSetup` dataclass, `load_controller_setup` (parses `--controller-config` + head flags; SystemExit when enabled-but-missing flags), `compute_per_protein_summary` (D2/D3 fields nullable for D1), `write_d1_artifacts` (writes `refresh_log.jsonl`, `controller_events.parquet`, `per_protein_summary.json` plus an empty parquet when no events), `d1_manifest_provenance` (controller mode/hash, head provenance, window k-range, cache paths). `main()` builds the head scorer ONCE per process, instantiates a fresh `D1MonitorController` per `(protein_id, design_idx)`, accumulates telemetry across designs, and flushes `static_window_cache.{parquet,meta.json}` at the end. CPU OOM retry rebuilds a fresh controller for the CPU sample.
+  - T7 `scripts/submit_if_phase_c.slurm` — exposed `CONTROLLER_CONFIG`, `HEAD_CHECKPOINT`, `HEAD_CONFIG_DIR`, `HEAD_VARIANT_ID`, `HEAD_DEVICE`, `HEAD_WINDOW_BATCH_SIZE`, `HEAD_ALLELE_IDX` env vars under `MODE=reference_flow`. Empty `CONTROLLER_CONFIG` → controller disabled and head flags ignored (vanilla C1 path preserved). Fixed a pre-existing missing `\` line-continuation after `--flag-name "${FLAG}"` that silently dropped `EXTRA_FLAGS` and `WANDB_ARGS` whenever they were non-empty. Registered the D1 extension in `doc/SCRIPTS.md` Phase C section.
+- rationale: §4.7 D1 (hard completion → online refresh → active blocks → reliability gates) sits entirely outside the denoiser, so no C2 retrain and no C3 conditioning are required — implementing D1 as a callable hook layered on the existing C1 sampler is the minimum-blast-radius path that still produces the D0 priority metrics. The strict D1 config-validator (only `monitor_only` / `argmax` / `raw_logit` / `threshold_then_top_n` accepted) keeps the schema honest about what D1 actually supports; D2/D3 will widen the enums when they ship. Static window-score cache is required because B2 h-map artifacts intentionally do not store per-window logits (sidecar JSON has only residue-level h_raw/h_processed/global_risk/n_windows), so D1 must lazily build window-level static scores once per protein and reuse them across designs.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/controller_config.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/d1_monitor.yaml`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/head_scoring.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/controller.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/sampler.py`
+  - `/Users/jerry/Project/MHC-IF/epitope_head/inference/predictor.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_phase_c1.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_phase_c.slurm`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_controller_config.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_head_scoring.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_d1_controller.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_sampler_controller.py`
+  - `/Users/jerry/Project/MHC-IF/tests/epitope_head/inference/test_batch_predictor.py`
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_run_if_phase_c1_d1.py`
+  - `/Users/jerry/Project/MHC-IF/.gitignore` (added `.worktrees/`)
+- evidence: `PYTHONPATH=inverse_folding/dplm/src pytest tests/inverse_folding/test_reference_flow_{schedule,amplification,sampler,config,runtime,controller_config,head_scoring,d1_controller,sampler_controller}.py tests/epitope_head/inference/test_batch_predictor.py tests/scripts/test_run_if_phase_c1_d1.py tests/scripts/test_run_if_phase_c1_script.py tests/scripts/test_run_if_phase_c0_script.py` → **83 passed, 1 pre-existing warning** (amplification g_max_cap warning, unrelated). New tests: 12 (T1) + 4 (T2) + 6 (T3) + 14 (T4) + 6 (T5) + 8 (T6) = **50 new tests**, all green. `bash -n scripts/submit_if_phase_c.slurm` clean. `python -c "import scripts.run_if_phase_c1"` clean. C1 sampler bit-equivalent under `controller=None` (verified by `test_controller_none_keyword_accepted_and_default_behavior_preserved`).
+- impact:
+  - scope: Phase D entry point. With `--controller-config` unset, `scripts/run_if_phase_c1.py` and `scripts/submit_if_phase_c.slurm` are bit-equivalent to pre-D1. With `--controller-config inverse_folding/reference_flow/configs/d1_monitor.yaml` plus head flags, the run emits 4 new D1 telemetry artifacts (`refresh_log.jsonl`, `controller_events.parquet`, `per_protein_summary.json`, `static_window_cache.{parquet,meta.json}`) and adds 12 controller / head provenance fields to the manifest; `generated.parquet` schema is unchanged.
+  - risk: medium. Cluster smoke not yet executed. Head model is loaded once per process — if the inference config's `min_k/max_k` differs from the controller cache's expected range the cache will fail-fast on the second run with a clear meta-mismatch error. The hard-completion sequence reconstruction in `D1MonitorController._build_hard_completion` uses `decode_residue_tokens(used_task, ...)` per refresh; if a step's structural logits contain non-residue tokens that the DPLM wrapper hasn't masked the head will receive a non-canonical AA character and may error — this case has not been exercised against the production DPLM denoiser yet.
+  - confidence: 0.85
+- status: done
+- next_action: On Della cluster: (1) run `MODE=reference_flow CONTROLLER_CONFIG=inverse_folding/reference_flow/configs/d1_monitor.yaml HEAD_CHECKPOINT=<best.pt> HEAD_VARIANT_ID=<v> sbatch scripts/submit_if_phase_c.slurm` against a 2-protein smoke subset and verify all 4 D1 telemetry artifacts appear with non-empty refresh records; (2) compare `generated.parquet` against a `CONTROLLER_CONFIG=""` baseline run with the same `--seed` to confirm sequences are bit-equivalent; (3) compute the D0 priority metrics (static-dynamic drift, new hotspot rate, risk volatility, active block coverage, head risk trajectory) from D1 artifacts as a smoke for D2/D3 planning. Once D1 baselines are clean, start D2 (hard counterfactual logits) and D3 (residue-level EMA recommit) per PLAN_RF.md.
+- refs:
+  - `PLAN_RF.md` Task D0 (telemetry contract), Task D1 (monitor-only implementation), Task D3 STUB (route A/B deferred decision)
+  - `doc/Reference_Flow_Derivation.md` §4.7 D1, §4.9 (training-side support justification)
+  - `L0082`, `L0083` (Task D theory updates that motivated this implementation)

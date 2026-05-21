@@ -21,6 +21,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from dataclasses import asdict, dataclass
+
 from inverse_folding.evaluation.h_maps import load_h_maps, sequence_md5
 from inverse_folding.reference_flow import (
     PositionDependentDFMSampler,
@@ -29,7 +31,297 @@ from inverse_folding.reference_flow import (
     reference_flow_config_to_dict,
     with_reference_flow_overrides,
 )
+from inverse_folding.reference_flow.controller import (
+    D1MonitorController,
+    D1RefreshRecord,
+)
+from inverse_folding.reference_flow.controller_config import (
+    ControllerConfig,
+    controller_config_hash,
+    controller_config_to_dict,
+    load_controller_config,
+)
+from inverse_folding.reference_flow.head_scoring import OnlineHeadScorer
 from scripts.run_if_phase_c0 import _fmt_hms, write_phase_c_outputs
+
+
+# ============================================================
+# Phase D1 helpers (controller setup, telemetry writers,
+# manifest provenance). Kept as module-level helpers so the
+# unit tests can exercise them without booting DPLM.
+# ============================================================
+
+
+@dataclass(frozen=True)
+class ControllerSetup:
+    """Resolved D-phase controller setup loaded from CLI + YAML."""
+
+    config: ControllerConfig
+    config_path: Path
+    config_hash: str
+    head_checkpoint: Path
+    head_config_dir: Path
+    head_variant_id: str
+    head_device: str
+    head_window_batch_size: int | None
+    head_allele_idx: int
+    allele: str
+
+
+def _compute_head_config_hash(config_dir: Path) -> str:
+    """SHA-256 over the three head config YAMLs in order (model/ablation/inference)."""
+    h = hashlib.sha256()
+    for fname in ("model.yaml", "model_ablation.yaml", "inference.yaml"):
+        path = Path(config_dir) / fname
+        if path.exists():
+            h.update(path.read_bytes())
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
+    """Resolve --controller-config + head flags into a ControllerSetup.
+
+    Returns None if the controller is not requested or if the loaded YAML has
+    ``enabled=False``. Calls ``sys.exit`` (via parser.error semantics) when the
+    controller is enabled but the required head flags are missing.
+    """
+    config_path = getattr(args, "controller_config", None)
+    if not config_path:
+        return None
+    config = load_controller_config(config_path)
+    if not config.enabled:
+        return None
+
+    missing = []
+    if not getattr(args, "head_checkpoint", None):
+        missing.append("--head-checkpoint")
+    if not getattr(args, "head_config_dir", None):
+        missing.append("--head-config-dir")
+    if not getattr(args, "head_variant_id", None):
+        missing.append("--head-variant-id")
+    if missing:
+        print(
+            "ERROR: --controller-config enabled but required head flags missing: "
+            + ", ".join(missing),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    return ControllerSetup(
+        config=config,
+        config_path=Path(config_path).resolve(),
+        config_hash=controller_config_hash(config),
+        head_checkpoint=Path(args.head_checkpoint).resolve(),
+        head_config_dir=Path(args.head_config_dir).resolve(),
+        head_variant_id=str(args.head_variant_id),
+        head_device=str(getattr(args, "head_device", "cpu")),
+        head_window_batch_size=(
+            int(args.head_window_batch_size)
+            if getattr(args, "head_window_batch_size", None) is not None
+            else None
+        ),
+        head_allele_idx=int(getattr(args, "head_allele_idx", 0)),
+        allele=str(getattr(args, "allele", "")),
+    )
+
+
+def compute_per_protein_summary(
+    *,
+    protein_id: str,
+    design_idx: int,
+    seed: int,
+    allele: str,
+    arm: str,
+    refresh_records: list[D1RefreshRecord],
+    event_rows: list[dict],
+) -> dict[str, Any]:
+    """Aggregate one design's controller telemetry into per_protein_summary fields.
+
+    D2/D3 fields are present but zero because D1 is monitor-only.
+    """
+    n_active_windows_per_refresh = [
+        sum(1 for e in r.window_excess if e > 0.0) for r in refresh_records
+    ]
+    total_active_windows = sum(n_active_windows_per_refresh)
+    total_new_hotspots = sum(int(r.new_hotspot_count) for r in refresh_records)
+    new_hotspot_rate = (
+        total_new_hotspots / float(total_active_windows)
+        if total_active_windows > 0
+        else 0.0
+    )
+    new_hotspot_static_threshold = 0.0  # D1: same as excess_threshold; refresh records carry the value implicitly
+    if refresh_records:
+        # All refresh records share the controller config; pull from the first.
+        new_hotspot_static_threshold = (
+            0.0  # placeholder; controller does not carry the threshold in the record,
+        )
+        # but the D1 step explicitly uses active_windows.excess_threshold for both,
+        # so the summary records the runtime-resolved value via the caller. We keep
+        # this field key here for schema completeness; the run-time caller may
+        # update it post-hoc through the manifest if desired.
+
+    return {
+        "protein_id": protein_id,
+        "design_idx": int(design_idx),
+        "seed": int(seed),
+        "allele": str(allele),
+        "arm": str(arm),
+        "n_refreshes": len(refresh_records),
+        "n_active_blocks_total": int(
+            sum(len(r.active_blocks) for r in refresh_records)
+        ),
+        "new_hotspot_rate": float(new_hotspot_rate),
+        "new_hotspot_static_threshold": float(new_hotspot_static_threshold),
+        "candidate_feasibility_rate": 0.0,  # D2 field
+        "total_D2_events": 0,
+        "total_D3_events": 0,
+        "total_corrected_positions": 0,
+        "total_recommits": 0,
+        "total_KL_budget": 0.0,
+        "productive_revisit_immune_only": None,
+        "productive_revisit_structure_only": None,
+        "productive_revisit_joint": None,
+        "churn_rate": None,
+        "same_refresh_conflict_rate": None,
+        "head_regression_flag": None,
+        "nmp_regression_flag": None,
+        "structure_regression_flag": None,
+        "active_block_mutation_count": None,
+    }
+
+
+def _refresh_record_to_jsonable(record: D1RefreshRecord) -> dict[str, Any]:
+    payload = asdict(record)
+    # asdict converts dataclass tuples to tuples; json dumps them as lists fine.
+    return payload
+
+
+def write_d1_artifacts(
+    *,
+    run_dir: Path,
+    refresh_records_all: list[D1RefreshRecord],
+    event_rows_all: list[dict],
+    per_protein_summaries: list[dict],
+) -> None:
+    """Write refresh_log.jsonl, controller_events.parquet, per_protein_summary.json."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    refresh_log = run_dir / "refresh_log.jsonl"
+    with open(refresh_log, "w") as f:
+        for record in refresh_records_all:
+            f.write(json.dumps(_refresh_record_to_jsonable(record), default=str))
+            f.write("\n")
+
+    events_parquet = run_dir / "controller_events.parquet"
+    if event_rows_all:
+        pd.DataFrame(event_rows_all).to_parquet(events_parquet, index=False)
+    else:
+        # Touch an empty parquet so downstream tooling can rely on the file
+        # existing in every D1 run directory.
+        pd.DataFrame(
+            columns=[
+                "protein_id", "design_idx", "refresh_step", "step", "t",
+                "event_type", "block_id", "residue_start_0b", "residue_end_0b",
+                "rho_B", "g_time", "g_comp", "g_ent", "g_ESS", "reason",
+            ]
+        ).to_parquet(events_parquet, index=False)
+
+    summary_json = run_dir / "per_protein_summary.json"
+    with open(summary_json, "w") as f:
+        json.dump({"summaries": per_protein_summaries}, f, indent=2, sort_keys=True)
+
+
+def d1_manifest_provenance(
+    setup: ControllerSetup,
+    *,
+    static_cache_path: Path | None,
+    static_cache_meta_path: Path | None,
+    window_k_min: int,
+    window_k_max: int,
+) -> dict[str, Any]:
+    """Return manifest additions for a D1 run.
+
+    Captures every value needed to detect controller / head config drift on a
+    resumed run independently of the C1 reference-flow config.
+    """
+    head_config_hash = _compute_head_config_hash(setup.head_config_dir)
+    head_checkpoint_digest = ""
+    if setup.head_checkpoint.exists():
+        h = hashlib.sha256()
+        with open(setup.head_checkpoint, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        head_checkpoint_digest = h.hexdigest()
+    return {
+        "controller_mode": setup.config.mode,
+        "controller_config": controller_config_to_dict(setup.config),
+        "controller_config_hash": setup.config_hash,
+        "controller_config_path": str(setup.config_path),
+        "head_checkpoint_path": str(setup.head_checkpoint),
+        "head_checkpoint_digest": head_checkpoint_digest,
+        "head_variant_id": setup.head_variant_id,
+        "head_config_dir": str(setup.head_config_dir),
+        "head_config_hash": head_config_hash,
+        "head_device": setup.head_device,
+        "head_allele_idx": setup.head_allele_idx,
+        "head_window_batch_size": setup.head_window_batch_size,
+        "window_k_min": int(window_k_min),
+        "window_k_max": int(window_k_max),
+        "static_window_cache_path": (
+            str(static_cache_path) if static_cache_path is not None else None
+        ),
+        "static_window_cache_meta_path": (
+            str(static_cache_meta_path) if static_cache_meta_path is not None else None
+        ),
+    }
+
+
+def build_head_scorer(
+    setup: ControllerSetup,
+    *,
+    window_k_min: int,
+    window_k_max: int,
+    static_cache_path: Path | None = None,
+    static_cache_meta_path: Path | None = None,
+    static_cache_policy: str = "lazy_write",
+) -> OnlineHeadScorer:
+    """Construct the production InferencePredictor and wrap it in OnlineHeadScorer.
+
+    Called ONCE per process (when the controller is enabled). The head model is
+    reused across all proteins and designs.
+    """
+    # Local import keeps the script importable without the head deps in unit tests.
+    from epitope_head.configs import (
+        load_ablation_config,
+        load_inference_config,
+        load_model_config,
+    )
+    from scripts.infer_v1 import build_predictor
+
+    predictor = build_predictor(
+        model_cfg=load_model_config(setup.head_config_dir / "model.yaml"),
+        ablation_cfg=load_ablation_config(setup.head_config_dir / "model_ablation.yaml"),
+        inference_cfg=load_inference_config(setup.head_config_dir / "inference.yaml"),
+        variant_id=setup.head_variant_id,
+        checkpoint_path=setup.head_checkpoint,
+        device=setup.head_device,
+    )
+    return OnlineHeadScorer(
+        predictor=predictor,
+        allele=setup.allele,
+        allele_idx=setup.head_allele_idx,
+        head_checkpoint_digest=hashlib.sha256(
+            setup.head_checkpoint.read_bytes()
+        ).hexdigest() if setup.head_checkpoint.exists() else "",
+        head_config_hash=_compute_head_config_hash(setup.head_config_dir),
+        score_scale=setup.config.head.score_scale,
+        window_k_min=int(window_k_min),
+        window_k_max=int(window_k_max),
+        static_cache_path=static_cache_path,
+        static_cache_meta_path=static_cache_meta_path,
+        static_cache_policy=static_cache_policy,
+        window_batch_size=setup.head_window_batch_size,
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -65,6 +357,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Allow writing into an existing non-empty run_dir (default: refuse unless resuming).",
     )
+
+    # Phase D controller wiring (optional). When --controller-config is supplied
+    # and the YAML has enabled=true, the D1 monitor-only controller is layered
+    # on top of the C1 sampler without changing logits, schedule, or remask.
+    parser.add_argument(
+        "--controller-config",
+        default=None,
+        help="Phase D controller YAML (e.g. inverse_folding/reference_flow/configs/d1_monitor.yaml).",
+    )
+    parser.add_argument("--head-checkpoint", default=None)
+    parser.add_argument(
+        "--head-config-dir",
+        default=None,
+        help="Directory containing model.yaml / model_ablation.yaml / inference.yaml.",
+    )
+    parser.add_argument("--head-variant-id", default=None)
+    parser.add_argument("--head-device", default="cpu")
+    parser.add_argument("--head-window-batch-size", type=int, default=None)
+    parser.add_argument("--head-allele-idx", type=int, default=0)
 
     from inverse_folding.observability import add_wandb_cli_args
 
@@ -449,6 +760,40 @@ def main(argv: list[str] | None = None) -> int:
         vocab_size=len(task.alphabet),
     )
 
+    # Phase D1 controller wiring. Built ONCE per process when enabled; reused
+    # across all proteins and designs. Telemetry buffers accumulate across
+    # designs and are flushed at the end of the run.
+    controller_setup = load_controller_setup(args)
+    head_scorer: OnlineHeadScorer | None = None
+    static_cache_path: Path | None = None
+    static_cache_meta_path: Path | None = None
+    refresh_records_all: list[D1RefreshRecord] = []
+    event_rows_all: list[dict] = []
+    per_protein_summaries: list[dict] = []
+    window_k_min_resolved = 0
+    window_k_max_resolved = 0
+    if controller_setup is not None:
+        static_cache_path = run_dir / "static_window_cache.parquet"
+        static_cache_meta_path = run_dir / "static_window_cache.meta.json"
+        # Resolve window range from the inference config so the cache key
+        # matches the predictor's enumeration. Reading raw YAML avoids a hard
+        # import of epitope_head.configs in unit tests.
+        inf_yaml = controller_setup.head_config_dir / "inference.yaml"
+        if inf_yaml.exists():
+            with open(inf_yaml) as f:
+                inf_payload = yaml.safe_load(f) or {}
+            inf_section = inf_payload.get("inference", {}) if isinstance(inf_payload, dict) else {}
+            window_k_min_resolved = int(inf_section.get("min_k", 12))
+            window_k_max_resolved = int(inf_section.get("max_k", 25))
+        head_scorer = build_head_scorer(
+            controller_setup,
+            window_k_min=window_k_min_resolved,
+            window_k_max=window_k_max_resolved,
+            static_cache_path=static_cache_path,
+            static_cache_meta_path=static_cache_meta_path,
+            static_cache_policy="lazy_write",
+        )
+
     resume_signature = {
         "mode": "c1_reference_flow",
         "allele": args.allele,
@@ -508,6 +853,20 @@ def main(argv: list[str] | None = None) -> int:
 
             design_seed = int(config.sampler.seed) + int(design_idx)
             used_task = task
+
+            def _build_d1_controller(task_for_decode):
+                if controller_setup is None or head_scorer is None:
+                    return None
+                return D1MonitorController(
+                    protein_id=protein_id,
+                    design_idx=int(design_idx),
+                    static_sequence=str(entry["sequence"]),
+                    scorer=head_scorer,
+                    config=controller_setup.config,
+                    decode_tokens=lambda toks: decode_residue_tokens(task_for_decode, toks),
+                )
+
+            d1_controller = _build_d1_controller(task)
             try:
                 started = time.time()
                 prepared = prepare_backbone(
@@ -535,6 +894,9 @@ def main(argv: list[str] | None = None) -> int:
                         if config.h_shuffle.enabled
                         else None
                     ),
+                    controller=d1_controller,
+                    protein_id=protein_id,
+                    design_idx=int(design_idx),
                 )
             except RuntimeError as exc:
                 if _is_oom(exc) and str(args.device).startswith("cuda"):
@@ -550,6 +912,7 @@ def main(argv: list[str] | None = None) -> int:
                             device="cpu",
                         )
                         context = build_dplm_denoiser_context(task=cpu_task, prepared=prepared)
+                        d1_controller = _build_d1_controller(cpu_task)
                         out = sampler.sample(
                             sequence_length=sequence_length,
                             h_values=h_values,
@@ -568,6 +931,9 @@ def main(argv: list[str] | None = None) -> int:
                                 if config.h_shuffle.enabled
                                 else None
                             ),
+                            controller=d1_controller,
+                            protein_id=protein_id,
+                            design_idx=int(design_idx),
                         )
                     except Exception as retry_exc:  # noqa: BLE001
                         failures.append(
@@ -623,6 +989,22 @@ def main(argv: list[str] | None = None) -> int:
                             **row,
                         }
                     )
+            if d1_controller is not None:
+                design_refreshes = d1_controller.refresh_records()
+                design_events = d1_controller.controller_event_rows()
+                refresh_records_all.extend(design_refreshes)
+                event_rows_all.extend(design_events)
+                per_protein_summaries.append(
+                    compute_per_protein_summary(
+                        protein_id=protein_id,
+                        design_idx=int(design_idx),
+                        seed=design_seed,
+                        allele=args.allele,
+                        arm="d1_monitor",
+                        refresh_records=design_refreshes,
+                        event_rows=design_events,
+                    )
+                )
 
         if args.save_trajectories:
             _write_trajectories(run_dir=run_dir, protein_id=protein_id, rows=trajectory_rows)
@@ -760,10 +1142,41 @@ def main(argv: list[str] | None = None) -> int:
         "wall_clock_seconds": float(time.time() - run_start),
         "aborted_on_failure_threshold": bool(aborted),
     }
+    if controller_setup is not None and head_scorer is not None:
+        manifest.update(
+            d1_manifest_provenance(
+                controller_setup,
+                static_cache_path=static_cache_path,
+                static_cache_meta_path=static_cache_meta_path,
+                window_k_min=window_k_min_resolved,
+                window_k_max=window_k_max_resolved,
+            )
+        )
+        run_config["controller_config"] = controller_config_to_dict(controller_setup.config)
+        run_config["controller_config_hash"] = controller_setup.config_hash
+        run_config["controller_config_path"] = str(controller_setup.config_path)
 
     write_phase_c_outputs(run_dir, rows, run_config, manifest)
     if failures:
         write_json(run_dir / "failures.json", {"failures": failures})
+
+    if controller_setup is not None and head_scorer is not None:
+        write_d1_artifacts(
+            run_dir=run_dir,
+            refresh_records_all=refresh_records_all,
+            event_rows_all=event_rows_all,
+            per_protein_summaries=per_protein_summaries,
+        )
+        try:
+            head_scorer.flush_static_cache(
+                source_dataset=str(Path(args.test_set_parquet).resolve()),
+                source_dataset_rowcount=int(len(entries)),
+            )
+        except Exception as flush_exc:  # noqa: BLE001
+            print(
+                f"WARNING: static window cache flush failed: {flush_exc}",
+                file=sys.stderr,
+            )
 
     total_wall = time.time() - run_start
     n_rows = int(len(rows))

@@ -1,0 +1,34 @@
+# Phase D1 monitor-only controller preset.
+#
+# This config layers the monitor-only adaptive controller on top of any C1
+# reference-flow YAML. The controller does not modify logits or remask
+# ordering; it only refreshes the online head risk field, discovers active
+# blocks, evaluates reliability gates, and writes telemetry artifacts that
+# downstream D0 metric tooling consumes.
+#
+# When D2/D3 ship, raise `reliability.min_rho_to_emit_event` to reduce
+# monitor-row volume (e.g. 0.3 once intervention events dominate the parquet).
+controller:
+  enabled: true
+  mode: monitor_only
+  t_start: 0.50
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 16
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    min_completion_fraction: 0.50
+    min_rho_to_emit_event: 0.0
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true

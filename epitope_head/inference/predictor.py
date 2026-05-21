@@ -339,12 +339,15 @@ class InferencePredictor:
         self,
         seq: str,
         allele_idx: int = 0,
+        window_batch_size: int | None = None,
     ) -> dict:
         """Full protein prediction: encode → enumerate → score → aggregate (F3+F4).
 
         Args:
             seq: amino acid string.
             allele_idx: allele index (default 0).
+            window_batch_size: optional batch size for span scoring. ``None``
+                inherits ``enumerate_and_score``'s default (4096).
 
         Returns:
             dict with keys: window_logits, residue_hotspot, global_risk, meta, debug.
@@ -357,8 +360,11 @@ class InferencePredictor:
         G, encode_debug = self.encode_sequence(seq)
         protein_len = len(seq)
 
+        enumerate_kwargs: dict = {}
+        if window_batch_size is not None:
+            enumerate_kwargs["window_batch_size"] = int(window_batch_size)
         window_entries, z_tensor = self.enumerate_and_score(
-            G, protein_len, min_k, max_k, allele_idx,
+            G, protein_len, min_k, max_k, allele_idx, **enumerate_kwargs,
         )
 
         if len(window_entries) == 0:
@@ -388,3 +394,33 @@ class InferencePredictor:
                 "z_tensor": z_tensor,
             },
         }
+
+    def predict_proteins(
+        self,
+        records: list[tuple[str, str]],
+        allele_idx: int = 0,
+        window_batch_size: int | None = None,
+    ) -> list[dict]:
+        """Ordered batch facade over ``predict_protein``.
+
+        The underlying model is constructed once on the instance and reused
+        across all records (the facade is an instance method by design, so
+        head weights and tokenizer state never reload between records).
+
+        Args:
+            records: list of ``(protein_id, sequence)`` pairs.
+            allele_idx: allele index applied to every record.
+            window_batch_size: optional window batch size forwarded to each
+                ``predict_protein`` call.
+
+        Returns:
+            One ``{"protein_id": str, "prediction": dict}`` per input record,
+            in input order.
+        """
+        outputs: list[dict] = []
+        for protein_id, seq in records:
+            prediction = self.predict_protein(
+                seq, allele_idx=allele_idx, window_batch_size=window_batch_size
+            )
+            outputs.append({"protein_id": protein_id, "prediction": prediction})
+        return outputs
