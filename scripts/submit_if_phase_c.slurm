@@ -42,7 +42,7 @@ else
 fi
 
 CHECKPOINT="${CHECKPOINT:-${RUN_DIR}/dplm_v1_adapter/seed42_20260319_094244/checkpoints/best.ckpt}"
-TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/if_ready/test_proteins_if_ready_${ALLELE_FILE_TAG}.parquet}"
+TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/if_ready/test_proteins_if_ready_fast_${ALLELE_FILE_TAG}.parquet}"
 PDB_ROOT="${PDB_ROOT:-${PDB_ROOT_DEFAULT}}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${WORK_DIR}/if_phase_c/${MODE}}"
 

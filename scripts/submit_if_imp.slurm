@@ -7,9 +7,9 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=16G
+#SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
+#SBATCH --time=16:00:00
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_imp/if_imp_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_imp/if_imp_%j.err
 
@@ -53,8 +53,11 @@ PDB_ROOT="${PDB_ROOT:-${WORK_DIR}/if_test_set/pdbs_if_ready/${ALLELE_SHORT}}"
 CATH_ROOT="${CATH_ROOT:-${WORK_DIR}/cath_4.3}"
 
 # Refiner / sidecar artifacts. Set these as env when running an arm that needs them.
+
 REFINER_CHECKPOINT="${REFINER_CHECKPOINT:-}"
 SIDECAR_CHECKPOINT="${SIDECAR_CHECKPOINT:-}"
+#REFINER_CHECKPOINT="${REFINER_CHECKPOINT:-/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/if_imp/refiner_train/train_if_imp_refiner_20260512T145317Z/refiner_last.pt}"
+#SIDECAR_CHECKPOINT="${SIDECAR_CHECKPOINT:-/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/if_imp/sidecar_train/train_if_imp_sidecar_20260512T170058Z/sidecar_last.pt}"
 
 # Mode-specific output roots
 case "${MODE}" in
@@ -74,14 +77,14 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-${OUTPUT_ROOT_DEFAULT}}"
 ENCODER_CHECKPOINT="${ENCODER_CHECKPOINT:-}"
 ENCODER_KIND="${ENCODER_KIND:-geoegnn_ipa}"          # geoegnn_ipa | gvp (default for legacy)
 ENCODER_BATCH_SIZE="${ENCODER_BATCH_SIZE:-2}"
-ENCODER_EPOCHS="${ENCODER_EPOCHS:-5}"
+ENCODER_EPOCHS="${ENCODER_EPOCHS:-10}"
 ENCODER_LR="${ENCODER_LR:-1e-4}"
 ENCODER_D_MODEL="${ENCODER_D_MODEL:-512}"
-ENCODER_EGNN_DEPTH="${ENCODER_EGNN_DEPTH:-3}"
+ENCODER_EGNN_DEPTH="${ENCODER_EGNN_DEPTH:-6}"
 ENCODER_EGNN_HIDDEN_DIM="${ENCODER_EGNN_HIDDEN_DIM:-128}"
 ENCODER_IPA_DEPTH="${ENCODER_IPA_DEPTH:-6}"
 ENCODER_IPA_HIDDEN_DIM="${ENCODER_IPA_HIDDEN_DIM:-128}"
-ENCODER_LAMBDA_AUX="${ENCODER_LAMBDA_AUX:-1.0}"
+ENCODER_LAMBDA_AUX="${ENCODER_LAMBDA_AUX:-0.15}"
 ENCODER_ADAPTER_NUM_LAYERS="${ENCODER_ADAPTER_NUM_LAYERS:-1}"
 ENCODER_ADAPTER_GATED="${ENCODER_ADAPTER_GATED:-0}"
 ENCODER_ADAPTER_GATE_INIT="${ENCODER_ADAPTER_GATE_INIT:-0.0}"
@@ -96,7 +99,7 @@ EPOCHS="${EPOCHS:-10}"
 LR="${LR:-1e-4}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 LIMIT_BATCHES="${LIMIT_BATCHES:-}"
-USE_DPLM_ENTROPY="${USE_DPLM_ENTROPY:-0}"
+USE_DPLM_ENTROPY="${USE_DPLM_ENTROPY:-1}"
 
 # Sidecar training overrides (defaults trimmed for IPA + 512-dim projection)
 SIDECAR_BATCH_SIZE="${SIDECAR_BATCH_SIZE:-2}"
@@ -106,7 +109,7 @@ SIDECAR_HIDDEN_DIM="${SIDECAR_HIDDEN_DIM:-128}"
 SIDECAR_IPA_DEPTH="${SIDECAR_IPA_DEPTH:-6}"
 SIDECAR_OUTPUT_DIM="${SIDECAR_OUTPUT_DIM:-512}"
 # Generation-time sidecar residual strength: feats + SIDECAR_SCALE * sidecar_feats
-SIDECAR_SCALE="${SIDECAR_SCALE:-1.0}"
+SIDECAR_SCALE="${SIDECAR_SCALE:-0.5}"
 
 # Refiner generation overrides
 ARM="${ARM:-}"
@@ -141,6 +144,8 @@ DIAG_ARMS="${DIAG_ARMS:-baseline sidecar refiner sidecar_refiner}"
 DIAG_EMIT_PER_POSITION="${DIAG_EMIT_PER_POSITION:-0}"
 DIAG_RUN_ID="${DIAG_RUN_ID:-}"
 DIAG_PROGRESS_EVERY="${DIAG_PROGRESS_EVERY:-10}"
+# Empty = respect checkpoint config; set to "true"/"false" to override generator.use_draft_seq.
+USE_DRAFT_SEQ="${USE_DRAFT_SEQ:-}"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -168,7 +173,7 @@ export WANDB_CONFIG_DIR="${WANDB_CONFIG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/wand
 mkdir -p "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}" "${WANDB_CONFIG_DIR}"
 WANDB_FLAG="${WANDB:-1}"
 WANDB_MODE_FOR_RUN="${WANDB_MODE:-online}"
-WANDB_PROJECT_FOR_RUN="${WANDB_PROJECT:-mhc-if-imp-refiner}"
+WANDB_PROJECT_FOR_RUN="${WANDB_PROJECT:-mhc-if-imp-encoder}"
 WANDB_GROUP_FOR_RUN="${WANDB_GROUP:-}"
 WANDB_TAGS_FOR_RUN="${WANDB_TAGS:-}"
 
@@ -313,6 +318,7 @@ elif [ "${MODE}" = "diag_arms" ]; then
     [[ -n "${DIAG_RUN_ID}" ]]        && EXTRA_FLAGS+=(--run-id "${DIAG_RUN_ID}")
     [[ -n "${OVERWRITE}" ]]          && EXTRA_FLAGS+=(--overwrite)
     [[ "${DIAG_EMIT_PER_POSITION}" = "1" ]] && EXTRA_FLAGS+=(--emit-per-position)
+    [[ -n "${USE_DRAFT_SEQ}" ]]      && EXTRA_FLAGS+=(--use-draft-seq "${USE_DRAFT_SEQ}")
     # shellcheck disable=SC2086  # we WANT DIAG_ARMS to word-split
     python -u "${PROJECT_ROOT}/scripts/diag_if_imp_arms.py" \
         --checkpoint "${CHECKPOINT}" \
@@ -407,6 +413,7 @@ elif [ "${MODE}" = "diag_encoder" ]; then
     [[ -n "${REFINER_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--refiner-checkpoint "${REFINER_CHECKPOINT}")
     [[ -n "${SIDECAR_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--sidecar-checkpoint "${SIDECAR_CHECKPOINT}")
     [[ "${DIAG_EMIT_PER_POSITION}" = "1" ]] && EXTRA_FLAGS+=(--emit-per-position)
+    [[ -n "${USE_DRAFT_SEQ}" ]] && EXTRA_FLAGS+=(--use-draft-seq "${USE_DRAFT_SEQ}")
     # shellcheck disable=SC2086
     python -u "${PROJECT_ROOT}/scripts/diag_if_imp_arms.py" \
         --checkpoint "${CHECKPOINT}" \

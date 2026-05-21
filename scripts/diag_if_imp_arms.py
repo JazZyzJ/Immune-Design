@@ -145,6 +145,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--progress-every", type=int, default=10)
+    parser.add_argument(
+        "--use-draft-seq",
+        choices=("true", "false"),
+        default=None,
+        help=(
+            "Override task.hparams.generator.use_draft_seq for this run. "
+            "Default: respect the value baked into the checkpoint config."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -377,6 +386,24 @@ def _load_models(args: argparse.Namespace):
     from inverse_folding.reference_flow.runtime import load_if_task
 
     task = load_if_task(args.checkpoint, device=args.device)
+    if args.use_draft_seq is not None:
+        new_val = args.use_draft_seq == "true"
+        gen_cfg = task.hparams.generator
+        old_val = bool(gen_cfg.use_draft_seq)
+        try:
+            from omegaconf import OmegaConf
+
+            OmegaConf.set_struct(gen_cfg, False)
+        except Exception:
+            pass
+        try:
+            gen_cfg.use_draft_seq = new_val
+        except Exception:
+            gen_cfg["use_draft_seq"] = new_val
+        print(
+            f"[hparams] override generator.use_draft_seq: "
+            f"{old_val} -> {bool(task.hparams.generator.use_draft_seq)}"
+        )
     if args.encoder_kind == "geoegnn_ipa":
         if not args.encoder_checkpoint:
             raise ValueError(

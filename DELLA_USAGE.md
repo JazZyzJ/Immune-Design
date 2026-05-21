@@ -151,6 +151,8 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 #SBATCH --mail-user=<netid>@princeton.edu         # 可选
 
 set -euo pipefail
+: "${PS1:=}"
+export PS1
 
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
 
