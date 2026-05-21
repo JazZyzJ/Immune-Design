@@ -4,16 +4,19 @@
 Replaces DPLM-IF's frozen GVP encoder with :class:`GeoEGNNIPAEncoder`
 (see ``PLAN_IF_ENCODER.md`` Task E5). DPLM backbone weights stay
 frozen; trainable parameters are the new encoder, its draft head, and
-the existing adapter (last-N gated adapter ablations are an
-encoder-checkpoint concern; this script trains whichever adapter shape
-``DPLMWithConditionalAdatper.from_pretrained`` produced when the task
-was loaded).
+the configured decoder adapters. Old Module-K checkpoints load with
+the default last-1 ungated adapter; this script can explicitly reinstall
+last-N gated adapters before freezing non-adapter decoder parameters.
 
 Loss is the standard DPLM ``diff_loss + lambda_aux * encoder_loss``
 contract from ``byprot.tasks.lm.dplm_invfold``, computed via
 ``task.model.forward(...)`` so the gradient flows back into the new
 encoder through the existing decoder path (this requires
 ``cfg.detach_encoder_feats=False`` — the script sets it explicitly).
+The decoder adapter shape is also an explicit training hyperparameter:
+old Module-K checkpoints default to last-1 ungated adapters, while
+GeoEGNN-IPA runs may request last-N gated adapters before freezing the
+rest of the DPLM backbone.
 """
 
 from __future__ import annotations
@@ -67,6 +70,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1.0,
         help="Weight on the encoder draft-head CE auxiliary loss.",
     )
+    parser.add_argument(
+        "--adapter-num-layers",
+        type=int,
+        default=1,
+        help=(
+            "Number of final ESM decoder layers to wrap with the "
+            "structure-conditioned adapter."
+        ),
+    )
+    parser.add_argument(
+        "--adapter-gated",
+        action="store_true",
+        help=(
+            "Use a learned scalar gate for adapter deltas. Required for "
+            "--adapter-num-layers > 1 so freshly inserted earlier-layer "
+            "adapters start as a zero-contribution branch."
+        ),
+    )
+    parser.add_argument(
+        "--adapter-gate-init",
+        type=float,
+        default=0.0,
+        help="Initial scalar gate value used when --adapter-gated is set.",
+    )
     # Encoder architecture knobs (mirror geo_encoder.encoder defaults).
     parser.add_argument("--d-model", type=int, default=512)
     parser.add_argument("--egnn-depth", type=int, default=3)
@@ -108,6 +135,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--log-every must be positive")
     if args.lambda_aux < 0:
         parser.error("--lambda-aux must be >= 0")
+    if args.adapter_num_layers <= 0:
+        parser.error("--adapter-num-layers must be positive")
+    if args.adapter_num_layers > 1 and not args.adapter_gated:
+        parser.error("--adapter-num-layers > 1 requires --adapter-gated")
     if args.egnn_depth <= 0 or args.ipa_depth <= 0:
         parser.error("--egnn-depth and --ipa-depth must be positive")
     if args.use_updated_coord_bias and not args.update_coors:
@@ -141,6 +172,7 @@ def install_geo_encoder(*, task: Any, args: argparse.Namespace, device: str) -> 
         GeoEGNNIPAEncoder,
         GraphConfig,
     )
+    from byprot.models.dplm.modules.dplm_adapter import install_adapters
 
     alphabet = task.alphabet
     # IMPORTANT: do NOT include ``mask_idx`` or ``unk_idx`` in the
@@ -180,6 +212,38 @@ def install_geo_encoder(*, task: Any, args: argparse.Namespace, device: str) -> 
     # Disable detach so main CE flows back through the new encoder.
     OmegaConf.set_struct(task.model.cfg, False)
     task.model.cfg.detach_encoder_feats = False
+
+    current_n = int(getattr(task.model.decoder.cfg, "adapter_num_layers", 1))
+    current_gated = bool(
+        getattr(task.model.decoder.cfg, "adapter_gated", False)
+    )
+    requested_n = int(args.adapter_num_layers)
+    requested_gated = bool(args.adapter_gated)
+    requested_gate_init = float(args.adapter_gate_init)
+
+    OmegaConf.set_struct(task.model.decoder.cfg, False)
+    task.model.decoder.cfg.adapter_num_layers = requested_n
+    task.model.decoder.cfg.adapter_gated = requested_gated
+    task.model.decoder.cfg.adapter_gate_init = requested_gate_init
+    if hasattr(task.model.cfg, "decoder"):
+        OmegaConf.set_struct(task.model.cfg.decoder, False)
+        task.model.cfg.decoder.adapter_num_layers = requested_n
+        task.model.cfg.decoder.adapter_gated = requested_gated
+        task.model.cfg.decoder.adapter_gate_init = requested_gate_init
+
+    if requested_n != current_n or requested_gated != current_gated:
+        print(
+            "Reinstalling decoder adapters: "
+            f"current_n={current_n} current_gated={current_gated} -> "
+            f"requested_n={requested_n} requested_gated={requested_gated} "
+            f"gate_init={requested_gate_init}"
+        )
+        install_adapters(
+            task.model.decoder.net,
+            task.model.decoder.cfg,
+            adapter_num_layers=requested_n,
+        )
+        task.model.decoder.to(device)
 
     # Freeze the entire DPLM backbone; unfreeze adapter + new encoder.
     for p in task.model.parameters():
@@ -333,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
         "lr": args.lr,
         "max_length": args.max_length,
         "lambda_aux": args.lambda_aux,
+        "adapter_num_layers": args.adapter_num_layers,
+        "adapter_gated": args.adapter_gated,
+        "adapter_gate_init": args.adapter_gate_init,
         "d_model": args.d_model,
         "egnn_depth": args.egnn_depth,
         "egnn_hidden_dim": args.egnn_hidden_dim,

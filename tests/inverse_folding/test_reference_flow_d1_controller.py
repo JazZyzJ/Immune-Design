@@ -179,7 +179,7 @@ def test_no_refresh_before_t_start():
     cfg = _make_controller_config(t_start=0.5, refresh_interval=1)
     scorer = StubScorer(static_windows=[], dyn_windows_per_refresh=[])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     ctx = _make_context(
@@ -203,7 +203,7 @@ def test_refresh_cadence_matches_t_start_and_interval():
     dyn_runs = [[WindowRiskRecord(0, 12, 12, 0.0)] for _ in range(10)]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=dyn_runs)
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     refresh_steps_observed = []
@@ -227,7 +227,7 @@ def test_hard_completion_keeps_committed_argmaxes_masked():
     static = [WindowRiskRecord(0, 5, 5, 0.0)]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[static])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="ACDEF",
+        protein_id="P1", design_idx=0, seed=42, static_sequence="ACDEF",
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     # Position 1 and 3 are masked; others committed.
@@ -261,7 +261,7 @@ def test_single_active_window_produces_single_block():
     ]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 20,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 20,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     x_t = torch.full((20,), _MASK_ID + 1, dtype=torch.long)
@@ -288,7 +288,7 @@ def test_two_overlapping_windows_merge_into_one_block():
     ]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 50,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 50,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     x_t = torch.full((50,), _MASK_ID + 1, dtype=torch.long)
@@ -314,7 +314,7 @@ def test_three_transitively_overlapping_windows_merge_into_one_block():
     ]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 50,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 50,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     x_t = torch.full((50,), _MASK_ID + 1, dtype=torch.long)
@@ -338,7 +338,7 @@ def test_max_windows_caps_after_thresholding_keeping_highest_excess():
     ]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 80,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 80,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     x_t = torch.full((80,), _MASK_ID + 1, dtype=torch.long)
@@ -361,7 +361,7 @@ def test_reliability_gate_factors_in_unit_interval():
     dyn = [WindowRiskRecord(0, 12, 12, 2.0)]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 20,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 20,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     # Mixed completion: half masked, half committed.
@@ -381,7 +381,7 @@ def test_low_completion_reduces_rho_relative_to_high_completion():
 
     high_scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     high = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=high_scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     high_ctx = _make_context(
@@ -392,7 +392,7 @@ def test_low_completion_reduces_rho_relative_to_high_completion():
 
     low_scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     low = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=low_scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     low_x = torch.full((12,), _MASK_ID, dtype=torch.long)
@@ -412,7 +412,7 @@ def test_high_entropy_logits_reduce_g_ent():
 
     sharp_scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     sharp = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=sharp_scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     sharp_ctx = _make_context(x_t=x_t, logits=_sharp_logits(12), step=0, t=0.7)
@@ -420,7 +420,7 @@ def test_high_entropy_logits_reduce_g_ent():
 
     uniform_scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     uniform = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=uniform_scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     uniform_ctx = _make_context(x_t=x_t, logits=_uniform_logits(12), step=0, t=0.7)
@@ -437,7 +437,7 @@ def test_completion_fraction_below_min_forces_g_comp_zero():
     dyn = [WindowRiskRecord(0, 10, 10, 2.0)]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     x_t = torch.full((12,), _MASK_ID, dtype=torch.long)
@@ -457,7 +457,7 @@ def test_no_active_windows_writes_refresh_but_no_event_rows():
     dyn = [WindowRiskRecord(0, 12, 12, 1.0)]  # excess = 0 → no active windows
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     x_t = torch.full((12,), _MASK_ID + 1, dtype=torch.long)
@@ -477,7 +477,7 @@ def test_window_count_mismatch_raises():
     dyn = [WindowRiskRecord(0, 12, 12, 1.0)]  # missing the second window
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 20,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 20,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     x_t = torch.full((20,), _MASK_ID + 1, dtype=torch.long)
@@ -489,13 +489,66 @@ def test_window_count_mismatch_raises():
 # ---------- 6) telemetry hooks ----------
 
 
+def test_entropy_robust_to_neg_inf_special_token_logits():
+    """DPLM denoiser wrapper masks special tokens to -inf. The entropy gate
+    must compute over the finite (canonical residue) subset rather than
+    collapsing the whole position's entropy to 0 via NaN propagation."""
+    cfg = _make_controller_config(t_start=0.5, refresh_interval=1, min_completion_fraction=0.0)
+    static = [WindowRiskRecord(0, 12, 12, 0.0)]
+    dyn = [WindowRiskRecord(0, 12, 12, 2.0)]
+    scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
+        scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
+    )
+    x_t = torch.full((12,), _MASK_ID + 1, dtype=torch.long)
+    # First 3 vocab slots are "special tokens" masked to -inf; remaining 18
+    # slots get uniform logits → near-maximal entropy over canonical subset.
+    # Without the fix, NaN propagation through .sum() drives entropy → 0 and
+    # g_ent → 1.0.
+    logits = torch.zeros(12, _VOCAB_SIZE, dtype=torch.float32)
+    logits[:, :3] = float("-inf")
+    ctx = _make_context(x_t=x_t, logits=logits, step=0, t=0.7)
+    block = controller.step(ctx).refresh_record.active_blocks[0]
+    # Entropy over 18 uniform canonicals ≈ log(18) ≈ 2.89 nats → g_ent ≈ exp(-1.93) ≈ 0.146
+    assert block.g_ent < 0.5, f"g_ent={block.g_ent} — masked-logit entropy bug present"
+    assert block.mean_struct_entropy > 1.0  # substantially non-zero
+
+
+def test_refresh_record_is_self_contained():
+    """D0 metric reconstruction must not depend on the static cache: the
+    refresh record itself must carry both r_windows_dyn and r_windows_static
+    and the seed/protein_id/design_idx identity triple."""
+    cfg = _make_controller_config(t_start=0.0, refresh_interval=1)
+    static = [WindowRiskRecord(0, 12, 12, 0.5)]
+    dyn = [WindowRiskRecord(0, 12, 12, 2.5)]
+    scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
+    controller = D1MonitorController(
+        protein_id="PX", design_idx=3, seed=99, static_sequence="A" * 12,
+        scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
+    )
+    ctx = _make_context(
+        x_t=torch.full((12,), _MASK_ID + 1, dtype=torch.long),
+        logits=_sharp_logits(12), step=0, t=0.5,
+    )
+    record = controller.step(ctx).refresh_record
+    assert record.protein_id == "PX"
+    assert record.design_idx == 3
+    assert record.seed == 99
+    assert len(record.r_windows_static) == len(record.r_windows_dyn) == 1
+    assert record.r_windows_static[0].z == pytest.approx(0.5)
+    assert record.r_windows_dyn[0].z == pytest.approx(2.5)
+    # z_dyn - z_static is recoverable from the record alone (no cache join)
+    assert record.r_windows_dyn[0].z - record.r_windows_static[0].z == pytest.approx(2.0)
+
+
 def test_controller_buffers_refresh_records_for_later_flush():
     cfg = _make_controller_config(t_start=0.0, refresh_interval=1)
     static = [WindowRiskRecord(0, 12, 12, 0.0)]
     dyn_runs = [[WindowRiskRecord(0, 12, 12, 2.0)] for _ in range(3)]
     scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=dyn_runs)
     controller = D1MonitorController(
-        protein_id="P1", design_idx=0, static_sequence="A" * 12,
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
         scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
     )
     x_t = torch.full((12,), _MASK_ID + 1, dtype=torch.long)

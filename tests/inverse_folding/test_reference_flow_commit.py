@@ -1,0 +1,239 @@
+"""Phase D3 commit/EMA primitives contract tests (PLAN_RF.md §D3)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import pytest
+import torch
+
+from inverse_folding.reference_flow.commit import (
+    compute_chosen_token_logprob,
+    compute_commit_score,
+    compute_ema_gamma,
+    compute_residue_reliability,
+    project_window_excess_to_residue,
+    select_freeze_protected_positions,
+    update_ema,
+    z_score,
+)
+
+
+VOCAB_SIZE = 16
+MASK_TOKEN_ID = 0
+
+
+@dataclass(frozen=True)
+class _Window:
+    start_0b: int
+    end_0b: int
+
+
+@dataclass(frozen=True)
+class _Block:
+    residue_start_0b: int
+    residue_end_0b: int
+    rho_B: float
+
+
+# ---------------------------------------------------------------------------
+# project_window_excess_to_residue (PLAN §D3-3)
+# ---------------------------------------------------------------------------
+
+
+def test_project_window_excess_max_over_covering_windows():
+    windows = [_Window(0, 3), _Window(2, 5), _Window(4, 6)]
+    window_excess = [0.5, 0.8, 0.0]
+    e_i = project_window_excess_to_residue(
+        windows=windows, window_excess=window_excess, sequence_length=6
+    )
+    # residues 0,1 only covered by window 0 → 0.5
+    # residue 2 covered by 0 (0.5) and 1 (0.8) → 0.8
+    # residues 3,4 only by window 1 → 0.8
+    # residue 5 only by window 2 (0.0) → 0.0
+    np.testing.assert_allclose(e_i, [0.5, 0.5, 0.8, 0.8, 0.8, 0.0])
+
+
+def test_project_window_excess_zero_when_no_window_covers_residue():
+    windows = [_Window(2, 4)]
+    e_i = project_window_excess_to_residue(
+        windows=windows, window_excess=[1.0], sequence_length=6
+    )
+    np.testing.assert_allclose(e_i, [0.0, 0.0, 1.0, 1.0, 0.0, 0.0])
+
+
+def test_project_window_excess_skips_nonpositive():
+    # Windows with excess <= 0 must not lower a residue that other windows already raised.
+    windows = [_Window(0, 4), _Window(0, 4)]
+    e_i = project_window_excess_to_residue(
+        windows=windows, window_excess=[0.7, -0.3], sequence_length=4
+    )
+    np.testing.assert_allclose(e_i, [0.7, 0.7, 0.7, 0.7])
+
+
+# ---------------------------------------------------------------------------
+# compute_residue_reliability (PLAN §D3-4)
+# ---------------------------------------------------------------------------
+
+
+def test_residue_reliability_max_over_covering_blocks():
+    blocks = [
+        _Block(residue_start_0b=0, residue_end_0b=3, rho_B=0.4),
+        _Block(residue_start_0b=2, residue_end_0b=5, rho_B=0.9),
+    ]
+    rho_i = compute_residue_reliability(active_blocks=blocks, sequence_length=6)
+    np.testing.assert_allclose(rho_i, [0.4, 0.4, 0.9, 0.9, 0.9, 0.0])
+
+
+def test_residue_reliability_zero_without_blocks():
+    rho_i = compute_residue_reliability(active_blocks=(), sequence_length=4)
+    np.testing.assert_allclose(rho_i, np.zeros(4))
+
+
+# ---------------------------------------------------------------------------
+# EMA: gamma + update + cold start (PLAN §D3-5/D3-6)
+# ---------------------------------------------------------------------------
+
+
+def test_gamma_high_reliability_uses_gamma_min():
+    rho_i = np.array([1.0, 1.0])
+    gamma = compute_ema_gamma(rho_i=rho_i, gamma_min=0.4, gamma_max=0.9)
+    np.testing.assert_allclose(gamma, [0.4, 0.4])
+
+
+def test_gamma_low_reliability_uses_gamma_max():
+    rho_i = np.array([0.0, 0.0])
+    gamma = compute_ema_gamma(rho_i=rho_i, gamma_min=0.4, gamma_max=0.9)
+    np.testing.assert_allclose(gamma, [0.9, 0.9])
+
+
+def test_gamma_interpolates_linearly():
+    rho_i = np.array([0.5])
+    gamma = compute_ema_gamma(rho_i=rho_i, gamma_min=0.4, gamma_max=0.9)
+    np.testing.assert_allclose(gamma, [0.65])
+
+
+def test_update_ema_cold_start_uses_e_i_directly():
+    e_i = np.array([0.2, 0.5, 0.0])
+    m = update_ema(m_prev=None, e_i=e_i, rho_i=np.zeros_like(e_i), gamma_min=0.4, gamma_max=0.9)
+    np.testing.assert_allclose(m, e_i)
+
+
+def test_update_ema_combines_prev_and_current():
+    m_prev = np.array([1.0, 1.0])
+    e_i = np.array([0.0, 0.0])
+    # rho=1 → gamma=gamma_min=0.4 → m = 0.4 * m_prev + 0.6 * e_i = 0.4
+    m = update_ema(
+        m_prev=m_prev,
+        e_i=e_i,
+        rho_i=np.array([1.0, 1.0]),
+        gamma_min=0.4,
+        gamma_max=0.9,
+    )
+    np.testing.assert_allclose(m, [0.4, 0.4])
+
+
+# ---------------------------------------------------------------------------
+# compute_chosen_token_logprob (PLAN §D3-7)
+# ---------------------------------------------------------------------------
+
+
+def test_chosen_token_logprob_uses_struct_logits_not_scores():
+    L = 3
+    logits = torch.full((L, VOCAB_SIZE), -10.0)
+    logits[0, 5] = 5.0
+    logits[1, 6] = 2.0; logits[1, 7] = 2.0
+    logits[2, 8] = 0.0
+    x_t = torch.tensor([5, 7, MASK_TOKEN_ID])
+    out = compute_chosen_token_logprob(struct_logits=logits, x_t=x_t, mask_token_id=MASK_TOKEN_ID)
+    # Position 0: ~0 log-prob (token 5 dominates), Position 1: ~log(0.5), Position 2: NaN
+    assert out[0] == pytest.approx(0.0, abs=1e-3)
+    assert out[1] < 0.0
+    assert np.isnan(out[2])
+
+
+# ---------------------------------------------------------------------------
+# z_score (PLAN §D3-8)
+# ---------------------------------------------------------------------------
+
+
+def test_zscore_returns_zero_when_too_few_eligible():
+    vals = np.array([1.0, 2.0, np.nan])
+    mask = np.array([True, False, False])  # only one eligible
+    out = z_score(values=vals, eligibility_mask=mask, zscore_epsilon=1e-6)
+    np.testing.assert_allclose(out, np.zeros(3))
+
+
+def test_zscore_returns_zero_when_std_below_epsilon():
+    vals = np.array([5.0, 5.0, 5.0])
+    mask = np.array([True, True, True])
+    out = z_score(values=vals, eligibility_mask=mask, zscore_epsilon=1e-3)
+    np.testing.assert_allclose(out, np.zeros(3))
+
+
+def test_zscore_eligible_only_includes_committed():
+    vals = np.array([10.0, 20.0, 30.0, np.nan])
+    mask = np.array([True, True, True, False])  # last one masked
+    out = z_score(values=vals, eligibility_mask=mask, zscore_epsilon=1e-6)
+    # Standardize over [10, 20, 30] → mean=20, std=sqrt(200/3)≈8.165
+    mu, sigma = 20.0, float(np.std([10.0, 20.0, 30.0]))
+    expected = np.array([(10 - mu) / sigma, 0.0, (30 - mu) / sigma, 0.0])
+    np.testing.assert_allclose(out, expected, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# compute_commit_score + same-refresh grace (PLAN §D3-9/D3-10)
+# ---------------------------------------------------------------------------
+
+
+def test_commit_score_combines_z_ell_and_z_m():
+    z_ell = np.array([0.5, -0.2, 1.0])
+    z_m = np.array([1.0, 0.0, -0.5])
+    score = compute_commit_score(
+        z_ell=z_ell, z_m=z_m, lambda_commit=1.0, grace_positions=None
+    )
+    np.testing.assert_allclose(score, z_ell - z_m)
+
+
+def test_grace_removes_immune_penalty_at_corrected_positions_only():
+    z_ell = np.array([0.5, -0.2, 1.0])
+    z_m = np.array([1.0, 1.0, 1.0])
+    score = compute_commit_score(
+        z_ell=z_ell, z_m=z_m, lambda_commit=2.0, grace_positions=(1,)
+    )
+    # Position 0: 0.5 - 2*1.0 = -1.5
+    # Position 1: grace → just z_ell = -0.2
+    # Position 2: 1.0 - 2*1.0 = -1.0
+    np.testing.assert_allclose(score, [-1.5, -0.2, -1.0])
+
+
+# ---------------------------------------------------------------------------
+# select_freeze_protected_positions (PLAN §D3-12, validation 13)
+# ---------------------------------------------------------------------------
+
+
+def test_freeze_empty_before_freeze_window():
+    x_t = torch.tensor([5, MASK_TOKEN_ID, 6])
+    protected = select_freeze_protected_positions(
+        x_t=x_t, mask_token_id=MASK_TOKEN_ID, step=4, n_steps=10, final_freeze_steps=2
+    )
+    assert protected == ()
+
+
+def test_freeze_protects_all_committed_in_window():
+    x_t = torch.tensor([5, MASK_TOKEN_ID, 6, MASK_TOKEN_ID, 7])
+    protected = select_freeze_protected_positions(
+        x_t=x_t, mask_token_id=MASK_TOKEN_ID, step=8, n_steps=10, final_freeze_steps=2
+    )
+    # step 8 in freeze window (n_steps - final_freeze_steps = 8) → freeze active.
+    assert set(protected) == {0, 2, 4}
+
+
+def test_freeze_final_freeze_steps_one_aligns_with_last_step():
+    x_t = torch.tensor([5, 6])
+    # final_freeze_steps=1; step==n_steps-1 must trigger freeze.
+    protected = select_freeze_protected_positions(
+        x_t=x_t, mask_token_id=MASK_TOKEN_ID, step=9, n_steps=10, final_freeze_steps=1
+    )
+    assert set(protected) == {0, 1}

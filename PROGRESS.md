@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-05-20T00:00:00+08:00
+> **Last synced**: 2026-05-21T21:18:36+08:00
 > **Branch**: dev_head
 
 ---
@@ -154,6 +154,19 @@
   1. Level 1 post-hoc filter (N1) — from C0 candidates
   2. Sampling-only position-dependent schedule (C1 / Tier 0 ablation)
   3. Full position-dependent reference flow (C2-C3 / our method)
+
+---
+
+## IF Encoder Replacement (PLAN_IF_ENCODER.md)
+
+- **Status**: GeoEGNN-IPA implementation code ready; cluster smoke + ablations pending.
+- **Latest code state**:
+  - `scripts/train_if_imp_encoder.py` now exposes adapter shape controls: `--adapter-num-layers`, `--adapter-gated`, `--adapter-gate-init`.
+  - Training reinstall logic runs before DPLM freezing: old Module-K last-1 ungated adapters can be rebuilt as last-N gated adapters, then only `encoder.*` and adapter-named decoder parameters remain trainable.
+  - `--adapter-num-layers > 1` requires `--adapter-gated` fail-fast to avoid fresh ungated mid-layer adapters perturbing decoder hidden states at initialization.
+  - `scripts/submit_if_imp.slurm` forwards `ENCODER_ADAPTER_NUM_LAYERS`, `ENCODER_ADAPTER_GATED`, and `ENCODER_ADAPTER_GATE_INIT` under `MODE=train_encoder`.
+- **Validation**: local focused checks passed (`tests/scripts/test_if_imp_encoder_scripts.py` + `tests/inverse_folding/dplm_refiner/test_dplm_adapter_layers.py` → 16 passed, 8 skipped; skipped tests are PyG / omegaconf / transformers gated). `python scripts/train_if_imp_encoder.py --help`, `python -m py_compile scripts/train_if_imp_encoder.py`, and `bash -n scripts/submit_if_imp.slurm` pass.
+- **Operational note**: Della `immune-design` smoke should include one `ENCODER_ADAPTER_NUM_LAYERS=4 ENCODER_ADAPTER_GATED=1 ENCODER_ADAPTER_GATE_INIT=0.0 LIMIT_BATCHES=2 MODE=train_encoder` job before full ablations.
 
 ---
 

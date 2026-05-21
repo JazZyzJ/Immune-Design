@@ -7,14 +7,14 @@
 > - **Second axis**: static hotspot conditioning (`C3`)
 > - **Optional extension**: adaptive controller (`Task D`)
 >
-> Concrete design choices for `C2/C3/D` are intentionally left open until offline design is frozen. Only `C1` has a detailed implementation contract in this file today.
+> Concrete design choices for `C2/C3` are still open until offline design is frozen. `C1`, `D1`, and the D2-D3 adaptive-controller handoff now have implementation contracts in this file.
 
 **Planned experiment layers**:
 - **C0**: DPLM native sampler (baseline) — Task C0
 - **C1 (Tier 0)**: static-prior DFM sampler + position-dependent schedule (includes `g ≡ 1` uniform-schedule control via config) — Task C1
 - **C2 (Tier 1)**: retrain with static-prior position-dependent forward process — STUB
 - **C3 (Tier 2)**: static hotspot conditioning axis (FiLM/additive/attention-bias family; CFG optional) — STUB
-- **Task D (optional extension)**: adaptive controller layer (online hotspot refresh / logit steering / revisit-corrector / schedule modulation) — STUB
+- **Task D (optional extension)**: adaptive controller layer — D1 monitor implemented; D2-D3 planned; D4 dynamic schedule deferred
 
 **Mathematical reference**: `doc/Reference_Flow_Derivation.md` §4 (sampling + conditioning + adaptive controller), §7 (design choices).
 
@@ -461,7 +461,7 @@ D-phase generation must emit process telemetry with stable schemas. Extra debug 
 | `kl_struct_corrected` | KL between corrected and structural token distributions |
 | `delta_R_B` | Block-level counterfactual risk change when available |
 | `delta_R_i` | Independent per-AA or residue-level risk change when available |
-| `ESS` | Candidate effective sample size for D2 |
+| `ESS_candidates` | Candidate importance-weight effective sample size for D2 |
 | `rho_B` | Block reliability gate value for D2 |
 | `m_i` | EMA risk memory for D3 |
 | `commit_score` | Final remask ranking score for D3 |
@@ -485,7 +485,7 @@ D-phase generation must emit process telemetry with stable schemas. Extra debug 
 | `m_i` | Nullable EMA risk memory array; populated from D3 onward |
 | `candidate_feasibility` | Per-block feasibility booleans and best feasible `delta_R_B` |
 | `rho_B` | Per-block reliability gate values and factor breakdowns |
-| `ESS_B` | Per-block candidate ESS |
+| `ESS_B_candidates` | Per-block candidate importance-weight ESS |
 | `completion_fraction` | Fraction of resolved residues globally and per active block |
 | `mean_struct_entropy` | Structural entropy globally and per active block |
 | `head_risk_LME`, `head_risk_max` | Completed-sequence head risk under both aggregators |
@@ -753,17 +753,305 @@ Validation rules:
 4. A local fake-model fixture run of `scripts/run_if_phase_c1.py --controller-config <d1_monitor.yaml>` emits all four D1 telemetry artifacts and leaves generated sequences identical to the same fixture run without `--controller-config`.
 5. The plan-level D0 priority metrics `static-dynamic drift`, `new hotspot rate`, `risk volatility`, `active block coverage`, and `head risk trajectory` can be computed from D1 artifacts without rerunning generation.
 
-#### Task D3: Residue-Level EMA Commit/Revisit Control — STUB
+#### Task D2-D3: Hard Counterfactual Logits and EMA Commit/Revisit
 
-Deferred. D3 is the commitment/revisit surface and must not be implemented until D1 monitor-only telemetry is stable and D2's active-block logit correction has a working candidate-risk interface.
+**Goal**
+- Upgrade the D1 monitor-only controller into an adaptive controller that can run `monitor_only`, `d2_logits`, `d3_revisit`, or `d2_d3_full` from one shared refresh/candidate/telemetry surface.
+- D2 supplies token direction by applying hard-counterfactual active-block logit correction before C1 sampling.
+- D3 supplies reversibility by replacing generic remask ranking with a residue-level EMA commit score after sampling and before reparameterized remask.
 
-**Deferred data-plumbing decision**
-1. Current `inverse_folding/reference_flow/sampler.py` keeps `scores[i]` as the log-probability of the token sampled at the step where position `i` was last unmasked. This is the value used by `_apply_reparam_remask()`.
-2. D3's commit score needs the chosen-token log-probability under the latest structural logits at a refresh step, not necessarily the old unmask-step score.
-3. D1 must keep `scores[]` semantics unchanged and must not pre-reserve a `l_i_cur_at_refresh` telemetry array.
-4. D3 implementation must choose one route explicitly:
-   - Route A: leave `scores[]` as unmask-step confidence and compute latest committed-token log-probability from the refresh-step structural logits inside the D3 controller;
-   - Route B: redefine or add a separate array for refresh-step committed-token log-probabilities, then update `_apply_reparam_remask()` tests because the remask ranking semantics change.
-5. Default recommendation for D3 planning is Route A because it preserves current C1/D1 remask behavior and isolates the immune-aware commit score inside the controller.
+**Implementation decision**
+1. Plan and implement D2 and D3 together because they share D1 refresh state, active blocks, head scoring, telemetry schemas, and ablation controls.
+2. Keep the mechanisms separately switchable. `full D` must be decomposable into `monitor_only`, `d2_logits`, and `d3_revisit` without code changes.
+3. Use D3 Route A: preserve `scores[]` as unmask-step sampled-token log-probability for legacy C1/D1 semantics. D3 computes latest committed-token structural log-probability from the current refresh logits inside the controller.
+4. Do not implement direct hard block write-back in this task. It remains a later comparator because it bypasses the sampler's token-level interface.
+5. Do not implement dynamic schedule modulation. D4 remains deferred because state-dependent schedules break the static ordering theorem.
+6. Rename `D1MonitorController` to `ReferenceFlowController` in the D2-D3 implementation PR and update call sites/tests in the same change. A temporary deprecated alias is acceptable only to keep older D1 tests readable during the transition.
+
+**Current code reality**
+1. `inverse_folding/reference_flow/sampler.py` already calls the controller after denoiser logits validation and before unmask sampling. It uses `result.logits` for sampling, so D2 can reuse the existing hook.
+2. The current hook sees `SamplerStepContext(x_t, logits, scores, step, t, mask_token_id, protein_id, design_idx, sequence_length)`. `x_t` is a clone and `scores` is a copy, so pre-sampling hooks cannot corrupt sampler state.
+3. `_apply_reparam_remask()` runs after sampling and currently ranks committed residues by `scores[]`. D3 therefore needs a second controller surface after sampling and before `_apply_reparam_remask()`.
+4. `OnlineHeadScorer.score_batch_same_protein(records)` already accepts ordered multi-candidate batches for one protein, which is the right D2 counterfactual scoring interface.
+5. D1 telemetry is narrower than the D0 target schema. D2-D3 must widen `controller_events.parquet`, `refresh_log.jsonl`, and `per_protein_summary.json` in one schema migration so D2 does not need another telemetry rewrite when D3 lands.
+6. D1 active-block merging is currently the residue-span connected-component merge implemented by `_merge_overlapping_spans()`. D2 must reuse the resulting D1 `ActiveBlock` list and must not introduce a second scoring-window-set merge rule in this task.
+
+**Planned file touchpoints**
+- Modify: `inverse_folding/reference_flow/controller_config.py`
+  - Broaden `controller.mode` to `monitor_only | d2_logits | d3_revisit | d2_d3_full`.
+  - Add nested `d2`, `d3`, `attribution`, and `controls` config dataclasses.
+  - Preserve existing `configs/d1_monitor.yaml` behavior: no D2/D3 sections means monitor-only D1 semantics.
+- Create: `inverse_folding/reference_flow/counterfactual.py`
+  - D2 candidate enumeration/sampling, local window-risk aggregation, `Q_B` / `pi_B` computation, marginal projection, logit-ratio correction, ESS, KL, and candidate-feasibility records.
+- Create: `inverse_folding/reference_flow/commit.py`
+  - D3 residue projection from window excess, EMA state update, per-refresh z-scoring, commit-score construction, same-refresh grace, and remask-rank-score construction.
+  - File split rationale: D2 candidate scoring and D3 EMA ranking are independent, single-testable modules; keeping them out of `controller.py` avoids turning the controller into a monolith as it grows beyond D1.
+- Modify: `inverse_folding/reference_flow/controller.py`
+  - Rename the public controller to `ReferenceFlowController`.
+  - Use composition: instantiate optional `D2Handler` from `counterfactual.py` and optional `D3Handler` from `commit.py` based on `controller.mode`; avoid scattering D2/D3 logic across large `if` blocks.
+  - Add a `RefreshState` dataclass as the single in-memory source for latest refresh step, structural logits, active blocks, residue excess, EMA memory, and same-refresh corrected positions.
+  - Add D2 candidate scoring and logit correction in the existing `step()` pre-sampling hook.
+  - Add a post-sampling/pre-remask hook for D3 commit/revisit state and telemetry.
+  - Keep internal event buffers as the single source for `controller_events.parquet`.
+  - Define the post-hook return contract explicitly:
+
+```python
+@dataclass(frozen=True)
+class PostSamplingResult:
+    rank_scores: np.ndarray | None
+    protected_positions: tuple[int, ...]
+    post_event_rows: tuple[dict, ...]
+    refresh_addendum: dict | None
+```
+
+  - `rank_scores=None` means legacy `_apply_reparam_remask()` should use `scores[]`.
+  - `protected_positions` are excluded from D3 remasking for grace/freeze semantics.
+  - `post_event_rows` append to `controller_events.parquet`.
+  - `refresh_addendum` merges into the current refresh record for D3 arrays and candidate diagnostics.
+- Modify: `inverse_folding/reference_flow/sampler.py`
+  - Preserve `controller=None` bit-equivalence.
+  - Keep the existing pre-sampling hook for D2.
+  - Add a post-sampling hook before `_apply_reparam_remask()` that receives sampled positions/tokens, structural logits, corrected logits, and current `scores[]`.
+  - Extend `_apply_reparam_remask()` to accept optional `rank_scores` and `protected_positions`; when omitted it must behave exactly as today.
+- Modify: `scripts/run_if_phase_c1.py`
+  - Build the same head scorer once per process.
+  - Set summary `arm` from `controller.mode`.
+  - Write the widened telemetry schema for all D modes, including empty nullable columns for disabled surfaces.
+  - Include D2/D3 config and mode provenance in `manifest.json` and `run_config.yaml`.
+  - Print the fully resolved controller config at startup with `controller_config_to_dict(config)`, one top-level key per line, alongside the existing resolved Phase C1 hyperparameters.
+- Modify: `scripts/submit_if_phase_c.slurm`
+  - Keep `CONTROLLER_CONFIG` as the only required mode selector; do not add a new script.
+  - Allow D2/D3 arms by swapping YAML only.
+- Modify: `doc/SCRIPTS.md`
+  - Register D2/D3 controller presets and the unchanged `submit_if_phase_c.slurm` entry.
+- Add configs:
+  - `inverse_folding/reference_flow/configs/d_monitor_full.yaml`
+  - `inverse_folding/reference_flow/configs/d2_logits.yaml`
+  - `inverse_folding/reference_flow/configs/d3_revisit.yaml`
+  - `inverse_folding/reference_flow/configs/d2_d3_full.yaml`
+
+**Controller config contract**
+
+```yaml
+controller:
+  enabled: true
+  mode: d2_d3_full        # monitor_only | d2_logits | d3_revisit | d2_d3_full
+  t_start: 0.50
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+    local_risk_aggregation: LME
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 16
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    min_completion_fraction: 0.50
+    min_rho_to_emit_event: 0.0
+  d2:
+    enabled: true
+    beta: 1.0
+    eta: 1.0
+    epsilon: 1.0e-8
+    candidate_mode: structure_topk
+    top_k_tokens: 4
+    max_positions_per_block: 2
+    max_candidates_per_block: 32
+    selection_score: residue_excess_then_low_entropy
+    min_delta_R_improvement: 0.0
+    min_ess_fraction: 0.25
+    max_abs_logit_shift: 5.0
+    paired_uncorrected_sample: true
+  d3:
+    enabled: true
+    window_to_residue_projection: max_covering_window
+    gamma_min: 0.40
+    gamma_max: 0.90
+    lambda_commit: 1.0
+    zscore_epsilon: 1.0e-6
+    same_refresh_grace: true
+    final_freeze_steps: 1
+  attribution:
+    write_paired_counterfactual: true
+    write_independent_delta_R_i: true
+    productive_delta_logp: 0.5
+  controls:
+    allow_wrong_allele_head: true
+    allow_shuffled_head: true
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true
+```
+
+Validation rules:
+1. `controller.enabled=false` is still a no-op and requires no head flags.
+2. `mode=monitor_only` may compute D2/D3 diagnostics when the nested sections are present, but it must return identity logits and legacy remask ranking.
+3. `mode=d2_logits` requires `d2.enabled=true` and `d3.enabled=false`.
+4. `mode=d3_revisit` requires `d2.enabled=false` and `d3.enabled=true`.
+5. `mode=d2_d3_full` requires both `d2.enabled=true` and `d3.enabled=true`.
+6. `head.score_scale` remains `raw_logit` for the first D2/D3 implementation.
+7. `head.local_risk_aggregation` must be `LME` for the first implementation; hard max is a later sensitivity comparator.
+8. `d2.top_k_tokens`, `d2.max_positions_per_block`, and `d2.max_candidates_per_block` must be positive.
+9. `d2.beta=0` must be allowed and must produce exactly zero immune logit correction.
+10. `d2.min_ess_fraction` must lie in `[0, 1]`; low ESS sets `g_ESS=0` or disables correction for that block.
+11. `d3.window_to_residue_projection` must be `max_covering_window` for the first implementation.
+12. `d3.gamma_min <= d3.gamma_max`, both in `[0, 1]`.
+13. `d3.final_freeze_steps >= 1` so the controller cannot create unresolved masks at the end. When `final_freeze_steps > 1`, the post-hook must return all committed residues in `protected_positions` inside the freeze window so legacy remask cannot undo the freeze.
+
+**D2 step behavior**
+1. Reuse the D1 refresh cadence and hard completion.
+2. Compute dynamic/static matched window records and `window_excess` exactly as D1.
+3. Build active blocks exactly as D1 and reuse the D1 `ActiveBlock` list. Do not add a second merge rule based on scoring-window-set overlap in D2; changing merge semantics belongs in a separate D1/D2 geometry PR.
+4. For each active block, define `Omega(B)` as the union of the block's scoring-window indices.
+5. Select editable positions `A_B` from masked positions inside the active block. Committed high-risk residues are D3's responsibility; D2 only changes logits for positions that can be sampled in the current step.
+6. Rank editable positions by residue-level excess risk, breaking ties by lower structural entropy. Keep at most `d2.max_positions_per_block`.
+7. Define candidate support `K_i` as the top `d2.top_k_tokens` canonical amino-acid tokens under current structural logits for each selected position.
+8. Enumerate the Cartesian product of `K_i` when its size is `<= max_candidates_per_block`; otherwise sample exactly `max_candidates_per_block` hard candidates from the structural proposal using a deterministic controller RNG derived from `(seed, protein_id, design_idx, refresh_step, block_id)`.
+   - Sampling mode is i.i.d. across selected positions: draw each `a_i` independently from the normalized structural softmax over `K_i`, then assemble `a_B`.
+   - Sampling is with replacement, and duplicate hard candidates are retained. Do not deduplicate, because duplicate draws are part of the Monte Carlo estimate and ESS calculation.
+9. For each hard candidate, create a completed sequence by replacing only `A_B` in the current hard completion and score all candidates through one `OnlineHeadScorer.score_batch_same_protein()` call for that block.
+10. Compute local block risk with `R_H^Omega` over `Omega(B)` only, not over all windows.
+11. Compute `Delta R_B(candidate) = R_candidate^Omega - R_current^Omega`.
+12. Compute structural proposal weights `Q_B` from the structural token log-probs of the candidate tokens.
+13. Compute immune weights with branch-specific semantics:
+    - Cartesian enumeration: unnormalized candidate weight is `Q_B(a_B) * exp(-beta * Delta R_B(a_B))`.
+    - Sampling from `Q_B`: unnormalized importance weight is `exp(-beta * Delta R_B(a_B))` because `Q_B` is already the sampling proposal.
+14. Compute candidate ESS from the branch-appropriate unnormalized weights. Write this value as `ESS_candidates`; keep `g_ESS` as the reliability gate factor. If `ESS_candidates / n_candidates < min_ess_fraction`, set `g_ESS=0` and return no correction for the block.
+15. Compute candidate feasibility as `best_delta_R_B < -min_delta_R_improvement`. If no candidate is feasible, emit diagnostics but return no D2 correction for that block.
+16. Project `Q_B` and `pi_B` to per-position marginals `Q_{B,i}` and `pi_{B,i}`.
+17. Add the posterior/proposal-ratio correction only for tokens in candidate support:
+    - `delta_logit_i(a) = eta * rho_B * (log(pi_{B,i}(a)+eps) - log(Q_{B,i}(a)+eps))`
+    - clip per-token shifts to `[-max_abs_logit_shift, max_abs_logit_shift]`.
+18. Leave all tokens outside the candidate support unchanged.
+19. If `beta=0`, `pi_B == Q_B`; the corrected logits must be exactly equal to structural logits within numerical tolerance.
+20. The controller must clone structural logits before applying any `delta_logit`; never mutate the denoiser output tensor in place because D3 and paired attribution need the uncorrected structural logits.
+21. Store pending D2 metadata for corrected positions so the post-sampling hook can fill `a_after`, `a_uncorrected`, paired disagreement, chosen-token structural log-prob, corrected log-prob, KL, and realized local risk deltas.
+
+**D3 step behavior**
+1. Add a post-sampling hook that runs after newly selected tokens update `x_t` / `scores[]` and before `_apply_reparam_remask()`.
+2. D3 only runs on refresh steps, only when `step < n_steps - final_freeze_steps`, and only when `sampler.remask.enabled=true`.
+3. Project window-level excess to residue-level `e_i(t)` by `max_covering_window`: each residue receives the maximum `window_excess` among scored windows that cover it, or `0.0` if none cover it. Compute this projection once per refresh and reuse it for all D3 blocks/events.
+4. Maintain `m_i(t)` as controller state per design. For residue `i`, compute `rho_i(t)` as the maximum `rho_B` among active blocks covering `i`, else `0.0`. D3 only writes `m_i` on refresh steps; in memory, `rho_i` is the latest refresh's value and is not defined as a continuously updated between-refresh quantity.
+5. Cold start: at the first refresh after `t_start`, initialize `m_i = e_i` for all residues, then use EMA updates on later refreshes.
+6. Use reliability-dependent EMA:
+   - `gamma_i(t) = gamma_min + (gamma_max - gamma_min) * (1 - rho_i(t))`
+   - `m_i(t) = gamma_i(t) * m_i(previous) + (1 - gamma_i(t)) * e_i(t)`.
+7. Compute latest structural chosen-token log-prob `ell_i_cur(t)` from the pre-D2 structural logits at the same refresh step for every committed residue.
+8. Eligible residues for z-scoring are all positions with `x_t != mask_token_id` in the current step, across the full protein, not only active-block residues. If there are fewer than two eligible residues or the standard deviation is below `zscore_epsilon`, use zero-centered scores for that term.
+9. Compute `commit_score_i = z(ell_i_cur) - lambda_commit * z(m_i)`.
+10. Apply same-refresh grace: positions whose logits received D2 correction in this refresh use `commit_score_i = z(ell_i_cur)` for this refresh only. They are not protected from structure-low-confidence remask.
+11. Pass `commit_score` as `rank_scores` into `_apply_reparam_remask()`; lower scores are more likely to be remasked under the existing DPLM-style remask budget.
+12. During the final freeze window, return every committed position in `protected_positions` so neither D3 nor legacy remask can reopen a residue.
+13. Do not mutate `scores[]`. It remains the sampled-token log-prob at the most recent unmask step and is still used by legacy C1/D1 when D3 is disabled.
+14. Emit one D3 event row for each remasked committed residue in D3 modes, with `m_i`, `commit_score`, `remask_flag=true`, `grace_flag`, active-block status, and reason `immune_risk`, `low_confidence`, or `immune_and_low_confidence`. Use `attribution.productive_delta_logp` only in summary/analysis classification of productive revisits, not in sampling decisions.
+
+**Sampler integration details**
+1. Capture structural logits before the D2 pre-sampling hook.
+2. Capture corrected logits after the D2 hook.
+3. Determine Bernoulli selected positions exactly as the current sampler does, using `rng.random(sequence_length) < probs`.
+4. After `selected_positions` is fixed and immediately before `_sample_categorical(corrected_selected_logits, rng)`, save `saved_state = rng.bit_generator.state`.
+5. Use corrected logits for the actual sampler path with the real `rng`, advancing the real RNG exactly once.
+6. If paired attribution is enabled, create an isolated `paired_rng = np.random.default_rng()`, assign `paired_rng.bit_generator.state = saved_state`, and run `_sample_categorical(structural_selected_logits, paired_rng)` on the same `selected_positions`. Never call the real RNG for the paired branch.
+7. For selected positions outside D2-corrected support, structural and corrected logits are identical; paired samples for those positions must match actual samples exactly. This is a required invariant and should be unit-tested.
+8. If `d2.paired_uncorrected_sample=false`, skip paired replay and write nullable paired fields.
+9. Pass both actual corrected samples and paired uncorrected samples into the post-sampling controller hook.
+10. Add optional `rank_scores` / `protected_positions` to `_apply_reparam_remask()`. With both omitted, the output and tests must match the current implementation.
+
+**Telemetry migration**
+- `controller_events.parquet` must always contain the full D0 schema, even when some columns are null for a mode.
+- `refresh_log.jsonl` must include D1 fields plus:
+  - `r_windows_static` records, not only `r_windows_static_count`;
+  - `e_i` residue excess array from D3's projection rule;
+  - `m_i` EMA array when D3 is enabled, null otherwise;
+  - `candidate_feasibility` per active block;
+  - `candidate_count`, `best_delta_R_B`, `mean_delta_R_B`, `ESS_B_candidates`, `g_ESS`, and `corrected_positions` per active block;
+  - cumulative `kl_struct_corrected` and `delta_logit_max` summaries per refresh.
+  - `head_risk_LME` and `head_risk_max` must remain present; if any D1 writer path missed them, fix it in this migration.
+- `per_protein_summary.json` must aggregate:
+  - `candidate_feasibility_rate`;
+  - `total_D2_events`;
+  - `total_D3_events`;
+  - `total_corrected_positions`;
+  - `total_recommits`;
+  - `total_KL_budget`;
+  - `productive_revisit_immune_only`;
+  - `productive_revisit_structure_only`;
+  - `productive_revisit_joint`;
+  - `churn_rate`;
+  - `same_refresh_conflict_rate`.
+- `generated.parquet` remains unchanged.
+- `manifest.json` gains:
+  - `controller_mode`;
+  - `d2_config`;
+  - `d3_config`;
+  - `attribution_config`;
+  - `controls_config`;
+  - `controller_surface_version`: set to `2` for D2-D3 runs. D1 manifests that lack this field are read as version `1`.
+
+**Test plan**
+1. `tests/inverse_folding/test_reference_flow_controller_config.py`
+   - Existing D1 YAML still validates and materializes D1 behavior.
+   - `d2_logits`, `d3_revisit`, and `d2_d3_full` validate only with consistent nested `enabled` flags.
+   - Invalid top-K, candidate budget, ESS fraction, gamma bounds, and local aggregation are rejected.
+   - `beta=0` is accepted.
+2. `tests/inverse_folding/test_reference_flow_counterfactual.py`
+   - Candidate support uses top-K canonical tokens and excludes special tokens.
+   - Cartesian enumeration is used below budget; deterministic sampled candidates are used above budget.
+   - Sampled mode draws i.i.d. with replacement from `Q_B` and retains duplicate candidates.
+   - Local risk aggregation only uses `Omega(B)` windows.
+   - `beta=0` produces zero logit correction.
+   - Tokens outside support are unchanged.
+   - Low ESS disables block correction.
+   - `min_delta_R_improvement` gates candidate feasibility and disables correction when no candidate is feasible.
+   - Beneficial candidates increase corrected probability mass for lower-risk tokens.
+   - Independent single-residue `delta_R_i` is computed separately from `pi_B`.
+3. `tests/inverse_folding/test_reference_flow_commit.py`
+   - `max_covering_window` projects window excess to residue excess deterministically.
+   - EMA uses `gamma_min` for high-reliability residues and approaches `gamma_max` for low-reliability residues.
+   - `ell_i_cur` is computed from refresh-step structural logits, not `scores[]`.
+   - Same-refresh D2 grace removes only the immune penalty term.
+   - First refresh cold-start sets `m_i = e_i`.
+   - Eligible z-score set is all currently committed residues in the full protein.
+   - Final freeze protects all committed residues when `final_freeze_steps > 1`.
+   - `scores[]` remains unchanged after D3 ranking.
+   - Low commit-score positions are selected for remask under the existing remask budget.
+4. `tests/inverse_folding/test_reference_flow_d2_d3_controller.py`
+   - `monitor_only` computes diagnostics but returns identity logits and legacy remask ranking.
+   - `d2_logits` changes logits only for supported active-block tokens.
+   - `d3_revisit` changes remask ranking without changing logits.
+   - `d2_d3_full` records same-refresh grace and next-refresh conflict state.
+   - No active blocks emits no D2/D3 events and preserves current sampler behavior.
+5. `tests/inverse_folding/test_reference_flow_sampler_controller.py`
+   - `controller=None` remains bit-equivalent.
+   - Identity pre/post hooks remain bit-equivalent.
+   - D2 corrected logits are used for sampling.
+   - D3 rank scores are used only by remask.
+   - Paired uncorrected sampling does not advance the real RNG state.
+   - Paired RNG is snapshotted after Bernoulli selected positions are fixed and before categorical sampling.
+   - Paired uncorrected samples match actual samples at selected positions whose logits were not corrected.
+   - `_apply_reparam_remask(rank_scores=None, protected_positions=())` is byte-equivalent to the legacy implementation.
+6. `tests/scripts/test_run_if_phase_c1_d2_d3.py`
+   - Each preset config writes the widened telemetry schema.
+   - `generated.parquet` schema remains C1-compatible.
+   - Manifest/run_config include D2/D3 config provenance.
+   - Head scorer is still constructed once per process.
+   - `arm` in `per_protein_summary.json` matches controller mode.
+   - Startup stdout includes the fully resolved controller config.
+
+**Acceptance**
+1. Vanilla C1 and D1 monitor-only tests remain green and bit-equivalent when D2/D3 modes are disabled.
+2. `pytest tests/inverse_folding/test_reference_flow_counterfactual.py tests/inverse_folding/test_reference_flow_commit.py tests/inverse_folding/test_reference_flow_d2_d3_controller.py -q` passes.
+3. `pytest tests/inverse_folding/test_reference_flow_sampler_controller.py tests/scripts/test_run_if_phase_c1_d2_d3.py -q` passes.
+4. A fake-head local fixture can run all four controller modes and produce non-empty D2/D3 telemetry where expected.
+5. A real D1 cluster smoke should be run before large D2/D3 sweeps, but it is not a blocker for local D2/D3 implementation because the D1 hook and head-scoring interfaces are already covered by local tests.
+6. The first real D2/D3 smoke must be a 2-protein paired-seed panel: `monitor_only`, `d2_logits`, `d3_revisit`, and `d2_d3_full`, all with the same base seed list and the same head checkpoint.
+7. D2/D3 is not considered experiment-ready until D0 metrics can be computed from artifacts without rerunning generation.
 
 ---

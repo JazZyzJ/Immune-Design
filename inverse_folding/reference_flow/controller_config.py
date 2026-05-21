@@ -15,6 +15,11 @@ class ControllerConfigError(ValueError):
     """Raised when a controller YAML violates the frozen D-phase contract."""
 
 
+_ALLOWED_MODES = frozenset({"monitor_only", "d2_logits", "d3_revisit", "d2_d3_full"})
+_MODES_REQUIRING_D2 = frozenset({"d2_logits", "d2_d3_full"})
+_MODES_REQUIRING_D3 = frozenset({"d3_revisit", "d2_d3_full"})
+
+
 @dataclass(frozen=True)
 class CompletionConfig:
     method: str = "argmax"
@@ -24,6 +29,49 @@ class CompletionConfig:
 class HeadConfig:
     score_scale: str = "raw_logit"
     static_cache_policy: str = "lazy_write"
+    local_risk_aggregation: str = "LME"
+
+
+@dataclass(frozen=True)
+class D2Config:
+    enabled: bool = False
+    beta: float = 1.0
+    eta: float = 1.0
+    epsilon: float = 1.0e-8
+    candidate_mode: str = "structure_topk"
+    top_k_tokens: int = 4
+    max_positions_per_block: int = 2
+    max_candidates_per_block: int = 32
+    selection_score: str = "residue_excess_then_low_entropy"
+    min_delta_R_improvement: float = 0.0
+    min_ess_fraction: float = 0.25
+    max_abs_logit_shift: float = 5.0
+    paired_uncorrected_sample: bool = True
+
+
+@dataclass(frozen=True)
+class D3Config:
+    enabled: bool = False
+    window_to_residue_projection: str = "max_covering_window"
+    gamma_min: float = 0.40
+    gamma_max: float = 0.90
+    lambda_commit: float = 1.0
+    zscore_epsilon: float = 1.0e-6
+    same_refresh_grace: bool = True
+    final_freeze_steps: int = 1
+
+
+@dataclass(frozen=True)
+class AttributionConfig:
+    write_paired_counterfactual: bool = True
+    write_independent_delta_R_i: bool = True
+    productive_delta_logp: float = 0.5
+
+
+@dataclass(frozen=True)
+class ControlsConfig:
+    allow_wrong_allele_head: bool = True
+    allow_shuffled_head: bool = True
 
 
 @dataclass(frozen=True)
@@ -66,6 +114,10 @@ class ControllerConfig:
     head: HeadConfig = HeadConfig()
     active_windows: ActiveWindowsConfig = ActiveWindowsConfig()
     reliability: ReliabilityConfig = ReliabilityConfig()
+    d2: D2Config = D2Config()
+    d3: D3Config = D3Config()
+    attribution: AttributionConfig = AttributionConfig()
+    controls: ControlsConfig = ControlsConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
 
 
@@ -88,9 +140,10 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
         return ControllerConfig(enabled=False)
 
     mode = str(controller_payload.get("mode", ""))
-    if mode != "monitor_only":
+    if mode not in _ALLOWED_MODES:
         raise ControllerConfigError(
-            f"controller.mode must be 'monitor_only' for D1 (got {mode!r})"
+            "controller.mode must be one of "
+            f"{sorted(_ALLOWED_MODES)} (got {mode!r})"
         )
 
     t_start = float(controller_payload.get("t_start", -1.0))
@@ -125,7 +178,17 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
             "controller.head.static_cache_policy must be 'lazy_write' or 'read_only' "
             f"(got {static_cache_policy!r})"
         )
-    head = HeadConfig(score_scale=score_scale, static_cache_policy=static_cache_policy)
+    local_risk_aggregation = str(head_payload.get("local_risk_aggregation", "LME"))
+    if local_risk_aggregation != "LME":
+        raise ControllerConfigError(
+            "controller.head.local_risk_aggregation must be 'LME' for the first D2/D3 "
+            f"implementation (got {local_risk_aggregation!r})"
+        )
+    head = HeadConfig(
+        score_scale=score_scale,
+        static_cache_policy=static_cache_policy,
+        local_risk_aggregation=local_risk_aggregation,
+    )
 
     aw_payload = _require_mapping(controller_payload, "active_windows")
     selection = str(aw_payload.get("selection", ""))
@@ -178,6 +241,12 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
         min_rho_to_emit_event=min_rho_to_emit_event,
     )
 
+    d2 = _materialize_d2(controller_payload.get("d2"))
+    d3 = _materialize_d3(controller_payload.get("d3"))
+    _cross_validate_mode(mode=mode, d2=d2, d3=d3)
+    attribution = _materialize_attribution(controller_payload.get("attribution"))
+    controls = _materialize_controls(controller_payload.get("controls"))
+
     tel_payload = controller_payload.get("telemetry", {})
     if not isinstance(tel_payload, dict):
         raise ControllerConfigError("controller.telemetry must be a mapping")
@@ -196,8 +265,205 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
         head=head,
         active_windows=active_windows,
         reliability=reliability,
+        d2=d2,
+        d3=d3,
+        attribution=attribution,
+        controls=controls,
         telemetry=telemetry,
     )
+
+
+def _materialize_d2(payload: Any) -> D2Config:
+    if payload is None:
+        return D2Config()
+    if not isinstance(payload, dict):
+        raise ControllerConfigError("controller.d2 must be a mapping when present")
+
+    enabled = bool(payload.get("enabled", False))
+    if not enabled:
+        # Carry-through of disabled section: ignore other fields, return default
+        # disabled config so cross-mode validation still sees enabled=False.
+        return D2Config(enabled=False)
+
+    top_k_tokens = int(payload.get("top_k_tokens", 0))
+    if top_k_tokens <= 0:
+        raise ControllerConfigError(
+            f"controller.d2.top_k_tokens must be positive (got {top_k_tokens})"
+        )
+    max_positions = int(payload.get("max_positions_per_block", 0))
+    if max_positions <= 0:
+        raise ControllerConfigError(
+            f"controller.d2.max_positions_per_block must be positive (got {max_positions})"
+        )
+    max_candidates = int(payload.get("max_candidates_per_block", 0))
+    if max_candidates <= 0:
+        raise ControllerConfigError(
+            f"controller.d2.max_candidates_per_block must be positive (got {max_candidates})"
+        )
+    beta = float(payload.get("beta", 1.0))
+    if beta < 0.0:
+        raise ControllerConfigError(
+            f"controller.d2.beta must be >= 0 (got {beta})"
+        )
+    eta = float(payload.get("eta", 1.0))
+    if eta < 0.0:
+        raise ControllerConfigError(f"controller.d2.eta must be >= 0 (got {eta})")
+    epsilon = float(payload.get("epsilon", 1.0e-8))
+    if epsilon <= 0.0:
+        raise ControllerConfigError(
+            f"controller.d2.epsilon must be positive (got {epsilon})"
+        )
+    candidate_mode = str(payload.get("candidate_mode", "structure_topk"))
+    if candidate_mode != "structure_topk":
+        raise ControllerConfigError(
+            "controller.d2.candidate_mode must be 'structure_topk' for the first "
+            f"D2 implementation (got {candidate_mode!r})"
+        )
+    selection_score = str(payload.get("selection_score", "residue_excess_then_low_entropy"))
+    if selection_score != "residue_excess_then_low_entropy":
+        raise ControllerConfigError(
+            "controller.d2.selection_score must be 'residue_excess_then_low_entropy' "
+            f"(got {selection_score!r})"
+        )
+    min_delta_R_improvement = float(payload.get("min_delta_R_improvement", 0.0))
+    if min_delta_R_improvement < 0.0:
+        raise ControllerConfigError(
+            "controller.d2.min_delta_R_improvement must be >= 0 "
+            f"(got {min_delta_R_improvement})"
+        )
+    min_ess_fraction = float(payload.get("min_ess_fraction", 0.25))
+    if not (0.0 <= min_ess_fraction <= 1.0):
+        raise ControllerConfigError(
+            "controller.d2.min_ess_fraction must lie in [0, 1] "
+            f"(got {min_ess_fraction})"
+        )
+    max_abs_logit_shift = float(payload.get("max_abs_logit_shift", 5.0))
+    if max_abs_logit_shift <= 0.0:
+        raise ControllerConfigError(
+            "controller.d2.max_abs_logit_shift must be positive "
+            f"(got {max_abs_logit_shift})"
+        )
+    return D2Config(
+        enabled=True,
+        beta=beta,
+        eta=eta,
+        epsilon=epsilon,
+        candidate_mode=candidate_mode,
+        top_k_tokens=top_k_tokens,
+        max_positions_per_block=max_positions,
+        max_candidates_per_block=max_candidates,
+        selection_score=selection_score,
+        min_delta_R_improvement=min_delta_R_improvement,
+        min_ess_fraction=min_ess_fraction,
+        max_abs_logit_shift=max_abs_logit_shift,
+        paired_uncorrected_sample=bool(payload.get("paired_uncorrected_sample", True)),
+    )
+
+
+def _materialize_d3(payload: Any) -> D3Config:
+    if payload is None:
+        return D3Config()
+    if not isinstance(payload, dict):
+        raise ControllerConfigError("controller.d3 must be a mapping when present")
+
+    enabled = bool(payload.get("enabled", False))
+    if not enabled:
+        return D3Config(enabled=False)
+
+    projection = str(payload.get("window_to_residue_projection", "max_covering_window"))
+    if projection != "max_covering_window":
+        raise ControllerConfigError(
+            "controller.d3.window_to_residue_projection must be 'max_covering_window' "
+            f"for the first D3 implementation (got {projection!r})"
+        )
+    gamma_min = float(payload.get("gamma_min", 0.4))
+    gamma_max = float(payload.get("gamma_max", 0.9))
+    if not (0.0 <= gamma_min <= 1.0 and 0.0 <= gamma_max <= 1.0):
+        raise ControllerConfigError(
+            "controller.d3.gamma_min and gamma_max must lie in [0, 1] "
+            f"(got gamma_min={gamma_min}, gamma_max={gamma_max})"
+        )
+    if gamma_min > gamma_max:
+        raise ControllerConfigError(
+            "controller.d3.gamma_min must be <= gamma_max "
+            f"(got gamma_min={gamma_min}, gamma_max={gamma_max})"
+        )
+    lambda_commit = float(payload.get("lambda_commit", 1.0))
+    if lambda_commit < 0.0:
+        raise ControllerConfigError(
+            f"controller.d3.lambda_commit must be >= 0 (got {lambda_commit})"
+        )
+    zscore_epsilon = float(payload.get("zscore_epsilon", 1.0e-6))
+    if zscore_epsilon <= 0.0:
+        raise ControllerConfigError(
+            f"controller.d3.zscore_epsilon must be positive (got {zscore_epsilon})"
+        )
+    final_freeze_steps = int(payload.get("final_freeze_steps", 1))
+    if final_freeze_steps < 1:
+        raise ControllerConfigError(
+            "controller.d3.final_freeze_steps must be >= 1 "
+            f"(got {final_freeze_steps})"
+        )
+    return D3Config(
+        enabled=True,
+        window_to_residue_projection=projection,
+        gamma_min=gamma_min,
+        gamma_max=gamma_max,
+        lambda_commit=lambda_commit,
+        zscore_epsilon=zscore_epsilon,
+        same_refresh_grace=bool(payload.get("same_refresh_grace", True)),
+        final_freeze_steps=final_freeze_steps,
+    )
+
+
+def _materialize_attribution(payload: Any) -> AttributionConfig:
+    if payload is None:
+        return AttributionConfig()
+    if not isinstance(payload, dict):
+        raise ControllerConfigError("controller.attribution must be a mapping when present")
+    productive_delta_logp = float(payload.get("productive_delta_logp", 0.5))
+    if productive_delta_logp < 0.0:
+        raise ControllerConfigError(
+            "controller.attribution.productive_delta_logp must be >= 0 "
+            f"(got {productive_delta_logp})"
+        )
+    return AttributionConfig(
+        write_paired_counterfactual=bool(payload.get("write_paired_counterfactual", True)),
+        write_independent_delta_R_i=bool(payload.get("write_independent_delta_R_i", True)),
+        productive_delta_logp=productive_delta_logp,
+    )
+
+
+def _materialize_controls(payload: Any) -> ControlsConfig:
+    if payload is None:
+        return ControlsConfig()
+    if not isinstance(payload, dict):
+        raise ControllerConfigError("controller.controls must be a mapping when present")
+    return ControlsConfig(
+        allow_wrong_allele_head=bool(payload.get("allow_wrong_allele_head", True)),
+        allow_shuffled_head=bool(payload.get("allow_shuffled_head", True)),
+    )
+
+
+def _cross_validate_mode(*, mode: str, d2: D2Config, d3: D3Config) -> None:
+    """Enforce mode-vs-enabled cross constraints (PLAN_RF.md §D2-D3 rules 3-5)."""
+
+    if mode in _MODES_REQUIRING_D2 and not d2.enabled:
+        raise ControllerConfigError(
+            f"controller.mode={mode!r} requires controller.d2.enabled=true"
+        )
+    if mode in _MODES_REQUIRING_D3 and not d3.enabled:
+        raise ControllerConfigError(
+            f"controller.mode={mode!r} requires controller.d3.enabled=true"
+        )
+    if mode == "d2_logits" and d3.enabled:
+        raise ControllerConfigError(
+            "controller.mode='d2_logits' requires controller.d3.enabled=false"
+        )
+    if mode == "d3_revisit" and d2.enabled:
+        raise ControllerConfigError(
+            "controller.mode='d3_revisit' requires controller.d2.enabled=false"
+        )
 
 
 def controller_config_to_dict(config: ControllerConfig) -> dict[str, Any]:

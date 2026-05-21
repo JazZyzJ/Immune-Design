@@ -83,9 +83,10 @@ class PositionDependentDFMSampler:
             if torch.isnan(logits).any():
                 raise FloatingPointError(f"NaN logits encountered at step={step} t={t:.6f}")
 
+            structural_logits = logits
             if controller is not None:
                 # Local import to avoid pulling controller deps when unused.
-                from .controller import SamplerStepContext
+                from .controller import PostSamplingContext, SamplerStepContext
 
                 ctx = SamplerStepContext(
                     x_t=x_t.detach().clone(),
@@ -100,6 +101,7 @@ class PositionDependentDFMSampler:
                 )
                 result = controller.step(ctx)
                 logits = result.logits
+            corrected_logits = logits
 
             last_logits = logits.detach().cpu()
             probs = positionwise_unmask_probabilities(
@@ -109,10 +111,20 @@ class PositionDependentDFMSampler:
                 base_form=config.schedule.base_form,
             )
             masked_positions = (x_t == self.mask_token_id).cpu().numpy()
+            selected_positions = np.array([], dtype=np.int64)
+            sampled_tokens_actual = np.array([], dtype=np.int64)
+            sampled_tokens_uncorrected: np.ndarray | None = None
             if masked_positions.any():
                 draws = rng.random(sequence_length) < probs
                 selected_positions = np.flatnonzero(masked_positions & draws)
                 if selected_positions.size:
+                    # PLAN §"Sampler integration" 4: snapshot RNG state AFTER
+                    # Bernoulli draws are fixed and BEFORE categorical sampling
+                    # so the paired branch can replay token sampling without
+                    # changing the set of selected positions.
+                    saved_state = (
+                        rng.bit_generator.state if controller is not None else None
+                    )
                     selected_logits = last_logits[selected_positions] / float(
                         config.sampler.temperature
                     )
@@ -124,17 +136,84 @@ class PositionDependentDFMSampler:
                     for pos in selected_positions.tolist():
                         if unmask_step_by_pos[pos] < 0:
                             unmask_step_by_pos[pos] = step
+                    sampled_tokens_actual = sampled_tokens.numpy().astype(
+                        np.int64, copy=False
+                    )
+                    # PLAN §"Sampler integration" 6-7: paired uncorrected sample
+                    # via an isolated RNG clone so the real RNG is unaffected.
+                    # Skipped when corrected == structural (no information gain)
+                    # or when D2 paired_uncorrected_sample is disabled.
+                    if (
+                        controller is not None
+                        and saved_state is not None
+                        and getattr(controller, "config", None) is not None
+                        and getattr(controller.config, "d2", None) is not None
+                        and bool(controller.config.d2.enabled)
+                        and bool(controller.config.d2.paired_uncorrected_sample)
+                        and corrected_logits is not structural_logits
+                    ):
+                        paired_rng = np.random.default_rng()
+                        paired_rng.bit_generator.state = saved_state
+                        structural_selected_logits = (
+                            structural_logits.detach().cpu()[selected_positions]
+                            / float(config.sampler.temperature)
+                        )
+                        sampled_uncorrected, _ = _sample_categorical(
+                            structural_selected_logits, paired_rng
+                        )
+                        sampled_tokens_uncorrected = (
+                            sampled_uncorrected.numpy().astype(np.int64, copy=False)
+                        )
 
+            # Post-sampling hook (PLAN §"Sampler integration" 9-10). Skipped
+            # when no controller is bound or when remask is disabled, which
+            # keeps controller=None bit-equivalent with pre-D2/D3 behavior.
             remask_count = 0
+            post_rank_scores: np.ndarray | None = None
+            post_protected: tuple[int, ...] = ()
+            if controller is not None and remask_enabled and step < n_steps - 1:
+                post_ctx = PostSamplingContext(
+                    x_t=x_t.detach().clone(),
+                    scores=scores.copy(),
+                    structural_logits=structural_logits,
+                    corrected_logits=corrected_logits,
+                    selected_positions=selected_positions,
+                    sampled_tokens_actual=sampled_tokens_actual,
+                    sampled_tokens_uncorrected=sampled_tokens_uncorrected,
+                    step=step,
+                    t=t,
+                    n_steps=n_steps,
+                    mask_token_id=self.mask_token_id,
+                    protein_id=protein_id,
+                    design_idx=design_idx,
+                    sequence_length=sequence_length,
+                )
+                post_result = controller.post_step(post_ctx)
+                post_rank_scores = post_result.rank_scores
+                post_protected = post_result.protected_positions
             if remask_enabled and step < n_steps - 1:
-                remask_count = _apply_reparam_remask(
+                remask_result = _apply_reparam_remask(
                     x_t=x_t,
                     scores=scores,
                     unmask_step_by_pos=unmask_step_by_pos,
                     mask_token_id=self.mask_token_id,
                     step=step,
                     n_steps=n_steps,
+                    rank_scores=post_rank_scores,
+                    protected_positions=post_protected,
                 )
+                remask_count = remask_result.count
+                # D3 remask telemetry hook (PLAN §D3-14). Skipped when the
+                # controller does not expose post_remask (keeps duck-typed
+                # stub controllers in unit tests bit-equivalent).
+                if controller is not None and remask_result.remasked_positions:
+                    post_remask_fn = getattr(controller, "post_remask", None)
+                    if callable(post_remask_fn):
+                        post_remask_fn(
+                            remasked_positions=remask_result.remasked_positions,
+                            step=step,
+                            t=t,
+                        )
 
             if save_trajectories:
                 trajectory_rows.append(
@@ -188,6 +267,14 @@ def _sample_categorical(
     return torch.from_numpy(sampled).to(torch.long), chosen_logp.astype(np.float64, copy=False)
 
 
+@dataclass
+class ReparamRemaskResult:
+    """Number of positions remasked plus the actual position list for telemetry."""
+
+    count: int
+    remasked_positions: tuple[int, ...]
+
+
 def _apply_reparam_remask(
     *,
     x_t: torch.Tensor,
@@ -196,35 +283,55 @@ def _apply_reparam_remask(
     mask_token_id: int,
     step: int,
     n_steps: int,
-) -> int:
+    rank_scores: np.ndarray | None = None,
+    protected_positions: tuple[int, ...] = (),
+) -> ReparamRemaskResult:
     """Re-mask the lowest-confidence committed positions.
 
     Mirrors DPLM's ``reparam-uncond-deterministic-linear`` rule: at step ``s``
     of ``T`` (1-indexed for the rate), keep ``s/T`` of the committed positions
     and re-mask the bottom ``1 - s/T`` by score.
 
+    ``rank_scores`` overrides ``scores[]`` as the per-residue ranking signal
+    (D3 commit-score path). When ``None`` the function uses ``scores[]``
+    exactly as before. ``protected_positions`` removes positions from the
+    remask candidate pool (D3 grace / final freeze). With both defaults the
+    output is byte-equivalent to the pre-D2/D3 implementation.
+
     Returns the number of positions re-masked this step.
     """
     committed_mask = (x_t != mask_token_id).cpu().numpy()
     n_committed = int(committed_mask.sum())
     if n_committed == 0:
-        return 0
+        return ReparamRemaskResult(count=0, remasked_positions=())
     rate = 1.0 - (step + 1) / float(n_steps)
     cutoff_len = int(n_committed * rate)
     if cutoff_len <= 0:
-        return 0
+        return ReparamRemaskResult(count=0, remasked_positions=())
     committed_positions = np.flatnonzero(committed_mask)
-    committed_scores = scores[committed_positions]
+    if protected_positions:
+        protected_set = {int(p) for p in protected_positions}
+        committed_positions = np.array(
+            [p for p in committed_positions if int(p) not in protected_set],
+            dtype=committed_positions.dtype,
+        )
+    if committed_positions.size == 0:
+        return ReparamRemaskResult(count=0, remasked_positions=())
+    ranking = scores if rank_scores is None else rank_scores
+    ranking_at_committed = ranking[committed_positions]
     # Lowest cutoff_len scores → re-mask. ``argpartition`` for O(n).
     if cutoff_len >= committed_positions.size:
         bottom_positions = committed_positions
     else:
-        partition_idx = np.argpartition(committed_scores, cutoff_len)[:cutoff_len]
+        partition_idx = np.argpartition(ranking_at_committed, cutoff_len)[:cutoff_len]
         bottom_positions = committed_positions[partition_idx]
     if bottom_positions.size == 0:
-        return 0
+        return ReparamRemaskResult(count=0, remasked_positions=())
     x_t[bottom_positions] = mask_token_id
     scores[bottom_positions] = -np.inf
     for pos in bottom_positions.tolist():
         unmask_step_by_pos[pos] = -1
-    return int(bottom_positions.size)
+    return ReparamRemaskResult(
+        count=int(bottom_positions.size),
+        remasked_positions=tuple(int(p) for p in bottom_positions.tolist()),
+    )

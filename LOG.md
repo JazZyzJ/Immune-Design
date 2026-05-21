@@ -2704,3 +2704,90 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_RF.md` Task D0 (telemetry contract), Task D1 (monitor-only implementation), Task D3 STUB (route A/B deferred decision)
   - `doc/Reference_Flow_Derivation.md` §4.7 D1, §4.9 (training-side support justification)
   - `L0082`, `L0083` (Task D theory updates that motivated this implementation)
+
+
+### L0093
+- timestamp: 2026-05-21T16:39:48+08:00
+- type: PLAN_UPDATE
+- module: PHASE_D
+- trigger: User asked whether D2 and D3 can now be fully planned together after D1 implementation, and whether logit steering plus commit/revisit should be implemented in one pass.
+- change_summary: Replaced the old D3 stub in `PLAN_RF.md` with a combined D2-D3 implementation plan. The plan keeps D2 and D3 jointly planned but separately switchable through `monitor_only`, `d2_logits`, `d3_revisit`, and `d2_d3_full` modes; it defines the D2 hard-counterfactual candidate/logit path, the D3 EMA commit-score/remask path, sampler hook changes, telemetry migration, config presets, tests, and acceptance gates.
+- rationale: D1 has already established the online refresh, active-block, static-window-cache, head-scoring, and controller-hook infrastructure. D2 and D3 share those interfaces and must share a widened telemetry schema, but their causal surfaces must remain separable for the D0 attribution and budget-normalization contract.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/PLAN_RF.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: Documentation-only update based on read-only inspection of `inverse_folding/reference_flow/controller.py`, `controller_config.py`, `sampler.py`, `head_scoring.py`, `scripts/run_if_phase_c1.py`, `PLAN_RF.md` D0/D1 schema, `doc/Reference_Flow_Derivation.md` §4.7 D2-D3, and two read-only explorer reports. No runtime tests executed.
+- impact:
+  - scope: Reference Flow D2/D3 implementation planning only; no production code or experiment artifacts changed.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: Future coder should implement D2 first on the existing pre-sampling controller hook, then D3 on a new post-sampling/pre-remask hook, while landing the shared telemetry schema before either mode is treated as complete.
+- refs:
+  - `PLAN_RF.md` Task D2-D3
+  - `PLAN_RF.md` Task D0
+  - `doc/Reference_Flow_Derivation.md` §4.7 D2-D3
+  - `L0092`
+
+
+### L0094
+- timestamp: 2026-05-21T18:47:06+08:00
+- type: FEATURE
+- module: PHASE_D
+- trigger: User authorized D2/D3 implementation per the revised `PLAN_RF.md` §"Task D2-D3" after the M1-M6 + N2 review cycle closed. Implementation followed `superpowers:executing-plans` with TDD per sub-task and the strict CLAUDE.md execution standards.
+- change_summary: Landed the full D2 hard-counterfactual logit correction and D3 EMA commit/revisit surfaces on top of the existing D1 monitor controller. ControllerConfig broadened to four modes (`monitor_only | d2_logits | d3_revisit | d2_d3_full`) with cross-mode validators; `counterfactual.py` and `commit.py` added as pure-function modules plus thin `D2Handler` / `D3Handler` orchestrators; `controller.py` was renamed to `ReferenceFlowController` (a deprecated `D1MonitorController` alias is kept), restructured around a single `RefreshState` snapshot, and now exposes a `post_step()` hook returning `PostSamplingResult(rank_scores, protected_positions, post_event_rows, refresh_addendum)`; `sampler.py` captures structural vs. corrected logits, snapshots `rng.bit_generator.state` after the Bernoulli draws / before categorical sampling, runs paired uncorrected sampling on an isolated RNG clone, calls the post-sampling hook before remask, and extends `_apply_reparam_remask` with optional `rank_scores` / `protected_positions` (defaults byte-equivalent to the legacy implementation); `scripts/run_if_phase_c1.py` derives `arm` from `controller.mode`, stamps `controller_surface_version=2` plus per-mode config blocks into the manifest, prints the resolved controller config at startup, and merges per-refresh D3 addenda into `refresh_log.jsonl`; four new YAML presets (`d_monitor_full`, `d2_logits`, `d3_revisit`, `d2_d3_full`) live under `inverse_folding/reference_flow/configs/`; `doc/SCRIPTS.md` was updated to describe the Phase D extension.
+- rationale: PLAN_RF.md §D2-D3 requires that D2 (token direction) and D3 (reversibility) ship from one shared refresh / candidate / telemetry surface so the D0 attribution and budget-normalization matrix can decompose them cleanly. Shipping the modes together preserves bit-equivalence of the existing C1 / D1 paths (no behavior drift when `controller=None`, when `enabled=false`, or when the mode is `monitor_only` with D2/D3 sections present for diagnostics) and avoids a second telemetry rewrite when D3 lands after D2.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/controller_config.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/counterfactual.py` (new)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/commit.py` (new)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/controller.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/sampler.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/d_monitor_full.yaml` (new)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/d2_logits.yaml` (new)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/d3_revisit.yaml` (new)
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/d2_d3_full.yaml` (new)
+  - `/Users/jerry/Project/MHC-IF/scripts/run_if_phase_c1.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_controller_config.py`
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_counterfactual.py` (new)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_commit.py` (new)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_d2_d3_controller.py` (new)
+  - `/Users/jerry/Project/MHC-IF/tests/inverse_folding/test_reference_flow_sampler_controller.py`
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_run_if_phase_c1_d2_d3.py` (new)
+- evidence: `pytest tests/inverse_folding/test_reference_flow_{controller_config,counterfactual,commit,d1_controller,d2_d3_controller,sampler_controller}.py tests/scripts/test_run_if_phase_c1_{d1,d2_d3}.py` → **125 passed**. Breakdown: T1 controller_config 33, T2 counterfactual 19, T3 commit 19, T4 d2_d3_controller 13, T5 sampler_controller 12 (incl. paired RNG isolation + `_apply_reparam_remask` byte-equivalence), T6 run_script d1 9 + run_script d2_d3 5, plus D1 monitor controller 15. All four preset YAMLs load cleanly via `load_controller_config`. The `D1MonitorController` alias keeps every pre-existing D1 test green without signature changes. `controller=None` + identity hook + `_apply_reparam_remask(rank_scores=None, protected_positions=())` were each verified bit-equivalent against the pre-T5 implementation by direct comparison tests. The one pre-existing failing test in `test_analysis_structural_features.py` is unrelated (missing `Bio` module) and was confirmed pre-existing via `git stash` regression.
+- impact:
+  - scope: Phase D adaptive controller. With `--controller-config` unset or `enabled=false`, the run is bit-equivalent to pre-D1. With one of the four new presets (`d_monitor_full`, `d2_logits`, `d3_revisit`, `d2_d3_full`), the controller activates the corresponding handler composition; `refresh_log.jsonl` gains nullable `e_i / m_i / rho_i / grace_positions` fields (populated only when D3 ran), `controller_events.parquet` retains the full D0 schema with nullable D2/D3 columns, and `manifest.json` stamps `controller_surface_version=2`, `controller_mode`, `d2_config`, `d3_config`, `attribution_config`, `controls_config`. `generated.parquet` schema is unchanged.
+  - risk: medium. Cluster smoke not yet executed; the head scorer call shape for D2 candidate batches (up to `max_candidates_per_block * n_active_blocks` per refresh) has only been exercised against the stub scorer in unit tests. D2 per-corrected-position event rows currently stay at D1 block-level monitor format (`a_after` / `a_uncorrected` / KL fields are still null); `per_protein_summary` aggregates for D2/D3 stay at zero/null because the script-level aggregation of corrected positions / KL / recommit counts was not extended in this PR. These two follow-ups do not change the on-disk schema, only its content density.
+  - confidence: 0.85
+- status: done
+- next_action: (1) On Della, run a 2-protein paired-seed smoke across all four presets per `PLAN_RF.md` §"Acceptance" 6 to validate D0 Layer A opportunity metrics and the D2/D3 telemetry density. (2) Wire D2 per-corrected-position event rows and the post-sampling `a_after / a_uncorrected / KL_struct_corrected / delta_R_corrected / delta_R_uncorrected` fill-in so `controller_events.parquet` rows for D2 modes carry full attribution. (3) Extend `compute_per_protein_summary` to aggregate D2 event count, total corrected positions, total KL budget, D3 recommit count, and productive-revisit rates from `event_rows`. (4) Optionally consider removing the `.worktrees/` line from `.gitignore` if no worktree workflow is planned for the near term.
+- refs:
+  - `PLAN_RF.md` §"Task D2-D3"
+  - `PLAN_RF.md` §"Task D0" (telemetry contract)
+  - `L0092`, `L0093`
+
+
+### L0095
+- timestamp: 2026-05-21T21:18:36+08:00
+- type: FEATURE
+- module: IF_ENCODER
+- trigger: User identified that GeoEGNN-IPA encoder training still inherited the old Module-K decoder adapter shape and requested explicit adapter-depth controls in the IF-IMP encoder stage.
+- change_summary: Added `--adapter-num-layers`, `--adapter-gated`, and `--adapter-gate-init` to `scripts/train_if_imp_encoder.py`, reinstalled requested decoder adapters before freezing non-adapter DPLM parameters, forwarded the new controls from `scripts/submit_if_imp.slurm`, and updated script registration/tests.
+- rationale: Module-K checkpoints predate the adapter-shape fields and therefore load as last-1 ungated adapters by default. Last-N adapter ablations must be an explicit training-run contract; last-N > 1 is guarded to require gated adapters so fresh earlier-layer adapters start with zero contribution instead of perturbing decoder hidden states at initialization.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/scripts/train_if_imp_encoder.py`
+  - `/Users/jerry/Project/MHC-IF/scripts/submit_if_imp.slurm`
+  - `/Users/jerry/Project/MHC-IF/tests/scripts/test_if_imp_encoder_scripts.py`
+  - `/Users/jerry/Project/MHC-IF/doc/SCRIPTS.md`
+  - `/Users/jerry/Project/MHC-IF/PROGRESS.md`
+  - `/Users/jerry/Project/MHC-IF/LOG.md`
+- evidence: `python scripts/train_if_imp_encoder.py --help` passed and lists the three adapter flags; `pytest -q tests/scripts/test_if_imp_encoder_scripts.py tests/inverse_folding/dplm_refiner/test_dplm_adapter_layers.py` → 16 passed, 8 skipped (PyG / omegaconf / transformers gated); `python -m py_compile scripts/train_if_imp_encoder.py` passed; `bash -n scripts/submit_if_imp.slurm` passed.
+- impact:
+  - scope: IF encoder replacement training and launcher controls only; default remains last-1 ungated unless the new flags/env vars are set.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: On Della, run a two-batch `MODE=train_encoder` smoke with `ENCODER_ADAPTER_NUM_LAYERS=4 ENCODER_ADAPTER_GATED=1 ENCODER_ADAPTER_GATE_INIT=0.0`, then include adapter depth/gating in the planned GeoEGNN-IPA ablation matrix.
+- refs:
+  - `PLAN_IF_ENCODER.md` Tasks E0, E5, E6

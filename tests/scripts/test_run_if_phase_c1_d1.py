@@ -127,9 +127,10 @@ def _make_refresh_record(
     rho_B: float = 0.8,
     new_hotspot: bool = False,
     static_z: float = 0.0,
+    seed: int = 42,
 ) -> D1RefreshRecord:
-    windows = [WindowRiskRecord(0, 12, 12, 1.0)]
-    static_windows_count = 1
+    dyn_windows = (WindowRiskRecord(0, 12, 12, 1.0),)
+    static_windows = (WindowRiskRecord(0, 12, 12, static_z),)
     blocks = tuple(
         ActiveBlock(
             block_id=i,
@@ -146,12 +147,13 @@ def _make_refresh_record(
     return D1RefreshRecord(
         protein_id="P1",
         design_idx=0,
+        seed=seed,
         refresh_step=refresh_step,
         step=refresh_step * 5,
         t=0.5 + 0.05 * refresh_step,
-        r_windows_dyn=tuple(windows),
-        r_windows_static_count=static_windows_count,
-        window_excess=(1.0,),
+        r_windows_dyn=dyn_windows,
+        r_windows_static=static_windows,
+        window_excess=(1.0 - static_z,),
         active_blocks=blocks,
         new_hotspot_count=1 if new_hotspot else 0,
         completion_fraction_global=0.5,
@@ -161,7 +163,7 @@ def _make_refresh_record(
     )
 
 
-def test_compute_per_protein_summary_aggregates_required_fields():
+def test_compute_per_protein_summary_aggregates_required_fields(tmp_path: Path):
     refreshes = [
         _make_refresh_record(refresh_step=0, n_blocks=2, new_hotspot=True),
         _make_refresh_record(refresh_step=1, n_blocks=1, new_hotspot=False),
@@ -171,6 +173,7 @@ def test_compute_per_protein_summary_aggregates_required_fields():
         {"event_type": "monitor", "protein_id": "P1", "design_idx": 0, "refresh_step": 0},
         {"event_type": "monitor", "protein_id": "P1", "design_idx": 0, "refresh_step": 1},
     ]
+    ctrl_cfg = load_controller_config(_write_enabled_controller_yaml(tmp_path))
     summary = compute_per_protein_summary(
         protein_id="P1",
         design_idx=0,
@@ -179,6 +182,7 @@ def test_compute_per_protein_summary_aggregates_required_fields():
         arm="d1_monitor",
         refresh_records=refreshes,
         event_rows=events,
+        controller_config=ctrl_cfg,
     )
     assert summary["protein_id"] == "P1"
     assert summary["design_idx"] == 0
@@ -196,22 +200,69 @@ def test_compute_per_protein_summary_aggregates_required_fields():
     assert summary["total_corrected_positions"] == 0
     assert summary["total_recommits"] == 0
     assert summary["total_KL_budget"] == 0.0
+    # P2.3: threshold provenance must come from controller config, not be hardcoded.
+    assert summary["new_hotspot_static_threshold"] == pytest.approx(
+        ctrl_cfg.active_windows.excess_threshold
+    )
+
+
+def test_compute_per_protein_summary_records_swept_threshold(tmp_path: Path):
+    """If the controller config uses a non-default threshold, the summary
+    must record that exact value (catches the previous hardcoded 0.0 bug)."""
+    from inverse_folding.reference_flow.controller_config import (
+        ActiveWindowsConfig, CompletionConfig, ControllerConfig,
+        HeadConfig, ReliabilityConfig, TelemetryConfig,
+    )
+    ctrl_cfg = ControllerConfig(
+        enabled=True, mode="monitor_only", t_start=0.5, refresh_interval=5,
+        completion=CompletionConfig(method="argmax"),
+        head=HeadConfig(score_scale="raw_logit"),
+        active_windows=ActiveWindowsConfig(
+            excess_threshold=0.7,  # swept value, NOT the preset default
+            max_windows=16,
+            selection="threshold_then_top_n",
+            merge_overlapping_scoring_windows=True,
+        ),
+        reliability=ReliabilityConfig(),
+        telemetry=TelemetryConfig(),
+    )
+    summary = compute_per_protein_summary(
+        protein_id="P1", design_idx=0, seed=42, allele="DRB1_0101",
+        arm="d1_monitor", refresh_records=[], event_rows=[],
+        controller_config=ctrl_cfg,
+    )
+    assert summary["new_hotspot_static_threshold"] == pytest.approx(0.7)
 
 
 # ---------- write_d1_artifacts ----------
 
 
+def _d0_event_minimum_columns() -> set[str]:
+    """Required D0 event schema (PLAN_RF.md §D0 controller_events.parquet)."""
+    return {
+        "protein_id", "design_idx", "seed", "refresh_step", "step", "t",
+        "event_type", "block_id", "position_i", "window_start", "window_end",
+        "a_before", "a_after", "a_uncorrected",
+        "delta_R_corrected", "delta_R_uncorrected", "paired_disagreement_flag",
+        "logit_struct", "logit_corrected", "delta_logit_max", "kl_struct_corrected",
+        "delta_R_B", "delta_R_i", "ESS", "rho_B",
+        "m_i", "commit_score", "remask_flag", "grace_flag", "reason",
+    }
+
+
 def test_write_d1_artifacts_writes_expected_files(tmp_path: Path):
     refreshes = [_make_refresh_record(refresh_step=0, n_blocks=1)]
+    # Build a real D0-schema monitor event row through the controller helper.
+    from inverse_folding.reference_flow.controller import (
+        _build_monitor_event_row,
+    )
     events = [
-        {
-            "protein_id": "P1", "design_idx": 0,
-            "refresh_step": 0, "step": 0, "t": 0.5,
-            "event_type": "monitor", "block_id": 0,
-            "residue_start_0b": 0, "residue_end_0b": 12,
-            "rho_B": 0.8, "g_time": 1.0, "g_comp": 1.0, "g_ent": 1.0, "g_ESS": 1.0,
-            "reason": "monitor_only",
-        }
+        _build_monitor_event_row(
+            protein_id="P1", design_idx=0, seed=42,
+            refresh_step=0, step=0, t=0.5,
+            block=refreshes[0].active_blocks[0],
+            dyn_score=None,
+        )
     ]
     summaries = [
         compute_per_protein_summary(
@@ -232,22 +283,32 @@ def test_write_d1_artifacts_writes_expected_files(tmp_path: Path):
     assert events_parquet.exists()
     assert summary_json.exists()
 
-    # refresh_log: one JSON per line.
+    # refresh_log: one JSON per line, self-contained (carries r_windows_static
+    # and seed so D0 metric tooling does not need a cache join).
     lines = refresh_log.read_text().strip().splitlines()
     assert len(lines) == 1
     parsed = json.loads(lines[0])
     assert parsed["protein_id"] == "P1"
+    assert parsed["seed"] == 42
     assert parsed["refresh_step"] == 0
     assert "active_blocks" in parsed
+    assert "r_windows_static" in parsed
+    assert "r_windows_dyn" in parsed
+    assert len(parsed["r_windows_static"]) == len(parsed["r_windows_dyn"])
 
-    # controller_events: one row per event.
+    # controller_events: one row per event, in the full D0 minimum schema.
     df = pd.read_parquet(events_parquet)
     assert len(df) == 1
-    expected_cols = {
-        "protein_id", "design_idx", "refresh_step", "step", "t",
-        "event_type", "block_id", "rho_B",
-    }
-    assert expected_cols.issubset(df.columns)
+    missing = _d0_event_minimum_columns() - set(df.columns)
+    assert not missing, f"event row missing D0 columns: {sorted(missing)}"
+    # D1-only events fill D2/D3 columns with null.
+    row = df.iloc[0]
+    assert row["event_type"] == "monitor"
+    assert pd.isna(row["a_after"])
+    assert pd.isna(row["delta_R_B"])
+    assert pd.isna(row["m_i"])
+    assert pd.isna(row["commit_score"])
+    assert row["seed"] == 42
 
 
 def test_write_d1_artifacts_no_records_writes_empty_artifacts(tmp_path: Path):

@@ -52,6 +52,26 @@ from scripts.run_if_phase_c0 import _fmt_hms, write_phase_c_outputs
 # ============================================================
 
 
+# PLAN_RF.md §"Telemetry migration" — controller_surface_version. D1
+# manifests that lack this field are read as version 1; D2/D3 runs stamp 2 so
+# downstream analyzers can dispatch on schema lineage without re-running.
+CONTROLLER_SURFACE_VERSION = 2
+
+
+def canonical_aa_token_ids(task: Any) -> tuple[int, ...]:
+    """Resolve the 20 canonical amino-acid DPLM token ids from a loaded task.
+
+    Used by the D-phase controller to restrict candidate support to sampleable
+    AA tokens. Computed from ``task.alphabet.get_idx`` so the ordering matches
+    the DPLMTokenBridge convention shared with the IPA refiner.
+    """
+    # Local import to keep the script importable without dplm_refiner deps in
+    # the unit-test environment that exercises the lightweight helpers.
+    from inverse_folding.dplm_refiner.tokens import CANONICAL_AA_ORDER
+
+    return tuple(int(task.alphabet.get_idx(aa)) for aa in CANONICAL_AA_ORDER)
+
+
 @dataclass(frozen=True)
 class ControllerSetup:
     """Resolved D-phase controller setup loaded from CLI + YAML."""
@@ -135,10 +155,18 @@ def compute_per_protein_summary(
     arm: str,
     refresh_records: list[D1RefreshRecord],
     event_rows: list[dict],
+    controller_config: ControllerConfig | None = None,
 ) -> dict[str, Any]:
     """Aggregate one design's controller telemetry into per_protein_summary fields.
 
-    D2/D3 fields are present but zero because D1 is monitor-only.
+    The ``new_hotspot_static_threshold`` field is read from the controller
+    config's ``active_windows.excess_threshold`` (per D1 step #13), so any
+    threshold sweep is correctly stamped into the per-protein summary
+    instead of relying on a hard-coded value. When ``controller_config`` is
+    omitted the threshold defaults to ``0.0`` for backward-compat with
+    callers that have not been updated yet.
+
+    D2/D3 fields are present but zero/null because D1 is monitor-only.
     """
     n_active_windows_per_refresh = [
         sum(1 for e in r.window_excess if e > 0.0) for r in refresh_records
@@ -150,16 +178,64 @@ def compute_per_protein_summary(
         if total_active_windows > 0
         else 0.0
     )
-    new_hotspot_static_threshold = 0.0  # D1: same as excess_threshold; refresh records carry the value implicitly
-    if refresh_records:
-        # All refresh records share the controller config; pull from the first.
-        new_hotspot_static_threshold = (
-            0.0  # placeholder; controller does not carry the threshold in the record,
+    new_hotspot_static_threshold = (
+        float(controller_config.active_windows.excess_threshold)
+        if controller_config is not None
+        else 0.0
+    )
+
+    d2_rows = [r for r in event_rows if r.get("event_type") == "D2"]
+    d3_rows = [r for r in event_rows if r.get("event_type") == "D3"]
+
+    # D2 candidate feasibility rate: fraction of refresh / active-block pairs
+    # where at least one candidate met the feasibility gate. We approximate
+    # using the D2 event rows we actually emit (rows are only emitted when
+    # ``feasible=true`` because the controller skips block correction
+    # otherwise). Total active blocks across refreshes is the denominator.
+    d2_corrected_blocks_seen: set[tuple[int, int]] = set()
+    for row in d2_rows:
+        d2_corrected_blocks_seen.add((int(row["refresh_step"]), int(row["block_id"])))
+    total_active_blocks = int(sum(len(r.active_blocks) for r in refresh_records))
+    candidate_feasibility_rate = (
+        float(len(d2_corrected_blocks_seen)) / float(total_active_blocks)
+        if total_active_blocks > 0
+        else 0.0
+    )
+
+    total_KL_budget = float(
+        sum(
+            float(r["kl_struct_corrected"])
+            for r in d2_rows
+            if r.get("kl_struct_corrected") is not None
         )
-        # but the D1 step explicitly uses active_windows.excess_threshold for both,
-        # so the summary records the runtime-resolved value via the caller. We keep
-        # this field key here for schema completeness; the run-time caller may
-        # update it post-hoc through the manifest if desired.
+    )
+    total_corrected_positions = len(d2_rows)
+    total_recommits = len(d3_rows)
+
+    # Churn rate: residues that were remasked more than once across the run.
+    remask_counts: dict[int, int] = {}
+    for row in d3_rows:
+        pos = row.get("position_i")
+        if pos is None:
+            continue
+        remask_counts[int(pos)] = remask_counts.get(int(pos), 0) + 1
+    churned_positions = sum(1 for c in remask_counts.values() if c > 1)
+    churn_rate = (
+        float(churned_positions) / float(len(remask_counts))
+        if remask_counts
+        else 0.0
+    )
+
+    # Same-refresh conflict rate: D2-corrected positions that D3 immediately
+    # remasked in the same refresh window. We use grace_flag=True on D3 rows
+    # as the marker since the D3 path sets grace_flag for any position that
+    # received a D2 correction in the current refresh.
+    grace_remasks = sum(1 for r in d3_rows if r.get("grace_flag") is True)
+    same_refresh_conflict_rate = (
+        float(grace_remasks) / float(total_corrected_positions)
+        if total_corrected_positions > 0
+        else 0.0
+    )
 
     return {
         "protein_id": protein_id,
@@ -168,22 +244,24 @@ def compute_per_protein_summary(
         "allele": str(allele),
         "arm": str(arm),
         "n_refreshes": len(refresh_records),
-        "n_active_blocks_total": int(
-            sum(len(r.active_blocks) for r in refresh_records)
-        ),
+        "n_active_blocks_total": total_active_blocks,
         "new_hotspot_rate": float(new_hotspot_rate),
         "new_hotspot_static_threshold": float(new_hotspot_static_threshold),
-        "candidate_feasibility_rate": 0.0,  # D2 field
-        "total_D2_events": 0,
-        "total_D3_events": 0,
-        "total_corrected_positions": 0,
-        "total_recommits": 0,
-        "total_KL_budget": 0.0,
+        "candidate_feasibility_rate": float(candidate_feasibility_rate),
+        "total_D2_events": len(d2_rows),
+        "total_D3_events": len(d3_rows),
+        "total_corrected_positions": int(total_corrected_positions),
+        "total_recommits": int(total_recommits),
+        "total_KL_budget": float(total_KL_budget),
+        # Productive-revisit rates require post-hoc head re-scoring of the
+        # remasked positions; that pass is computed by D0 analysis tooling
+        # against the generated.parquet + refresh_log, not here, so we leave
+        # the fields nullable.
         "productive_revisit_immune_only": None,
         "productive_revisit_structure_only": None,
         "productive_revisit_joint": None,
-        "churn_rate": None,
-        "same_refresh_conflict_rate": None,
+        "churn_rate": float(churn_rate),
+        "same_refresh_conflict_rate": float(same_refresh_conflict_rate),
         "head_regression_flag": None,
         "nmp_regression_flag": None,
         "structure_regression_flag": None,
@@ -191,9 +269,41 @@ def compute_per_protein_summary(
     }
 
 
-def _refresh_record_to_jsonable(record: D1RefreshRecord) -> dict[str, Any]:
+def _refresh_record_to_jsonable(
+    record: D1RefreshRecord, addendum: dict | None = None
+) -> dict[str, Any]:
+    """Serialize one refresh record plus any D2 / D3 controller addendum.
+
+    Addendum keys covered:
+
+    * D3 EMA: ``e_i`` / ``m_i`` / ``rho_i`` / ``grace_positions`` (null
+      outside D3 modes).
+    * D2 block diagnostics: ``d2_block_diagnostics`` with per-block
+      candidate_count / candidate_feasibility / best_delta_R_B /
+      mean_delta_R_B / ESS_B_candidates / g_ESS_candidates /
+      rho_B_effective / corrected_positions / skipped_reason, plus the
+      refresh-level ``delta_logit_max_refresh`` summary (PLAN_RF.md
+      §"Telemetry migration" line 967).
+    """
     payload = asdict(record)
     # asdict converts dataclass tuples to tuples; json dumps them as lists fine.
+    payload["e_i"] = None
+    payload["m_i"] = None
+    payload["rho_i"] = None
+    payload["grace_positions"] = None
+    payload["d2_block_diagnostics"] = None
+    payload["delta_logit_max_refresh"] = None
+    if addendum:
+        for key in (
+            "e_i",
+            "m_i",
+            "rho_i",
+            "grace_positions",
+            "d2_block_diagnostics",
+            "delta_logit_max_refresh",
+        ):
+            if key in addendum:
+                payload[key] = addendum[key]
     return payload
 
 
@@ -203,13 +313,30 @@ def write_d1_artifacts(
     refresh_records_all: list[D1RefreshRecord],
     event_rows_all: list[dict],
     per_protein_summaries: list[dict],
+    refresh_addenda_by_key: dict[tuple[str, int, int], dict] | None = None,
 ) -> None:
-    """Write refresh_log.jsonl, controller_events.parquet, per_protein_summary.json."""
+    """Write refresh_log.jsonl, controller_events.parquet, per_protein_summary.json.
+
+    ``refresh_addenda_by_key`` maps ``(protein_id, design_idx, refresh_step)``
+    to the D3 post_step addendum (``e_i``, ``m_i``, ``rho_i``,
+    ``grace_positions``). When ``None`` every record gets the nullable
+    placeholders, which is the D1 monitor-only schema.
+    """
     run_dir.mkdir(parents=True, exist_ok=True)
     refresh_log = run_dir / "refresh_log.jsonl"
     with open(refresh_log, "w") as f:
         for record in refresh_records_all:
-            f.write(json.dumps(_refresh_record_to_jsonable(record), default=str))
+            addendum = None
+            if refresh_addenda_by_key is not None:
+                addendum = refresh_addenda_by_key.get(
+                    (record.protein_id, int(record.design_idx), int(record.refresh_step))
+                )
+            f.write(
+                json.dumps(
+                    _refresh_record_to_jsonable(record, addendum=addendum),
+                    default=str,
+                )
+            )
             f.write("\n")
 
     events_parquet = run_dir / "controller_events.parquet"
@@ -217,12 +344,19 @@ def write_d1_artifacts(
         pd.DataFrame(event_rows_all).to_parquet(events_parquet, index=False)
     else:
         # Touch an empty parquet so downstream tooling can rely on the file
-        # existing in every D1 run directory.
+        # existing in every D1 run directory. Schema mirrors the D0 minimum
+        # event schema (PLAN_RF.md §D0) plus the D1 reliability factor extras
+        # so a zero-event run is column-compatible with a non-empty run.
         pd.DataFrame(
             columns=[
-                "protein_id", "design_idx", "refresh_step", "step", "t",
-                "event_type", "block_id", "residue_start_0b", "residue_end_0b",
-                "rho_B", "g_time", "g_comp", "g_ent", "g_ESS", "reason",
+                "protein_id", "design_idx", "seed", "refresh_step", "step", "t",
+                "event_type", "block_id", "position_i", "window_start", "window_end",
+                "a_before", "a_after", "a_uncorrected",
+                "delta_R_corrected", "delta_R_uncorrected", "paired_disagreement_flag",
+                "logit_struct", "logit_corrected", "delta_logit_max", "kl_struct_corrected",
+                "delta_R_B", "delta_R_i", "ESS", "rho_B",
+                "m_i", "commit_score", "remask_flag", "grace_flag", "reason",
+                "g_time", "g_comp", "g_ent", "g_ESS",
             ]
         ).to_parquet(events_parquet, index=False)
 
@@ -254,9 +388,16 @@ def d1_manifest_provenance(
         head_checkpoint_digest = h.hexdigest()
     return {
         "controller_mode": setup.config.mode,
+        "controller_surface_version": CONTROLLER_SURFACE_VERSION,
         "controller_config": controller_config_to_dict(setup.config),
         "controller_config_hash": setup.config_hash,
         "controller_config_path": str(setup.config_path),
+        # Top-level convenience views; the full nested config is already in
+        # ``controller_config`` but downstream analyzers prefer flat accessors.
+        "d2_config": controller_config_to_dict(setup.config)["d2"],
+        "d3_config": controller_config_to_dict(setup.config)["d3"],
+        "attribution_config": controller_config_to_dict(setup.config)["attribution"],
+        "controls_config": controller_config_to_dict(setup.config)["controls"],
         "head_checkpoint_path": str(setup.head_checkpoint),
         "head_checkpoint_digest": head_checkpoint_digest,
         "head_variant_id": setup.head_variant_id,
@@ -664,6 +805,7 @@ def assert_h_maps_align_with_test_set(
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
+    from inverse_folding.dplm_refiner.tokens import CANONICAL_AA_ORDER
     from inverse_folding.reference_flow.runtime import (
         build_dplm_denoiser_context,
         checkpoint_digest,
@@ -768,10 +910,35 @@ def main(argv: list[str] | None = None) -> int:
     static_cache_path: Path | None = None
     static_cache_meta_path: Path | None = None
     refresh_records_all: list[D1RefreshRecord] = []
+    refresh_addenda_by_key: dict[tuple[str, int, int], dict] = {}
     event_rows_all: list[dict] = []
     per_protein_summaries: list[dict] = []
     window_k_min_resolved = 0
     window_k_max_resolved = 0
+    if controller_setup is not None:
+        # Print the fully resolved controller config at startup (PLAN
+        # §"Planned file touchpoints" / CLAUDE.md feedback "print hyperparams").
+        resolved_controller_cfg = controller_config_to_dict(controller_setup.config)
+        print("[controller] resolved controller config:", flush=True)
+        for top_key, top_val in resolved_controller_cfg.items():
+            print(f"[controller]   {top_key}: {top_val}", flush=True)
+        print(
+            f"[controller] surface_version={CONTROLLER_SURFACE_VERSION} "
+            f"mode={controller_setup.config.mode}",
+            flush=True,
+        )
+    if controller_setup is not None and args.resume_from:
+        # v1 policy: D1 resume is rejected. Partial telemetry alignment is
+        # not supported because controller_config / head provenance / window
+        # k-range / cache policy can drift across runs and the existing
+        # refresh_log / controller_events / per_protein_summary artifacts
+        # would silently mix two arms. See PLAN_RF.md D0 attribution layer.
+        print(
+            "ERROR: --controller-config + --resume-from is not supported in D1 v1; "
+            "rerun fresh (or omit --controller-config to resume C1 only).",
+            file=sys.stderr,
+        )
+        return 2
     if controller_setup is not None:
         static_cache_path = run_dir / "static_window_cache.parquet"
         static_cache_meta_path = run_dir / "static_window_cache.meta.json"
@@ -854,19 +1021,26 @@ def main(argv: list[str] | None = None) -> int:
             design_seed = int(config.sampler.seed) + int(design_idx)
             used_task = task
 
-            def _build_d1_controller(task_for_decode):
+            def _build_d1_controller(task_for_decode, seed_for_design):
                 if controller_setup is None or head_scorer is None:
                     return None
+                # D2/D3 candidate enumeration restricts to canonical AA token
+                # IDs (excludes mask/pad/cls/eos/unk). For monitor_only mode
+                # without nested D2/D3 sections the controller ignores this
+                # tuple; for any d2.enabled config it is required.
+                canonical_ids = canonical_aa_token_ids(task_for_decode)
                 return D1MonitorController(
                     protein_id=protein_id,
                     design_idx=int(design_idx),
+                    seed=int(seed_for_design),
                     static_sequence=str(entry["sequence"]),
                     scorer=head_scorer,
                     config=controller_setup.config,
                     decode_tokens=lambda toks: decode_residue_tokens(task_for_decode, toks),
+                    canonical_token_ids=canonical_ids,
                 )
 
-            d1_controller = _build_d1_controller(task)
+            d1_controller = _build_d1_controller(task, design_seed)
             try:
                 started = time.time()
                 prepared = prepare_backbone(
@@ -912,7 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
                             device="cpu",
                         )
                         context = build_dplm_denoiser_context(task=cpu_task, prepared=prepared)
-                        d1_controller = _build_d1_controller(cpu_task)
+                        d1_controller = _build_d1_controller(cpu_task, design_seed)
                         out = sampler.sample(
                             sequence_length=sequence_length,
                             h_values=h_values,
@@ -994,15 +1168,21 @@ def main(argv: list[str] | None = None) -> int:
                 design_events = d1_controller.controller_event_rows()
                 refresh_records_all.extend(design_refreshes)
                 event_rows_all.extend(design_events)
+                design_addenda = d1_controller.refresh_addenda()
+                for refresh_step_key, addendum in design_addenda.items():
+                    refresh_addenda_by_key[
+                        (protein_id, int(design_idx), int(refresh_step_key))
+                    ] = addendum
                 per_protein_summaries.append(
                     compute_per_protein_summary(
                         protein_id=protein_id,
                         design_idx=int(design_idx),
                         seed=design_seed,
                         allele=args.allele,
-                        arm="d1_monitor",
+                        arm=controller_setup.config.mode,
                         refresh_records=design_refreshes,
                         event_rows=design_events,
+                        controller_config=controller_setup.config,
                     )
                 )
 
@@ -1156,27 +1336,28 @@ def main(argv: list[str] | None = None) -> int:
         run_config["controller_config_hash"] = controller_setup.config_hash
         run_config["controller_config_path"] = str(controller_setup.config_path)
 
-    write_phase_c_outputs(run_dir, rows, run_config, manifest)
-    if failures:
-        write_json(run_dir / "failures.json", {"failures": failures})
-
+    # D1 telemetry + static cache flush MUST happen before manifest write so
+    # the manifest can only claim cache paths that actually exist on disk.
+    # Failure to flush is treated as a hard error: refresh_log embeds
+    # r_windows_static, but the cache is still the contract for cross-run
+    # reuse; a manifest pointing at a missing cache would silently break D0
+    # downstream tooling.
     if controller_setup is not None and head_scorer is not None:
         write_d1_artifacts(
             run_dir=run_dir,
             refresh_records_all=refresh_records_all,
             event_rows_all=event_rows_all,
             per_protein_summaries=per_protein_summaries,
+            refresh_addenda_by_key=refresh_addenda_by_key,
         )
-        try:
-            head_scorer.flush_static_cache(
-                source_dataset=str(Path(args.test_set_parquet).resolve()),
-                source_dataset_rowcount=int(len(entries)),
-            )
-        except Exception as flush_exc:  # noqa: BLE001
-            print(
-                f"WARNING: static window cache flush failed: {flush_exc}",
-                file=sys.stderr,
-            )
+        head_scorer.flush_static_cache(
+            source_dataset=str(Path(args.test_set_parquet).resolve()),
+            source_dataset_rowcount=int(len(entries)),
+        )
+
+    write_phase_c_outputs(run_dir, rows, run_config, manifest)
+    if failures:
+        write_json(run_dir / "failures.json", {"failures": failures})
 
     total_wall = time.time() - run_start
     n_rows = int(len(rows))

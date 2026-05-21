@@ -82,6 +82,9 @@ ENCODER_EGNN_HIDDEN_DIM="${ENCODER_EGNN_HIDDEN_DIM:-128}"
 ENCODER_IPA_DEPTH="${ENCODER_IPA_DEPTH:-6}"
 ENCODER_IPA_HIDDEN_DIM="${ENCODER_IPA_HIDDEN_DIM:-128}"
 ENCODER_LAMBDA_AUX="${ENCODER_LAMBDA_AUX:-1.0}"
+ENCODER_ADAPTER_NUM_LAYERS="${ENCODER_ADAPTER_NUM_LAYERS:-1}"
+ENCODER_ADAPTER_GATED="${ENCODER_ADAPTER_GATED:-0}"
+ENCODER_ADAPTER_GATE_INIT="${ENCODER_ADAPTER_GATE_INIT:-0.0}"
 ENCODER_UPDATE_COORS="${ENCODER_UPDATE_COORS:-0}"     # 1 enables --update-coors
 ENCODER_USE_UPDATED_BIAS="${ENCODER_USE_UPDATED_BIAS:-0}"
 
@@ -191,6 +194,8 @@ echo "  OUTPUT_ROOT       : ${OUTPUT_ROOT}"
 echo "  ALLELE            : ${ALLELE}"
 echo "  ARM               : ${ARM:-<auto>}"
 echo "  ABLATION_MODE     : ${ABLATION_MODE}"
+echo "  ENCODER_ADAPTER_N : ${ENCODER_ADAPTER_NUM_LAYERS}"
+echo "  ENCODER_ADAPTER_GT: ${ENCODER_ADAPTER_GATED} init=${ENCODER_ADAPTER_GATE_INIT}"
 echo "  DEVICE            : ${DEVICE}"
 echo "  SEED              : ${SEED}"
 echo "  Python            : $(python --version 2>&1)"
@@ -347,6 +352,7 @@ elif [ "${MODE}" = "train_encoder" ]; then
     : "${CATH_ROOT:?set CATH_ROOT for train_encoder}"
     EXTRA_FLAGS=()
     [[ -n "${LIMIT_BATCHES}" ]] && EXTRA_FLAGS+=(--limit-batches "${LIMIT_BATCHES}")
+    [[ "${ENCODER_ADAPTER_GATED}" = "1" ]] && EXTRA_FLAGS+=(--adapter-gated)
     [[ "${ENCODER_UPDATE_COORS}" = "1" ]] && EXTRA_FLAGS+=(--update-coors)
     [[ "${ENCODER_USE_UPDATED_BIAS}" = "1" ]] && EXTRA_FLAGS+=(--use-updated-coord-bias)
     python -u "${PROJECT_ROOT}/scripts/train_if_imp_encoder.py" \
@@ -362,6 +368,8 @@ elif [ "${MODE}" = "train_encoder" ]; then
         --seed "${SEED}" \
         --num-workers "${NUM_WORKERS}" \
         --lambda-aux "${ENCODER_LAMBDA_AUX}" \
+        --adapter-num-layers "${ENCODER_ADAPTER_NUM_LAYERS}" \
+        --adapter-gate-init "${ENCODER_ADAPTER_GATE_INIT}" \
         --d-model "${ENCODER_D_MODEL}" \
         --egnn-depth "${ENCODER_EGNN_DEPTH}" \
         --egnn-hidden-dim "${ENCODER_EGNN_HIDDEN_DIM}" \
