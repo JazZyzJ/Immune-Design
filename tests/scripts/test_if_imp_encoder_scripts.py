@@ -67,6 +67,19 @@ def test_run_if_imp_refiner_exposes_encoder_flags():
     assert "geoegnn_ipa" in result.stdout
 
 
+def test_encoder_load_paths_auto_install_checkpoint_adapter_shape():
+    """Generation and diagnostics must restore last-N/gated adapter shapes.
+
+    The checkpoint loader still fails fast by default; these production
+    entrypoints opt into rebuilding the decoder adapter shape from the
+    checkpoint before loading adapter_state_dict.
+    """
+    run_text = (ROOT / "scripts/run_if_imp_refiner.py").read_text()
+    diag_text = (ROOT / "scripts/diag_if_imp_arms.py").read_text()
+    assert "auto_install_adapter_shape=True" in run_text
+    assert "auto_install_adapter_shape=True" in diag_text
+
+
 def test_diag_if_imp_arms_exposes_encoder_flags():
     result = _run_help("scripts/diag_if_imp_arms.py")
     assert result.returncode == 0, result.stderr

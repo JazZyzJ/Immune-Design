@@ -420,6 +420,7 @@ def _load_models(args: argparse.Namespace):
             decoder=task.model.decoder,
             map_location=args.device,
             strict_state=False,
+            auto_install_adapter_shape=True,
         )
         encoder.to(args.device)
         encoder.eval()

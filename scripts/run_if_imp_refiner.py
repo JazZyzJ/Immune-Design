@@ -445,6 +445,7 @@ def _maybe_replace_encoder(args: argparse.Namespace, *, task: Any) -> bool:
         decoder=task.model.decoder,
         map_location=args.device,
         strict_state=False,
+        auto_install_adapter_shape=True,
     )
     encoder.to(args.device)
     encoder.eval()

@@ -345,7 +345,9 @@ def test_graph_config_accepts_dict_and_dictconfig_at_encoder_construction():
     assert enc_dc.graph_config.k_neighbors == 6
 
 
-def test_checkpoint_adapter_shape_mismatch_fails_fast_by_default(tmp_path):
+def test_checkpoint_adapter_shape_mismatch_fails_fast_by_default(
+    tmp_path, monkeypatch
+):
     """If the checkpoint was trained with e.g. last-4 gated adapters
     but the target decoder has last-1 ungated, silent partial loading
     would drop the trained weights. ``load_geo_encoder_checkpoint``
@@ -357,6 +359,7 @@ def test_checkpoint_adapter_shape_mismatch_fails_fast_by_default(tmp_path):
     import torch.nn as nn
 
     from inverse_folding.dplm_refiner.geo_encoder import GeoEGNNIPAEncoder
+    from inverse_folding.dplm_refiner.geo_encoder import checkpoint as ckpt_mod
     from inverse_folding.dplm_refiner.geo_encoder.checkpoint import (
         load_geo_encoder_checkpoint,
         save_geo_encoder_checkpoint,
@@ -426,6 +429,15 @@ def test_checkpoint_adapter_shape_mismatch_fails_fast_by_default(tmp_path):
             super().__init__()
             self.net = _Net(layers)
             self.adapter_proj = nn.Linear(4, 4)
+            self.cfg = type(
+                "_Cfg",
+                (),
+                {
+                    "adapter_num_layers": 1,
+                    "adapter_gated": False,
+                    "adapter_gate_init": 0.0,
+                },
+            )()
 
     # Trained shape: 4 layers, gated.
     train_layers = [_PlainLayer(), _PlainLayer()] + [
@@ -458,6 +470,29 @@ def test_checkpoint_adapter_shape_mismatch_fails_fast_by_default(tmp_path):
     )
     # Some adapter keys are unexpected (the 3 dropped gated layers).
     assert report.adapter_unexpected_keys
+
+    def _fake_reinstall(decoder, saved_cfg):
+        decoder.net.esm.encoder.layer = nn.ModuleList(
+            [_PlainLayer(), _PlainLayer()]
+            + [_GatedAdapterLayer() for _ in range(4)]
+        )
+        decoder.cfg.adapter_num_layers = int(saved_cfg["adapter_num_layers"])
+        decoder.cfg.adapter_gated = bool(saved_cfg["adapter_gated"])
+        decoder.cfg.adapter_gate_init = float(saved_cfg["adapter_gate_init"])
+        return True
+
+    monkeypatch.setattr(
+        ckpt_mod, "_reinstall_decoder_adapter_shape", _fake_reinstall
+    )
+    target_auto = _Decoder(
+        [_PlainLayer() for _ in range(5)] + [_AdapterLayer()]
+    )
+    _, report = load_geo_encoder_checkpoint(
+        ckpt, decoder=target_auto, auto_install_adapter_shape=True
+    )
+    assert report.adapter_unexpected_keys == []
+    assert target_auto.cfg.adapter_num_layers == 4
+    assert target_auto.cfg.adapter_gated is True
 
 
 def test_train_if_imp_encoder_does_not_inject_mask_or_unk_into_specials():

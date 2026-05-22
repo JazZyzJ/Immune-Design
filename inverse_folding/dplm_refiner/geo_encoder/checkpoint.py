@@ -145,6 +145,76 @@ def _check_adapter_shape_matches(
         )
 
 
+def _set_cfg_value(cfg: Any, key: str, value: Any) -> None:
+    """Set a config field on OmegaConf / dict-like / object configs."""
+    try:
+        from omegaconf import OmegaConf
+
+        OmegaConf.set_struct(cfg, False)
+    except Exception:
+        pass
+    try:
+        setattr(cfg, key, value)
+    except Exception:
+        cfg[key] = value
+
+
+def _reinstall_decoder_adapter_shape(
+    decoder: Any, saved_cfg: Dict[str, Any]
+) -> bool:
+    """Rebuild the target decoder's adapter layers to match a checkpoint.
+
+    This is used by inference/diagnostic entrypoints before restoring
+    ``adapter_state_dict``. Without it, a last-4 gated adapter checkpoint loaded
+    into the default last-1 ungated decoder would fail the shape guard or, worse
+    if the guard were bypassed, silently drop trained adapter weights.
+    """
+    if not saved_cfg:
+        return False
+
+    saved_n = saved_cfg.get("adapter_num_layers")
+    saved_gated = saved_cfg.get("adapter_gated")
+    saved_gate_init = saved_cfg.get("adapter_gate_init", 0.0)
+    if saved_n is None and saved_gated is None:
+        return False
+
+    actual = _inspect_decoder_adapter_shape(decoder)
+    actual_n = actual["adapter_num_layers"]
+    actual_gated = actual["adapter_gated"]
+    saved_n_int = int(saved_n) if saved_n is not None else int(actual_n or 1)
+    saved_gated_bool = (
+        bool(saved_gated)
+        if saved_gated is not None
+        else bool(actual_gated)
+    )
+
+    if (
+        actual_n == saved_n_int
+        and actual_gated is not None
+        and bool(actual_gated) == saved_gated_bool
+    ):
+        return False
+
+    if not hasattr(decoder, "cfg") or not hasattr(decoder, "net"):
+        raise ValueError(
+            "cannot auto-install adapter shape: decoder lacks cfg/net "
+            "attributes needed by install_adapters"
+        )
+
+    _set_cfg_value(decoder.cfg, "adapter_num_layers", saved_n_int)
+    _set_cfg_value(decoder.cfg, "adapter_gated", saved_gated_bool)
+    _set_cfg_value(decoder.cfg, "adapter_gate_init", float(saved_gate_init))
+
+    from byprot.models.dplm.modules.dplm_adapter import install_adapters
+
+    install_adapters(
+        decoder.net,
+        decoder.cfg,
+        adapter_num_layers=saved_n_int,
+    )
+    return True
+
+
 def save_geo_encoder_checkpoint(
     path: str | Path,
     encoder: GeoEGNNIPAEncoder,
@@ -191,6 +261,7 @@ def load_geo_encoder_checkpoint(
     strict_format: bool = True,
     strict_state: bool = False,
     allow_adapter_shape_mismatch: bool = False,
+    auto_install_adapter_shape: bool = False,
 ) -> tuple[GeoEGNNIPAEncoder, LoadReport]:
     """Load a checkpoint into (or instantiate) a GeoEGNNIPAEncoder.
 
@@ -209,6 +280,12 @@ def load_geo_encoder_checkpoint(
         strict_format: when True, raise on missing format keys.
         strict_state: when True, raise on missing/unexpected state-dict
             keys; when False, collect them in the returned report.
+        allow_adapter_shape_mismatch: bypass the adapter-shape guard. This can
+            silently drop trained adapter weights and is only for debugging.
+        auto_install_adapter_shape: when ``decoder`` is provided, rebuild the
+            decoder's adapter layers to match checkpoint ``adapter_config``
+            before loading ``adapter_state_dict``. Production generation and
+            diagnostics should use this for last-N / gated adapter checkpoints.
 
     Returns:
         ``(encoder, report)``.
@@ -249,6 +326,10 @@ def load_geo_encoder_checkpoint(
     adapter_missing: list = []
     adapter_unexpected: list = []
     if decoder is not None and "adapter_state_dict" in payload:
+        if auto_install_adapter_shape:
+            _reinstall_decoder_adapter_shape(
+                decoder, payload.get("adapter_config", {})
+            )
         if not allow_adapter_shape_mismatch:
             _check_adapter_shape_matches(
                 decoder, payload.get("adapter_config", {})

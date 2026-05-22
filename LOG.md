@@ -2791,3 +2791,28 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - next_action: On Della, run a two-batch `MODE=train_encoder` smoke with `ENCODER_ADAPTER_NUM_LAYERS=4 ENCODER_ADAPTER_GATED=1 ENCODER_ADAPTER_GATE_INIT=0.0`, then include adapter depth/gating in the planned GeoEGNN-IPA ablation matrix.
 - refs:
   - `PLAN_IF_ENCODER.md` Tasks E0, E5, E6
+
+
+### L0096
+- timestamp: 2026-05-22T00:58:49-04:00
+- type: BUGFIX
+- module: IF_ENCODER
+- trigger: E7 quick-screen `aux01_a4g` diagnostic evaluation failed because a last-4 gated adapter checkpoint was loaded into the default last-1 ungated decoder; the checkpoint loader correctly refused to silently drop trained adapter weights.
+- change_summary: Added `auto_install_adapter_shape` to `load_geo_encoder_checkpoint()`. When enabled by production encoder-swap entrypoints, the loader rebuilds the target decoder adapter stack from checkpoint `adapter_config` before loading `adapter_state_dict`, then keeps the existing shape guard active. `scripts/run_if_imp_refiner.py` and `scripts/diag_if_imp_arms.py` now opt into this behavior for GeoEGNN-IPA checkpoints. Default direct loader behavior remains fail-fast on adapter-shape mismatch.
+- rationale: Adapter depth/gating is part of the trained checkpoint contract. Generation and diagnostics must restore both encoder weights and the matching trained adapter shape; bypassing the guard would produce invalid last-4 ablation results by partially loading or dropping adapter weights.
+- artifacts:
+  - `/home/zc1519/src/Immune-Design/inverse_folding/dplm_refiner/geo_encoder/checkpoint.py`
+  - `/home/zc1519/src/Immune-Design/scripts/run_if_imp_refiner.py`
+  - `/home/zc1519/src/Immune-Design/scripts/diag_if_imp_arms.py`
+  - `/home/zc1519/src/Immune-Design/tests/inverse_folding/dplm_refiner/test_geo_encoder_checkpoint.py`
+  - `/home/zc1519/src/Immune-Design/tests/scripts/test_if_imp_encoder_scripts.py`
+- evidence: `python -m py_compile inverse_folding/dplm_refiner/geo_encoder/checkpoint.py scripts/run_if_imp_refiner.py scripts/diag_if_imp_arms.py` passed. `pytest tests/inverse_folding/dplm_refiner/test_geo_encoder_checkpoint.py tests/scripts/test_if_imp_encoder_scripts.py` -> 29 passed, 1 warning. `bash -n scripts/submit_if_imp.slurm` passed.
+- impact:
+  - scope: GeoEGNN-IPA checkpoint restore path for `generate_encoder` and `diag_encoder`.
+  - risk: low; the new auto-install path is opt-in and the default loader guard remains unchanged.
+  - confidence: 0.92
+- status: done
+- next_action: Re-run the `aux01_a4g` diagnostic through the normal `MODE=diag_encoder` entrypoint and verify the checkpoint loads with adapter mismatch count zero.
+- refs:
+  - `PLAN_IF_ENCODER.md` Task E7
+  - `L0095`
