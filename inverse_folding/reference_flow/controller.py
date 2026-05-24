@@ -254,6 +254,20 @@ class ReferenceFlowController:
         # Last D3 commit pass output (m_i, commit_score, grace) cached so
         # ``post_remask`` can emit per-remasked-residue D3 event rows.
         self._latest_d3_signal: dict | None = None
+        # Productive-revisit tracking (PLAN_RF.md §D0 Layer B D3 metric 3).
+        # ``_d3_pending_snapshots`` records pre-remask state per D3-remasked
+        # residue; the next refresh that observes the residue re-committed
+        # resolves the snapshot into ``_d3_resolved`` with immune-only /
+        # structure-only / joint flags.
+        self._d3_pending_snapshots: list[dict] = []
+        self._d3_resolved: list[dict] = []
+        # Cache of post-sampling pre-remask state needed by ``post_remask``.
+        self._pre_remask_x_t: torch.Tensor | None = None
+        # Did the latest post_step actually return D3 rank_scores? PLAN
+        # §D3-2 limits D3 to refresh steps and the active t window; legacy
+        # non-refresh remasks share the same sampler hook so post_remask
+        # must gate on this flag to avoid attributing legacy remasks to D3.
+        self._d3_used_in_last_post_step: bool = False
 
     # ---------- public accessors for telemetry flush ----------
 
@@ -267,6 +281,18 @@ class ReferenceFlowController:
 
     def controller_event_rows(self) -> list[dict]:
         return list(self._event_rows)
+
+    def productive_revisit_outcomes(self) -> list[dict]:
+        """Resolved productive-revisit pairs (PLAN_RF.md §D0 Layer B D3-3).
+
+        Each entry carries pre- and post-resample state plus the
+        immune-only / structure-only / joint flags. Pending snapshots that
+        were never re-committed by the end of the run are NOT included; the
+        caller can derive a "stuck" count via ``len(self._d3_pending_snapshots)``
+        if needed.
+        """
+
+        return list(self._d3_resolved)
 
     # ---------- hook ----------
 
@@ -310,6 +336,22 @@ class ReferenceFlowController:
         window_excess = tuple(
             max(0.0, float(d.z) - float(s.z) - excess_threshold)
             for d, s in zip(dyn_score.windows, static_score.windows)
+        )
+
+        # Resolve any productive-revisit pre-snapshots whose position has
+        # been re-committed since the last D3 remask. ``ell_post`` uses the
+        # CURRENT refresh's structural logits per PLAN §D3-7 convention;
+        # ``R_post_local`` uses the current refresh's dyn windows. Pending
+        # snapshots that remain masked stay queued.
+        self._d3_pending_snapshots = _resolve_productive_revisit_snapshots(
+            pending=self._d3_pending_snapshots,
+            x_t=context.x_t,
+            mask_token_id=int(context.mask_token_id),
+            structural_logits=context.logits,
+            current_windows=dyn_score.windows,
+            current_refresh_step=int(self._refresh_step_counter),
+            delta_logp_threshold=float(self.config.attribution.productive_delta_logp),
+            resolved_sink=self._d3_resolved,
         )
 
         # Threshold first, then top-N by excess.
@@ -575,6 +617,8 @@ class ReferenceFlowController:
 
         rank_scores: np.ndarray | None = None
         refresh_addendum: dict | None = None
+        # Reset per-step flag; set below iff we actually return rank_scores.
+        self._d3_used_in_last_post_step = False
 
         # D3 commit pathway: refresh step + outside freeze window + handler active.
         is_refresh_now = (
@@ -600,6 +644,7 @@ class ReferenceFlowController:
             # d3.enabled stays identity per PLAN validation rule 2.
             if self.config.mode in {"d3_revisit", "d2_d3_full"}:
                 rank_scores = outcome.commit_score
+                self._d3_used_in_last_post_step = True
             # Persist EMA forward for the next refresh regardless of mode.
             self._refresh_state.e_i = outcome.e_i
             self._refresh_state.m_i = outcome.m_i
@@ -629,6 +674,11 @@ class ReferenceFlowController:
                 "grace_positions": set(int(p) for p in outcome.grace_positions),
             }
 
+        # Cache the post-sampling / pre-remask x_t snapshot so post_remask
+        # can recover the pre-remask tokens after the sampler has reverted
+        # them to mask. Required for productive_revisit pre/post comparison.
+        self._pre_remask_x_t = context.x_t.detach().clone()
+
         # Flush any D2 pending events into the controller event buffer.
         # This is mode-agnostic: monitor_only with d2.enabled emits D2 rows
         # for diagnostics, d2_logits / d2_d3_full emit them as actual
@@ -641,6 +691,23 @@ class ReferenceFlowController:
             sampled_tokens_uncorrected=context.sampled_tokens_uncorrected,
         )
         self._pending_d2_events = []
+        # Realized ΔR^Ω(B) for actual & paired-uncorrected branches
+        # (PLAN_RF.md §D0 schema delta_R_corrected / delta_R_uncorrected).
+        # One batch head re-score per refresh covers all blocks.
+        if flushed_d2 and self._latest_d2_outcome is not None:
+            _fill_realized_delta_R(
+                flushed=flushed_d2,
+                d2_outcome=self._latest_d2_outcome,
+                structural_logits=context.structural_logits,
+                x_t_post=context.x_t,
+                mask_token_id=int(context.mask_token_id),
+                sampled_tokens_uncorrected=context.sampled_tokens_uncorrected,
+                selected_positions=context.selected_positions,
+                scorer=self.scorer,
+                decode_tokens=self._decode_tokens,
+                protein_id=self.protein_id,
+                refresh_step=self._refresh_step_counter - 1,
+            )
         self._event_rows.extend(flushed_d2)
 
         return PostSamplingResult(
@@ -661,13 +728,19 @@ class ReferenceFlowController:
     ) -> None:
         """Emit one D3 event row per remasked residue (PLAN §D3-14).
 
-        Only fires in D3 modes and only when a D3 commit pass has produced a
-        ``_latest_d3_signal``. ``reason`` is classified using the sign of the
-        z-scored EMA risk and structural confidence components.
+        Only fires when the immediately preceding ``post_step`` actually
+        returned D3 ``rank_scores`` (i.e. a refresh step inside the active
+        ``[t_start, n_steps - final_freeze_steps)`` window and a D3 mode).
+        Otherwise the remask was driven by legacy ``scores[]`` and must not
+        be attributed to D3 telemetry / productive_revisit snapshots.
         """
         if not (self.config.enabled and self.config.d3.enabled):
             return
         if not remasked_positions:
+            return
+        if not self._d3_used_in_last_post_step:
+            # Legacy ``scores[]``-driven remask on a non-refresh step; PLAN
+            # §D3-2 explicitly excludes these from D3 telemetry.
             return
         signal = self._latest_d3_signal
         if signal is None:
@@ -689,6 +762,31 @@ class ReferenceFlowController:
                 in_active=in_active,
                 in_grace=in_grace,
             )
+            # Productive-revisit pre-snapshot (resolved at the next refresh
+            # where the position is re-committed). PLAN §D0 Layer B D3-3
+            # criteria use ℓ_i^pre under the refresh's structural logits and
+            # R_pre^Ω over the window set covering ``i``.
+            if (
+                self._pre_remask_x_t is not None
+                and self._refresh_state.structural_logits is not None
+            ):
+                a_pre = int(self._pre_remask_x_t[pos].item())
+                ell_pre = _chosen_token_logprob(
+                    self._refresh_state.structural_logits, pos, a_pre
+                )
+                r_pre_local = _local_lme_over_windows_covering(
+                    windows=self._refresh_state.windows, position=pos
+                )
+                self._d3_pending_snapshots.append(
+                    {
+                        "position_i": int(pos),
+                        "refresh_step_remask": int(self._refresh_step_counter - 1),
+                        "a_pre": a_pre,
+                        "ell_pre": float(ell_pre),
+                        "R_pre_local": float(r_pre_local),
+                    }
+                )
+
             self._event_rows.append(
                 {
                     # ---- identity ----
@@ -1079,6 +1177,214 @@ def _flush_pending_d2_events(
         row.pop("_push_token", None)
         flushed.append(row)
     return flushed
+
+
+def _fill_realized_delta_R(
+    *,
+    flushed: list[dict],
+    d2_outcome: D2RefreshOutcome,
+    structural_logits: torch.Tensor,
+    x_t_post: torch.Tensor,
+    mask_token_id: int,
+    sampled_tokens_uncorrected: np.ndarray | None,
+    selected_positions: np.ndarray,
+    scorer: OnlineHeadScorer,
+    decode_tokens: Callable[[torch.Tensor], str],
+    protein_id: str,
+    refresh_step: int,
+) -> None:
+    """Compute the realized post-sampling ΔR for the actual + paired branches.
+
+    Strategy (PLAN_RF.md D0 schema + ``doc/Reference_Flow_Derivation.md``
+    §D2 ΔR^Ω(B) definition):
+
+    1. Build the "actual" full sequence by argmax-completing any residue still
+       masked in ``x_t_post`` under the structural logits — this matches the
+       hard-completion convention used at refresh time so the baseline
+       ``r_current`` stored on each block remains directly comparable.
+    2. Build the "uncorrected" full sequence by overriding ALL D2-corrected
+       positions with ``sampled_tokens_uncorrected``; for positions outside
+       the corrected set, uncorrected and actual sequences agree because the
+       paired RNG snapshot guarantees identical tokens at uncorrected logits.
+    3. One ``score_batch_same_protein`` call returns both head scores; we
+       restrict to each block's ``omega_indices`` and re-aggregate via LME.
+    4. ``delta_R_corrected = R_actual^Ω - r_current``; same for uncorrected.
+
+    No-op when the refresh produced no corrected positions (e.g. low_ess or
+    not_feasible blocks only), or when ``sampled_tokens_uncorrected`` is None
+    (D2 paired sampling disabled).
+    """
+    if not flushed:
+        return
+    # Skip blocks that never produced a correction.
+    corrected_blocks = {
+        int(b.block_id): b for b in d2_outcome.block_outcomes if b.skipped_reason is None
+    }
+    if not corrected_blocks:
+        return
+
+    # 1. Actual sequence: clone post-sampling x_t; argmax-fill any residual masks.
+    actual_tokens = x_t_post.detach().clone()
+    masked = actual_tokens == int(mask_token_id)
+    if masked.any():
+        argmax = structural_logits.argmax(dim=-1)
+        actual_tokens[masked] = argmax[masked].to(dtype=actual_tokens.dtype)
+
+    records: list[tuple[str, str]] = [
+        ("realized_actual", decode_tokens(actual_tokens))
+    ]
+
+    # 2. Paired uncorrected sequence — only meaningful when the sampler ran
+    #    the paired branch AND the corrected positions were sampled this step.
+    uncorrected_tokens: torch.Tensor | None = None
+    if sampled_tokens_uncorrected is not None and selected_positions.size:
+        pos_to_idx = {int(p): int(i) for i, p in enumerate(selected_positions.tolist())}
+        uncorrected_tokens = actual_tokens.detach().clone()
+        for blk in corrected_blocks.values():
+            for pos in blk.corrected_positions:
+                idx = pos_to_idx.get(int(pos))
+                if idx is None:
+                    continue
+                uncorrected_tokens[int(pos)] = int(
+                    sampled_tokens_uncorrected[idx]
+                )
+        records.append(("realized_uncorrected", decode_tokens(uncorrected_tokens)))
+
+    # 3. One batched head re-score.
+    batch = scorer.score_batch_same_protein(protein_id=str(protein_id), records=records)
+    actual_windows = batch.scores[0].windows
+    uncorrected_windows = batch.scores[1].windows if len(batch.scores) > 1 else None
+
+    # 4. Compute ΔR per block and fill the flushed event rows in-place.
+    block_dR_corrected: dict[int, float] = {}
+    block_dR_uncorrected: dict[int, float] = {}
+    for blk_id, block in corrected_blocks.items():
+        omega = block.omega_indices
+        r_actual = _local_lme(actual_windows, omega)
+        block_dR_corrected[blk_id] = float(r_actual - block.r_current)
+        if uncorrected_windows is not None:
+            r_uncorr = _local_lme(uncorrected_windows, omega)
+            block_dR_uncorrected[blk_id] = float(r_uncorr - block.r_current)
+    # PLAN_RF.md D0 schema: delta_R_corrected is the realized risk delta
+    # AFTER applying ``a_after`` from D2 corrected logits. monitor_only mode
+    # emits D2 diagnostic rows with reason="d2_monitor_only" but never
+    # applies a corrected-logit shift, so writing realized ΔR there would
+    # conflate the two semantics. Only the actual-correction rows are
+    # filled; monitor diagnostics stay null for both ΔR fields.
+    for row in flushed:
+        if row.get("reason") != "d2_correction_applied":
+            continue
+        bid = int(row["block_id"])
+        if bid in block_dR_corrected and row.get("a_after") is not None:
+            row["delta_R_corrected"] = float(block_dR_corrected[bid])
+        if bid in block_dR_uncorrected and row.get("a_uncorrected") is not None:
+            row["delta_R_uncorrected"] = float(block_dR_uncorrected[bid])
+
+
+def _chosen_token_logprob(
+    logits: torch.Tensor, position: int, token: int
+) -> float:
+    """log p_struct(token | position) under ``logits`` (used for ℓ_i^pre / ℓ_i^post)."""
+    log_probs = torch.log_softmax(logits[int(position)], dim=-1).detach().cpu()
+    return float(log_probs[int(token)].item())
+
+
+def _local_lme_over_windows_covering(
+    *, windows: Sequence[WindowRiskRecord], position: int
+) -> float:
+    """LME risk over windows that cover ``position`` (half-open ``[start, end)``).
+
+    Returns ``-inf`` when no window covers the position so downstream
+    consumers can detect the unresolvable case (productive_revisit treats
+    these as missing rather than zero).
+    """
+    omega: list[int] = []
+    for i, w in enumerate(windows):
+        if int(w.start_0b) <= int(position) < int(w.end_0b):
+            omega.append(i)
+    if not omega:
+        return float("-inf")
+    return _local_lme(windows, tuple(omega))
+
+
+def _resolve_productive_revisit_snapshots(
+    *,
+    pending: list[dict],
+    x_t: torch.Tensor,
+    mask_token_id: int,
+    structural_logits: torch.Tensor,
+    current_windows: Sequence[WindowRiskRecord],
+    current_refresh_step: int,
+    delta_logp_threshold: float,
+    resolved_sink: list[dict],
+) -> list[dict]:
+    """For each pending snapshot whose position is now committed, fill the
+    post-resample state and classify productive-revisit flags.
+
+    Returns the still-unresolved snapshots so the controller can continue
+    waiting on them. Resolution criteria follow PLAN_RF.md §D0 Layer B D3-3:
+
+    * ``immune_only = 1[R_post^Ω - R_pre^Ω < 0]``
+    * ``structure_only = 1[ℓ_i^post(a_i^post) - ℓ_i^pre(a_i^pre) > -δ_ℓ]``
+    * ``joint = immune_only AND structure_only``
+
+    Snapshots whose Ω window set is empty at remask time are dropped because
+    ``R_pre^Ω = -inf`` makes the immune criterion ill-defined.
+    """
+    if not pending:
+        return pending
+    still_pending: list[dict] = []
+    for snap in pending:
+        pos = int(snap["position_i"])
+        if int(x_t[pos].item()) == int(mask_token_id):
+            still_pending.append(snap)
+            continue
+        # Position re-committed → resolve.
+        a_post = int(x_t[pos].item())
+        ell_post = _chosen_token_logprob(structural_logits, pos, a_post)
+        r_post_local = _local_lme_over_windows_covering(
+            windows=current_windows, position=pos
+        )
+        r_pre = float(snap["R_pre_local"])
+        ell_pre = float(snap["ell_pre"])
+        # Snapshots with degenerate Ω at remask time cannot be classified
+        # meaningfully (R_pre = -inf or R_post = -inf). Drop them.
+        if not (math.isfinite(r_pre) and math.isfinite(r_post_local)):
+            continue
+        delta_R_local = float(r_post_local - r_pre)
+        delta_ell = float(ell_post - ell_pre)
+        immune_only = delta_R_local < 0.0
+        structure_only = delta_ell > -float(delta_logp_threshold)
+        resolved_sink.append(
+            {
+                "position_i": pos,
+                "refresh_step_remask": int(snap["refresh_step_remask"]),
+                "refresh_step_resolve": int(current_refresh_step),
+                "a_pre": int(snap["a_pre"]),
+                "a_post": int(a_post),
+                "ell_pre": float(ell_pre),
+                "ell_post": float(ell_post),
+                "R_pre_local": float(r_pre),
+                "R_post_local": float(r_post_local),
+                "delta_R_local": float(delta_R_local),
+                "delta_ell": float(delta_ell),
+                "immune_only": bool(immune_only),
+                "structure_only": bool(structure_only),
+                "joint": bool(immune_only and structure_only),
+            }
+        )
+    return still_pending
+
+
+def _local_lme(windows: Sequence[WindowRiskRecord], omega: tuple[int, ...]) -> float:
+    """LME risk over window indices in ``omega`` (PLAN §D2-10 / Derivation §D2)."""
+    if not omega:
+        return float("-inf")
+    vals = np.asarray([float(windows[int(i)].z) for i in omega], dtype=np.float64)
+    m = float(vals.max())
+    if not math.isfinite(m):
+        return m
+    return m + math.log(float(np.exp(vals - m).mean()))
 
 
 def _classify_d3_reason(

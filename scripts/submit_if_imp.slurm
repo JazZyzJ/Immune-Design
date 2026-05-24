@@ -95,6 +95,10 @@ ENCODER_VAL_BATCH_SIZE="${ENCODER_VAL_BATCH_SIZE:-8}"
 ENCODER_VAL_EVAL_EVERY_EPOCHS="${ENCODER_VAL_EVAL_EVERY_EPOCHS:-1}"
 ENCODER_PRETRAIN_AUX_ONLY_EPOCHS="${ENCODER_PRETRAIN_AUX_ONLY_EPOCHS:-0}"
 ENCODER_PRETRAIN_TARGET="${ENCODER_PRETRAIN_TARGET:-0.30}"
+# Resume + multi-iter val sweep — train_if_imp_encoder.py follow-ups.
+ENCODER_RESUME_FROM_CKPT="${ENCODER_RESUME_FROM_CKPT:-}"
+ENCODER_VAL_MAX_ITERS="${ENCODER_VAL_MAX_ITERS:-1 2 100}"
+ENCODER_TRAIN_RECOVERY_ON_VAL="${ENCODER_TRAIN_RECOVERY_ON_VAL:-0}"
 
 # Refiner training overrides
 SPLIT="${SPLIT:-train}"
@@ -366,6 +370,8 @@ elif [ "${MODE}" = "train_encoder" ]; then
     [[ "${ENCODER_ADAPTER_GATED}" = "1" ]] && EXTRA_FLAGS+=(--adapter-gated)
     [[ "${ENCODER_UPDATE_COORS}" = "1" ]] && EXTRA_FLAGS+=(--update-coors)
     [[ "${ENCODER_USE_UPDATED_BIAS}" = "1" ]] && EXTRA_FLAGS+=(--use-updated-coord-bias)
+    [[ -n "${ENCODER_RESUME_FROM_CKPT}" ]] && EXTRA_FLAGS+=(--resume-from-ckpt "${ENCODER_RESUME_FROM_CKPT}")
+    [[ "${ENCODER_TRAIN_RECOVERY_ON_VAL}" = "1" ]] && EXTRA_FLAGS+=(--train-recovery-on-val)
     python -u "${PROJECT_ROOT}/scripts/train_if_imp_encoder.py" \
         --cath-root "${CATH_ROOT}" \
         --checkpoint "${CHECKPOINT}" \
@@ -388,6 +394,7 @@ elif [ "${MODE}" = "train_encoder" ]; then
         --ipa-hidden-dim "${ENCODER_IPA_HIDDEN_DIM}" \
         --val-batch-size "${ENCODER_VAL_BATCH_SIZE}" \
         --val-eval-every-epochs "${ENCODER_VAL_EVAL_EVERY_EPOCHS}" \
+        --val-max-iters ${ENCODER_VAL_MAX_ITERS} \
         --pretrain-aux-only-epochs "${ENCODER_PRETRAIN_AUX_ONLY_EPOCHS}" \
         --pretrain-target "${ENCODER_PRETRAIN_TARGET}" \
         "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"

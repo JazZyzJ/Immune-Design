@@ -146,6 +146,32 @@ def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
     )
 
 
+def _productive_revisit_rates(
+    outcomes: list[dict] | None,
+) -> dict[str, float | None]:
+    """Aggregate immune-only / structure-only / joint rates over resolved snapshots.
+
+    Returns ``None`` when no snapshot has been resolved (PLAN_RF.md
+    distinguishes "no opportunity" from "zero rate" — leaving the field
+    nullable communicates the former).
+    """
+    if not outcomes:
+        return {
+            "productive_revisit_immune_only": None,
+            "productive_revisit_structure_only": None,
+            "productive_revisit_joint": None,
+        }
+    n = float(len(outcomes))
+    immune = sum(1 for o in outcomes if o.get("immune_only"))
+    structure = sum(1 for o in outcomes if o.get("structure_only"))
+    joint = sum(1 for o in outcomes if o.get("joint"))
+    return {
+        "productive_revisit_immune_only": float(immune) / n,
+        "productive_revisit_structure_only": float(structure) / n,
+        "productive_revisit_joint": float(joint) / n,
+    }
+
+
 def compute_per_protein_summary(
     *,
     protein_id: str,
@@ -156,6 +182,8 @@ def compute_per_protein_summary(
     refresh_records: list[D1RefreshRecord],
     event_rows: list[dict],
     controller_config: ControllerConfig | None = None,
+    productive_revisit_outcomes: list[dict] | None = None,
+    refresh_addenda: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Aggregate one design's controller telemetry into per_protein_summary fields.
 
@@ -187,20 +215,37 @@ def compute_per_protein_summary(
     d2_rows = [r for r in event_rows if r.get("event_type") == "D2"]
     d3_rows = [r for r in event_rows if r.get("event_type") == "D3"]
 
-    # D2 candidate feasibility rate: fraction of refresh / active-block pairs
-    # where at least one candidate met the feasibility gate. We approximate
-    # using the D2 event rows we actually emit (rows are only emitted when
-    # ``feasible=true`` because the controller skips block correction
-    # otherwise). Total active blocks across refreshes is the denominator.
-    d2_corrected_blocks_seen: set[tuple[int, int]] = set()
-    for row in d2_rows:
-        d2_corrected_blocks_seen.add((int(row["refresh_step"]), int(row["block_id"])))
+    # D2 candidate feasibility rate: fraction of active blocks (across all
+    # refreshes) whose D2 candidate scan produced at least one feasible
+    # candidate (``best_delta_R_B < -min_delta_R_improvement``). The
+    # canonical source is the per-block ``candidate_feasibility`` flag
+    # stamped into ``refresh_addenda[i]['d2_block_diagnostics']`` by the D2
+    # handler. Falling back to D2 event rows conflates "no correction
+    # applied" cases (low_ess / not_feasible / no_editable) — by reading
+    # diagnostics directly we count each scanned block exactly once.
     total_active_blocks = int(sum(len(r.active_blocks) for r in refresh_records))
-    candidate_feasibility_rate = (
-        float(len(d2_corrected_blocks_seen)) / float(total_active_blocks)
-        if total_active_blocks > 0
-        else 0.0
-    )
+    feasible_block_count = 0
+    diagnostics_block_count = 0
+    if refresh_addenda is not None:
+        for addendum in refresh_addenda:
+            if addendum is None:
+                continue
+            diagnostics = addendum.get("d2_block_diagnostics") or []
+            for diag in diagnostics:
+                diagnostics_block_count += 1
+                if diag.get("candidate_feasibility"):
+                    feasible_block_count += 1
+    if diagnostics_block_count > 0:
+        candidate_feasibility_rate = float(feasible_block_count) / float(
+            diagnostics_block_count
+        )
+    elif total_active_blocks > 0:
+        # No D2 diagnostics available (D1 monitor-only) — record zero so the
+        # field stays numeric instead of None, matching the previous
+        # contract for that arm.
+        candidate_feasibility_rate = 0.0
+    else:
+        candidate_feasibility_rate = 0.0
 
     total_KL_budget = float(
         sum(
@@ -253,13 +298,12 @@ def compute_per_protein_summary(
         "total_corrected_positions": int(total_corrected_positions),
         "total_recommits": int(total_recommits),
         "total_KL_budget": float(total_KL_budget),
-        # Productive-revisit rates require post-hoc head re-scoring of the
-        # remasked positions; that pass is computed by D0 analysis tooling
-        # against the generated.parquet + refresh_log, not here, so we leave
-        # the fields nullable.
-        "productive_revisit_immune_only": None,
-        "productive_revisit_structure_only": None,
-        "productive_revisit_joint": None,
+        # Productive-revisit rates (PLAN_RF.md §D0 Layer B D3-3): computed
+        # from the controller's resolved snapshots. When no D3 remask was
+        # ever resolved (e.g. monitor_only run, or no remask happened), the
+        # fields stay None — a true zero rate would be indistinguishable
+        # from "no opportunity" otherwise.
+        **_productive_revisit_rates(productive_revisit_outcomes),
         "churn_rate": float(churn_rate),
         "same_refresh_conflict_rate": float(same_refresh_conflict_rate),
         "head_regression_flag": None,
@@ -1173,6 +1217,19 @@ def main(argv: list[str] | None = None) -> int:
                     refresh_addenda_by_key[
                         (protein_id, int(design_idx), int(refresh_step_key))
                     ] = addendum
+                design_productive = (
+                    d1_controller.productive_revisit_outcomes()
+                    if hasattr(d1_controller, "productive_revisit_outcomes")
+                    else None
+                )
+                # Snapshot per-refresh D2 block diagnostics (one entry per
+                # refresh in the same order as design_refreshes) so
+                # compute_per_protein_summary can score candidate
+                # feasibility from explicit per-block flags.
+                design_addenda_list = [
+                    design_addenda.get(int(rec.refresh_step))
+                    for rec in design_refreshes
+                ]
                 per_protein_summaries.append(
                     compute_per_protein_summary(
                         protein_id=protein_id,
@@ -1183,6 +1240,8 @@ def main(argv: list[str] | None = None) -> int:
                         refresh_records=design_refreshes,
                         event_rows=design_events,
                         controller_config=controller_setup.config,
+                        productive_revisit_outcomes=design_productive,
+                        refresh_addenda=design_addenda_list,
                     )
                 )
 

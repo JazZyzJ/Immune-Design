@@ -452,8 +452,8 @@ D-phase generation must emit process telemetry with stable schemas. Extra debug 
 | `a_before` | Token before event, nullable if unresolved |
 | `a_after` | Token after event or proposed token (D2 events: sampled under corrected logits); nullable if no write occurred |
 | `a_uncorrected` | D2 paired-attribution counterfactual: same-seed sample under structural logits; nullable for non-D2 events |
-| `delta_R_corrected` | Realized local head $\Delta R^{\Omega(B)}$ after applying `a_after` (D2 actual branch); nullable for non-D2 events |
-| `delta_R_uncorrected` | Realized local head $\Delta R^{\Omega(B)}$ after applying `a_uncorrected` (D2 counterfactual branch); nullable for non-D2 events |
+| `delta_R_corrected` | Realized post-sampling local head $\Delta R^{\Omega(B)}$ for the actual corrected branch: build the full sequence from post-sampling `x_t`, argmax-fill residual masks under structural logits, rescore, and subtract the refresh-time `r_current`; populated only for actual D2 correction rows (`reason=d2_correction_applied`) |
+| `delta_R_uncorrected` | Realized paired counterfactual local head $\Delta R^{\Omega(B)}$: same completed sequence as `delta_R_corrected`, but D2-corrected sampled positions are replaced by paired structural samples from the saved RNG state before rescoring; nullable when paired attribution is disabled or no corrected token was sampled |
 | `paired_disagreement_flag` | Boolean: `a_after != a_uncorrected` for D2 events; nullable for non-D2 events |
 | `logit_struct` | Structural chosen-token logit or log-prob before correction |
 | `logit_corrected` | Corrected chosen-token logit or log-prob after D2 |
@@ -483,7 +483,7 @@ D-phase generation must emit process telemetry with stable schemas. Extra debug 
 | `window_excess` | Window-level excess risk records `max(0, z_dyn - z_static - tau_W)` used for active-block discovery |
 | `e_i` | Nullable residue-level excess risk array; D1 leaves this null because D3 will define the window-to-residue projection used by EMA |
 | `m_i` | Nullable EMA risk memory array; populated from D3 onward |
-| `candidate_feasibility` | Per-block feasibility booleans and best feasible `delta_R_B` |
+| `candidate_feasibility` | Per-block D2 diagnostic records, one per scanned active block, including `candidate_feasibility`, `candidate_count`, `best_delta_R_B`, `mean_delta_R_B`, `ESS_B_candidates`, `g_ESS_candidates`, `rho_B_effective`, `skipped_reason`, and `delta_logit_max_block` |
 | `rho_B` | Per-block reliability gate values and factor breakdowns |
 | `ESS_B_candidates` | Per-block candidate importance-weight ESS |
 | `completion_fraction` | Fraction of resolved residues globally and per active block |
@@ -499,15 +499,15 @@ D-phase generation must emit process telemetry with stable schemas. Extra debug 
 | `n_active_blocks_total` | Total active blocks observed across refreshes |
 | `new_hotspot_rate` | Fraction of dynamic active windows whose static risk is below `new_hotspot_static_threshold` |
 | `new_hotspot_static_threshold` | Threshold used to define static absence; D1 sets this equal to `active_windows.excess_threshold` unless a later plan changes the rule |
-| `candidate_feasibility_rate` | Fraction of active blocks with a feasible candidate |
+| `candidate_feasibility_rate` | Fraction of D2-scanned active blocks whose refresh diagnostic has `candidate_feasibility=true`; denominator is `refresh_log.d2_block_diagnostics`, not emitted D2 event rows |
 | `total_D2_events` | Count of D2 logit-correction events |
 | `total_D3_events` | Count of D3 commit/revisit events |
 | `total_corrected_positions` | Number of position-level D2 corrections |
 | `total_recommits` | Number of remasked committed residues |
 | `total_KL_budget` | Sum of D2 KL intervention budget |
-| `productive_revisit_immune_only` | D3 immune-only productive rate |
-| `productive_revisit_structure_only` | D3 structure-only acceptable rate |
-| `productive_revisit_joint` | D3 joint productive rate |
+| `productive_revisit_immune_only` | Rate over resolved D3 revisit snapshots with improved local head risk, $(R_{\mathrm{post}}^{\Omega}-R_{\mathrm{pre}}^{\Omega}) < 0$; nullable when there was no resolved revisit opportunity |
+| `productive_revisit_structure_only` | Rate over resolved D3 revisit snapshots whose structural log-prob drop is acceptable, $(\ell_{\mathrm{post}}-\ell_{\mathrm{pre}}) > -\delta_\ell$; nullable when there was no resolved revisit opportunity |
+| `productive_revisit_joint` | Rate over resolved D3 revisit snapshots satisfying both immune and structure criteria; nullable when there was no resolved revisit opportunity |
 | `churn_rate` | Repeated-remask rate |
 | `same_refresh_conflict_rate` | D2 positions remasked immediately or at next refresh |
 | `head_regression_flag` | Whether final internal head risk worsened vs base or WT reference |
@@ -933,6 +933,10 @@ Validation rules:
 19. If `beta=0`, `pi_B == Q_B`; the corrected logits must be exactly equal to structural logits within numerical tolerance.
 20. The controller must clone structural logits before applying any `delta_logit`; never mutate the denoiser output tensor in place because D3 and paired attribution need the uncorrected structural logits.
 21. Store pending D2 metadata for corrected positions so the post-sampling hook can fill `a_after`, `a_uncorrected`, paired disagreement, chosen-token structural log-prob, corrected log-prob, KL, and realized local risk deltas.
+22. Store `r_current` = $R_{\mathrm{current}}^{\Omega}$ on every block outcome that reached local-risk scoring. This is the refresh-time hard-completion baseline used later for realized post-sampling deltas.
+23. In the post-sampling hook, compute realized `delta_R_corrected` by argmax-completing any still-masked positions in post-sampling `x_t` under the structural logits, rescoring that actual full sequence, aggregating by the same `Omega(B)` LME, and subtracting the stored `r_current`.
+24. If paired attribution is enabled, compute realized `delta_R_uncorrected` in the same batch head call by replacing only the D2-corrected sampled positions with `sampled_tokens_uncorrected`; selected positions outside D2 support should already match the actual sample by the RNG contract.
+25. Fill realized delta fields only on actual correction rows (`reason=d2_correction_applied` and sampled `a_after` / `a_uncorrected` present). Monitor-only diagnostic rows and skipped blocks keep both realized delta fields null.
 
 **D3 step behavior**
 1. Add a post-sampling hook that runs after newly selected tokens update `x_t` / `scores[]` and before `_apply_reparam_remask()`.
@@ -951,6 +955,10 @@ Validation rules:
 12. During the final freeze window, return every committed position in `protected_positions` so neither D3 nor legacy remask can reopen a residue.
 13. Do not mutate `scores[]`. It remains the sampled-token log-prob at the most recent unmask step and is still used by legacy C1/D1 when D3 is disabled.
 14. Emit one D3 event row for each remasked committed residue in D3 modes, with `m_i`, `commit_score`, `remask_flag=true`, `grace_flag`, active-block status, and reason `immune_risk`, `low_confidence`, or `immune_and_low_confidence`. Use `attribution.productive_delta_logp` only in summary/analysis classification of productive revisits, not in sampling decisions.
+15. Attribute `post_remask()` events to D3 only when the immediately preceding post-sampling hook actually returned D3 `rank_scores`. Non-refresh-step legacy remasks share the sampler hook but must not emit D3 event rows or productive-revisit snapshots.
+16. For each D3-attributed remask, snapshot the pre-remask token `a_pre`, the refresh structural log-prob `ell_pre = log p_struct(a_pre | i)`, and the local head risk $R_{\mathrm{pre}}^{\Omega}$ over windows covering the residue. Snapshots with empty window coverage are dropped because $R_{\mathrm{pre}}^{\Omega}$ is undefined.
+17. At the next refresh that observes the position recommitted, resolve the snapshot with `a_post`, `ell_post`, and $R_{\mathrm{post}}^{\Omega}$; classify `immune_only` by $(R_{\mathrm{post}}^{\Omega} - R_{\mathrm{pre}}^{\Omega}) < 0$, `structure_only` by `ell_post - ell_pre > -attribution.productive_delta_logp`, and `joint = immune_only and structure_only`.
+18. `per_protein_summary.productive_revisit_*` rates are computed over resolved snapshots only. If no snapshot resolves, write null rather than `0.0` so "no opportunity" is distinguishable from "opportunity but no success".
 
 **Sampler integration details**
 1. Capture structural logits before the D2 pre-sampling hook.
@@ -970,20 +978,18 @@ Validation rules:
   - `r_windows_static` records, not only `r_windows_static_count`;
   - `e_i` residue excess array from D3's projection rule;
   - `m_i` EMA array when D3 is enabled, null otherwise;
-  - `candidate_feasibility` per active block;
-  - `candidate_count`, `best_delta_R_B`, `mean_delta_R_B`, `ESS_B_candidates`, `g_ESS`, and `corrected_positions` per active block;
+  - `d2_block_diagnostics` / `candidate_feasibility` records per scanned active block, including skipped blocks that emitted no correction;
+  - `candidate_count`, `best_delta_R_B`, `mean_delta_R_B`, `ESS_B_candidates`, `g_ESS_candidates`, and `corrected_positions` per active block;
   - cumulative `kl_struct_corrected` and `delta_logit_max` summaries per refresh.
   - `head_risk_LME` and `head_risk_max` must remain present; if any D1 writer path missed them, fix it in this migration.
 - `per_protein_summary.json` must aggregate:
-  - `candidate_feasibility_rate`;
+  - `candidate_feasibility_rate` from `d2_block_diagnostics` as feasible scanned blocks divided by total scanned blocks;
   - `total_D2_events`;
   - `total_D3_events`;
   - `total_corrected_positions`;
   - `total_recommits`;
   - `total_KL_budget`;
-  - `productive_revisit_immune_only`;
-  - `productive_revisit_structure_only`;
-  - `productive_revisit_joint`;
+  - `productive_revisit_immune_only`, `productive_revisit_structure_only`, and `productive_revisit_joint` from resolved D3 pre/post snapshots, with null when there are no resolved snapshots;
   - `churn_rate`;
   - `same_refresh_conflict_rate`.
 - `generated.parquet` remains unchanged.
@@ -1025,8 +1031,12 @@ Validation rules:
 4. `tests/inverse_folding/test_reference_flow_d2_d3_controller.py`
    - `monitor_only` computes diagnostics but returns identity logits and legacy remask ranking.
    - `d2_logits` changes logits only for supported active-block tokens.
+   - D2 event rows carry realized `delta_R_corrected` and paired `delta_R_uncorrected` after post-sampling head re-score, and the corrected branch is lower than the paired branch in a controlled beneficial fixture.
+   - Monitor-only D2 diagnostic rows keep realized delta fields null even when D2 diagnostics and paired samples are available.
    - `d3_revisit` changes remask ranking without changing logits.
    - `d2_d3_full` records same-refresh grace and next-refresh conflict state.
+   - D3 productive-revisit snapshots round-trip from remask to next-refresh recommit and classify `immune_only`, `structure_only`, and `joint`.
+   - Non-refresh legacy remasks do not emit D3 event rows or productive-revisit snapshots.
    - No active blocks emits no D2/D3 events and preserves current sampler behavior.
 5. `tests/inverse_folding/test_reference_flow_sampler_controller.py`
    - `controller=None` remains bit-equivalent.
@@ -1043,6 +1053,8 @@ Validation rules:
    - Manifest/run_config include D2/D3 config provenance.
    - Head scorer is still constructed once per process.
    - `arm` in `per_protein_summary.json` matches controller mode.
+   - `candidate_feasibility_rate` is aggregated from `d2_block_diagnostics` rather than D2 event rows.
+   - `productive_revisit_*` summary rates aggregate resolved controller outcomes, and remain null when no revisit opportunity resolved.
    - Startup stdout includes the fully resolved controller config.
 
 **Acceptance**

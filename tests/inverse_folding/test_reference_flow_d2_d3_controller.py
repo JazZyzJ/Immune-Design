@@ -663,6 +663,108 @@ def test_d2_logits_emits_per_corrected_position_event_rows_after_post_step():
     assert len(res.post_event_rows) == len(rows)
 
 
+def test_d2_event_row_carries_realized_delta_R_corrected_and_uncorrected():
+    """G1 contract: post-sampling re-score fills realized ΔR^Ω(B) for both
+    actual and paired-uncorrected branches (PLAN_RF.md D0 schema)."""
+    L = 10
+    static_seq = "A" * L
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence=static_seq,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    pre = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    corrected_positions = sorted(int(p) for p in controller._refresh_state.corrected_positions)
+    assert corrected_positions, "expected at least one corrected position"
+
+    # Simulate the actual sampler: corrected positions get A (low risk), paired
+    # uncorrected gets Y (high risk). Apply tokens to x_t to mirror sampler
+    # state at post_step time.
+    x_t_post = x_t.clone()
+    for p in corrected_positions:
+        x_t_post[p] = _LOW_RISK
+    selected = np.array(corrected_positions, dtype=np.int64)
+    actual = np.array([_LOW_RISK] * len(corrected_positions), dtype=np.int64)
+    uncorr = np.array([_HIGH_RISK] * len(corrected_positions), dtype=np.int64)
+    post_ctx = PostSamplingContext(
+        x_t=x_t_post,
+        scores=np.zeros(L, dtype=np.float64),
+        structural_logits=logits,
+        corrected_logits=pre.logits,
+        selected_positions=selected,
+        sampled_tokens_actual=actual,
+        sampled_tokens_uncorrected=uncorr,
+        step=5,
+        t=0.5,
+        n_steps=10,
+        mask_token_id=_MASK_ID,
+        protein_id="P1",
+        design_idx=0,
+        sequence_length=L,
+    )
+    controller.post_step(post_ctx)
+    rows = [r for r in controller.controller_event_rows() if r["event_type"] == "D2"]
+    assert rows
+    for row in rows:
+        assert row["delta_R_corrected"] is not None
+        assert row["delta_R_uncorrected"] is not None
+        # Actual branch replaces Y with A → lower head risk; corrected ΔR
+        # must be strictly less than uncorrected ΔR for the stub scorer
+        # (which counts Y residues over the window).
+        assert row["delta_R_corrected"] < row["delta_R_uncorrected"]
+
+
+def test_monitor_only_d2_diagnostic_rows_keep_realized_delta_R_null():
+    """H2 contract: monitor_only with d2.enabled emits D2 diagnostic rows
+    (reason='d2_monitor_only') but applies no corrected logits. The
+    realized-ΔR fill must NOT touch these rows because there's no
+    "corrected branch" to be realized."""
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="monitor_only", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    corrected = sorted(int(p) for p in controller._refresh_state.corrected_positions)
+    selected = np.array(corrected, dtype=np.int64) if corrected else np.array([], dtype=np.int64)
+    actual = np.array([_LOW_RISK] * len(corrected), dtype=np.int64)
+    uncorr = np.array([_HIGH_RISK] * len(corrected), dtype=np.int64)
+    post_ctx = PostSamplingContext(
+        x_t=x_t, scores=np.zeros(L, dtype=np.float64),
+        structural_logits=logits, corrected_logits=logits,
+        selected_positions=selected,
+        sampled_tokens_actual=actual, sampled_tokens_uncorrected=uncorr,
+        step=5, t=0.5, n_steps=10,
+        mask_token_id=_MASK_ID, protein_id="P1", design_idx=0, sequence_length=L,
+    )
+    controller.post_step(post_ctx)
+    rows = [r for r in controller.controller_event_rows() if r["event_type"] == "D2"]
+    if rows:
+        for row in rows:
+            assert row["reason"] == "d2_monitor_only"
+            assert row["delta_R_corrected"] is None
+            assert row["delta_R_uncorrected"] is None
+
+
 def test_d2_event_row_a_after_remains_null_when_position_not_in_sampler_selection():
     """If a D2-corrected position never made it into ``selected_positions``,
     a_after stays None (event still emitted with pre-sample fields)."""
@@ -754,6 +856,119 @@ def test_d3_post_remask_emits_event_rows_per_remasked_position():
         assert row["m_i"] is not None
         assert row["commit_score"] is not None
         assert row["reason"] in {"immune_risk", "low_confidence"}
+
+
+def test_d3_productive_revisit_pre_post_snapshot_round_trip():
+    """G2 contract: post_remask records a pre-snapshot; the next refresh that
+    observes the position re-committed resolves it into immune_only /
+    structure_only / joint flags exposed via productive_revisit_outcomes."""
+    L = 8
+    logits = _struct_logits(L)
+    # All committed with high-risk Y → high R^Ω covering remasked positions.
+    x_t = torch.tensor([_HIGH_RISK] * L, dtype=torch.long)
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d3_revisit", d2_enabled=False, d3_enabled=True),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    # Refresh 1: D3 commit runs, post_remask records pre-snapshot at pos=2.
+    controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    post_ctx = PostSamplingContext(
+        x_t=x_t, scores=np.zeros(L, dtype=np.float64),
+        structural_logits=logits, corrected_logits=logits,
+        selected_positions=np.array([], dtype=np.int64),
+        sampled_tokens_actual=np.array([], dtype=np.int64),
+        sampled_tokens_uncorrected=None,
+        step=5, t=0.5, n_steps=20,
+        mask_token_id=_MASK_ID, protein_id="P1", design_idx=0, sequence_length=L,
+    )
+    controller.post_step(post_ctx)
+    controller.post_remask(remasked_positions=(2,), step=5, t=0.5)
+    assert len(controller._d3_pending_snapshots) == 1
+    assert not controller.productive_revisit_outcomes()  # not resolved yet
+
+    # Refresh 2: position 2 has been re-sampled to A (low risk). The next
+    # refresh must observe this and resolve the snapshot.
+    x_t_next = x_t.clone()
+    x_t_next[2] = _LOW_RISK
+    controller.step(_make_context(x_t=x_t_next, logits=logits, step=10, t=0.6))
+    resolved = controller.productive_revisit_outcomes()
+    assert len(resolved) == 1
+    entry = resolved[0]
+    assert entry["position_i"] == 2
+    assert entry["a_pre"] == _HIGH_RISK
+    assert entry["a_post"] == _LOW_RISK
+    # Replacing Y with A inside the window LOWERS risk → immune_only=True.
+    assert entry["delta_R_local"] < 0
+    assert entry["immune_only"] is True
+    # Under the test fixture log p(Y)-log p(A) ≈ 1 nat, so the structural
+    # drop exceeds δ_ℓ=0.5 → structure_only=False, joint=False. This shows
+    # the immune gain came at a non-trivial structural cost.
+    assert entry["structure_only"] is False
+    assert entry["joint"] is False
+    assert entry["delta_ell"] < -0.5
+
+
+def test_d3_post_remask_noop_on_non_refresh_step_legacy_remask():
+    """H1 contract: non-refresh steps fall back to legacy ``scores[]`` remask;
+    those positions must NOT be attributed to D3 telemetry / productive
+    snapshots even though ``_latest_d3_signal`` is still populated from the
+    last refresh."""
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_LOW_RISK] * 4 + [_MASK_ID] * 2, dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d3_revisit", d2_enabled=False, d3_enabled=True),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    # Refresh step: D3 runs, post_remask emits D3 event.
+    controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    refresh_ctx = PostSamplingContext(
+        x_t=x_t, scores=np.zeros(L, dtype=np.float64),
+        structural_logits=logits, corrected_logits=logits,
+        selected_positions=np.array([], dtype=np.int64),
+        sampled_tokens_actual=np.array([], dtype=np.int64),
+        sampled_tokens_uncorrected=None,
+        step=5, t=0.5, n_steps=20,
+        mask_token_id=_MASK_ID, protein_id="P1", design_idx=0, sequence_length=L,
+    )
+    controller.post_step(refresh_ctx)
+    controller.post_remask(remasked_positions=(2,), step=5, t=0.5)
+    d3_after_refresh = [r for r in controller.controller_event_rows() if r["event_type"] == "D3"]
+    assert len(d3_after_refresh) == 1
+
+    # Non-refresh step (step=6 with refresh_interval=5): post_step returns
+    # rank_scores=None, so legacy remask is what would happen in the
+    # sampler. post_remask is still called (sampler hook), but the
+    # controller MUST NOT log the legacy remask as D3.
+    nonrefresh_ctx = PostSamplingContext(
+        x_t=x_t, scores=np.zeros(L, dtype=np.float64),
+        structural_logits=logits, corrected_logits=logits,
+        selected_positions=np.array([], dtype=np.int64),
+        sampled_tokens_actual=np.array([], dtype=np.int64),
+        sampled_tokens_uncorrected=None,
+        step=6, t=0.55, n_steps=20,
+        mask_token_id=_MASK_ID, protein_id="P1", design_idx=0, sequence_length=L,
+    )
+    controller.post_step(nonrefresh_ctx)
+    controller.post_remask(remasked_positions=(3,), step=6, t=0.55)
+    d3_after_legacy = [r for r in controller.controller_event_rows() if r["event_type"] == "D3"]
+    # Count unchanged: no new D3 event row, no new pre-snapshot from legacy remask.
+    assert len(d3_after_legacy) == 1
+    assert all(int(r["position_i"]) != 3 for r in d3_after_legacy)
 
 
 def test_d3_post_remask_noop_when_d3_disabled():

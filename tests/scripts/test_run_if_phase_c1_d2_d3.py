@@ -213,6 +213,22 @@ def test_per_protein_summary_aggregates_d2_d3_event_counts(tmp_path: Path):
             mean_struct_entropy_global=1.0, head_risk_LME=1.0, head_risk_max=1.0,
         ),
     ]
+    # H4 contract: feasibility is read from refresh_addenda's
+    # d2_block_diagnostics (canonical per-block flag). Construct addenda
+    # with 2 feasible + 1 infeasible (low_ess) blocks → rate = 2/3.
+    refresh_addenda_list = [
+        {
+            "d2_block_diagnostics": [
+                {"block_id": 0, "candidate_feasibility": True},
+                {"block_id": 1, "candidate_feasibility": False},
+            ]
+        },
+        {
+            "d2_block_diagnostics": [
+                {"block_id": 1, "candidate_feasibility": True},
+            ]
+        },
+    ]
     summary = compute_per_protein_summary(
         protein_id="P1",
         design_idx=0,
@@ -222,18 +238,70 @@ def test_per_protein_summary_aggregates_d2_d3_event_counts(tmp_path: Path):
         refresh_records=refresh_records,
         event_rows=d2_rows + d3_rows,
         controller_config=setup.config,
+        refresh_addenda=refresh_addenda_list,
     )
     assert summary["total_D2_events"] == 3
     assert summary["total_D3_events"] == 3
     assert summary["total_corrected_positions"] == 3
     assert summary["total_recommits"] == 3
     assert summary["total_KL_budget"] == pytest.approx(0.9, abs=1e-9)
-    # 2 unique (refresh_step, block_id) pairs in D2 rows; 3 total active blocks.
+    # 2 feasible / 3 total scanned blocks (canonical d2_block_diagnostics path).
     assert summary["candidate_feasibility_rate"] == pytest.approx(2.0 / 3.0, abs=1e-9)
     # Position 4 remasked twice in D3 rows → 1 churned / 2 unique positions = 0.5.
     assert summary["churn_rate"] == pytest.approx(0.5, abs=1e-9)
     # 1 grace_flag=True in D3 rows / 3 D2 corrected positions = 1/3.
     assert summary["same_refresh_conflict_rate"] == pytest.approx(1.0 / 3.0, abs=1e-9)
+
+
+def test_per_protein_summary_aggregates_productive_revisit_outcomes(tmp_path: Path):
+    """G2 contract: productive_revisit_* fields come from the controller's
+    resolved snapshots, NOT a hard-coded null."""
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_d2_d3_yaml(tmp_path)
+    args = _make_args(tmp_path, ctrl_yaml)
+    setup = load_controller_setup(args)
+    assert setup is not None
+    outcomes = [
+        {"immune_only": True, "structure_only": True, "joint": True},
+        {"immune_only": True, "structure_only": False, "joint": False},
+        {"immune_only": False, "structure_only": True, "joint": False},
+        {"immune_only": True, "structure_only": True, "joint": True},
+    ]
+    summary = compute_per_protein_summary(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        allele="DRB1*01:01",
+        arm=setup.config.mode,
+        refresh_records=[],
+        event_rows=[],
+        controller_config=setup.config,
+        productive_revisit_outcomes=outcomes,
+    )
+    assert summary["productive_revisit_immune_only"] == pytest.approx(0.75)
+    assert summary["productive_revisit_structure_only"] == pytest.approx(0.75)
+    assert summary["productive_revisit_joint"] == pytest.approx(0.5)
+
+
+def test_per_protein_summary_productive_revisit_null_when_no_outcomes(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_d2_d3_yaml(tmp_path)
+    args = _make_args(tmp_path, ctrl_yaml)
+    setup = load_controller_setup(args)
+    summary = compute_per_protein_summary(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        allele="DRB1*01:01",
+        arm=setup.config.mode,
+        refresh_records=[],
+        event_rows=[],
+        controller_config=setup.config,
+        productive_revisit_outcomes=None,
+    )
+    assert summary["productive_revisit_immune_only"] is None
+    assert summary["productive_revisit_structure_only"] is None
+    assert summary["productive_revisit_joint"] is None
 
 
 def test_per_protein_summary_arm_matches_controller_mode(tmp_path: Path):

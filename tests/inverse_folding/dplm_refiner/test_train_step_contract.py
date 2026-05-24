@@ -216,10 +216,12 @@ def test_train_step_aux_uses_seq_mask_not_loss_mask():
 
     # seq_mask covers 4 positions; loss_mask (from fake decoder) covers
     # 1 position per repeated row * 2 repeats = 2. The two MUST differ.
-    assert metrics["n_aux_positions"] == 4, metrics
-    assert metrics["n_main_positions"] != metrics["n_aux_positions"], (
-        "n_aux_positions and n_main_positions are identical — aux is "
-        "using loss_mask instead of seq_mask, defeating PLAN E7"
+    assert metrics["train/n_aux_positions"] == 4, metrics
+    assert (
+        metrics["train/n_main_positions"] != metrics["train/n_aux_positions"]
+    ), (
+        "train/n_aux_positions and train/n_main_positions are identical "
+        "— aux is using loss_mask instead of seq_mask, defeating PLAN E7"
     )
 
 
@@ -272,24 +274,55 @@ def test_train_step_aux_only_skips_decoder_entirely():
     assert decoder.compute_loss_calls == [], (
         "train_step_aux_only must not call decoder.compute_loss"
     )
-    assert metrics["n_main_positions"] == 0
-    assert metrics["n_aux_positions"] == 4
+    assert metrics["train/n_main_positions"] == 0
+    assert metrics["train/n_aux_positions"] == 4
 
 
-def test_val_step_returns_draft_recovery_and_uses_no_grad():
-    """val_step must not require gradient and must report
-    val_draft_recovery from the FULL seq_mask."""
+def test_val_step_returns_draft_and_full_recovery_at_each_max_iter():
+    """val_step must emit the ``val/`` prefix keys ``draft_recovery``,
+    ``aux_loss``, ``n_positions``, AND ``full_recovery_iter{N}`` for
+    every N in ``max_iters``."""
     mod = _import_train_module()
     encoder = _FakeEncoder()
     decoder = _FakeDecoder()
-    model = _FakeModel(encoder, decoder)
-    task = _FakeTask(model)
+
+    # task.model.generate is called inside _recovery_eval; provide a
+    # cheap stub that returns native tokens so full_recovery is well-
+    # defined for the assertion.
+    class _ModelWithGenerate(_FakeModel):
+        generate_calls: list = []
+
+        def generate(self, batch, *args, **kwargs):
+            type(self).generate_calls.append(int(kwargs.get("max_iter", 0)))
+            return batch["tokens"], None
+
+    model = _ModelWithGenerate(encoder, decoder)
+    # Alphabet stub for special-token derivation.
+    class _Alphabet:
+        cls_idx = 0
+        padding_idx = 1
+        eos_idx = 2
+        mask_idx = 32
+
+    task = type(
+        "_TaskWithAlphabet",
+        (_FakeTask,),
+        {},
+    )(model)
+    task.alphabet = _Alphabet()
     val_batch = _build_batch()
 
-    metrics = mod.val_step(task=task, val_batch=val_batch, device="cpu")
+    metrics = mod.val_step(
+        task=task,
+        val_batch=val_batch,
+        device="cpu",
+        max_iters=[1, 2, 100],
+    )
 
-    assert "val_draft_recovery" in metrics
-    assert "val_aux_loss" in metrics
-    assert metrics["val_n_positions"] == 4
-    # val_step toggled encoder.eval() but training mode is restored only
-    # if it WAS training; default fake is eval, so no toggle expected.
+    assert "val/draft_recovery" in metrics
+    assert "val/aux_loss" in metrics
+    assert metrics["val/n_positions"] == 4
+    for m in (1, 2, 100):
+        assert f"val/full_recovery_iter{m}" in metrics, metrics
+    # generate was called once per max_iter.
+    assert _ModelWithGenerate.generate_calls == [1, 2, 100]

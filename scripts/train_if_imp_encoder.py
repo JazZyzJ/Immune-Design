@@ -152,6 +152,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Only consulted when --pretrain-aux-only-epochs > 0."
         ),
     )
+    parser.add_argument(
+        "--resume-from-ckpt",
+        default=None,
+        help=(
+            "Resume training from a previously saved encoder_last.pt. "
+            "Loads encoder + adapter state via load_geo_encoder_checkpoint, "
+            "and an optional sibling optimizer.pt for AdamW state. Starts "
+            "the epoch counter from ``extra['epoch'] + 1`` recorded in the "
+            "checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--val-max-iters",
+        type=int,
+        nargs="+",
+        default=[1, 2, 100],
+        help=(
+            "Run ``task.model.generate(max_iter=N)`` once per N in this "
+            "list at each val cadence; report val/full_recovery_iter{N}. "
+            "The draft_recovery metric is max_iter-independent and is "
+            "logged once per val."
+        ),
+    )
+    parser.add_argument(
+        "--train-recovery-on-val",
+        action="store_true",
+        help=(
+            "At each val cadence, also run the recovery sweep on the "
+            "most recent train batch and emit train/full_recovery_iter{N}. "
+            "Off by default because it adds N decoder forwards per val "
+            "(~seconds per epoch)."
+        ),
+    )
 
     from inverse_folding.observability import add_wandb_cli_args
 
@@ -190,6 +223,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--pretrain-aux-only-epochs must be >= 0")
     if not (0.0 <= args.pretrain_target <= 1.0):
         parser.error("--pretrain-target must be in [0, 1]")
+    if any(int(m) <= 0 for m in args.val_max_iters):
+        parser.error("--val-max-iters values must be positive")
     return args
 
 
@@ -339,6 +374,111 @@ def _aux_loss_and_recovery(
     return aux_loss, draft_recovery, n_valid
 
 
+def _prepare_generate_batch(fwd_batch, *, alphabet) -> dict[str, Any]:
+    """Build a batch suitable for ``DPLMInvFold.generate(...)``.
+
+    ``generate()`` reads ``batch["prev_tokens"]`` (current denoising
+    state) and ``batch["prev_token_mask"]`` (True at positions to be
+    decoded). For a from-scratch val pass: every residue position is
+    masked, every structural special (cls/pad/eos) keeps its native id.
+    """
+    import torch
+
+    tokens = fwd_batch["tokens"]
+    mask_id = int(getattr(alphabet, "mask_idx", 32))
+    cls_idx = int(alphabet.cls_idx)
+    pad_idx = int(alphabet.padding_idx)
+    eos_idx = int(alphabet.eos_idx)
+    special = (
+        (tokens == cls_idx) | (tokens == pad_idx) | (tokens == eos_idx)
+    )
+    prev_tokens = torch.where(
+        special, tokens, torch.full_like(tokens, mask_id)
+    )
+    prev_token_mask = ~special
+    return {
+        "coords": fwd_batch["coords"],
+        "coord_mask": fwd_batch["coord_mask"],
+        "tokens": tokens,
+        "prev_tokens": prev_tokens,
+        "prev_token_mask": prev_token_mask,
+    }
+
+
+def _recovery_eval(
+    *,
+    task: Any,
+    batch: dict[str, Any],
+    device: str,
+    max_iters: list[int],
+    prefix: str,
+) -> dict[str, Any]:
+    """No-grad sweep: draft_recovery (encoder-only) + full_recovery at
+    each max_iter via ``task.model.generate(...)``.
+
+    Returns a metrics dict prefixed with ``prefix`` (e.g. ``"val/"``,
+    ``"train/"``). Used both for held-out val and the optional same-
+    batch train-side evaluation.
+    """
+    import torch
+
+    encoder = task.model.encoder
+    decoder = task.model.decoder
+    was_enc_training = encoder.training
+    was_dec_training = decoder.training
+    encoder.eval()
+    decoder.eval()
+
+    metrics: dict[str, Any] = {}
+    try:
+        with torch.no_grad():
+            fwd_batch = _prepare_fwd_batch(batch, device)
+            native = fwd_batch["tokens"]
+
+            encoder_logits, encoder_out = encoder(fwd_batch, output_logits=True)
+            seq_mask = encoder_out["encoder_attention_mask"].bool()
+            aux_loss, draft_recovery, n_valid = _aux_loss_and_recovery(
+                encoder_logits, native, seq_mask
+            )
+            metrics[f"{prefix}aux_loss"] = float(aux_loss.item())
+            metrics[f"{prefix}draft_recovery"] = (
+                float(draft_recovery.item()) if n_valid > 0 else float("nan")
+            )
+            metrics[f"{prefix}n_positions"] = n_valid
+
+            if n_valid > 0:
+                for max_iter in max_iters:
+                    gen_batch = _prepare_generate_batch(
+                        fwd_batch, alphabet=task.alphabet
+                    )
+                    output_tokens, _ = task.model.generate(
+                        gen_batch,
+                        tokenizer=task.alphabet,
+                        max_iter=int(max_iter),
+                        temperature=1.0,
+                        sampling_strategy="argmax",
+                        use_draft_seq=True,
+                    )
+                    correct = (
+                        output_tokens[seq_mask] == native[seq_mask]
+                    ).float().mean()
+                    metrics[f"{prefix}full_recovery_iter{int(max_iter)}"] = (
+                        float(correct.item())
+                    )
+            else:
+                for max_iter in max_iters:
+                    metrics[f"{prefix}full_recovery_iter{int(max_iter)}"] = (
+                        float("nan")
+                    )
+    finally:
+        if was_enc_training:
+            encoder.train()
+        if was_dec_training:
+            decoder.train()
+
+    return metrics
+
+
 def train_step(
     *,
     task: Any,
@@ -410,13 +550,15 @@ def train_step(
 
     feats_std = float(encoder_out["feats"][seq_mask].std().item()) if n_valid > 0 else float("nan")
     return {
-        "loss": float(loss.item()),
-        "main_loss": float(main_loss.item()),
-        "aux_loss": float(aux_loss.item()),
-        "draft_recovery": float(draft_recovery.item()) if n_valid > 0 else float("nan"),
-        "feats_std": feats_std,
-        "n_aux_positions": n_valid,
-        "n_main_positions": int(loss_mask.sum().item()),
+        "train/loss": float(loss.item()),
+        "train/main_loss": float(main_loss.item()),
+        "train/aux_loss": float(aux_loss.item()),
+        "train/draft_recovery": (
+            float(draft_recovery.item()) if n_valid > 0 else float("nan")
+        ),
+        "train/feats_std": feats_std,
+        "train/n_aux_positions": n_valid,
+        "train/n_main_positions": int(loss_mask.sum().item()),
     }
 
 
@@ -453,13 +595,15 @@ def train_step_aux_only(
 
     feats_std = float(encoder_out["feats"][seq_mask].std().item()) if n_valid > 0 else float("nan")
     return {
-        "loss": float(aux_loss.item()),
-        "main_loss": 0.0,
-        "aux_loss": float(aux_loss.item()),
-        "draft_recovery": float(draft_recovery.item()) if n_valid > 0 else float("nan"),
-        "feats_std": feats_std,
-        "n_aux_positions": n_valid,
-        "n_main_positions": 0,
+        "train/loss": float(aux_loss.item()),
+        "train/main_loss": 0.0,
+        "train/aux_loss": float(aux_loss.item()),
+        "train/draft_recovery": (
+            float(draft_recovery.item()) if n_valid > 0 else float("nan")
+        ),
+        "train/feats_std": feats_std,
+        "train/n_aux_positions": n_valid,
+        "train/n_main_positions": 0,
     }
 
 
@@ -468,36 +612,24 @@ def val_step(
     task: Any,
     val_batch: dict[str, Any],
     device: str,
+    max_iters: list[int],
 ) -> dict[str, Any]:
-    """No-grad val pass: compute draft_recovery and aux CE on a fixed
-    held-out CATH batch. Used to monitor encoder progress + drive the
-    best-on-val checkpoint save.
+    """No-grad val sweep on a fixed held-out CATH batch.
+
+    Emits ``val/draft_recovery`` (encoder-only, max_iter-independent),
+    ``val/aux_loss``, ``val/n_positions``, and a
+    ``val/full_recovery_iter{N}`` for each N in ``max_iters``. The
+    full-recovery numbers come from ``task.model.generate(...)``, so
+    they reflect what the production inference path produces under
+    ``use_draft_seq=True, sampling_strategy="argmax"``.
     """
-    import torch
-
-    encoder = task.model.encoder
-    was_training = encoder.training
-    encoder.eval()
-    try:
-        with torch.no_grad():
-            fwd_batch = _prepare_fwd_batch(val_batch, device)
-            native = fwd_batch["tokens"]
-            encoder_logits, encoder_out = encoder(
-                fwd_batch, output_logits=True
-            )
-            seq_mask = encoder_out["encoder_attention_mask"].bool()
-            aux_loss, draft_recovery, n_valid = _aux_loss_and_recovery(
-                encoder_logits, native, seq_mask
-            )
-    finally:
-        if was_training:
-            encoder.train()
-
-    return {
-        "val_aux_loss": float(aux_loss.item()),
-        "val_draft_recovery": float(draft_recovery.item()) if n_valid > 0 else float("nan"),
-        "val_n_positions": n_valid,
-    }
+    return _recovery_eval(
+        task=task,
+        batch=val_batch,
+        device=device,
+        max_iters=max_iters,
+        prefix="val/",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -619,8 +751,15 @@ def main(argv: list[str] | None = None) -> int:
         "use_updated_coord_bias": args.use_updated_coord_bias,
         "val_batch_size": args.val_batch_size,
         "val_eval_every_epochs": args.val_eval_every_epochs,
+        "val_max_iters": list(args.val_max_iters),
+        "train_recovery_on_val": bool(args.train_recovery_on_val),
         "pretrain_aux_only_epochs": args.pretrain_aux_only_epochs,
         "pretrain_target": args.pretrain_target,
+        "resume_from_ckpt": (
+            str(Path(args.resume_from_ckpt).expanduser())
+            if args.resume_from_ckpt
+            else None
+        ),
         "device": args.device,
         "seed": args.seed,
     }
@@ -655,8 +794,65 @@ def main(argv: list[str] | None = None) -> int:
     pretrain_exited = pretrain_budget == 0
     best_val_recovery: float = float("-inf")
 
+    # Resume: restore encoder + adapter from a previous run, plus
+    # AdamW state from a sibling ``optimizer.pt`` if present. The epoch
+    # counter restarts from ``extra["epoch"] + 1`` recorded in the
+    # checkpoint so the run config (--epochs / --lr) governs end-time
+    # but the saved progress isn't repeated.
+    start_epoch = 0
+    if args.resume_from_ckpt:
+        from inverse_folding.dplm_refiner.geo_encoder.checkpoint import (
+            load_geo_encoder_checkpoint,
+        )
+
+        resume_path = Path(args.resume_from_ckpt).expanduser().resolve()
+        if not resume_path.is_file():
+            raise FileNotFoundError(
+                f"--resume-from-ckpt not found: {resume_path}"
+            )
+        _, report = load_geo_encoder_checkpoint(
+            resume_path,
+            encoder=encoder,
+            decoder=task.model.decoder,
+            map_location=args.device,
+            strict_state=False,
+            auto_install_adapter_shape=True,
+        )
+        recorded_epoch = int(report.extra.get("epoch", -1))
+        start_epoch = recorded_epoch + 1 if recorded_epoch >= 0 else 0
+        best_val_recovery = float(
+            report.extra.get("val_draft_recovery", float("-inf")) or float("-inf")
+        )
+        print(
+            f"Resumed from {resume_path}: recorded_epoch={recorded_epoch}, "
+            f"start_epoch={start_epoch}, "
+            f"best_val_recovery={best_val_recovery:.4f}, "
+            f"adapter_missing={len(report.adapter_missing_keys)}, "
+            f"adapter_unexpected={len(report.adapter_unexpected_keys)}"
+        )
+        opt_state_path = resume_path.parent / "optimizer.pt"
+        if opt_state_path.is_file():
+            optimizer.load_state_dict(
+                torch.load(str(opt_state_path), map_location=args.device)
+            )
+            print(f"Restored optimizer state from {opt_state_path}")
+        else:
+            print(
+                f"WARNING: no optimizer.pt next to {resume_path}; starting "
+                "with fresh AdamW state (momenta zeroed)."
+            )
+
+    if start_epoch >= int(args.epochs):
+        print(
+            f"start_epoch={start_epoch} >= --epochs={args.epochs}; "
+            "nothing to do."
+        )
+
+    val_max_iters = [int(m) for m in args.val_max_iters]
+
     step_idx = 0
-    for epoch in range(int(args.epochs)):
+    last_train_batch = None
+    for epoch in range(start_epoch, int(args.epochs)):
         # PLAN_IF_ENCODER.md Task E7 stage switching:
         #   pretrain phase: aux-only (encoder + draft head); decoder
         #     not invoked. Switch to joint when budget exhausted OR
@@ -689,43 +885,71 @@ def main(argv: list[str] | None = None) -> int:
                     device=args.device,
                     lambda_aux=float(args.lambda_aux),
                 )
+            # Bookkeeping fields stay un-prefixed (they're not metrics).
             metrics["epoch"] = epoch
             metrics["batch_idx"] = bidx
             metrics["step"] = step_idx
             metrics["phase"] = phase
             metrics["wall_seconds"] = time.time() - t0
+            last_train_batch = batch
             with metrics_path.open("a") as fh:
                 fh.write(json.dumps(metrics) + "\n")
             log_metrics(wandb_run, metrics, step=step_idx)
             if step_idx % int(args.log_every) == 0:
                 print(
                     f"epoch={epoch} step={step_idx} phase={phase} "
-                    f"loss={metrics['loss']:.4f} "
-                    f"main={metrics['main_loss']:.4f} "
-                    f"aux={metrics['aux_loss']:.4f} "
-                    f"draft_rec={metrics['draft_recovery']:.4f} "
-                    f"feats_std={metrics['feats_std']:.4f}"
+                    f"loss={metrics['train/loss']:.4f} "
+                    f"main={metrics['train/main_loss']:.4f} "
+                    f"aux={metrics['train/aux_loss']:.4f} "
+                    f"draft_rec={metrics['train/draft_recovery']:.4f} "
+                    f"feats_std={metrics['train/feats_std']:.4f}"
                 )
             step_idx += 1
 
         # Per-epoch val + best-on-improve save.
         if (epoch + 1) % int(args.val_eval_every_epochs) == 0:
             val_metrics = val_step(
-                task=task, val_batch=val_batch, device=args.device
+                task=task,
+                val_batch=val_batch,
+                device=args.device,
+                max_iters=val_max_iters,
             )
             val_metrics["epoch"] = epoch
             val_metrics["step"] = step_idx
             val_metrics["phase"] = phase
+
+            # Optional train-side recovery sweep on the last train batch,
+            # using the same max_iter set. Emits ``train/full_recovery_iter{N}``.
+            if args.train_recovery_on_val and last_train_batch is not None:
+                train_eval_metrics = _recovery_eval(
+                    task=task,
+                    batch=last_train_batch,
+                    device=args.device,
+                    max_iters=val_max_iters,
+                    prefix="train/",
+                )
+                # Keep aux_loss / draft_recovery / n_positions from the
+                # per-step train metrics; only graft the new full_recovery
+                # numbers so we don't double-log.
+                for k, v in train_eval_metrics.items():
+                    if "full_recovery" in k:
+                        val_metrics[k] = v
+
             with metrics_path.open("a") as fh:
                 fh.write(json.dumps(val_metrics) + "\n")
             log_metrics(wandb_run, val_metrics, step=step_idx)
+            iter_summary = " ".join(
+                f"full@{m}={val_metrics.get(f'val/full_recovery_iter{m}', float('nan')):.4f}"
+                for m in val_max_iters
+            )
             print(
                 f"==== val @ epoch {epoch}: "
-                f"draft_recovery={val_metrics['val_draft_recovery']:.4f} "
-                f"aux_loss={val_metrics['val_aux_loss']:.4f} "
-                f"n_pos={val_metrics['val_n_positions']} ===="
+                f"draft={val_metrics['val/draft_recovery']:.4f} "
+                f"{iter_summary} "
+                f"aux_loss={val_metrics['val/aux_loss']:.4f} "
+                f"n_pos={val_metrics['val/n_positions']} ===="
             )
-            current = float(val_metrics["val_draft_recovery"])
+            current = float(val_metrics["val/draft_recovery"])
             # NaN comparison is always False, so this also guards the
             # "no valid positions" edge case.
             if current > best_val_recovery:
@@ -762,8 +986,16 @@ def main(argv: list[str] | None = None) -> int:
             encoder,
             decoder=task.model.decoder,
             adapter_config=adapter_cfg,
-            extra={"epoch": epoch, "step": step_idx, "phase": phase},
+            extra={
+                "epoch": epoch,
+                "step": step_idx,
+                "phase": phase,
+                "val_draft_recovery": best_val_recovery,
+            },
         )
+        # Save AdamW state alongside so --resume-from-ckpt can pick up
+        # the moment estimators (not just the parameters).
+        torch.save(optimizer.state_dict(), run_dir / "optimizer.pt")
 
     set_summary(
         wandb_run,

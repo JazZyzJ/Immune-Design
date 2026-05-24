@@ -344,6 +344,11 @@ class D2BlockOutcome:
     ``"no_editable"`` → block had no masked positions to write into.
     ``"low_ess"`` → ESS fraction below ``min_ess_fraction``; ``g_ESS=0``.
     ``"not_feasible"`` → no candidate met the ``min_delta_R_improvement`` gate.
+
+    ``r_current`` is the LME risk over ``omega_indices`` of the hard-completion
+    sequence at refresh time. Used by the post-sampling realized ΔR pass to
+    compute ``delta_R_corrected`` / ``delta_R_uncorrected`` (PLAN_RF.md D0
+    schema) without re-scoring the baseline.
     """
 
     block_id: int
@@ -365,6 +370,7 @@ class D2BlockOutcome:
     corrected_positions: tuple[int, ...]
     delta_logit: dict[tuple[int, int], float]
     skipped_reason: str | None
+    r_current: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -477,10 +483,23 @@ class D2Handler:
             max_positions=int(self.config.max_positions_per_block),
         )
         if not editable:
+            # No editable masked positions inside this block → no candidate
+            # enumeration / head re-score happens, so ``r_current`` is not
+            # available here. We pass NaN explicitly to document that no
+            # realized ΔR can be computed for no_editable blocks (and the
+            # realized-ΔR pass at post_step also skips blocks with
+            # ``skipped_reason != None``).
+            current_window_risks_tuple = tuple(float(z) for z in current_window_risks)
+            r_current_unused = compute_local_risk(
+                window_risks=current_window_risks_tuple,
+                omega_indices=omega,
+                aggregation="LME",
+            )
             return _empty_block_outcome(
                 block_id=int(block.block_id),
                 omega=omega,
                 reason="no_editable",
+                r_current=float(r_current_unused),
             )
 
         K = build_candidate_support(
@@ -573,6 +592,7 @@ class D2Handler:
                 corrected_positions=(),
                 delta_logit={},
                 skipped_reason="low_ess",
+                r_current=float(r_current),
             )
         g_ESS_candidates = 1.0
 
@@ -597,6 +617,7 @@ class D2Handler:
                 corrected_positions=(),
                 delta_logit={},
                 skipped_reason="not_feasible",
+                r_current=float(r_current),
             )
 
         w_sum = float(weights.sum())
@@ -674,11 +695,16 @@ class D2Handler:
             corrected_positions=tuple(editable),
             delta_logit=delta,
             skipped_reason=None,
+            r_current=float(r_current),
         )
 
 
 def _empty_block_outcome(
-    *, block_id: int, omega: tuple[int, ...], reason: str
+    *,
+    block_id: int,
+    omega: tuple[int, ...],
+    reason: str,
+    r_current: float = float("nan"),
 ) -> D2BlockOutcome:
     return D2BlockOutcome(
         block_id=block_id,
@@ -700,6 +726,7 @@ def _empty_block_outcome(
         corrected_positions=(),
         delta_logit={},
         skipped_reason=reason,
+        r_current=float(r_current),
     )
 
 

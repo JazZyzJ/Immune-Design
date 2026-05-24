@@ -55,6 +55,9 @@ def test_train_if_imp_encoder_help_lists_key_flags():
         "--val-eval-every-epochs",
         "--pretrain-aux-only-epochs",
         "--pretrain-target",
+        "--resume-from-ckpt",
+        "--val-max-iters",
+        "--train-recovery-on-val",
     ):
         assert flag in result.stdout, f"missing flag {flag}"
 
@@ -392,3 +395,59 @@ def test_main_loop_writes_encoder_best_and_runs_val_step():
     # The pretrain early-exit on --pretrain-target must be present.
     assert "pretrain_target" in text
     assert "pretrain early-exit" in text.lower() or "pretrain-target" in text
+
+
+def test_metric_keys_use_train_and_val_prefixes():
+    """All trainable metrics emitted by ``train_step`` /
+    ``train_step_aux_only`` / ``val_step`` must use ``train/`` and
+    ``val/`` prefixes — no mixed namespace in wandb."""
+    text = (ROOT / "scripts/train_if_imp_encoder.py").read_text()
+    # Train-side metric keys.
+    for key in (
+        '"train/loss"',
+        '"train/main_loss"',
+        '"train/aux_loss"',
+        '"train/draft_recovery"',
+        '"train/feats_std"',
+        '"train/n_aux_positions"',
+        '"train/n_main_positions"',
+    ):
+        assert key in text, f"missing train-prefixed metric key {key}"
+    # Val-side metric keys (some are emitted via _recovery_eval's
+    # ``prefix`` arg).
+    assert 'prefix="val/"' in text
+    assert "full_recovery_iter" in text
+
+
+def test_resume_from_ckpt_wires_optimizer_pt_and_load_checkpoint():
+    text = (ROOT / "scripts/train_if_imp_encoder.py").read_text()
+    # The flag itself is parsed.
+    assert "--resume-from-ckpt" in text
+    # The resume branch loads via load_geo_encoder_checkpoint with
+    # adapter shape rebuild + matching optimizer.pt state.
+    assert "load_geo_encoder_checkpoint" in text
+    assert "auto_install_adapter_shape=True" in text
+    assert "optimizer.pt" in text
+    # And the train loop starts from ``start_epoch``.
+    assert "for epoch in range(start_epoch, int(args.epochs))" in text
+
+
+def test_val_step_runs_at_each_max_iter():
+    """val_step is wired to ``_recovery_eval`` which generates at every
+    configured ``max_iter`` and emits ``val/full_recovery_iter{N}``."""
+    text = (ROOT / "scripts/train_if_imp_encoder.py").read_text()
+    assert "max_iters=val_max_iters" in text
+    assert "full_recovery_iter" in text
+    assert "task.model.generate(" in text
+
+
+def test_submit_if_imp_slurm_forwards_resume_and_val_iter_flags():
+    text = (ROOT / "scripts/submit_if_imp.slurm").read_text()
+    for env in (
+        "ENCODER_RESUME_FROM_CKPT",
+        "ENCODER_VAL_MAX_ITERS",
+        "ENCODER_TRAIN_RECOVERY_ON_VAL",
+    ):
+        assert env in text, f"submit_if_imp.slurm missing env {env}"
+    for cli in ("--val-max-iters", "--resume-from-ckpt", "--train-recovery-on-val"):
+        assert cli in text, f"submit_if_imp.slurm missing CLI {cli}"
