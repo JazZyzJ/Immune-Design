@@ -495,6 +495,83 @@ def test_checkpoint_adapter_shape_mismatch_fails_fast_by_default(
     assert target_auto.cfg.adapter_gated is True
 
 
+def test_auto_install_adapter_shape_restores_decoder_device(tmp_path, monkeypatch):
+    """Regression for cluster diag failure: reinstalling adapters creates fresh
+    CPU modules unless the loader moves the decoder back to its original device.
+    """
+    _require_pyg_stack()
+    import torch
+    import torch.nn as nn
+
+    from inverse_folding.dplm_refiner.geo_encoder import checkpoint as ckpt_mod
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required to catch CPU/CUDA adapter reinstall drift")
+
+    class _AdapterLayer(nn.Module):
+        adapter_gated = False
+
+        def __init__(self):
+            super().__init__()
+            self.adapter_proj = nn.Linear(2, 2)
+
+    _AdapterLayer.__name__ = "AdapterLayer"
+
+    class _Encoder(nn.Module):
+        def __init__(self, layers):
+            super().__init__()
+            self.layer = nn.ModuleList(layers)
+
+    class _Esm(nn.Module):
+        def __init__(self, layers):
+            super().__init__()
+            self.encoder = _Encoder(layers)
+
+    class _Net(nn.Module):
+        def __init__(self, layers):
+            super().__init__()
+            self.esm = _Esm(layers)
+
+    class _Decoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.net = _Net([_AdapterLayer()])
+            self.adapter_proj = nn.Linear(4, 4)
+            self.cfg = type(
+                "_Cfg",
+                (),
+                {
+                    "adapter_num_layers": 1,
+                    "adapter_gated": False,
+                    "adapter_gate_init": 0.0,
+                },
+            )()
+
+    from byprot.models.dplm.modules import dplm_adapter
+
+    def _fake_install_adapters(net, cfg, adapter_num_layers):
+        # Simulate ``install_adapters`` introducing a fresh CPU module into a
+        # decoder that was already moved to CUDA.
+        net.esm.encoder.layer = nn.ModuleList(
+            [_AdapterLayer() for _ in range(adapter_num_layers)]
+        )
+
+    monkeypatch.setattr(
+        dplm_adapter, "install_adapters", _fake_install_adapters
+    )
+    dec_dst = _Decoder().to("cuda")
+    ckpt_mod._reinstall_decoder_adapter_shape(
+        dec_dst,
+        {
+            "adapter_num_layers": 2,
+            "adapter_gated": False,
+            "adapter_gate_init": 0.0,
+        },
+    )
+    devices = {p.device.type for p in dec_dst.parameters()}
+    assert devices == {"cuda"}
+
+
 def test_train_if_imp_encoder_does_not_inject_mask_or_unk_into_specials():
     """P2 regression: the training script must not pass mask_idx /
     unk_idx into the encoder's ``special_token_ids``; doing so would

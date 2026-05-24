@@ -200,6 +200,10 @@ def _reinstall_decoder_adapter_shape(
             "cannot auto-install adapter shape: decoder lacks cfg/net "
             "attributes needed by install_adapters"
         )
+    try:
+        target_device = next(decoder.parameters()).device
+    except StopIteration:
+        target_device = None
 
     _set_cfg_value(decoder.cfg, "adapter_num_layers", saved_n_int)
     _set_cfg_value(decoder.cfg, "adapter_gated", saved_gated_bool)
@@ -212,6 +216,8 @@ def _reinstall_decoder_adapter_shape(
         decoder.cfg,
         adapter_num_layers=saved_n_int,
     )
+    if target_device is not None:
+        decoder.to(target_device)
     return True
 
 

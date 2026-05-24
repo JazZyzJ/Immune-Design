@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-05-21T21:18:36+08:00
+> **Last synced**: 2026-05-22T07:54:31-04:00
 > **Branch**: dev_head
 
 ---
@@ -159,13 +159,21 @@
 
 ## IF Encoder Replacement (PLAN_IF_ENCODER.md)
 
-- **Status**: GeoEGNN-IPA implementation code ready; cluster smoke + ablations pending.
+- **Status**: GeoEGNN-IPA implementation code ready; E7 quick encoder diagnostics rerun with `use_draft_seq=true` on 300 proteins using `encoder_last.pt` checkpoints (2026-05-22).
 - **Latest code state**:
   - `scripts/train_if_imp_encoder.py` now exposes adapter shape controls: `--adapter-num-layers`, `--adapter-gated`, `--adapter-gate-init`.
   - Training reinstall logic runs before DPLM freezing: old Module-K last-1 ungated adapters can be rebuilt as last-N gated adapters, then only `encoder.*` and adapter-named decoder parameters remain trainable.
   - `--adapter-num-layers > 1` requires `--adapter-gated` fail-fast to avoid fresh ungated mid-layer adapters perturbing decoder hidden states at initialization.
   - `scripts/submit_if_imp.slurm` forwards `ENCODER_ADAPTER_NUM_LAYERS`, `ENCODER_ADAPTER_GATED`, and `ENCODER_ADAPTER_GATE_INIT` under `MODE=train_encoder`.
 - **Validation**: local focused checks passed (`tests/scripts/test_if_imp_encoder_scripts.py` + `tests/inverse_folding/dplm_refiner/test_dplm_adapter_layers.py` → 16 passed, 8 skipped; skipped tests are PyG / omegaconf / transformers gated). `python scripts/train_if_imp_encoder.py --help`, `python -m py_compile scripts/train_if_imp_encoder.py`, and `bash -n scripts/submit_if_imp.slurm` pass.
+- **Latest cluster diagnostics** (`work/immune-design/if_imp/diag_encoder/e7_quick_eval_draftseq_last/`, 300 proteins, `use_draft_seq=true`, `encoder_last.pt`):
+  | Arm | final recovery mean | final recovery median | draft-init recovery mean | draft-init recovery median |
+  |-----|---------------------|-----------------------|--------------------------|----------------------------|
+  | `aux05_a1` | **0.1736** | **0.1697** | 0.2549 | 0.2657 |
+  | `pre2_aux01_a1` | 0.1389 | 0.1289 | 0.2546 | 0.2596 |
+  | `aux01_a1` | 0.0975 | 0.0938 | 0.2102 | 0.2129 |
+  | `aux01_a4g` | 0.0911 | 0.0833 | 0.2130 | 0.2200 |
+- **Current interpretation**: draft initialization is active and non-trivial (`draft_init_recovery` ≈0.21-0.25), but iterative decoding does not preserve draft recovery by default. `aux05_a1` remains the best final-recovery arm; `pre2_aux01_a1` is second-best under last checkpoint and no longer shows the best-checkpoint collapse.
 - **Operational note**: Della `immune-design` smoke should include one `ENCODER_ADAPTER_NUM_LAYERS=4 ENCODER_ADAPTER_GATED=1 ENCODER_ADAPTER_GATE_INIT=0.0 LIMIT_BATCHES=2 MODE=train_encoder` job before full ablations.
 
 ---

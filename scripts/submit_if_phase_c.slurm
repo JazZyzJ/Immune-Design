@@ -60,6 +60,7 @@ FAIL_PCT_THRESHOLD="${FAIL_PCT_THRESHOLD:-0.05}"
 SAVE_TRAJECTORIES="${SAVE_TRAJECTORIES:-0}"
 H_CORPUS_STATS="${H_CORPUS_STATS:-}"
 FLAG="${FLAG:-}"
+RUN_ID="${RUN_ID:-}"
 
 # Phase D1 controller wiring (optional; only consumed by MODE=reference_flow).
 # CONTROLLER_CONFIG empty → controller is disabled and the head flags are
@@ -171,6 +172,7 @@ case "${MODE}" in
         echo "  N steps         : ${N_STEPS:-<from config>}"
         echo "  h corpus stats  : ${H_CORPUS_STATS:-<none>}"
         echo "  Resume from     : ${RESUME_FROM:-<fresh run>}"
+        echo "  Run ID          : ${RUN_ID:-<auto>}"
         echo "  Controller YAML : ${CONTROLLER_CONFIG:-<disabled>}"
         if [[ -n "${CONTROLLER_CONFIG}" ]]; then
             echo "  Head checkpoint : ${HEAD_CHECKPOINT:-<missing>}"
@@ -198,6 +200,9 @@ case "${MODE}" in
         fi
         if [[ -n "${N_STEPS:-}" ]]; then
             EXTRA_FLAGS+=(--n-steps "${N_STEPS}")
+        fi
+        if [[ -n "${RUN_ID}" ]]; then
+            EXTRA_FLAGS+=(--run-id "${RUN_ID}")
         fi
         if [[ -n "${CONTROLLER_CONFIG}" ]]; then
             EXTRA_FLAGS+=(--controller-config "${CONTROLLER_CONFIG}")

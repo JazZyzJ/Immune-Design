@@ -113,6 +113,16 @@ def test_submit_if_imp_slurm_has_new_modes():
     assert "train_if_imp_encoder.py" in text
 
 
+def test_submit_if_imp_train_encoder_forwards_wandb_args():
+    """Encoder training must honor the launcher's WANDB_* env contract."""
+    text = (ROOT / "scripts/submit_if_imp.slurm").read_text()
+    start = text.index('elif [ "${MODE}" = "train_encoder" ]')
+    end = text.index('elif [ "${MODE}" = "generate_encoder" ]', start)
+    body = text[start:end]
+    assert "train_if_imp_encoder.py" in body
+    assert '"${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"' in body
+
+
 def test_doc_scripts_registers_train_if_imp_encoder():
     text = (ROOT / "doc/SCRIPTS.md").read_text()
     assert "scripts/train_if_imp_encoder.py" in text

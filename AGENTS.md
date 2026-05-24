@@ -61,6 +61,8 @@ SLURM `--output/--error` 必须指向 `logs/`，不能混入 `run/`。
 
 **参照模板**: `scripts/submit_cnn_enhance.slurm`。所有新 SLURM 脚本必须遵循 sbatch 的格式。
 
+When returning experiment data, use SSH host `mhc-if-local` and sync into local data directory `/Users/jerry/Project/MHC-IF/data`.
+
 ## 4. Plan & Progress Files
 
 - **核心任务驱动文件**: 当前未指定；以用户当次指定和下列计划文件为准。

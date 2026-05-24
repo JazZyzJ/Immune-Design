@@ -397,7 +397,8 @@ elif [ "${MODE}" = "train_encoder" ]; then
         --val-max-iters ${ENCODER_VAL_MAX_ITERS} \
         --pretrain-aux-only-epochs "${ENCODER_PRETRAIN_AUX_ONLY_EPOCHS}" \
         --pretrain-target "${ENCODER_PRETRAIN_TARGET}" \
-        "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
+        "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
+        "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
 elif [ "${MODE}" = "generate_encoder" ]; then
     : "${CHECKPOINT:?set CHECKPOINT for generate_encoder}"
     : "${ENCODER_CHECKPOINT:?set ENCODER_CHECKPOINT for generate_encoder}"
