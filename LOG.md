@@ -3044,3 +3044,16 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - next_action: use `uricase_caseset_if_ready_unified.parquet` + `pdbs_if_ready/` as the uricase IF eval set (filter `structure_source` / `gt_pass` as needed); decide separately whether to admit the 19 X-containing proteins.
 - refs:
   - `L0103` (ESMFold2 fold), `L0104` (uricase case-study dataset build)
+
+
+### L0106
+- timestamp: 2026-06-04T11:32:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: Uricase is now a standalone case-study dataset, so Tier 3 is redundant in the main test set; user requested removing it.
+- change_summary: Removed all Tier 3 rows from the canonical main test set (both alleles) — `test_proteins_<tag>.parquet`, `if_ready/test_proteins_if_ready_<tag>.parquet`, `if_ready/h_maps_v2/h_maps_<htag>.parquet` — and regenerated `test_proteins_summary_<tag>.json`. Main test set is now Tier 1 + Tier 2 only: 0701 3014 (T1 15 / T2 2999), 0401 3015 (T1 15 / T2 3000); if_ready + h_maps_v2 match (h_maps cover 100%, 0 missing). v1-with-tier3 backed up to `backups/20260604_113159_tier3_removal/`.
+- evidence: 0701 test_proteins 3165→3014, if_ready 3139→3014, h_maps 3139→3014; 0401 3167→3015, 3147→3015, 3147→3015. h_maps cover if_ready missing=0 both alleles.
+- impact: scope — main test set only; uricase case-study set untouched. risk low (backup retained).
+- status: done
+- refs:
+  - `L0104` (uricase case study), `L0098`/`L0100` (Tier 2 v2 + promotion)

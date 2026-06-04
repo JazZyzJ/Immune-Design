@@ -82,24 +82,22 @@
 
 ## Module L → Data Selection (PLAN_DATA_SEL.md)
 
-- **Tier 2 v2 rebuild (2026-06-03, L0098/L0099/L0100) — NMP-only, density-stratified, COMPLETE + PROMOTED TO CANONICAL for both alleles.** Supersedes the §7.3 dual-scorer Tier 2; Tier 1 + Tier 3 unchanged. Selection uses **NetMHCIIpan only** (no epitope head, no structure) over `coverage_fraction`, with a unimodal Gaussian marginal (μ=median, peak:tail=3, min-per-bin=40, →3000). Pipeline: S1 length-15 scan of 75,425 overlap pool → uniform→5000 → S2 multi-length NMP → if_ready gate (→~4750 survivors) → Gaussian→3000. **Canonical now = v2** (v1 backed up under `backups/20260603_170203_tier2v2_promote/`):
-  | allele | `test_proteins_<tag>` | `if_ready` | `if_ready/h_maps_v2/` (npoff) | Tier 2 cov median |
-  |--------|-----------------------|------------|-------------------------------|-------------------|
-  | DRB1\*07:01 | 3165 (T1 15 / **T2 2999** / T3 151) | 3139 (all if_ready) | 3139 (0 fail, covers 100%) | ≈0.39 |
-  | DRB1\*04:01 | 3167 (T1 15 / **T2 3000** / T3 152) | 3147 (all if_ready) | 3147 (0 fail, covers 100%) | ≈0.46 |
-  - h_maps verified **bit-identical** to the prior npoff h_maps on overlapping proteins (md5 100%, Δ=0). Cleaned tier2 structures copied into `pdbs_if_ready/{0701,0401}`. **fast subset (493, `if_ready/test_proteins_if_ready_fast_*`) intentionally left stale** — rebuild from v2 (or replace with a mid-density pilot) is a separate future task. Phase C SLURM `H_MAPS_PARQUET` default still points at the stale LC1 `if_ready/h_maps/`; override to `if_ready/h_maps_v2/`.
-  - New CLIs: `select_tier2_v2.py` (merge shards + stratified sample); `prescreen_tier2.py --selection-mode nmp_only` (+ `--nmp-screen-lengths`, `--n-shards`, `--sample`).
-  - **Diagnostic subsets (v2, allele-specific, NMP-only, structure-blind; tier3/uricase intentionally excluded → separate case study):**
-    - **pilot** `if_ready/pilot_v2_<tag>.parquet` — 50 = 15 Tier 1 (gold experimental anchors) + 35 Tier 2 in the **mid-load Pareto band** [p40,p75] of coverage (0701 [0.33,0.56], 0401 [0.39,0.64]; below the p90 saturation 0.67/0.78), 4-sub-bin light stratification. For high-frequency RF-iteration; **evaluate on Pareto improvement (Δimmune at matched scTM), not immune-only** (immune-only↓ grows with load but Pareto-gap peaks at moderate load).
-    - **fast** `if_ready/fast_v2_<tag>.parquet` — 300 = 15 Tier 1 + 285 Tier 2 uniform across coverage (full range), for lower-frequency global sanity.
-    - Both are strict subsets of canonical if_ready (have if_ready seq + `pdbs_if_ready` structures + `h_maps_v2`); Phase C runs directly via `TEST_SET_PARQUET=...`.
-  - **Uricase case study (standalone, COMPLETE 2026-06-04)** — full uricase pool rebuilt as its own translational dataset (separate from the main tier1/2/3 set; "best" = therapeutic relevance, no NMP/density selection). Universe 6804 accessions (`uricases/filtered_uricases.fasta` 6801 + 3 characterized) → AFDB CIF 5222 + **ESMFold2-folded missing 1518** (user; GT gate pLDDT≥0.90 & pTM≥0.80, dropped poor-fold / special-token / dup) = **6740 if_ready (0 fail)**; **all 25 characterized present and flagged** (`characterized` clean bool; the 2 Streptomyces `A0ABR4SZB5`/`A0ABX7U467` came in via ESMFold2, gt_pass, flag re-filled after the merge dropped it). All under `uricases/`:
-    - `uricase_caseset_if_ready_unified.parquet` — **6740** (5222 `if_source_structure=afdb` + 1518 `esmfold`)
-    - `pdbs_if_ready/` — **6740** cleaned structures (5222 `.cif` + 1518 `.pdb`), single PDB_ROOT
-    - `h_maps/h_maps_uricase_DRB1_{07_01,04_01}.parquet` — **6740 each, 100% cover, 0 fail** (npoff)
-    - `missing_structure_list.{csv,fasta}` — original 1583 no-AFDB list (now mostly folded; residual dropped: 43 dup seq + 3 illegal-token + 19 if_ready-fail). **All 25 characterized are in the set** (incl. the 2 Streptomyces via ESMFold2).
-    - Phase C uses it via `TEST_SET_PARQUET=uricases/uricase_caseset_if_ready_unified.parquet`, `H_MAPS_PARQUET=uricases/h_maps/h_maps_uricase_<htag>.parquet`, `PDB_ROOT=uricases/pdbs_if_ready`. Best deimmunized uricases cherry-picked downstream after RF.
-    - **Caveat** (per L0103): ESMFold-predicted backbones as scTM refold targets = self-consistency, not true GT; paper-grade IF claims should anchor on an independent folder / native-recovery.
+- **Main test set = v2 (Tier 1 + Tier 2 only; Tier 3 removed).** Tier 2 selection: NMP-only, structure-blind, unimodal-Gaussian over `coverage_fraction` (μ=median, peak:tail=3, min-per-bin=40). Canonical files (npoff h_maps):
+  | allele | `test_proteins_<tag>.parquet` | `if_ready/test_proteins_if_ready_<tag>.parquet` | `if_ready/h_maps_v2/h_maps_<htag>.parquet` |
+  |--------|-------------------------------|--------------------------------------------------|--------------------------------------------|
+  | DRB1\*07:01 | 3014 (T1 15 / T2 2999) | 3014 | 3014 (covers 100%) |
+  | DRB1\*04:01 | 3015 (T1 15 / T2 3000) | 3015 | 3015 (covers 100%) |
+  - Phase C: `TEST_SET_PARQUET=if_ready/test_proteins_if_ready_<tag>.parquet`, `H_MAPS_PARQUET=if_ready/h_maps_v2/h_maps_<htag>.parquet`, `PDB_ROOT=pdbs_if_ready/<short>`. SLURM `submit_if_phase_c.slurm` H_MAPS default = `h_maps_v2`.
+  - CLIs: `select_tier2_v2.py` (merge shards + stratified sample); `prescreen_tier2.py --selection-mode nmp_only` (`--nmp-screen-lengths/--n-shards/--sample`); lib `inverse_folding/evaluation/{sampling.py,immunogenicity.compute_coverage_fraction}`.
+- **Diagnostic subsets (allele-specific, subsets of canonical if_ready):**
+  - **pilot** `if_ready/pilot_v2_<tag>.parquet` — 50 = 15 Tier 1 + 35 Tier 2 in mid-load Pareto band [p40,p75] of coverage (0701 [0.33,0.56], 0401 [0.39,0.64]), 4 sub-bins. High-freq RF iteration; metric = Pareto improvement (Δimmune at matched scTM).
+  - **fast** `if_ready/fast_v2_<tag>.parquet` — 300 = 15 Tier 1 + 285 Tier 2 uniform across coverage. Global sanity.
+- **Uricase case study (standalone, not in main test set).** Files under `uricases/`:
+  - `uricase_caseset_if_ready_unified.parquet` — **6740** (5222 AFDB + 1518 ESMFold2), all 25 `characterized` flagged.
+  - `pdbs_if_ready/` — 6740 cleaned structures (5222 `.cif` + 1518 `.pdb`); `h_maps/h_maps_uricase_DRB1_{07_01,04_01}.parquet` — 6740 each, covers 100%, npoff.
+  - `missing_structure_list.{csv,fasta}` — uricases still without structure.
+  - Phase C: `TEST_SET_PARQUET=uricases/uricase_caseset_if_ready_unified.parquet`, `H_MAPS_PARQUET=uricases/h_maps/h_maps_uricase_<htag>.parquet`, `PDB_ROOT=uricases/pdbs_if_ready`.
+  - Caveat: ESMFold-predicted backbones as scTM refold targets = self-consistency, not true GT.
 
 - **Code**: L0-L5 implemented + tested (139 tests passing), 6 code review issues fixed
   - schema (`validate_test_protein_entry`), overlap (MMseqs2), prescreen (dual-scorer + CATH diversity), assembly, tier validators
