@@ -1,0 +1,44 @@
+# Phase D3-only t-start sweep preset: conservative early start, t_start=0.55.
+controller:
+  enabled: true
+  mode: d3_revisit
+  t_start: 0.55
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+    local_risk_aggregation: LME
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 8
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    min_completion_fraction: 0.50
+    min_rho_to_emit_event: 0.0
+  d2:
+    enabled: false
+  d3:
+    enabled: true
+    window_to_residue_projection: max_covering_window
+    gamma_min: 0.50
+    gamma_max: 0.90
+    lambda_commit: 0.5
+    zscore_epsilon: 1.0e-6
+    same_refresh_grace: true
+    final_freeze_steps: 1
+  attribution:
+    write_paired_counterfactual: false
+    write_independent_delta_R_i: false
+    productive_delta_logp: 0.5
+  controls:
+    allow_wrong_allele_head: true
+    allow_shuffled_head: true
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true

@@ -2816,3 +2816,231 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN_IF_ENCODER.md` Task E7
   - `L0095`
+
+
+### L0097
+- timestamp: 2026-06-03T01:20:57-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: User provided `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/characterized_uricases.fasta` and requested that characterized uricases be deduplicated against the existing uricase/test-set data, added to the IF test set, structure-backed, and rebuilt through the current IF-ready contract.
+- change_summary: Normalized the characterized FASTA to the existing uricase ID style (`accession|organism|name|taxid|len`), removed one exact-sequence duplicate (`Q2U050` duplicate of `Q00511`), and appended 25 curated characterized uricases as Tier 3 additions to both allele-specific raw test-set parquets. Scored the additions with the current npoff epitope-head checkpoints and NetMHCIIpan for both HLA-DRB1*07:01 and HLA-DRB1*04:01 before appending. Downloaded AFDB CIF structures through `scripts/download_test_set_pdbs.py`, linked the 23 successful structures into both allele-specific raw PDB roots, updated the two AFDB-404 accessions in `uniprot_final_failures.txt`, and rebuilt both IF-ready parquets with `scripts/build_if_ready_test_set.py --allow-cif --default-chain A`. Updated `PROGRESS.md` to reflect the new raw, structure, failure, and IF-ready counts.
+- rationale: The characterized uricases were mostly already present in the broad uricase candidate pool but had not been selected into the assembled Tier 3 test set. For the current scientific use case they are curated functional/therapeutic additions, so inclusion should be based on curated status rather than rerunning the old pool-level selection/median filter. Still, allele-specific WT head/NMP artifacts and resolved-backbone IF-ready structures must be materialized so Phase C consumes the same schema and sequence/structure contract as the existing test set.
+- artifacts:
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/characterized_uricases.normalized_unique.fasta`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/characterized_uricases.normalized_unique_manifest.json`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricase_prescreen/characterized_uricase_artifacts_HLA-DRB1_07_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricase_prescreen/characterized_uricase_artifacts_HLA-DRB1_04_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs/characterized_afdb/`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs/characterized_afdb_link_report.json`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs/{0401,0701}/uniprot_final_failures.txt`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/load_coords_gate_HLA-DRB1_07_01.json`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/load_coords_gate_HLA-DRB1_04_01.json`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backups/20260603_003541_EDT/`
+  - `/home/zc1519/src/Immune-Design/PROGRESS.md`
+  - `/home/zc1519/src/Immune-Design/LOG.md`
+- evidence: Characterized FASTA normalization produced 25 unique sequences from 26 records, with `Q2U050` recorded as an exact duplicate of `Q00511`. NetMHCIIpan completed for all additions on both alleles: 0701 n_strong median=88 (min=10, max=190), 0401 n_strong median=82 (min=19, max=189). Raw test-set validation passed after append: 0701 3,141 -> 3,166 rows (Tier 3 126 -> 151), 0401 3,140 -> 3,165 rows (Tier 3 127 -> 152). AFDB CIF download via `download_test_set_pdbs.py` succeeded for 23/25 accessions; AFDB PDB retry confirmed 404 for `A0ABR4SZB5` and `A0ABX7U467`. IF-ready rebuilds completed: 0701 3,166 input -> 3,102 ready / 64 failed (Tier 3 ready=125), 0401 3,165 input -> 3,095 ready / 70 failed (Tier 3 ready=132). DPLM `load_coords()` gate passed exactly for all IF-ready rows: 0701 3,102/3,102, 0401 3,095/3,095.
+- impact:
+  - scope: Cluster data artifacts for Module L / Phase B only. Repo code was not changed; only `PROGRESS.md` and `LOG.md` were updated locally.
+  - risk: low. Two characterized additions are present in the raw test set with WT head/NMP artifacts but are not IF-ready because AFDB has no CIF/PDB prediction for them; they are explicit missing-structure failures and remain candidates for AF3 fill-in.
+  - confidence: 0.93
+- status: done
+- next_action: If these two characterized Streptomyces uricases are important for Phase C/F4, generate AF3 structures for `A0ABR4SZB5` and `A0ABX7U467`, then rerun `build_if_ready_test_set.py` and the DPLM `load_coords()` gate. B2 h-map precompute must be rerun against the updated IF-ready parquets before Phase C C1/D runs.
+- refs:
+  - `PROGRESS.md` Module L / Phase B snapshot
+  - `scripts/download_test_set_pdbs.py`
+  - `scripts/build_if_ready_test_set.py`
+
+
+### L0098
+- timestamp: 2026-06-03T01:53:34-04:00
+- type: FEATURE
+- module: DATA_SELECTION
+- trigger: User decided the v1 Tier 2 selection is biased — the epitope head (the RF guidance signal) gated test-set selection, and the set is a high-immunogenicity tail rather than representative. Authorized a Tier 2 **v2** rebuild that is NMP-only, structure-blind, with a controlled unimodal (Gaussian) marginal over immunogenicity density. Tier 1 and Tier 3 (expanded in L0097) are untouched; v2 only swaps Tier 2.
+- change_summary: Added the NMP-only density-stratified Tier 2 v2 selection path. `inverse_folding/evaluation/immunogenicity.py` gained pure `compute_coverage_fraction(window_df, seq_len)` (residues covered by ≥1 strong window / length) and now stamps `coverage_fraction` into `aggregate_nmp_batch_scores` output. New `inverse_folding/evaluation/sampling.py` provides pure `sample_uniform_bins` / `sample_gaussian_bins` (greedy water-filling proportional to per-bin weights, capped by availability, floored at min-per-bin, deficit redistributed to hit target; returns selected ids + realized histogram). `scripts/prescreen_tier2.py` gained `--selection-mode {dual_scorer,nmp_only}` (dual_scorer untouched/byte-equivalent), `--nmp-screen-lengths`, `--candidate-id-list` (reuse allele-independent overlap IDs, skip MMseqs2), and `--sample {none,uniform,gaussian}` + params; `--cath-train-fasta/--epitope-ckpt/--cath-domain-list` relaxed to conditionally-required. `scripts/submit_prescreen_tier2.slurm` gained `MODE=nmp_only` (CPU-only) branch. PLAN_DATA_SEL.md §7.3 dual-scorer rule marked SUPERSEDED; new §12 documents the two-stage S1(len-15→uniform≈5000)→if_ready gate→S2(multi-len→Gaussian≈3000) procedure. SCRIPTS.md updated.
+- rationale: The epitope head is the guidance signal RF optimizes; using it to select the test set inflates apparent performance (the §8 risk #4 accepted in v1). NMP is the independent validator, so NMP-only selection is the de-biased contract. Single-length-15 is a high-recall coarse detector (MHC-II binding is 9-mer-core-driven), making a full-pool head-free scan affordable (~2× original NMP). Gaussian-over-coverage concentrates statistical power in the mid-density regime (where RF is most expressive) while keeping tails populated, and is naturally satisfiable by the right-skewed candidate pool (unlike flat-uniform, which over-requests the rare high-density tail).
+- artifacts:
+  - `/home/zc1519/src/Immune-Design/inverse_folding/evaluation/sampling.py` (new)
+  - `/home/zc1519/src/Immune-Design/inverse_folding/evaluation/immunogenicity.py`
+  - `/home/zc1519/src/Immune-Design/scripts/prescreen_tier2.py`
+  - `/home/zc1519/src/Immune-Design/scripts/submit_prescreen_tier2.slurm`
+  - `/home/zc1519/src/Immune-Design/tests/inverse_folding/test_tier2_v2_sampling.py` (new)
+  - `/home/zc1519/src/Immune-Design/PLAN_DATA_SEL.md`
+  - `/home/zc1519/src/Immune-Design/doc/SCRIPTS.md`
+- evidence: `pytest tests/inverse_folding/test_tier2_v2_sampling.py tests/inverse_folding/test_module_l_prescreen.py` → 24 passed (11 new v2 coverage/sampling + 13 legacy dual_scorer regression; dual_scorer path unchanged). `py_compile` clean on all touched modules. Login-node end-to-end pilot: `prescreen_tier2.py --selection-mode nmp_only --nmp-screen-lengths 15` on 24 real overlap-passed proteins via the bundled NetMHCIIpan produced a valid scored parquet (coverage_fraction populated, e.g. 1 strong window over a 145-aa protein → 15/145 = 0.103) at 0.72 proteins/s with 4 workers → ~7.3 h projected for 75,425 at 16 workers, ~3.6 h at 32. Verified candidate pool: all 75,425 overlap-passed IDs (head cache) covered by `tier2_candidates_merged.fasta`; overlap is allele-independent so both alleles reuse the same id pool.
+- impact:
+  - scope: Tier 2 test-set selection only. `dual_scorer` default is byte-equivalent to pre-change; no existing artifact is overwritten by this change. Materialization (assemble → download structures → if_ready → h_maps) is deferred to Phase B and will overwrite `test_proteins_<allele>.parquet` only after the user reviews the S2 Gaussian histogram.
+  - risk: medium. S1/S2 are long CPU jobs; the Gaussian (μ, σ, peak:tail, min-per-bin) is finalized against realized histograms before S3 commits. The v2 Tier 2 will include low-immunogenicity proteins (no floor), a deliberate distribution change from v1.
+  - confidence: 0.85
+- status: in_progress
+- next_action: S1 length-15 screen runs as **strided job-arrays** (16 shards × 8 cores, `--array=0-15`, qos=short) — added `--n-shards/--shard-index` to `prescreen_tier2.py` + `N_SHARDS`/`SLURM_ARRAY_TASK_ID` to the SLURM after the initial 48-core single jobs (9128221/9128222) queued too long; small shards backfill instantly. Current arrays: 9147972 [0701] / 9147973 [0401], writing `tier2_nmp_screen_<allele>_l15.shardNNof16.parquet`. When drained: (1) merge shards → full scored parquet; (2) S1 uniform-sample → ≈5000 per allele; (3) S2 multi-length NMP on the ≈5000; (4) review Gaussian target histogram with user, finalize knobs; (5) S3 Gaussian → ≈3000; (6) assemble (swap Tier 2, keep Tier 1 + L0097 Tier 3), download structures, build_if_ready, rerun precompute_h_maps for both alleles.
+- refs:
+  - `PLAN_DATA_SEL.md` §12 (Tier 2 v2)
+  - `PLAN_DATA_SEL.md` §7.3 (superseded), §8 risk #4
+  - `L0097` (Tier 3 uricase expansion — orthogonal)
+
+
+### L0099
+- timestamp: 2026-06-03T05:40:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: Execute the Tier 2 v2 NMP-only density-stratified rebuild (L0098 design) end-to-end on Della for both alleles, producing the v2 test set (`test_proteins_v2` + `if_ready_v2` + `h_maps_v2`). User reviewed and approved the default Gaussian shape (μ=median coverage, peak:tail=3, min-per-bin=40, 20 bins, →3000).
+- change_summary: Ran the full S1→S2→gate→S3→materialize pipeline. **S1**: length-15 NetMHCIIpan over the full 75,425 overlap-passed pool per allele, as strided 16-shard CPU job-arrays (2 shards timed out at 3h and were resumed after adding the `: "${PS1:=}"` guard to `submit_prescreen_tier2.slurm`); merged + `select_tier2_v2.py --mode uniform --n-target 5000` → 5000-protein coarse pool spanning all density bins. **S2**: full 12–25 NMP on the 5000 (24-shard arrays) → accurate `coverage_fraction`. **if_ready gate**: built 5000-candidate full-schema parquets (joined S2 NMP + head-cache risk), downloaded RCSB structures (4839/5000 0701, 4865/5000 0401 — the rest are obsolete/withdrawn PDB codes), ran `build_if_ready_test_set.py` → 4759/4745 if_ready survivors. **S3**: `select_tier2_v2.py --mode gaussian --n-target 3000` on survivors → final Tier 2 v2 (2999 0701 after dropping 1 Tier-1 collision `6Y76_A`; 3000 0401). **Materialize**: spliced `test_proteins_v2` (existing Tier 1+3 + new Tier 2) and `if_ready_v2` (existing Tier 1+3 if_ready + gated Tier 2 if_ready, column-aligned), then recomputed `h_maps_v2` with the current npoff head checkpoints (the existing h_maps were stale — old `LC1_lite_aug` ckpt, pre-L0097, per L0097 next_action).
+- rationale: Single-length-15 coarse screen made the full-pool head-free scan affordable; uniform→Gaussian two-stage decouples "span all densities for S2" from "final unimodal marginal". if_ready gate before the final Gaussian keeps the selected set hole-free. Splicing (vs full re-assemble) avoided re-resolving Tier 1/3 structures and side-stepped the scattered structure layout (new Tier 2 structures landed in `pdbs/` top-level due to an output-dir glob bug; harmless since PDB structures are allele-independent and h_maps are sequence-based).
+- artifacts:
+  - `work/immune-design/if_test_set/test_proteins_v2_HLA-DRB1_07_01.parquet` — 3165 rows (T1=15, **T2=2999**, T3=151)
+  - `work/immune-design/if_test_set/test_proteins_v2_HLA-DRB1_04_01.parquet` — 3167 rows (T1=15, **T2=3000**, T3=152)
+  - `work/immune-design/if_test_set/if_ready/test_proteins_if_ready_v2_HLA-DRB1_07_01.parquet` — 3139 (all if_ready=True; T2=2999, T3=125)
+  - `work/immune-design/if_test_set/if_ready/test_proteins_if_ready_v2_HLA-DRB1_04_01.parquet` — 3147 (all if_ready=True; T2=3000, T3=132)
+  - `work/immune-design/if_test_set/h_maps/h_maps_v2_DRB1_07_01.{parquet,meta.json}` — 3139 rows, 0 failed, npoff ckpt
+  - `work/immune-design/if_test_set/h_maps/h_maps_v2_DRB1_04_01.{parquet,meta.json}` — 3147 rows, 0 failed, npoff ckpt
+  - Intermediates (audit/resume): `tier2_nmp_screen_<allele>_l15.shard*of16.parquet`, `..._lall.shard*of24.parquet`, `tier2_v2_s1_uniform_<allele>.parquet`, `tier2_v2_cand5000_<allele>.parquet`, `tier2_v2_ifready5000_<allele>.parquet`, `tier2_v2_selected_<allele>.parquet` (+ `.histogram.json`), cleaned structures in `pdbs_if_ready_v2/{0701,0401}/`
+- evidence: Final verification — both alleles: protein_id unique; if_ready_v2 `if_ready` all True; `h_maps_v2` covers 100% of if_ready proteins (0 missing), 0 head failures; Tier 2 `head_global_risk` 100% populated (joined from head cache). Multi-length coverage medians: 0701 ≈ 0.39, 0401 ≈ 0.46. Gaussian per-bin histograms saved as `tier2_v2_selected_<allele>.histogram.json`. h_maps wall-clock ~2 min each (jobs 9164104/9164105 COMPLETED 0:0).
+- impact:
+  - scope: New parallel v2 test-set artifacts. **Frozen v1 files were NOT overwritten** — v2 lives under `*_v2` names. Promotion to canonical (back up v1, rename v2 → `test_proteins_<allele>.parquet` etc., repoint Phase C/D) is a separate user-gated step.
+  - risk: low-medium. v2 Tier 2 is NMP-only / head-free / structure-blind-selected and includes low-immunogenicity proteins (no floor) — a deliberate distribution change from v1; downstream comparisons must not mix v1/v2. h_maps use the npoff head ckpt; confirm this matches the head used at Phase C/D generation before relying on the risk landscape.
+  - confidence: 0.88
+- status: done
+- next_action: (1) User decides whether to promote `*_v2` to canonical (with v1 backup) or keep parallel. (2) If promoting, repoint Phase C/D `TEST_SET_PARQUET` / `H_MAPS_PARQUET` (or rename) and re-run any cached WT baselines. (3) Optionally regenerate `test_proteins_summary_v2_*.json` via the summary path. (4) The pilot/diagnostic subset (mid-density sweet spot) is a separate future task per the earlier discussion.
+- refs:
+  - `PLAN_DATA_SEL.md` §12 (Tier 2 v2)
+  - `L0098` (v2 design + code), `L0097` (Tier 3 uricase expansion)
+
+
+### L0100
+- timestamp: 2026-06-03T17:05:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: User confirmed promotion of the Tier 2 v2 full set to canonical, after a requested consistency check between the newly-computed npoff h_maps and the pre-existing `if_ready/h_maps_v2/` npoff h_maps.
+- change_summary: Verified h_map consistency, then promoted v2 → canonical (both alleles). **Consistency check**: on overlapping proteins (289 0701 / 433 0401) the new h_maps are bit-identical to the existing npoff `if_ready/h_maps_v2/` — 100% sequence_md5 match, global_risk |Δ|=0, h_raw per-residue |Δ|=0 (same npoff head + same pipeline). **Promotion** (v1 backed up to `backups/20260603_170203_tier2v2_promote/`): `test_proteins_v2_<tag>` → `test_proteins_<tag>`; `if_ready/test_proteins_if_ready_v2_<tag>` → `if_ready/test_proteins_if_ready_<tag>`; `h_maps/h_maps_v2_DRB1_<tag>{.parquet,.meta.json}` → `if_ready/h_maps_v2/h_maps_DRB1_<tag>`; copied v2 cleaned tier2 structures into `pdbs_if_ready/{0701,0401}`; regenerated `test_proteins_summary_<tag>.json`.
+- rationale: The workspace `h_maps_v2` naming denotes the npoff-checkpoint version (a different axis than test-set version); the prior npoff h_maps were already the in-use set, and the bit-identical overlap confirms the new h_maps are drop-in. Promotion makes the full v2 set canonical for Phase C full runs while leaving the derived fast subset untouched per user.
+- artifacts:
+  - `work/.../if_test_set/test_proteins_{HLA-DRB1_07_01,HLA-DRB1_04_01}.parquet` (now v2: 3165 / 3167)
+  - `work/.../if_test_set/if_ready/test_proteins_if_ready_{...}.parquet` (now v2: 3139 / 3147, all if_ready)
+  - `work/.../if_test_set/if_ready/h_maps_v2/h_maps_DRB1_{07_01,04_01}.parquet` (now v2 npoff: 3139 / 3147, covers 100%)
+  - `work/.../if_test_set/pdbs_if_ready/{0701,0401}/` (+ v2 tier2 cleaned structures; all if_ready structs resolvable incl. tier3 .cif by safe-id)
+  - `work/.../if_test_set/backups/20260603_170203_tier2v2_promote/` (v1 test_proteins + if_ready + npoff h_maps, both alleles)
+- evidence: Post-promotion verification both alleles: canonical test_proteins tiers {1:15, 2:2999/3000, 3:151/152}; if_ready all if_ready=True; h_maps cover 100% of if_ready (0 missing); PDB_ROOT structures resolvable for tier1/2/3 (tier3 via safe-id .cif, 125/125 0701). No `*_v2` leftovers (moved). v1 backup present.
+- impact:
+  - scope: Canonical IF test set (full) for both alleles is now v2. Phase C/D full runs that read `test_proteins_if_ready_<tag>` + `if_ready/h_maps_v2/` consume v2. The fast subset (`*_if_ready_fast_*`, 493) is now stale relative to its source and left as-is. Phase C SLURM `H_MAPS_PARQUET` default points at the stale LC1 `if_ready/h_maps/`; runs must override to `if_ready/h_maps_v2/`.
+  - risk: medium. Canonical files overwritten (v1 recoverable from backup). Do not mix v1/v2 results. Confirm Phase C/D generation head == npoff before relying on the risk landscape.
+  - confidence: 0.9
+- status: done
+- next_action: (1) When fast/pilot runs are needed, rebuild a v2 fast subset (or a mid-density diagnostic pilot per the earlier discussion) from the new canonical full set. (2) Consider fixing the Phase C SLURM `H_MAPS_DEFAULT` to `if_ready/h_maps_v2/`. (3) Re-run any cached WT baselines that referenced v1 Tier 2.
+- refs:
+  - `L0099` (v2 build), `L0098` (v2 design)
+
+
+### L0101
+- timestamp: 2026-06-03T18:20:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: After promoting the v2 full test set, design + build two diagnostic subsets to replace the stale pilot50 / 493-fast subsets. Decided collaboratively: keep **two distinct sets** (not merged) — a high-frequency RF-iteration "pilot" (concentrated where RF wins) and a lower-frequency global "fast" sanity set — both allele-specific, NMP-only, structure-blind. Uricase (Tier 3) is a separate case study, excluded from both.
+- change_summary: Built both subsets (both alleles) as strict subsets of the canonical v2 if_ready. **pilot** (50 = 15 Tier 1 + 35 Tier 2): Tier 2 drawn from the **mid-load Pareto band** [p40,p75] of `coverage_fraction` with 4-sub-bin light stratification — band centered near the median and kept below the p90 saturation zone, because the meaningful metric is Pareto improvement (immune↓ at matched structure) which peaks at moderate load, whereas immune-only↓ keeps rising into the structure-sacrificing saturated regime. 0701 band [0.33,0.56], 0401 [0.39,0.64]. All 15 Tier 1 included as experimental-epitope anchors. **fast** (300 = 15 Tier 1 + 285 Tier 2): Tier 2 uniform across the full coverage range (20 bins). Computed Tier 1 `coverage_fraction` via multi-length NMP (15/allele) for the record. Outputs `if_ready/pilot_v2_<tag>.parquet` and `if_ready/fast_v2_<tag>.parquet`.
+- rationale: pilot vs fast have different objectives → different designs (concentrated-diagnostic vs representative-global) and sizes (≤50 iteration cap vs 300). Length fixed to the recovery-reliable range and structure kept out of selection so the RF-vs-baseline comparison is fair (selecting structurally-flexible epitopes would advantage unconstrained baselines). Allele-specific because `coverage_fraction` is allele-dependent — sharing proteins across alleles would break the density-bin assignment.
+- artifacts:
+  - `work/.../if_test_set/if_ready/pilot_v2_{HLA-DRB1_07_01,HLA-DRB1_04_01}.parquet` (50 each)
+  - `work/.../if_test_set/if_ready/fast_v2_{HLA-DRB1_07_01,HLA-DRB1_04_01}.parquet` (300 each)
+- evidence: pilot tier2 coverage medians 0.44 (0701) / 0.50 (0401), 4 sub-bins ~9 each, all below p90 saturation. fast tier2 coverage spread p10/p90 = 0.09/0.80 (0701), 0.10/0.86 (0401). Tier 1 coverage medians 0.32 / 0.34. Both subsets are subsets of canonical if_ready → inherit `pdbs_if_ready` structures + `h_maps_v2` coverage (verified 100% at promotion).
+- impact:
+  - scope: New diagnostic/sanity subsets for Phase C. Not wired into any SLURM default yet — pass `TEST_SET_PARQUET=...pilot_v2_<tag>.parquet` (or fast) explicitly.
+  - risk: low (read-only subsets of canonical). The pilot band edges are a first principled bet on the Pareto-gap peak; the in-band gradient (top sub-bin probes toward saturation) lets the first pilot run confirm/refine the peak location.
+  - confidence: 0.85
+- status: done
+- next_action: (1) Run RF + baselines on `pilot_v2` and read the Pareto-gap-vs-coverage trend across the 4 sub-bins to confirm the band; adjust edges if the peak sits elsewhere. (2) Build the uricase case-study set separately. (3) Optionally formalize pilot/fast generation into a small CLI if the bands need frequent retuning.
+- refs:
+  - `L0100` (v2 promotion), `L0099`/`L0098` (v2 build/design)
+
+
+### L0102
+- timestamp: 2026-06-03T22:47:53-04:00
+- type: FEATURE
+- module: IF_BASELINES
+- result: `scripts/run_proteinmpnn_baseline.py` now supports IF-ready ProteinMPNN staging via `--test-set-parquet`. The wrapper resolves canonical IF-ready rows under `--input-pdb-folder`, rewrites each source PDB/CIF into a single-chain continuous-residue-numbered staging PDB (`1..L`, chain `A`) aligned to the parquet sequence, and maps staged ids back to original `protein_id` in output FASTA/parquet. Generated sequences are validated before output for non-canonical residues and length drift. The vendored ProteinMPNN parser/model files are unchanged.
+- rationale: The observed `X` sequences came from ProteinMPNN's official parser preserving author-residue-number gaps as missing-coordinate positions, which are later represented as `X` and masked from redesign. The staging path aligns ProteinMPNN input with the existing IF-ready resolved-residue contract used by DPLM without dropping proteins or changing coordinates.
+- artifacts:
+  - `/home/zc1519/src/Immune-Design/scripts/run_proteinmpnn_baseline.py`
+  - `/home/zc1519/src/Immune-Design/scripts/submit_if_baselines.slurm`
+  - `/home/zc1519/src/Immune-Design/tests/scripts/test_run_proteinmpnn_baseline.py`
+  - `/home/zc1519/src/Immune-Design/doc/SCRIPTS.md`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/baselines/proteinmpnn_preflight/{0701,0401}/_mpnn_raw/staged_pdbs/`
+- evidence: `pytest -q tests/scripts/test_run_proteinmpnn_baseline.py` -> 10 passed; `py_compile` clean for `scripts/run_proteinmpnn_baseline.py`; `git diff --check` clean for touched files. Full-data staging preflight succeeded for both canonical v2 IF-ready sets: 0701 3139/3139 staged, 0401 3147/3147 staged. CA residue numbering continuity check passed for every staged PDB (0 bad for both alleles).
+- impact:
+  - scope: ProteinMPNN comparison baseline wrapper + Module N SLURM defaults only.
+  - risk: low-medium. The staging transform changes only PDB residue numbering/chain id presented to ProteinMPNN, not coordinates or sequence.
+  - confidence: 0.9
+- status: implemented; generation/evaluation metrics not yet recorded
+- refs:
+  - `scripts/run_proteinmpnn_baseline.py`
+  - `scripts/submit_if_baselines.slurm`
+
+### L0103
+- timestamp: 2026-06-04T01:16:43-04:00
+- type: VERIFICATION
+- module: L
+- trigger: User requested predicting GT backbone structures for the uricase missing-structure case set (1583 seqs lacking AFDB structures) with ESMFold2, strictly as evaluation GT.
+- result: Folded the 1537 deduped legal uricase sequences (from 1583: −43 exact-duplicate sequences, −3 with X-run≥5) with ESMFold2 on ailab/H200 (8-shard array `9186985` + a 1-protein resume). 1537/1537 folded; 1494 (97.2%) pass the GT gate `mean pLDDT ≥ 0.90 & pTM ≥ 0.80` (ESMFold2 pLDDT is 0–1 scale). pLDDT median 0.957 (p5 0.921, min 0.657); pTM median 0.970 (p5 0.923, min 0.465). Per-protein mmCIF + PDB, merged manifest, and pass-id list written.
+- rationale: uricase is an in-distribution known fold family, so ESMFold2 self-reported confidence is reliable here and a simple pLDDT+pTM gate suffices (no ensemble / cross-predictor machinery needed). ESMFold2 (`biohub/ESMFold2` + `biohub/ESMC-6B`) was installed in an isolated `esmfold2` conda env because its `esm` package shadows the fair-esm `esm` used by the existing `esmfold_runner` refold pipeline. Raw pLDDT/pTM are recorded per protein so the threshold is re-derivable without re-folding. METHODOLOGY CAVEAT: these predicted structures are GT for a case study only — using a predicted backbone as the scTM refold target for a protein with no experimental structure is self-consistency, not ground truth; paper-grade IF effectiveness should anchor on an independent folder (AF) and/or recovery vs the true native sequence.
+- artifacts:
+  - `/home/zc1519/src/Immune-Design/scripts/predict_esmfold2_gt.py`
+  - `/home/zc1519/src/Immune-Design/scripts/submit_esmfold2_gt.slurm`
+  - `/home/zc1519/src/Immune-Design/doc/SCRIPTS.md`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/esmfold2_inputs/{to_fold.fasta,fold_manifest.csv,dup_map.json,dropped_illegal.csv}`
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/esmfold2_structures/{mmcif/,pdb/,gt_manifest.jsonl,gt_manifest.parquet,gt_pass_ids.txt}`
+- evidence: GPU smoke (A100, `--limit 5`) validated import/CUDA/API/gate and pLDDT 0–1 scale; full array sacct = 7/8 shards COMPLETED, shard 0 FAILED on a composite FASTA id containing `/` (treated as a path separator by `Path`), fixed by filename sanitization + a resume that folded only the 1 missing protein. Merge over the 8 shard manifests = 1537 unique ids; gate pass = 1494. Mean 2.8 s/protein on H200.
+- impact:
+  - scope: new uricase case-study GT structure set + 2 new scripts (Module L test-set curation); no change to existing IF/DPLM code or the `immune-design` env.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: optional — if-ready check (verify a sample of the ESMFold2 PDBs load via DPLM `load_coords()` with matching sequence) before using the 1494-protein pass set as IF evaluation conditioning/GT.
+- refs:
+  - `doc/SCRIPTS.md` (Module L · Test Set Curation #10; SLURM #5)
+
+
+### L0104
+- timestamp: 2026-06-04T00:55:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: User reframed the uricase work as a standalone **case study** (translational de-immunization, separate from the RF-mechanism pilot/fast sets): build the *full* uricase pool into a complete dataset (structures + if_ready + h_maps), tag the characterized (proven-activity) members with a simple boolean (no evidence text), so the best designs can be cherry-picked downstream after RF. Also produce a "missing structure" list to fold externally.
+- change_summary: Built the full uricase case-study dataset from `uricases/filtered_uricases.fasta` (6801) + 3 characterized not in the pool (O32141/Q45697/W8X3B8) = 6804 accessions (bare-accession protein_id; `characterized` boolean flag = 25). AFDB CIF download (`--source afdb`): 5222/6804 resolved (1582 no AFDB prediction). `build_if_ready_test_set.py --allow-cif`: **5222/5222 if_ready, 0 failures**. h_maps (npoff, both alleles): 5222 each, covers 100%, 0 failures. Emitted `missing_structure_list.{csv,fasta}` (1583 = 1582 no-AFDB uricases + 1 main-set extra; 2 are characterized) for external folding. **Operational note**: login-node `build_if_ready` on 5222 CIFs was SIGKILLed (~1h, empty log) — re-ran as a SLURM CPU job (`9187104`, 12 min). For large structure sets, run if_ready/downloads on a compute node, not login.
+- rationale: For a case study, "best" = real therapeutic relevance, not RF-favorability or density — so no NMP/density selection; build everything and tag the curated (characterized) members. Bare accession protein_id is AFDB-native and clean. CATH overlap deliberately NOT annotated/excluded (case study ≠ controlled benchmark) — can be added later. NMP WT artifacts deferred (h_maps/if_ready prioritized per user); add a sharded NMP pass if a WT immunogenicity baseline is needed for eval.
+- artifacts:
+  - `work/.../if_test_set/uricases/uricase_caseset_if_ready.parquet` — 5222 (characterized flag; 23 with structure)
+  - `work/.../if_test_set/uricases/h_maps/h_maps_uricase_DRB1_{07_01,04_01}.parquet` (+meta) — 5222 each, npoff
+  - `work/.../if_test_set/uricases/pdbs_if_ready/` — 5222 cleaned CIF
+  - `work/.../if_test_set/uricases/uricase_caseset_candidate.parquet` (6804), `uricase_caseset_structured.parquet` (5222), `afdb_structures/` (5222 raw CIF + download_failures.txt)
+  - `work/.../if_test_set/uricases/missing_structure_list.{csv,fasta}` — 1583 to fold externally
+- evidence: if_ready manifest n_input=5222 n_ready=5222 n_failed=0. h_maps both alleles cover 100% of if_ready, 0 head failures. characterized 23/25 in the if_ready set (2 Streptomyces A0ABR4SZB5/A0ABX7U467 have no AFDB → in the missing list). 6411→5222 with structure; unique sequences 4958.
+- impact:
+  - scope: New standalone uricase case-study dataset (not part of the main tier1/2/3 test set). Consumed by pointing `TEST_SET_PARQUET`/`H_MAPS_PARQUET`/`PDB_ROOT` at the uricase files. The main v2 test set still embeds Tier 3 uricases (151) — whether to drop them now that uricase is a separate case study is an open decision.
+  - risk: low (additive). The 1583 missing-structure proteins are excluded until folded structures are supplied; then re-run if_ready/h_maps for those.
+  - confidence: 0.9
+- status: done
+- next_action: (1) User folds the 1583 missing structures (prioritize the 2 characterized) and drops PDBs in; then materialize them into the case set. (2) Decide whether to remove Tier 3 from the main v2 test set. (3) If a WT immunogenicity baseline is needed, run a sharded NMP pass over the 5222. (4) Cherry-pick the best deimmunized uricases after RF generation.
+- refs:
+  - `L0097` (Tier 3 uricase expansion — the 25 characterized originate here), `L0101` (pilot/fast diagnostic subsets)
+
+### L0105
+- timestamp: 2026-06-04T10:18:31-04:00
+- type: VERIFICATION
+- module: L
+- trigger: Executes L0104 next_action (1) — fold the missing-structure uricases (ESMFold2, per L0103) and materialize them into the case set; plus user request to unify all uricase structures into one location.
+- change_summary: Made the 1537 ESMFold2 uricase structures (L0103) IF-ready via `build_if_ready_test_set.py` (PDB input, `--default-chain A`) and merged them into the existing uricase case set. 1518 IF-ready (`if_sequence_coverage==1.0`, `if_length_delta==0` for all); 19 failed = `unknown_residue` (UNK at X positions — same canonical-AA contract the 5222 AFDB set obeys). DPLM `byprot.utils.io.load_coords()` reads the new `.pdb` and returns the exact input sequence (3/3 spot-check). Unified `pdbs_if_ready/` now holds all 6740 uricase IF-ready structures (5222 `.cif` AFDB + 1518 `.pdb` ESMFold2); `uricase_caseset_if_ready_unified.parquet` (6740 rows, `structure_source ∈ {afdb, esmfold2}` + `mean_plddt`/`ptm`/`gt_pass` for ESMFold2 rows). Original AFDB-only parquet left intact.
+- rationale: ESMFold2 mmCIF omits `_atom_site.occupancy` (build_if_ready cif reader KeyError) → used the biotite-written PDB instead. The 19 X→UNK sequences are excluded to stay consistent with the AFDB set's contract; raw structures remain under `esmfold2_structures/` if those 19 are wanted later. Structures co-located but provenance-tagged. NOTE: the full uricase GT is now entirely predicted (AF2 for 5222, ESMFold2 for 1518), no experimental — paper-grade IF effectiveness still needs an independent folder / recovery anchor (L0103).
+- artifacts:
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/pdbs_if_ready/` — now 6740 (5222 cif + 1518 pdb)
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/uricase_caseset_if_ready_unified.parquet` — 6740 rows
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/esmfold2_structures/{gt_manifest.parquet,gt_pass_ids.txt,esmfold2_caseset_if_ready.parquet,if_ready_failure.csv,mmcif/,pdb/}`
+- evidence: build_if_ready summary 1518 ready / 19 failed (all `unknown_residue`); coverage==1.0 & length_delta==0 for all 1518; `load_coords(.pdb,'A') == input` 3/3; `pdbs_if_ready/` = 6740 (5222 cif + 1518 pdb); unified parquet 6740 rows, 0 duplicate `protein_id`.
+- impact:
+  - scope: uricase case-study IF-ready dataset (unified parquet + 1518 added structures); no change to existing AFDB parquet/structures or shared scripts.
+  - risk: low
+  - confidence: 0.95
+- status: done
+- next_action: use `uricase_caseset_if_ready_unified.parquet` + `pdbs_if_ready/` as the uricase IF eval set (filter `structure_source` / `gt_pass` as needed); decide separately whether to admit the 19 X-containing proteins.
+- refs:
+  - `L0103` (ESMFold2 fold), `L0104` (uricase case-study dataset build)

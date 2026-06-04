@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-05-22T07:54:31-04:00
+> **Last synced**: 2026-06-04T01:00:24-04:00
 > **Branch**: dev_head
 
 ---
@@ -82,6 +82,25 @@
 
 ## Module L → Data Selection (PLAN_DATA_SEL.md)
 
+- **Tier 2 v2 rebuild (2026-06-03, L0098/L0099/L0100) — NMP-only, density-stratified, COMPLETE + PROMOTED TO CANONICAL for both alleles.** Supersedes the §7.3 dual-scorer Tier 2; Tier 1 + Tier 3 unchanged. Selection uses **NetMHCIIpan only** (no epitope head, no structure) over `coverage_fraction`, with a unimodal Gaussian marginal (μ=median, peak:tail=3, min-per-bin=40, →3000). Pipeline: S1 length-15 scan of 75,425 overlap pool → uniform→5000 → S2 multi-length NMP → if_ready gate (→~4750 survivors) → Gaussian→3000. **Canonical now = v2** (v1 backed up under `backups/20260603_170203_tier2v2_promote/`):
+  | allele | `test_proteins_<tag>` | `if_ready` | `if_ready/h_maps_v2/` (npoff) | Tier 2 cov median |
+  |--------|-----------------------|------------|-------------------------------|-------------------|
+  | DRB1\*07:01 | 3165 (T1 15 / **T2 2999** / T3 151) | 3139 (all if_ready) | 3139 (0 fail, covers 100%) | ≈0.39 |
+  | DRB1\*04:01 | 3167 (T1 15 / **T2 3000** / T3 152) | 3147 (all if_ready) | 3147 (0 fail, covers 100%) | ≈0.46 |
+  - h_maps verified **bit-identical** to the prior npoff h_maps on overlapping proteins (md5 100%, Δ=0). Cleaned tier2 structures copied into `pdbs_if_ready/{0701,0401}`. **fast subset (493, `if_ready/test_proteins_if_ready_fast_*`) intentionally left stale** — rebuild from v2 (or replace with a mid-density pilot) is a separate future task. Phase C SLURM `H_MAPS_PARQUET` default still points at the stale LC1 `if_ready/h_maps/`; override to `if_ready/h_maps_v2/`.
+  - New CLIs: `select_tier2_v2.py` (merge shards + stratified sample); `prescreen_tier2.py --selection-mode nmp_only` (+ `--nmp-screen-lengths`, `--n-shards`, `--sample`).
+  - **Diagnostic subsets (v2, allele-specific, NMP-only, structure-blind; tier3/uricase intentionally excluded → separate case study):**
+    - **pilot** `if_ready/pilot_v2_<tag>.parquet` — 50 = 15 Tier 1 (gold experimental anchors) + 35 Tier 2 in the **mid-load Pareto band** [p40,p75] of coverage (0701 [0.33,0.56], 0401 [0.39,0.64]; below the p90 saturation 0.67/0.78), 4-sub-bin light stratification. For high-frequency RF-iteration; **evaluate on Pareto improvement (Δimmune at matched scTM), not immune-only** (immune-only↓ grows with load but Pareto-gap peaks at moderate load).
+    - **fast** `if_ready/fast_v2_<tag>.parquet` — 300 = 15 Tier 1 + 285 Tier 2 uniform across coverage (full range), for lower-frequency global sanity.
+    - Both are strict subsets of canonical if_ready (have if_ready seq + `pdbs_if_ready` structures + `h_maps_v2`); Phase C runs directly via `TEST_SET_PARQUET=...`.
+  - **Uricase case study (standalone, COMPLETE 2026-06-04)** — full uricase pool rebuilt as its own translational dataset (separate from the main tier1/2/3 set; "best" = therapeutic relevance, no NMP/density selection). Universe 6804 accessions (`uricases/filtered_uricases.fasta` 6801 + 3 characterized) → AFDB CIF 5222 + **ESMFold2-folded missing 1518** (user; GT gate pLDDT≥0.90 & pTM≥0.80, dropped poor-fold / special-token / dup) = **6740 if_ready (0 fail)**; **all 25 characterized present and flagged** (`characterized` clean bool; the 2 Streptomyces `A0ABR4SZB5`/`A0ABX7U467` came in via ESMFold2, gt_pass, flag re-filled after the merge dropped it). All under `uricases/`:
+    - `uricase_caseset_if_ready_unified.parquet` — **6740** (5222 `if_source_structure=afdb` + 1518 `esmfold`)
+    - `pdbs_if_ready/` — **6740** cleaned structures (5222 `.cif` + 1518 `.pdb`), single PDB_ROOT
+    - `h_maps/h_maps_uricase_DRB1_{07_01,04_01}.parquet` — **6740 each, 100% cover, 0 fail** (npoff)
+    - `missing_structure_list.{csv,fasta}` — original 1583 no-AFDB list (now mostly folded; residual dropped: 43 dup seq + 3 illegal-token + 19 if_ready-fail). **All 25 characterized are in the set** (incl. the 2 Streptomyces via ESMFold2).
+    - Phase C uses it via `TEST_SET_PARQUET=uricases/uricase_caseset_if_ready_unified.parquet`, `H_MAPS_PARQUET=uricases/h_maps/h_maps_uricase_<htag>.parquet`, `PDB_ROOT=uricases/pdbs_if_ready`. Best deimmunized uricases cherry-picked downstream after RF.
+    - **Caveat** (per L0103): ESMFold-predicted backbones as scTM refold targets = self-consistency, not true GT; paper-grade IF claims should anchor on an independent folder / native-recovery.
+
 - **Code**: L0-L5 implemented + tested (139 tests passing), 6 code review issues fixed
   - schema (`validate_test_protein_entry`), overlap (MMseqs2), prescreen (dual-scorer + CATH diversity), assembly, tier validators
   - CLIs: `run_overlap_filter.py`, `validate_tier1.py`, `validate_tier3.py`, `prescreen_tier2.py`, `assemble_if_test_set.py`, `download_tier2_candidates.py`
@@ -89,41 +108,42 @@
   - Key fixes: validate_tier1 now runs MMseqs2 overlap; validate_tier3 enforces NMP signal; prescreen uses correct epitope_head API; assembly generates WT artifacts; overlap CLI includes no-hit candidates; sample_diverse guarantees cross-architecture-class coverage
 - **Cluster**: test sets **assembled** for two alleles
 - **Key Data**:
-  - **HLA-DRB1\*07:01 test set** — `test_proteins_HLA-DRB1_07_01.parquet` — **3,141 proteins**
+  - **HLA-DRB1\*07:01 test set** — `test_proteins_HLA-DRB1_07_01.parquet` — **3,166 proteins**
     | Tier | Count | mean_len | mean_risk | mean_nmp_strong |
     |------|-------|----------|-----------|-----------------|
     | 1 | 15 | 267.5 | -0.433 | 64.5 |
     | 2 | 3,000 | 250.3 | 3.649 | 85.1 |
-    | 3 | 126 | 282.9 | 0.452 | 64.5 |
-  - **HLA-DRB1\*04:01 test set** — `test_proteins_HLA-DRB1_04_01.parquet` — **3,140 proteins**
+    | 3 | 151 | 289.1 | 0.006 | 68.4 |
+  - **HLA-DRB1\*04:01 test set** — `test_proteins_HLA-DRB1_04_01.parquet` — **3,165 proteins**
     | Tier | Count | mean_len | mean_risk | mean_nmp_strong |
     |------|-------|----------|-----------|-----------------|
     | 1 | 15 | 267.5 | -4.207 | 49.9 |
     | 2 | 2,998 | 207.9 | 3.128 | 113.4 |
-    | 3 | 127 | 281.0 | -2.719 | 80.2 |
+    | 3 | 152 | 287.5 | -2.859 | 80.7 |
+  - Characterized uricase curated additions (2026-06-03): 26 input FASTA records → 25 unique sequences (`Q2U050` exact duplicate of `Q00511`, omitted); appended as Tier 3 to both allele test sets after allele-specific head/NMP artifact scoring. NMP status complete for all 25 per allele; NMP strong windows: 0701 median=88 (min=10, max=190), 0401 median=82 (min=19, max=189).
   - Prescreen pipeline (Tier 2): 225,821 → 75,425 (MMseqs2 CATH overlap) → 3,000 (head prefilter) → dual predictor filter (head + NMP) → assembly
   - NMP scoring: 3,000/3,000 complete (both alleles), no timeout
   - CATH topology filter: **frozen** (舍弃) — 最后一步只做 dual predictor (head + NMP) 筛选，不再做 CATH topology diversity sampling
 - **Artifacts**:
-  - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` — 3,141 rows, 17 columns
+  - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` — 3,166 rows, 17 columns
   - `work/immune-design/if_test_set/test_proteins_summary_HLA-DRB1_07_01.json`
-  - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` — 3,140 rows, 17 columns
+  - `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` — 3,165 rows, 17 columns
   - `work/immune-design/if_test_set/test_proteins_summary_HLA-DRB1_04_01.json`
-  - `work/immune-design/if_test_set/fastas/` — 6,166 FASTA files
-  - `work/immune-design/if_test_set/pdbs/0401/` — **2,943 .pdb** (RCSB experimental) + **192 .cif** (local AF snapshot rescue + RCSB .cif Track A + AFDB Track B) = 3,135 structures; **18 unresolved** uricase UniProts listed in `uniprot_final_failures.txt` (no AFDB prediction)
-  - `work/immune-design/if_test_set/pdbs/0701/` — **2,874 .pdb** (RCSB experimental) + **244 .cif** (18 local AF + 123 RCSB cif + 102 AFDB + 1 D3BGR1 fix) = 3,118 structures; **23 unresolved** uricase UniProts listed in `uniprot_final_failures.txt` (no AFDB prediction)
-  - `work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet` — **3,072 IF-ready proteins** (Tier 1:15, Tier 2:2,948, Tier 3:109; 2,881 `.pdb` + 191 `.cif`); cleaned structures in `work/immune-design/if_test_set/pdbs_if_ready/0401/`; DPLM `load_coords()` gate: **3,072/3,072 exact sequence+length match**
-  - `work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet` — **3,079 IF-ready proteins** (Tier 1:15, Tier 2:2,962, Tier 3:102; 2,839 `.pdb` + 240 `.cif`); cleaned structures in `work/immune-design/if_test_set/pdbs_if_ready/0701/`; DPLM `load_coords()` gate: **3,079/3,079 exact sequence+length match**
-  - IF-ready failure manifests: `if_ready/test_proteins_if_ready_HLA-DRB1_04_01.failures.csv` (68 failures: 50 unknown residues, 18 missing structures), `if_ready/test_proteins_if_ready_HLA-DRB1_07_01.failures.csv` (62 failures: 38 unknown residues, 24 missing structures)
+  - `work/immune-design/if_test_set/fastas/` — 6,191 FASTA files
+  - `work/immune-design/if_test_set/pdbs/0401/` — **2,943 .pdb** (RCSB experimental) + **215 .cif** (local AF snapshot rescue + RCSB .cif Track A + AFDB Track B + characterized uricase AFDB) = 3,158 structures; **20 unresolved** uricase UniProts listed in `uniprot_final_failures.txt` (no AFDB prediction; includes `A0ABR4SZB5`, `A0ABX7U467`)
+  - `work/immune-design/if_test_set/pdbs/0701/` — **2,874 .pdb** (RCSB experimental) + **267 .cif** (18 local AF + 123 RCSB cif + 102 AFDB + 1 D3BGR1 fix + characterized uricase AFDB) = 3,141 structures; **25 unresolved** uricase UniProts listed in `uniprot_final_failures.txt` (no AFDB prediction; includes `A0ABR4SZB5`, `A0ABX7U467`)
+  - `work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet` — **3,095 IF-ready proteins** (Tier 1:15, Tier 2:2,948, Tier 3:132; 23 characterized uricase additions ready); cleaned structures in `work/immune-design/if_test_set/pdbs_if_ready/0401/`; DPLM `load_coords()` gate: **3,095/3,095 exact sequence+length match**
+  - `work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet` — **3,102 IF-ready proteins** (Tier 1:15, Tier 2:2,962, Tier 3:125; 23 characterized uricase additions ready); cleaned structures in `work/immune-design/if_test_set/pdbs_if_ready/0701/`; DPLM `load_coords()` gate: **3,102/3,102 exact sequence+length match**
+  - IF-ready failure manifests: `if_ready/test_proteins_if_ready_HLA-DRB1_04_01.failures.csv` (70 failures: 50 unknown residues, 20 missing structures), `if_ready/test_proteins_if_ready_HLA-DRB1_07_01.failures.csv` (64 failures: 38 unknown residues, 26 missing structures)
   - Final-failure manifests (absolute paths):
-    - `work/immune-design/if_test_set/pdbs/0401/uniprot_final_failures.txt` (18 UniProts, mostly Streptomyces / 小众真菌 / Uncharacterized TrEMBL entries)
-    - `work/immune-design/if_test_set/pdbs/0701/uniprot_final_failures.txt` (23 UniProts, same pattern)
+    - `work/immune-design/if_test_set/pdbs/0401/uniprot_final_failures.txt` (20 UniProts, mostly Streptomyces / 小众真菌 / Uncharacterized TrEMBL entries; now includes two characterized additions with AFDB CIF/PDB 404)
+    - `work/immune-design/if_test_set/pdbs/0701/uniprot_final_failures.txt` (25 UniProts, same pattern; now includes two characterized additions with AFDB CIF/PDB 404)
     - `pdb_final_failures.txt` — 0 entries on both (all RCSB 404s recovered via .cif tracks)
     - `download_failures_remaining.txt` — 45 (0401) / 98 (0701) historical chain-level RCSB 404 lines, superseded by rescue via .cif; kept for audit
   - intermediate: `_prescreen_{head,nmp}_results*.parquet`, `tier2_prescreened*.parquet`
 - **Feeds**: all downstream evaluation (M, N, and all F3/F4 subfigures)
 - **Open**:
-  - 41 UniProts (18 + 23) have no AFDB prediction — planned to run **AF3** locally to fill these gaps before Phase C
+  - 45 allele-specific UniProt structure entries (20 + 25; includes two characterized additions missing for both alleles) have no AFDB prediction — planned to run **AF3** locally to fill these gaps before Phase C
   - L6 E2E verification + L7 release gates not yet run
 
 ---
@@ -148,6 +168,7 @@
   - CLI: `scripts/run_proteinmpnn_baseline.py` (wraps vendored `DRAKES/drakes_protein/ProteinMPNN/`)
   - SLURM: `MODE=proteinmpnn ALLELE=... [APPLY_NMP_FILTER=1] sbatch scripts/submit_if_baselines.slurm`
   - Generates ``--num-seq-per-target`` designs per PDB, optional argmin-NMP-risk selection per protein
+  - Current PMPNN v2 full-set run: output root `run/inverse_folding/baselines/proteinmpnn/v2_8design_20260604T024603Z/`; input staging preflight passed for 0701 3139/3139 and 0401 3147/3147 with continuous CA residue numbering. Generation/evaluation metrics are not yet recorded.
 - **N3 (Level 3 DRAKES)**: **dropped** — not needed for paper; can be added as reviewer response if requested
 - **Blocked by**: Phase C (need unguided baseline candidate pool from C0)
 - **Comparison structure for paper**:
@@ -180,8 +201,8 @@
 
 ## Phase B: Experiment Preparation (NEW, 2026-04-07)
 
-- **B1 (PDB download)**: **near-complete** — 0401: 2,943 .pdb + 192 .cif (AF rescue + RCSB cif + AFDB); 0701: 2,874 .pdb + 244 .cif. All RCSB 404s rescued via .cif tracks (`pdb_final_failures.txt` = 0 on both). Residual **41 UniProts** (18 on 0401 / 23 on 0701) have no AFDB prediction — listed in `pdbs/{0401,0701}/uniprot_final_failures.txt`; will be filled by **AF3 local prediction**
-- **B1.5 (IF-ready structure/sequence cleaning)**: **complete for PDB/mmCIF-backed rows** — `scripts/build_if_ready_test_set.py` materialized resolved-backbone parquets and cleaned single-chain PDB/mmCIF structures. 0401: 3,072 ready / 68 failed; 0701: 3,079 ready / 62 failed. DPLM `load_coords()` exact sequence+length gate passes for all ready rows. Tier 3 uricases are now partially recovered via default chain `A` (0401:109, 0701:102). Remaining failures are missing structures or unknown residue symbols not covered by BioPython's extended PDB residue map.
+- **B1 (PDB download)**: **near-complete** — 0401: 2,943 .pdb + 215 .cif (AF rescue + RCSB cif + AFDB + characterized uricase AFDB); 0701: 2,874 .pdb + 267 .cif. All RCSB 404s rescued via .cif tracks (`pdb_final_failures.txt` = 0 on both). Residual **45 allele-specific UniProt structure entries** (20 on 0401 / 25 on 0701; includes two characterized additions with AFDB CIF/PDB 404 on both alleles) have no AFDB prediction — listed in `pdbs/{0401,0701}/uniprot_final_failures.txt`; will be filled by **AF3 local prediction**
+- **B1.5 (IF-ready structure/sequence cleaning)**: **complete for PDB/mmCIF-backed rows** — `scripts/build_if_ready_test_set.py` materialized resolved-backbone parquets and cleaned single-chain PDB/mmCIF structures. 0401: 3,095 ready / 70 failed; 0701: 3,102 ready / 64 failed. DPLM `load_coords()` exact sequence+length gate passes for all ready rows. Tier 3 uricases are now partially recovered via default chain `A` (0401:132, 0701:125), including 23 characterized additions per allele. Remaining failures are missing structures or unknown residue symbols not covered by BioPython's extended PDB residue map.
 - **B2 (h_i maps for test set)**: **must rerun on IF-ready parquets** — shared CLI `scripts/precompute_h_maps.py`, loader/validator `inverse_folding/evaluation/h_maps.py`, test-set SLURM `scripts/submit_precompute_h_test.slurm`; previous biological-sequence h-maps are invalid for Phase C if their length differs from the resolved backbone sequence. Resume is guarded by sidecar metadata, allele/checkpoint/config/source matching, and sequence-length checks.
 - **B3 (h_i maps for CATH training set)**: **code ready, cluster not run** — same CLI with JSONL split filtering, CATH-specific sequence policy, guarded resume support, and required corpus-level `h_raw` stats; SLURM `scripts/submit_precompute_h_cath.slurm`
 - **B4 (eval pipeline integration)**: **code ready, cluster not run** — new `scripts/evaluate_phase_c.py` consumes Phase C `generated.parquet` directly, supports `imm | struct | all` mode separation, writes schema-aligned `imm_head.parquet`, `imm_nmp.parquet`, `structural.parquet`, uses `scripts.infer_v1.build_predictor` for head inference, dispatches refold via `inverse_folding/evaluation/refold.py` (`esmfold` active, `af3` stub), and is wired into `scripts/submit_benchmark.slurm` as `MODE=phase_c`. Legacy `scripts/evaluate_if.py` removed.
@@ -304,10 +325,10 @@
 | Epitope head DRB1501 | `run/epitope_head/LC1_drb1501_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.1721, pp_auc=0.8492 — npoff variant not yet trained |
 | Tier 1 candidates | `work/immune-design/if_test_set/tier1_candidates.json` | 15 candidates, user review pending |
 | Tier 2 merged FASTA | `work/immune-design/if_test_set/tier2_candidates_merged.fasta` | 226k chains |
-| IF test set (0701) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` | 3,141 proteins (T1:15 T2:3000 T3:126) |
-| IF test set (0401) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` | 3,140 proteins (T1:15 T2:2998 T3:127) |
-| IF test set FASTAs | `work/immune-design/if_test_set/fastas/` | 6,166 files |
-| IF test set structures | `work/immune-design/if_test_set/pdbs/{0401,0701}/` | 0401: 2,943 .pdb + 192 .cif; 0701: 2,874 .pdb + 244 .cif. RCSB 404s fully rescued. 18 / 23 UniProts still missing (no AFDB) — `uniprot_final_failures.txt`; AF3 planned |
+| IF test set (0701) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_07_01.parquet` | 3,166 proteins (T1:15 T2:3000 T3:151) |
+| IF test set (0401) | `work/immune-design/if_test_set/test_proteins_HLA-DRB1_04_01.parquet` | 3,165 proteins (T1:15 T2:2998 T3:152) |
+| IF test set FASTAs | `work/immune-design/if_test_set/fastas/` | 6,191 files |
+| IF test set structures | `work/immune-design/if_test_set/pdbs/{0401,0701}/` | 0401: 2,943 .pdb + 215 .cif; 0701: 2,874 .pdb + 267 .cif. RCSB 404s fully rescued. 20 / 25 UniProt structure entries still missing (no AFDB) — `uniprot_final_failures.txt`; AF3 planned |
 | IF test set h-maps (B2) | `work/immune-design/if_test_set/h_maps/h_maps_DRB1_{07_01,04_01}.parquet` + `.meta.json` | TBD — cluster run pending |
 | CATH training h-maps (B3) | `work/immune-design/cath_4.3/h_maps/h_maps_cath_DRB1_{07_01,04_01}.parquet` + `.meta.json` | TBD — cluster run pending |
 | Phase C0 outputs | `work/immune-design/if_phase_c/c0/<allele_tag>/<run_id>/{generated.{parquet,fasta},run_config.yaml,manifest.json}` | TBD — cluster run pending |

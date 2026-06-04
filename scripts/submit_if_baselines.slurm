@@ -91,16 +91,19 @@ case "${MODE}" in
             ALLELE_FILE_TAG="HLA-DRB1_07_01"
             ALLELE_TAG="DRB1_07_01"
             PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0701"
+            TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet"
         elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
             ALLELE_FILE_TAG="HLA-DRB1_04_01"
             ALLELE_TAG="DRB1_04_01"
             PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0401"
+            TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet"
         else
             echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
             exit 2
         fi
 
         INPUT_PDB_FOLDER="${INPUT_PDB_FOLDER:-${PDB_ROOT_DEFAULT}}"
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-${TEST_SET_PARQUET_DEFAULT}}"
         OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/baselines/proteinmpnn/${ALLELE_TAG}}"
         mkdir -p "${OUTPUT_DIR}"
 
@@ -128,6 +131,7 @@ case "${MODE}" in
 
         echo "  Allele       : ${ALLELE}"
         echo "  Input PDBs   : ${INPUT_PDB_FOLDER}"
+        echo "  Test parquet : ${TEST_SET_PARQUET}"
         echo "  Output dir   : ${OUTPUT_DIR}"
         echo "  MPNN model   : ${MPNN_MODEL_NAME}"
         echo "  N seq/target : ${NUM_SEQ_PER_TARGET}"
@@ -182,6 +186,7 @@ case "${MODE}" in
 
         python -u "${PROJECT_ROOT}/scripts/run_proteinmpnn_baseline.py" \
             --input-pdb-folder "${INPUT_PDB_FOLDER}" \
+            --test-set-parquet "${TEST_SET_PARQUET}" \
             --output-dir "${OUTPUT_DIR}" \
             --mpnn-model-name "${MPNN_MODEL_NAME}" \
             --num-seq-per-target "${NUM_SEQ_PER_TARGET}" \

@@ -511,8 +511,9 @@ This task involves manual scientific curation. The user performs the manual step
    - CATH overlap uses MMseqs2 sequence identity > 30%, not PDB code matching
 2. Frozen:
    - epitope-head training overlap is annotated but not excluded
-3. Frozen:
-   - Tier 2 requires dual-scorer agreement (NMP ≥ 5 strong windows AND head risk in top 50%)
+3. **SUPERSEDED by §12 (Tier 2 v2, 2026-06-03)**:
+   - ~~Tier 2 requires dual-scorer agreement (NMP ≥ 5 strong windows AND head risk in top 50%)~~
+   - The dual-scorer rule is retired for the Tier 2 v2 rebuild. The epitope head is the guidance signal and must not gate test-set selection (selection bias inflates RF; see §8 risk #4). Tier 2 v2 selection is **NMP-only**. See §12.
 4. Frozen:
    - Tier 3 requires NMP ≥ 3 windows at %Rank < 5% AND literature evidence
 5. Frozen:
@@ -558,3 +559,54 @@ Follows the same schema and rules as `PLAN_IF.md` Section 9. Module identifier f
 - Module M (guidance sweep) depends on this plan's outputs: `test_proteins.parquet`, per-protein PDB/FASTA, WT hotspot maps.
 - Module N (comparison baselines) depends on the same outputs.
 - The test set persists across Phase 2-3 without modification. New cohorts (e.g., multi-allele) are additive.
+
+---
+
+## 12. Tier 2 v2 Rebuild — NMP-only, Density-Stratified (2026-06-03)
+
+**Status:** active. Supersedes the §7.3 dual-scorer rule for Tier 2 only. Tier 1 (manual gold) and Tier 3 (uricase case study, expanded per `LOG.md` L0097) are **not** rebuilt; v2 only swaps the Tier 2 rows.
+
+### 12.1 Motivation
+
+The v1 Tier 2 selection used the epitope head twice — a `head_global_risk` top-K prefilter before NMP, and a `head_global_risk >= median` dual-scorer gate. The head is the **guidance signal** the reference flow optimizes against; selecting the test set with it biases the pool toward exactly where RF acts, inflating apparent performance (the §8 risk #4 that was accepted in v1). The v1 set is also a high-immunogenicity tail (`n_strong >= 5` + head gate), not representative across the immunogenicity spectrum.
+
+**v2 goal:** a Tier 2 set whose selection uses **only NetMHCIIpan** (the independent validator), structure-blind, with a controlled **unimodal (Gaussian) marginal over immunogenicity density** so the bulk of statistical power sits in the mid-density regime while the tails are still populated. The diagnostic "pilot" subset is a separate, later concern (not this plan).
+
+### 12.2 Frozen v2 decisions
+
+1. **Selection signal:** NetMHCIIpan only. The epitope head must not enter Tier 2 selection (neither prefilter nor gate). Structure (burial/conservation/CATH) must not enter selection either — structure is handled as a shared task constraint and an evaluation readout, not a selection filter.
+2. **Density axis:** `coverage_fraction` = (number of residues covered by ≥1 strong window with %Rank_EL < 2%) / `sequence_length`. Bounded [0,1], length-normalized. This is the binning axis.
+3. **No floor:** sample from lowest to highest density; the near-zero-density bin is included (characterizes RF behavior across the full spectrum, including already-safe proteins).
+4. **Target marginal:** unimodal Gaussian over `coverage_fraction`, centered at the density median (μ), modest peak (central:tail bin-count ratio ≈ 3:1), with a hard `min-per-bin` floor (≈ 40) so every bin has an objective count. Each bin target is capped by its availability in the pool (rare high-density bins take all available); capping is logged, never silent.
+5. **Target size:** ≈ 3000 (current Tier 2 magnitude).
+6. **Overlap reuse:** the v1 MMseqs2 CATH-overlap decision (the 75,425 overlap-passed candidate IDs in `_prescreen_head_results_*.parquet`) is reused as-is — overlap is train/test separation, independent of head/NMP. No MMseqs2 re-run.
+
+### 12.3 Two-stage NMP procedure (cost control)
+
+Running full multi-length NMP (k∈[12,25], 14 lengths) on all 75,425 candidates is prohibitive. Single-length-15 is a high-recall coarse detector (MHC-II binding is core-driven; a strong core almost always shows in a centered 15-mer), so:
+
+| Stage | Operation | Scale | Cost |
+|---|---|---|---|
+| **S1 screen** | length-15-only NMP on the full overlap-passed pool (75,425) → coarse `coverage_fraction_15` | 75k × 1 length | ≈ 1× v1 NMP |
+| **S1 sample** | uniform across `coverage_fraction_15` bins (no floor, lowest→highest), down to ≈ 5000 | →≈5000 | cheap |
+| **S2 screen** | full k∈[12,25] NMP on the ≈5000 → accurate `coverage_fraction` + final artifact fields (`n_strong`, `mean_best_rank`) | 5k × 14 | ≈ 1× v1 NMP |
+| **if_ready gate** | structure download + `build_if_ready_test_set` + `load_coords` gate on the ≈5000 **before** final sampling, so failures don't punch holes in the target distribution | — | — |
+| **S3 sample** | Gaussian over accurate `coverage_fraction` (μ=median, peak:tail≈3:1, min-per-bin), down to ≈ 3000 → Tier 2 v2 | →≈3000 | — |
+
+Total ≈ 2× the original NMP cost, for full-pool, head-free coverage. The double sampling (coarse uniform → accurate Gaussian) absorbs the length-15-vs-multi-length bin jitter: final bins are assigned on accurate multi-length density.
+
+### 12.4 Materialization (after selection)
+
+Tier 2 v2 selection → replace Tier 2 rows in the assembled `test_proteins_<allele>.parquet` (keep existing Tier 1 + updated Tier 3) → download structures for any new Tier 2 protein_ids → `build_if_ready_test_set.py` → `precompute_h_maps.py` rerun against the updated IF-ready parquet (B2). Both alleles (HLA-DRB1*07:01 and HLA-DRB1*04:01).
+
+### 12.5 Implementation surface
+
+- `inverse_folding/evaluation/immunogenicity.py`: already supports `pep_lengths`; add a pure `compute_coverage_fraction(window_df, seq_len)`.
+- `inverse_folding/evaluation/prescreen.py` (or a new `sampling.py`): pure `sample_uniform_bins(...)` and `sample_gaussian_bins(...)` returning selected ids + realized histogram (TDD).
+- `scripts/prescreen_tier2.py`: extend with `--nmp-screen-lengths`, `--selection-mode {dual_scorer,nmp_only}`, `--reuse-overlap-ids`, and `--sample {none,uniform,gaussian}` + params; the dual_scorer default path stays byte-equivalent for backward compatibility.
+- SLURM: extend `submit_prescreen_tier2.slurm` with env overrides for the new mode (no new file).
+
+### 12.6 Open knobs (tune at runtime, log realized values)
+
+- Exact `n_bins`, μ, peak:tail ratio, min-per-bin — finalized against the realized S1/S2 density histograms; the realized target histogram is logged and (per user) reviewed before S3 commits.
+- if_ready yield buffer: S1 target (≈5000) carries margin so post-if_ready survivors still comfortably exceed the ≈3000 S3 target.

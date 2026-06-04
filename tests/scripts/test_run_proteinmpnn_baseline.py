@@ -49,6 +49,59 @@ def _write_mpnn_fa(path: Path) -> None:
     )
 
 
+def _pdb_atom_line(
+    serial: int,
+    atom: str,
+    resname: str,
+    chain: str,
+    resseq: int,
+    x: float,
+    y: float,
+    z: float,
+) -> str:
+    return (
+        "ATOM  "
+        f"{serial:5d} "
+        f"{atom:>4}"
+        " "
+        f"{resname:>3} "
+        f"{chain:1}"
+        f"{resseq:4d}"
+        " "
+        "   "
+        f"{x:8.3f}"
+        f"{y:8.3f}"
+        f"{z:8.3f}"
+        f"{1.0:6.2f}"
+        f"{10.0:6.2f}"
+        "          "
+        f"{atom[0]:>2}"
+        "  \n"
+    )
+
+
+def _write_gap_numbered_pdb(path: Path) -> None:
+    lines = []
+    serial = 1
+    for resname, resseq, offset in [("ALA", 10, 0.0), ("GLY", 12, 4.0)]:
+        for atom_i, atom in enumerate(["N", "CA", "C", "O"]):
+            lines.append(
+                _pdb_atom_line(
+                    serial,
+                    atom,
+                    resname,
+                    "B",
+                    resseq,
+                    offset + atom_i,
+                    1.0,
+                    2.0,
+                )
+            )
+            serial += 1
+    lines.extend(["TER\n", "END\n"])
+    path.write_text("".join(lines))
+
+
 def test_parse_mpnn_seqs_skips_wt_and_extracts_designs(tmp_path, script_mod):
     seqs_dir = tmp_path / "seqs"
     seqs_dir.mkdir()
@@ -74,10 +127,60 @@ def test_parse_mpnn_seqs_skips_wt_and_extracts_designs(tmp_path, script_mod):
     assert d1["mpnn_sample"] == 2
 
 
+def test_parse_mpnn_seqs_maps_stage_id_back_to_protein_id(tmp_path, script_mod):
+    seqs_dir = tmp_path / "seqs"
+    seqs_dir.mkdir()
+    _write_mpnn_fa(seqs_dir / "A_B.fa")
+
+    out = script_mod.parse_mpnn_seqs(
+        seqs_dir,
+        protein_id_by_stage_id={"A_B": "A|B"},
+    )
+
+    assert set(out.keys()) == {"A|B"}
+    assert out["A|B"][0]["protein_id"] == "A|B"
+
+
+def test_staged_pdb_renumbers_author_gaps_without_changing_sequence(tmp_path, script_mod):
+    pdb_root = tmp_path / "pdbs"
+    pdb_root.mkdir()
+    source = pdb_root / "gap.pdb"
+    _write_gap_numbered_pdb(source)
+    staged = tmp_path / "staged" / "gap_case.pdb"
+
+    info = script_mod._write_staged_pdb(
+        row={
+            "protein_id": "gap_case",
+            "sequence": "AG",
+            "sequence_length": 2,
+            "pdb_path": "gap.pdb",
+            "if_chain_id": "B",
+        },
+        pdb_root=pdb_root,
+        output_path=staged,
+    )
+
+    assert info.sequence_length == 2
+    assert info.original_chain_id == "B"
+    atom_lines = [line for line in staged.read_text().splitlines() if line.startswith("ATOM")]
+    assert [line[22:26].strip() for line in atom_lines if line[12:16].strip() == "CA"] == ["1", "2"]
+    assert {line[21] for line in atom_lines} == {"A"}
+
+
 def test_designed_chain_seqs_splits_and_drops_empty(script_mod):
     assert script_mod._designed_chain_seqs("AAAA/BBBB") == ["AAAA", "BBBB"]
     assert script_mod._designed_chain_seqs("XYZ") == ["XYZ"]
     assert script_mod._designed_chain_seqs("AAA//BBB/") == ["AAA", "BBB"]
+
+
+def test_validate_generated_designs_rejects_x_when_expected_lengths(script_mod):
+    designs = {
+        "P1": [
+            {"design_idx": 0, "sequence": "ACX"},
+        ]
+    }
+    with pytest.raises(ValueError, match="non-canonical X"):
+        script_mod.validate_generated_designs(designs, expected_lengths={"P1": 3})
 
 
 def test_select_per_protein_min_n_sb_uses_mean_rank_tiebreak(script_mod):

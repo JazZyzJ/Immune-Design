@@ -2,12 +2,14 @@
 """ProteinMPNN inverse-folding baseline with optional NetMHCIIpan post-hoc filter.
 
 Pipeline:
-  1. Parse a folder of input PDBs into a ProteinMPNN jsonl.
-  2. Run the vendored ProteinMPNN (`DRAKES/drakes_protein/ProteinMPNN/`) to
+  1. Optionally stage IF-ready structures into continuous-residue-numbered
+     PDBs aligned to a test-set parquet.
+  2. Parse a folder of input PDBs into a ProteinMPNN jsonl.
+  3. Run the vendored ProteinMPNN (`DRAKES/drakes_protein/ProteinMPNN/`) to
      generate ``--num-seq-per-target`` designs per structure.
-  3. Optionally score each design with the project's NetMHCIIpan
+  4. Optionally score each design with the project's NetMHCIIpan
      ``StandaloneRunner`` and select an argmin-risk design per protein.
-  4. Write ``generated.parquet`` / ``generated.fasta`` with the columns used by
+  5. Write ``generated.parquet`` / ``generated.fasta`` with the columns used by
      ``scripts/run_if_phase_c0.py`` so downstream evaluation (Phase B4) is
      plug-compatible. When the NMP filter is enabled, also emit
      ``selection.parquet`` (one selected design per protein) and
@@ -21,30 +23,55 @@ NMP filter convention:
                           (lower = better; tie-break by ``min_mean_rank``)
       ``min_mean_rank`` — mean ``%Rank_EL`` across all scored windows (lower = better)
 
-Single-PDB structures should match the assumptions of the curated IF test set;
-the script is not restricted to that set but no extra filtering is applied.
+When ``--test-set-parquet`` is provided, ``--input-pdb-folder`` is treated as
+the canonical IF-ready PDB root. Structures are resolved from the parquet,
+rewritten into a private staging folder with continuous residue numbering, and
+validated against the parquet sequence before ProteinMPNN sees them. This keeps
+ProteinMPNN's official parser/model unchanged while avoiding author-numbering
+gaps being converted into ``X`` tokens.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yaml
+from Bio.Data import PDBData
+from Bio.PDB import MMCIFParser, PDBParser
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROTEINMPNN_ROOT = PROJECT_ROOT / "DRAKES" / "drakes_protein" / "ProteinMPNN"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+CANONICAL_AA = frozenset("ACDEFGHIKLMNPQRSTVWY")
+AA3_TO1_EXT = {k.upper(): v for k, v in PDBData.protein_letters_3to1_extended.items()}
+AA1_TO3 = {k: v.upper() for k, v in PDBData.protein_letters_1to3.items()}
+REQUIRED_BACKBONE_ATOMS = ("N", "CA", "C", "O")
+PDB_CHAIN_ID_RE = re.compile(r"^[0-9][A-Za-z0-9]{3}_[A-Za-z0-9]{1,4}$")
+
+
+@dataclass(frozen=True)
+class StagedInput:
+    protein_id: str
+    stage_id: str
+    source_path: str
+    staged_path: str
+    original_chain_id: str
+    staged_chain_id: str
+    sequence_length: int
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +86,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # I/O
     p.add_argument("--input-pdb-folder", required=True, type=Path,
-                   help="Directory containing the input PDB files.")
+                   help="Directory containing input PDB/CIF files, or the IF-ready PDB root "
+                        "when --test-set-parquet is set.")
+    p.add_argument("--test-set-parquet", type=Path, default=None,
+                   help="Optional IF-ready test-set parquet. When set, only these proteins "
+                        "are staged for ProteinMPNN, with continuous residue numbering.")
     p.add_argument("--output-dir", required=True, type=Path,
                    help="Directory to write generated.parquet / fasta / configs.")
     p.add_argument("--overwrite", action="store_true",
@@ -109,6 +140,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("--num-seq-per-target must be positive")
     if args.mpnn_batch_size <= 0:
         p.error("--mpnn-batch-size must be positive")
+    if args.test_set_parquet is not None and not args.test_set_parquet.exists():
+        p.error(f"--test-set-parquet not found: {args.test_set_parquet}")
+    if args.test_set_parquet is not None and args.design_chains.strip() not in {"", "A"}:
+        p.error("--test-set-parquet stages single-chain inputs as chain A; use --design-chains A or omit it")
     if args.apply_nmp_filter:
         if args.netmhciipan_bin is None:
             p.error("--netmhciipan-bin is required when --apply-nmp-filter is set")
@@ -119,6 +154,257 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if args.nmp_rank_threshold <= 0:
             p.error("--nmp-rank-threshold must be positive")
     return args
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IF-ready staging for ProteinMPNN
+# ─────────────────────────────────────────────────────────────────────────────
+
+def safe_file_id(protein_id: str) -> str:
+    """Return a filesystem-safe id matching the IF-ready data convention."""
+    return "".join(c if (c.isalnum() or c in ("-", "_", ".")) else "_" for c in protein_id)
+
+
+def infer_chain_id(protein_id: str, default_chain: str = "A") -> str:
+    if not PDB_CHAIN_ID_RE.match(protein_id):
+        return default_chain
+    return protein_id.split("_", 1)[1]
+
+
+def resolve_structure_path(row: dict[str, Any], pdb_root: Path) -> Path:
+    protein_id = str(row["protein_id"])
+    safe_id = safe_file_id(protein_id)
+    pdb_path = str(row.get("pdb_path") or "")
+    candidates: list[Path] = []
+
+    if pdb_path:
+        raw_path = Path(pdb_path)
+        if raw_path.is_absolute():
+            candidates.append(raw_path)
+        else:
+            candidates.append(pdb_root / raw_path)
+            candidates.append(pdb_root / raw_path.name)
+            candidates.append(pdb_root / f"{raw_path.stem}.pdb")
+            candidates.append(pdb_root / f"{raw_path.stem}.cif")
+
+    candidates.extend([
+        pdb_root / f"{protein_id}.pdb",
+        pdb_root / f"{protein_id}.cif",
+        pdb_root / f"{safe_id}.pdb",
+        pdb_root / f"{safe_id}.cif",
+    ])
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"{protein_id}: could not resolve structure under {pdb_root}"
+    )
+
+
+def _load_structure(path: Path) -> Any:
+    if path.suffix.lower() == ".cif":
+        parser = MMCIFParser(QUIET=True)
+    elif path.suffix.lower() == ".pdb":
+        parser = PDBParser(QUIET=True)
+    else:
+        raise ValueError(f"unsupported structure suffix for ProteinMPNN staging: {path}")
+    return parser.get_structure(path.stem, str(path))
+
+
+def _select_chain(structure: Any, chain_id: str) -> Any:
+    model = next(structure.get_models())
+    chains = list(model.get_chains())
+    for chain in chains:
+        if str(chain.id) == chain_id:
+            return chain
+    if len(chains) == 1:
+        return chains[0]
+    raise ValueError(
+        f"chain {chain_id!r} not found; available chains={[str(c.id) for c in chains]}"
+    )
+
+
+def _residue_to_aa(residue: Any) -> str:
+    resname = residue.get_resname().strip().upper()
+    aa = AA3_TO1_EXT.get(resname)
+    if aa is None:
+        raise ValueError(f"unknown residue {resname}")
+    if aa not in CANONICAL_AA:
+        raise ValueError(f"non-canonical residue {resname}->{aa}")
+    return aa
+
+
+def _selected_atoms_by_name(residue: Any) -> dict[str, Any]:
+    """Pick at most one atom per atom name, preferring highest occupancy."""
+    selected: dict[str, Any] = {}
+    for atom in residue.get_atoms():
+        name = atom.get_name().strip()
+        current = selected.get(name)
+        if current is None:
+            selected[name] = atom
+            continue
+        atom_occ = atom.get_occupancy() or 0.0
+        current_occ = current.get_occupancy() or 0.0
+        if atom_occ > current_occ:
+            selected[name] = atom
+    return selected
+
+
+def _atom_fullname(atom: Any) -> str:
+    fullname = atom.get_fullname()
+    if isinstance(fullname, str) and len(fullname) == 4:
+        return fullname
+    return f"{atom.get_name().strip():>4}"[:4]
+
+
+def _write_staged_pdb(
+    *,
+    row: dict[str, Any],
+    pdb_root: Path,
+    output_path: Path,
+    staged_chain_id: str = "A",
+) -> StagedInput:
+    protein_id = str(row["protein_id"])
+    expected_sequence = str(row["sequence"]).upper()
+    expected_length = int(row["sequence_length"])
+    if len(expected_sequence) != expected_length:
+        raise ValueError(
+            f"{protein_id}: len(sequence)={len(expected_sequence)} "
+            f"!= sequence_length={expected_length}"
+        )
+    if set(expected_sequence) - CANONICAL_AA:
+        raise ValueError(f"{protein_id}: test-set sequence contains non-canonical AA")
+    if expected_length > 9999:
+        raise ValueError(f"{protein_id}: sequence too long for staged PDB numbering")
+
+    source_path = resolve_structure_path(row, pdb_root)
+    chain_id = str(row.get("if_chain_id") or row.get("chain") or "").strip()
+    if not chain_id:
+        chain_id = infer_chain_id(protein_id)
+    structure = _load_structure(source_path)
+    chain = _select_chain(structure, chain_id)
+
+    residues: list[tuple[Any, str, dict[str, Any]]] = []
+    for residue in chain.get_residues():
+        aa = _residue_to_aa(residue)
+        atoms_by_name = _selected_atoms_by_name(residue)
+        missing = [atom for atom in REQUIRED_BACKBONE_ATOMS if atom not in atoms_by_name]
+        if missing:
+            raise ValueError(
+                f"{protein_id}: residue {residue.id!r} missing backbone atoms {missing}"
+            )
+        residues.append((residue, aa, atoms_by_name))
+
+    observed_sequence = "".join(aa for _residue, aa, _atoms in residues)
+    if observed_sequence != expected_sequence:
+        raise ValueError(
+            f"{protein_id}: staged structure sequence mismatch "
+            f"(structure_len={len(observed_sequence)}, parquet_len={expected_length})"
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    serial = 1
+    with open(output_path, "w") as handle:
+        for res_idx, (_residue, aa, atoms_by_name) in enumerate(residues, start=1):
+            resname = AA1_TO3[aa]
+            atoms = sorted(
+                atoms_by_name.values(),
+                key=lambda atom: int(atom.get_serial_number() or 0),
+            )
+            for atom in atoms:
+                coord = atom.get_coord()
+                occupancy = atom.get_occupancy()
+                bfactor = atom.get_bfactor()
+                element = (atom.element or atom.get_name().strip()[:1]).strip().upper()
+                handle.write(
+                    "ATOM  "
+                    f"{serial:5d} "
+                    f"{_atom_fullname(atom)}"
+                    " "
+                    f"{resname:>3} "
+                    f"{staged_chain_id[:1]:1}"
+                    f"{res_idx:4d}"
+                    " "
+                    "   "
+                    f"{float(coord[0]):8.3f}"
+                    f"{float(coord[1]):8.3f}"
+                    f"{float(coord[2]):8.3f}"
+                    f"{float(occupancy if occupancy is not None else 1.0):6.2f}"
+                    f"{float(bfactor if bfactor is not None else 0.0):6.2f}"
+                    "          "
+                    f"{element[:2]:>2}"
+                    "  \n"
+                )
+                serial += 1
+        handle.write("TER\nEND\n")
+
+    return StagedInput(
+        protein_id=protein_id,
+        stage_id=output_path.stem,
+        source_path=str(source_path),
+        staged_path=str(output_path),
+        original_chain_id=str(chain.id),
+        staged_chain_id=staged_chain_id[:1],
+        sequence_length=expected_length,
+    )
+
+
+def prepare_mpnn_input(
+    args: argparse.Namespace,
+    mpnn_out: Path,
+) -> tuple[Path, dict[str, str], dict[str, int]]:
+    """Return the PDB folder ProteinMPNN should parse plus stage-id metadata."""
+    if args.test_set_parquet is None:
+        return args.input_pdb_folder, {}, {}
+
+    df = pd.read_parquet(args.test_set_parquet).copy()
+    required = {"protein_id", "sequence", "sequence_length", "pdb_path"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"test-set parquet missing required columns: {sorted(missing)}")
+    df["protein_id"] = df["protein_id"].astype(str)
+    if df["protein_id"].duplicated().any():
+        raise ValueError("test-set parquet contains duplicate protein_id values")
+
+    staged_dir = mpnn_out / "staged_pdbs"
+    if staged_dir.exists():
+        shutil.rmtree(staged_dir)
+    staged_dir.mkdir(parents=True)
+
+    stage_to_protein: dict[str, str] = {}
+    expected_lengths: dict[str, int] = {}
+    manifest: list[dict[str, Any]] = []
+    used_stage_ids: set[str] = set()
+    for row in df.to_dict("records"):
+        protein_id = str(row["protein_id"])
+        stage_id = safe_file_id(protein_id)
+        if stage_id in used_stage_ids:
+            raise ValueError(f"safe stage id collision: {stage_id}")
+        used_stage_ids.add(stage_id)
+        staged_path = staged_dir / f"{stage_id}.pdb"
+        staged = _write_staged_pdb(
+            row=row,
+            pdb_root=args.input_pdb_folder,
+            output_path=staged_path,
+        )
+        stage_to_protein[stage_id] = protein_id
+        expected_lengths[protein_id] = int(row["sequence_length"])
+        manifest.append(staged.__dict__)
+
+    with open(mpnn_out / "staged_inputs_manifest.json", "w") as handle:
+        json.dump(manifest, handle, indent=2)
+    with open(mpnn_out / "stage_id_to_protein_id.json", "w") as handle:
+        json.dump(stage_to_protein, handle, indent=2, sort_keys=True)
+    print(
+        f"[stage] wrote {len(manifest)} continuous-numbered PDBs under {staged_dir}",
+        flush=True,
+    )
+    return staged_dir, stage_to_protein, expected_lengths
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,17 +425,21 @@ def _run_subprocess(cmd: list[str], cwd: Path) -> None:
     subprocess.run(cmd, check=True, cwd=str(cwd))
 
 
-def run_proteinmpnn(args: argparse.Namespace, mpnn_out: Path) -> Path:
-    """Run ProteinMPNN over ``args.input_pdb_folder``; return the seqs/ path."""
+def run_proteinmpnn(
+    args: argparse.Namespace,
+    mpnn_out: Path,
+) -> tuple[Path, dict[str, str], dict[str, int]]:
+    """Run ProteinMPNN and return ``(seqs_dir, stage_id_map, expected_lengths)``."""
     _check_proteinmpnn_install()
     mpnn_out.mkdir(parents=True, exist_ok=True)
+    mpnn_input_folder, stage_id_map, expected_lengths = prepare_mpnn_input(args, mpnn_out)
 
     helper = PROTEINMPNN_ROOT / "helper_scripts"
     parsed_jsonl = mpnn_out / "parsed_chains.jsonl"
     _run_subprocess(
         [
             sys.executable, str(helper / "parse_multiple_chains.py"),
-            "--input_path", str(args.input_pdb_folder.resolve()),
+            "--input_path", str(mpnn_input_folder.resolve()),
             "--output_path", str(parsed_jsonl),
         ],
         cwd=PROTEINMPNN_ROOT,
@@ -189,7 +479,7 @@ def run_proteinmpnn(args: argparse.Namespace, mpnn_out: Path) -> Path:
     seqs_dir = mpnn_out / "seqs"
     if not seqs_dir.is_dir():
         raise RuntimeError(f"ProteinMPNN did not produce seqs/ under {mpnn_out}")
-    return seqs_dir
+    return seqs_dir, stage_id_map, expected_lengths
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,11 +497,16 @@ def _parse_kv_header(header: str) -> dict[str, str]:
     return out
 
 
-def parse_mpnn_seqs(seqs_dir: Path) -> dict[str, list[dict[str, Any]]]:
+def parse_mpnn_seqs(
+    seqs_dir: Path,
+    protein_id_by_stage_id: dict[str, str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Return {protein_id: [design_record, ...]} parsed from MPNN's *.fa files."""
     rows: dict[str, list[dict[str, Any]]] = {}
+    protein_id_by_stage_id = protein_id_by_stage_id or {}
     for fa_path in sorted(seqs_dir.glob("*.fa")):
-        pid = fa_path.stem
+        stage_id = fa_path.stem
+        pid = protein_id_by_stage_id.get(stage_id, stage_id)
         designs: list[dict[str, Any]] = []
         cur_header: str | None = None
         is_design = False
@@ -244,6 +539,45 @@ def parse_mpnn_seqs(seqs_dir: Path) -> dict[str, list[dict[str, Any]]]:
             design_idx += 1
         rows[pid] = designs
     return rows
+
+
+def validate_generated_designs(
+    designs: dict[str, list[dict[str, Any]]],
+    *,
+    expected_lengths: dict[str, int] | None = None,
+) -> None:
+    """Fail fast on sequences that downstream head/NMP cannot consume."""
+    expected_lengths = expected_lengths or {}
+    failures: list[str] = []
+    for pid, design_list in designs.items():
+        expected_len = expected_lengths.get(pid)
+        for d in design_list:
+            sequence = str(d["sequence"]).upper()
+            chars = set(sequence)
+            invalid = chars - CANONICAL_AA - set("/")
+            if invalid:
+                failures.append(
+                    f"{pid}/design_{d['design_idx']}: non-canonical "
+                    f"{''.join(sorted(invalid))}"
+                )
+                continue
+            if expected_len is not None:
+                if "/" in sequence:
+                    failures.append(
+                        f"{pid}/design_{d['design_idx']}: unexpected multi-chain output"
+                    )
+                    continue
+                if len(sequence) != expected_len:
+                    failures.append(
+                        f"{pid}/design_{d['design_idx']}: len={len(sequence)} "
+                        f"expected={expected_len}"
+                    )
+    if failures:
+        preview = "; ".join(failures[:10])
+        raise ValueError(
+            f"ProteinMPNN generated invalid downstream sequences "
+            f"({len(failures)} failures; first: {preview})"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -448,10 +782,20 @@ def main(argv: list[str] | None = None) -> int:
     mpnn_out = args.output_dir / "_mpnn_raw"
     if mpnn_out.exists():
         shutil.rmtree(mpnn_out)
-    seqs_dir = run_proteinmpnn(args, mpnn_out)
-    designs = parse_mpnn_seqs(seqs_dir)
+    seqs_dir, stage_id_map, expected_lengths = run_proteinmpnn(args, mpnn_out)
+    designs = parse_mpnn_seqs(seqs_dir, protein_id_by_stage_id=stage_id_map)
     if not designs:
         raise SystemExit(f"No designs parsed from {seqs_dir}")
+    validate_generated_designs(designs, expected_lengths=expected_lengths)
+    if expected_lengths:
+        missing = sorted(set(expected_lengths) - set(designs))
+        unexpected = sorted(set(designs) - set(expected_lengths))
+        if missing or unexpected:
+            raise SystemExit(
+                "ProteinMPNN output/test-set mismatch: "
+                f"missing={missing[:10]} total_missing={len(missing)}; "
+                f"unexpected={unexpected[:10]} total_unexpected={len(unexpected)}"
+            )
     n_designs = sum(len(v) for v in designs.values())
     print(
         f"[mpnn] parsed {n_designs} designs across {len(designs)} proteins",
@@ -474,6 +818,7 @@ def main(argv: list[str] | None = None) -> int:
         "n_proteins": len(designs),
         "n_designs": n_designs,
         "n_selected": len(selections) if selections is not None else 0,
+        "n_staged_inputs": len(expected_lengths),
         "proteinmpnn_root": str(PROTEINMPNN_ROOT),
     }
     write_outputs(
@@ -491,9 +836,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  selection.parquet  ({len(selections)} rows)")
         print(f"  selection.json")
     if not args.keep_mpnn_raw:
-        # Trim raw helper artifacts but keep parsed_chains.jsonl + seqs/ for audit.
+        # Trim bulky helper artifacts but keep parsed inputs, seqs, and staging
+        # manifest for audit.
         for child in mpnn_out.iterdir():
-            if child.name not in {"seqs", "parsed_chains.jsonl"}:
+            if child.name not in {
+                "seqs",
+                "parsed_chains.jsonl",
+                "staged_inputs_manifest.json",
+                "stage_id_to_protein_id.json",
+            }:
                 if child.is_file():
                     child.unlink()
                 else:

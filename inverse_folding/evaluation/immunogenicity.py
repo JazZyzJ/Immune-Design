@@ -12,6 +12,7 @@ before passing to aggregate_nmp_scores.
 
 from typing import Any, Dict, List
 
+import numpy as np
 import pandas as pd
 
 
@@ -127,7 +128,9 @@ def aggregate_nmp_batch_scores(
         else:
             status = "partial"
 
-        agg = aggregate_nmp_scores(peptide_scores_to_dataframe(all_scores))
+        windows_df = peptide_scores_to_dataframe(all_scores)
+        agg = aggregate_nmp_scores(windows_df)
+        agg["coverage_fraction"] = compute_coverage_fraction(windows_df, seq_len)
         agg["scored_lengths"] = scored
         agg["requested_lengths"] = applicable
         agg["nmp_status"] = status
@@ -142,12 +145,54 @@ def aggregate_nmp_batch_scores(
                 "n_weak_binders": 0,
                 "mean_best_rank": float("nan"),
                 "n_windows_scored": 0,
+                "coverage_fraction": 0.0,
                 "scored_lengths": [],
                 "requested_lengths": applicable,
                 "nmp_status": "timeout",
             }
 
     return aggregated
+
+
+def compute_coverage_fraction(
+    window_df: pd.DataFrame,
+    seq_len: int,
+    strong_threshold: float = _STRONG_BINDER_THRESHOLD,
+) -> float:
+    """Fraction of residues covered by ≥1 strong NetMHCIIpan window.
+
+    The length-normalized immunogenicity density used for Tier 2 v2
+    stratified selection (PLAN_DATA_SEL §12). A "strong" window has
+    ``rank_EL < strong_threshold`` (percentage units). Each strong window
+    covers residues ``[pos, pos + len(peptide))`` (0-based, per
+    PeptideScore.pos); the covered set is the union across all strong
+    windows, clipped to ``[0, seq_len)``.
+
+    Args:
+        window_df: per-window DataFrame with columns ``pos``, ``peptide``,
+            ``rank_EL`` (percentage units, as from peptide_scores_to_dataframe).
+        seq_len: protein length (residue count).
+        strong_threshold: %Rank_EL cutoff for a strong binder window.
+
+    Returns:
+        Coverage fraction in [0, 1]. 0.0 when seq_len <= 0, the frame is
+        empty, or no window is strong.
+    """
+    if seq_len <= 0 or window_df is None or len(window_df) == 0:
+        return 0.0
+
+    strong = window_df[window_df["rank_EL"] < strong_threshold]
+    if len(strong) == 0:
+        return 0.0
+
+    covered = np.zeros(seq_len, dtype=bool)
+    for pos, peptide in zip(strong["pos"].to_numpy(), strong["peptide"].to_numpy()):
+        start = max(0, int(pos))
+        end = min(seq_len, int(pos) + len(peptide))
+        if end > start:
+            covered[start:end] = True
+
+    return float(covered.sum()) / float(seq_len)
 
 
 def aggregate_nmp_scores(scores: pd.DataFrame) -> Dict[str, Any]:

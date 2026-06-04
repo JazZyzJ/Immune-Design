@@ -440,6 +440,9 @@ def test_resume_from_ckpt_wires_optimizer_pt_and_load_checkpoint():
     assert "optimizer.pt" in text
     # And the train loop starts from ``start_epoch``.
     assert "for epoch in range(start_epoch, int(args.epochs))" in text
+    # Resume should also keep W&B / metrics step axes continuous.
+    assert "start_step = int(report.extra.get(\"step\", 0) or 0)" in text
+    assert "step_idx = start_step" in text
 
 
 def test_val_step_runs_at_each_max_iter():

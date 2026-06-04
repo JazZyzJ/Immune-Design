@@ -39,7 +39,7 @@ Thinker with critical and logical reasoning should act as a pragmatic technical 
 - WT baseline 必须使用真实数据，缺失时 fail-fast，**不允许 placeholder 值**。
 - 修改前先读代码，理解现有逻辑再改。
 - Markdown 文档中的行间公式必须使用独立行的双美元符号包裹：`$$` 单独一行，公式单独一行，闭合 `$$` 单独一行，同时前后留空行；行内公式保持 `$...$`。
-- **LOG.md 记录**：每次行动确认完成后需要向 `LOG.md` 添加一条记录，具体格式参照 `LOG.md` 中的模板。
+- **LOG.md 记录**：每次行动确认完成后需要向 `LOG.md` 添加一条记录，具体格式参照 `LOG.md` 中的模板，不需要记录实验/job提交。
 
 ## 3. Cluster Convention
 
@@ -61,7 +61,8 @@ SLURM `--output/--error` 必须指向 `logs/`，不能混入 `run/`。
 
 **参照模板**: `scripts/submit_cnn_enhance.slurm`。所有新 SLURM 脚本必须遵循 sbatch 的格式。
 
-When returning experiment data, use SSH host `mhc-if-local` and sync into local data directory `/Users/jerry/Project/MHC-IF/data`.
+Return experiment results via `mhc-if-local` to `/Users/jerry/Project/MHC-IF/Results`.
+Use buckets `RF/`, `EpitopeHead/`, `IFStandalone/`, `TestSets/`; RF runs use `RF/<allele>/<run_tag>__<timestamp>/{generation,eval_immune,eval_structure,analysis,logs,meta}`. Returning does not require LOG.md modification.
 
 ## 4. Plan & Progress Files
 

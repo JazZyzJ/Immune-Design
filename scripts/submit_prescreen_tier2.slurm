@@ -11,6 +11,8 @@
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval/prescreen_tier2_%j.err
 
 set -euo pipefail
+: "${PS1:=}"          # guard: conda activate references $PS1 under `set -u`
+export PS1
 
 # ── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"
@@ -24,7 +26,7 @@ CATH_TRAIN_SOURCE="${CATH_DIR}/chain_set.jsonl"
 CATH_DOMAIN_LIST="${CATH_DIR}/chain_set.jsonl"
 EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
 NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
-ALLELE="HLA-DRB1*04:01"
+ALLELE="${ALLELE:-HLA-DRB1*04:01}"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -59,22 +61,70 @@ echo "  GPU name     : $(python -c 'import torch; print(torch.cuda.get_device_na
 echo "  Timestamp    : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "============================================================"
 
+# ── Mode (dual_scorer = legacy; nmp_only = Tier 2 v2, PLAN_DATA_SEL §12) ─────
+MODE="${MODE:-dual_scorer}"
+NMP_WORKERS="${NMP_WORKERS:-8}"
+NMP_BATCH_SIZE="${NMP_BATCH_SIZE:-8}"
+
 # ── Launch ────────────────────────────────────────────────────────────────
-python -u "${PROJECT_ROOT}/scripts/prescreen_tier2.py" \
-    --candidate-merged-fasta "${DATA_DIR}/tier2_candidates_merged.fasta" \
-    --cath-train-fasta "${CATH_TRAIN_SOURCE}" \
-    --epitope-ckpt "${EPITOPE_CKPT}" \
-    --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
-    --cath-domain-list "${CATH_DOMAIN_LIST}" \
-    --output-dir "${OUTPUT_ROOT}" \
-    --nmp-batch-size 8 \
-    --nmp-timeout 600 \
-    --nmp-max-lengths-per-call 4 \
-    --nmp-workers 8 \
-    --head-prefilter-topk 3000 \
-    --resume \
-    --skip-cath-diversity \
-    --max-per-topology 2 \
-    --target-total 50 \
-    --allele "${ALLELE}"
+if [ "${MODE}" = "nmp_only" ]; then
+    # NMP-only screen. Pure CPU (no epitope head / GPU). For the S1 75k scan,
+    # submit CPU-only with many cores, e.g.:
+    #   MODE=nmp_only NMP_WORKERS=32 NMP_SCREEN_LENGTHS=15 \
+    #   CANDIDATE_ID_LIST=.../_prescreen_head_results_<allele>.parquet \
+    #   sbatch --partition=cpu --gres=none --cpus-per-task=32 --time=12:00:00 \
+    #          scripts/submit_prescreen_tier2.slurm
+    # For S2, point CANDIDATE_ID_LIST at the S1-selected parquet and drop
+    # NMP_SCREEN_LENGTHS (defaults to all 12-25), add SAMPLE=gaussian.
+    NMP_SCREEN_LENGTHS="${NMP_SCREEN_LENGTHS:-}"
+    CANDIDATE_ID_LIST="${CANDIDATE_ID_LIST:-${DATA_DIR}/_prescreen_head_results_$(echo "${ALLELE}" | tr '*:' '__' | tr -d ' ').parquet}"
+    SAMPLE="${SAMPLE:-none}"
+    SAMPLE_N_TARGET="${SAMPLE_N_TARGET:-3000}"
+    SAMPLE_N_BINS="${SAMPLE_N_BINS:-20}"
+    SAMPLE_MIN_PER_BIN="${SAMPLE_MIN_PER_BIN:-40}"
+    SAMPLE_PEAK_TO_TAIL="${SAMPLE_PEAK_TO_TAIL:-3.0}"
+    SAMPLE_SEED="${SAMPLE_SEED:-42}"
+    # Job-array sharding: SLURM_ARRAY_TASK_ID = shard index; N_SHARDS = array size.
+    N_SHARDS="${N_SHARDS:-1}"
+    SHARD_INDEX="${SLURM_ARRAY_TASK_ID:-0}"
+    python -u "${PROJECT_ROOT}/scripts/prescreen_tier2.py" \
+        --selection-mode nmp_only \
+        --candidate-merged-fasta "${DATA_DIR}/tier2_candidates_merged.fasta" \
+        --candidate-id-list "${CANDIDATE_ID_LIST}" \
+        --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
+        --output-dir "${OUTPUT_ROOT}" \
+        --nmp-screen-lengths "${NMP_SCREEN_LENGTHS}" \
+        --nmp-batch-size "${NMP_BATCH_SIZE}" \
+        --nmp-timeout 600 \
+        --nmp-max-lengths-per-call 4 \
+        --nmp-workers "${NMP_WORKERS}" \
+        --n-shards "${N_SHARDS}" \
+        --shard-index "${SHARD_INDEX}" \
+        --resume \
+        --sample "${SAMPLE}" \
+        --sample-n-target "${SAMPLE_N_TARGET}" \
+        --sample-n-bins "${SAMPLE_N_BINS}" \
+        --sample-min-per-bin "${SAMPLE_MIN_PER_BIN}" \
+        --sample-peak-to-tail "${SAMPLE_PEAK_TO_TAIL}" \
+        --sample-seed "${SAMPLE_SEED}" \
+        --allele "${ALLELE}"
+else
+    python -u "${PROJECT_ROOT}/scripts/prescreen_tier2.py" \
+        --candidate-merged-fasta "${DATA_DIR}/tier2_candidates_merged.fasta" \
+        --cath-train-fasta "${CATH_TRAIN_SOURCE}" \
+        --epitope-ckpt "${EPITOPE_CKPT}" \
+        --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
+        --cath-domain-list "${CATH_DOMAIN_LIST}" \
+        --output-dir "${OUTPUT_ROOT}" \
+        --nmp-batch-size "${NMP_BATCH_SIZE}" \
+        --nmp-timeout 600 \
+        --nmp-max-lengths-per-call 4 \
+        --nmp-workers "${NMP_WORKERS}" \
+        --head-prefilter-topk 3000 \
+        --resume \
+        --skip-cath-diversity \
+        --max-per-topology 2 \
+        --target-total 50 \
+        --allele "${ALLELE}"
+fi
 echo "Tier 2 pre-screening finished."

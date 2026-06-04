@@ -800,6 +800,7 @@ def main(argv: list[str] | None = None) -> int:
     # checkpoint so the run config (--epochs / --lr) governs end-time
     # but the saved progress isn't repeated.
     start_epoch = 0
+    start_step = 0
     if args.resume_from_ckpt:
         from inverse_folding.dplm_refiner.geo_encoder.checkpoint import (
             load_geo_encoder_checkpoint,
@@ -820,12 +821,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         recorded_epoch = int(report.extra.get("epoch", -1))
         start_epoch = recorded_epoch + 1 if recorded_epoch >= 0 else 0
+        start_step = int(report.extra.get("step", 0) or 0)
         best_val_recovery = float(
             report.extra.get("val_draft_recovery", float("-inf")) or float("-inf")
         )
         print(
             f"Resumed from {resume_path}: recorded_epoch={recorded_epoch}, "
             f"start_epoch={start_epoch}, "
+            f"start_step={start_step}, "
             f"best_val_recovery={best_val_recovery:.4f}, "
             f"adapter_missing={len(report.adapter_missing_keys)}, "
             f"adapter_unexpected={len(report.adapter_unexpected_keys)}"
@@ -850,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
 
     val_max_iters = [int(m) for m in args.val_max_iters]
 
-    step_idx = 0
+    step_idx = start_step
     last_train_batch = None
     for epoch in range(start_epoch, int(args.epochs)):
         # PLAN_IF_ENCODER.md Task E7 stage switching:
