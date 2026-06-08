@@ -1,0 +1,22 @@
+{
+  "n_design": 400,
+  "n_protein": 50,
+  "spearman_per_design_mean": 0.38328848877088106,
+  "spearman_per_design_median": 0.40517118445724376,
+  "spearman_per_design_iqr": [
+    0.2319348017734467,
+    0.5755964558681402
+  ],
+  "spearman_per_design_range": [
+    -0.6173753580008094,
+    0.906145726932244
+  ],
+  "pearson_per_design_mean": 0.35187983593764266,
+  "spearman_davg_mean": 0.49062284023506464,
+  "spearman_davg_median": 0.4941092547954514,
+  "spearman_davg_iqr": [
+    0.38023446984539355,
+    0.6523739160598087
+  ],
+  "pearson_davg_mean": 0.5124505710808183
+}

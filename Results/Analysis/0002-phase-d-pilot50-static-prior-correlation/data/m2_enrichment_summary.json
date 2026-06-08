@@ -1,0 +1,17 @@
+{
+  "n_remasks": 13632,
+  "n_cells": 449640,
+  "reason_immune": 5004,
+  "reason_lowconf": 8628,
+  "reason_immune_frac": 0.3670774647887324,
+  "mi_remasked_mean": 6.348196771122794,
+  "mi_remasked_median": 4.826885127067566,
+  "mi_kept_mean": 4.315242127171583,
+  "mi_kept_median": 3.0043507188796994,
+  "enrich_Q4Q1": 2.7277151719574544,
+  "P_remask_Q4": 0.052783835506698115,
+  "P_remask_Q1": 0.019350933722606947,
+  "enrich_perRefresh_median": 2.0,
+  "enrich_perRefresh_mean": 2.414826279731466,
+  "n_refresh_used": 1813
+}
