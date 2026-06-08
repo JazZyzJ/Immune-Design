@@ -1,0 +1,42 @@
+{
+  "threshold_all_nod_pp_hotspot_coverage": 0.37566800531242095,
+  "threshold_tier2_nod_pp_hotspot_coverage": 0.3768656716417911,
+  "n_proteins": 50,
+  "n_designs_per_arm": {
+    "nod": 400,
+    "t060": 400,
+    "t075": 400
+  },
+  "artifact_files": [
+    "burden_split_summary.csv",
+    "design_level_paired_deltas.csv",
+    "head_field_availability.csv",
+    "headline_burden_results.csv",
+    "headline_residue_landscape_results.csv",
+    "per_protein_8design_distribution_summary.csv",
+    "residue_landscape_burden_split_summary.csv",
+    "residue_landscape_design_deltas.csv",
+    "residue_landscape_per_protein_summary.csv",
+    "static_window_z_summary.csv"
+  ],
+  "source_paths": {
+    "testset": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/meta/testset/pilot_v2_HLA-DRB1_07_01.parquet",
+    "nod_gen": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/phaseD_pilotv2_nod_n8_seed42__20260604T172853Z/generation/generated.parquet",
+    "nod_head": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/phaseD_pilotv2_nod_n8_seed42__20260604T172853Z/eval_immune/imm_head.parquet",
+    "nod_res": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/phaseD_pilotv2_nod_n8_seed42__20260604T172853Z/eval_immune/imm_head_residues.parquet",
+    "nod_nmp": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/phaseD_pilotv2_nod_n8_seed42__20260604T172853Z/eval_immune/imm_nmp.parquet",
+    "nod_struct": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/phaseD_pilotv2_nod_n8_seed42__20260604T172853Z/eval_structure/structural.parquet",
+    "t060_gen": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/generation/phaseD_pilotv2_d3_t060_n8_seed42/generated.parquet",
+    "t060_head": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/eval_immune/phaseD_pilotv2_d3_t060_n8_seed42_imm_full/imm_head.parquet",
+    "t060_res": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/eval_immune/phaseD_pilotv2_d3_t060_n8_seed42_imm_full/imm_head_residues.parquet",
+    "t060_nmp": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/eval_immune/phaseD_pilotv2_d3_t060_n8_seed42_imm_full/imm_nmp.parquet",
+    "t060_struct": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/eval_structure/phaseD_pilotv2_d3_t060_n8_seed42_struct/structural.parquet",
+    "t060_static": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/generation/phaseD_pilotv2_d3_t060_n8_seed42/static_window_cache.parquet",
+    "t075_gen": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/generation/phaseD_pilotv2_d3_t075_n8_seed42/generated.parquet",
+    "t075_head": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/eval_immune/phaseD_pilotv2_d3_t075_n8_seed42_imm_full/imm_head.parquet",
+    "t075_res": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/eval_immune/phaseD_pilotv2_d3_t075_n8_seed42_imm_full/imm_head_residues.parquet",
+    "t075_nmp": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/eval_immune/phaseD_pilotv2_d3_t075_n8_seed42_imm_full/imm_nmp.parquet",
+    "t075_struct": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/eval_structure/phaseD_pilotv2_d3_t075_n8_seed42_struct/structural.parquet",
+    "t075_static": "/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/generation/phaseD_pilotv2_d3_t075_n8_seed42/static_window_cache.parquet"
+  }
+}

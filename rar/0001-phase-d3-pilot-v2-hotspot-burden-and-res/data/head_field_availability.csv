@@ -1,0 +1,5 @@
+artifact_type,source_path,columns,n_rows_example
+imm_head,/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/phaseD_pilotv2_nod_n8_seed42__20260604T172853Z/eval_immune/imm_head.parquet,"protein_id,design_id,design_idx,global_risk,mean_hotspot,max_hotspot,n_hotspot_positions",400
+imm_head_residues,/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/phaseD_pilotv2_nod_n8_seed42__20260604T172853Z/eval_immune/imm_head_residues.parquet,"protein_id,design_id,design_idx,residue_idx,residue_aa,hotspot",92488
+static_window_cache,/Users/jerry/Project/MHC-IF/Results/RF/HLA-DRB1_07_01/pilot_v2_d3_t060_t075_n8__20260604T144231Z/generation/phaseD_pilotv2_d3_t060_n8_seed42/static_window_cache.parquet,"protein_id,allele,sequence_md5,sequence_length,window_start_0b,window_end_0b,k,z_static,head_checkpoint_digest,head_config_hash,score_scale,window_k_min,window_k_max",149604
+dynamic_window_logits_generated_designs,not present in transferred pilot_v2 eval artifacts,,0
