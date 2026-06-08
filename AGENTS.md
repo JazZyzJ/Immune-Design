@@ -39,7 +39,7 @@ Thinker with critical and logical reasoning should act as a pragmatic technical 
 - WT baseline 必须使用真实数据，缺失时 fail-fast，**不允许 placeholder 值**。
 - 修改前先读代码，理解现有逻辑再改。
 - Markdown 文档中的行间公式必须使用独立行的双美元符号包裹：`$$` 单独一行，公式单独一行，闭合 `$$` 单独一行，同时前后留空行；行内公式保持 `$...$`。
-- **LOG.md 记录**：每次行动确认完成后需要向 `LOG.md` 添加一条记录，具体格式参照 `LOG.md` 中的模板，不需要记录实验/job提交。
+- **LOG.md 记录边界**：LOG.md 只记录**实质性实现变更**——改变行为或产物的 data/代码/config/pipeline 改动，每条按 `LOG.md` 模板。**不记录**：实验/job 提交、结果回传（`mhc-if-local`）、RAR records、sanity/诊断分析、小 bug 修复、探索性尝试、纯文档/注释微调。边界不清时默认**不记**，保持 LOG 精简。
 
 ## 3. Cluster Convention
 
@@ -71,7 +71,7 @@ Use buckets `RF/`, `EpitopeHead/`, `IFStandalone/`, `TestSets/`; RF runs use `RF
 - **数据选择计划**: `PLAN_DATA_SEL.md` (absorbs Module L from PLAN_IF)
 - **Epitope head 计划**: `PLAN.md`
 - **逆折叠模型理论基础**: `doc/Reference_Flow_Derivation.md`
-- **变更必须同步到 `LOG.md`**（append-only, 结构化 schema）
+- **实质性变更**同步到 `LOG.md`（append-only, 结构化 schema；记录边界见 §2 LOG.md 记录边界）
 - 科学架构文档: `doc/Inverse_Folding_v1.md`, `doc/Immune_Design_Architecture_v2.md`
 
 ### PROGRESS.md 治理规则
