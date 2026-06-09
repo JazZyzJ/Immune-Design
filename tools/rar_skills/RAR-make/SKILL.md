@@ -6,8 +6,8 @@ description: 'Use when you have finished a data analysis, computation, measureme
 # RAR: make — write a Reproducible Analysis Record
 
 Canonical source: this file lives in the repo at `tools/rar_skills/RAR-make/` and is copied
-into `~/.claude/skills/` (Claude Code) and `~/.codex/skills/` (Codex) on each machine. Edit
-here, then re-copy. The CLI and the repo-local registry are SHARED across agents, so a
+into `~/.claude/skills/` (Claude Code) and `~/.codex/skills/` (Codex) on each machine via
+`tools/rar_skills/install.sh`. Edit here, then re-run it. The CLI and the repo-local registry are SHARED across agents, so a
 record made by one agent is discoverable by the others via the same `index.jsonl`.
 
 ## Overview
@@ -64,12 +64,11 @@ Want to add a conclusion? STOP — it belongs in a human report, not a RAR.
 
 ## Workflow
 
-Run the CLI with `python3`. **CLI resolution order: (1) a repo-vendored copy `tools/rar.py`
-if present (works on every machine via git, including the cluster); (2) the local plugin copy
-`~/.claude/local-plugins/RAR/scripts/rar.py`.**
+Run the CLI as `python3 tools/rar.py` (vendored in the repo, present on every machine via
+git, including the cluster). RAR operates on a repo-local registry, so run it from inside the repo.
 
 ```
-CLI=tools/rar.py   # or ~/.claude/local-plugins/RAR/scripts/rar.py outside a repo
+CLI=tools/rar.py
 
 python3 $CLI new --title "Latency cfg_v17 vs v18"
 # -> mints id (e.g. 0001-latency-cfg-v17-vs-v18) and creates <root>/<id>/data/

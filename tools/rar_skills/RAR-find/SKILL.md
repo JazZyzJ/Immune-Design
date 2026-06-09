@@ -6,9 +6,9 @@ description: Use when about to start a data analysis or answer a data/metric que
 # RAR: find — discover & reuse a Reproducible Analysis Record
 
 Canonical source: this file lives in the repo at `tools/rar_skills/RAR-find/` and is copied
-into `~/.claude/skills/` (Claude Code) and `~/.codex/skills/` (Codex) on each machine. The
-CLI and the repo-local registry are SHARED across agents, so records made by any agent are
-discoverable here.
+into `~/.claude/skills/` (Claude Code) and `~/.codex/skills/` (Codex) on each machine via
+`tools/rar_skills/install.sh`. The CLI and the repo-local registry are SHARED across agents,
+so records made by any agent are discoverable here.
 
 ## Overview
 
@@ -23,9 +23,8 @@ WITHOUT re-running the analysis.
 
 ## Workflow
 
-Run the CLI with `python3`. **CLI resolution order: (1) a repo-vendored copy `tools/rar.py`
-if present (works on every machine via git, including the cluster); (2) the local plugin copy
-`~/.claude/local-plugins/RAR/scripts/rar.py`.**
+Run the CLI as `python3 tools/rar.py` (vendored in the repo, present on every machine via
+git, including the cluster).
 
 ```
 CLI=tools/rar.py
