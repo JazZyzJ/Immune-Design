@@ -13,6 +13,8 @@
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/esmfold2/gt_%A_%a.err
 
 set -euo pipefail
+: "${PS1:=}"
+export PS1
 
 # Predict GT structures for the uricase missing-structure case set with ESMFold2.
 # Array of NUM_SHARDS tasks; each folds a round-robin shard of the FASTA and

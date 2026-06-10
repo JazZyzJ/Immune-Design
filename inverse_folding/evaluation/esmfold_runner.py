@@ -14,6 +14,21 @@ def seq_hash(sequence: str) -> str:
     return hashlib.sha256(sequence.encode()).hexdigest()[:12]
 
 
+def cache_key(protein_id: str, sequence: str) -> str:
+    """Cache key safe to use as a single filesystem basename."""
+    return f"{_cache_token(protein_id)}_{seq_hash(sequence)}"
+
+
+def _cache_token(value: str) -> str:
+    token = str(value)
+    separators = {os.sep, os.altsep, "/", "\\"}
+    for separator in separators:
+        if separator:
+            token = token.replace(separator, "_")
+    token = token.replace("\x00", "_")
+    return token or "protein"
+
+
 def predict_structure(
     sequence: str,
     protein_id: str,
@@ -33,13 +48,12 @@ def predict_structure(
     Returns:
         Dict with keys: pdb_string, pLDDT, pdb_path (if cached).
     """
-    sh = seq_hash(sequence)
-    cache_key = f"{protein_id}_{sh}"
+    key = cache_key(protein_id, sequence)
 
     # Check cache
     if cache_dir is not None:
-        pdb_path = os.path.join(cache_dir, f"{cache_key}.pdb")
-        plddt_path = os.path.join(cache_dir, f"{cache_key}.plddt")
+        pdb_path = os.path.join(cache_dir, f"{key}.pdb")
+        plddt_path = os.path.join(cache_dir, f"{key}.plddt")
         if os.path.isfile(pdb_path) and os.path.isfile(plddt_path):
             with open(pdb_path) as f:
                 pdb_string = f.read()
@@ -68,10 +82,10 @@ def predict_structure(
     pdb_path = None
     if cache_dir is not None:
         os.makedirs(cache_dir, exist_ok=True)
-        pdb_path = os.path.join(cache_dir, f"{cache_key}.pdb")
+        pdb_path = os.path.join(cache_dir, f"{key}.pdb")
         with open(pdb_path, "w") as f:
             f.write(output)
-        with open(os.path.join(cache_dir, f"{cache_key}.plddt"), "w") as f:
+        with open(os.path.join(cache_dir, f"{key}.plddt"), "w") as f:
             f.write(f"{plddt:.4f}")
 
     return {

@@ -264,6 +264,24 @@ elif [ "${MODE}" = "phase_c" ]; then
         exit 2
     fi
 
+    # ── Optional facade sharding (job array) ──────────────────────────────
+    # Set N_SHARDS and submit with --array=0-(N_SHARDS-1). GENERATED_PARQUET and
+    # RUN_ID are treated as BASE names; ".shardKKofNN" is inserted into both so
+    # each array task scores one pre-split facade shard into its own run dir.
+    # Merge the per-shard tables afterward with merge_eval_immune_shards.py.
+    if [ -n "${N_SHARDS:-}" ] && [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+        SHARD_TAG="$(printf 'shard%02dof%02d' "${SLURM_ARRAY_TASK_ID}" "${N_SHARDS}")"
+        GENERATED_PARQUET="${GENERATED_PARQUET%.parquet}.${SHARD_TAG}.parquet"
+        if [ -n "${RUN_ID:-}" ]; then
+            RUN_ID="${RUN_ID}.${SHARD_TAG}"
+        fi
+        echo "  Sharding          : ${SHARD_TAG} (N_SHARDS=${N_SHARDS})"
+        if [ ! -f "${GENERATED_PARQUET}" ]; then
+            echo "ERROR: shard facade not found: ${GENERATED_PARQUET}" >&2
+            exit 2
+        fi
+    fi
+
     PHASE_C_OUTPUT_ROOT="${PHASE_C_OUTPUT_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/if_phase_c}"
     ESMFOLD_CACHE_DIR="${ESMFOLD_CACHE_DIR:-${PHASE_C_OUTPUT_ROOT}/.cache/esmfold/${ALLELE_TAG}}"
 

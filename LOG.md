@@ -3059,6 +3059,41 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `L0104` (uricase case study), `L0098`/`L0100` (Tier 2 v2 + promotion)
 
 ### L0107
+- timestamp: 2026-06-05T10:52:00-04:00
+- type: FIX
+- module: IF_EVAL
+- trigger: Structural evaluation exposed an ESMFold cache write failure when a valid protein identifier contained a path separator.
+- result: ESMFold structure cache keys now replace path separators inside the protein-id component before constructing the cache basename, preserving the existing `(protein_id, sequence_hash)` cache semantics while preventing accidental nested paths.
+- evidence: `python -m py_compile inverse_folding/evaluation/esmfold_runner.py scripts/evaluate_phase_c.py`; `pytest -q tests/inverse_folding/test_esmfold_runner.py` passed.
+- impact: scope — ESMFold cache filename handling only; no change to refold model behavior, structural metrics, or ProteinMPNN generation.
+- status: done
+
+### L0108
+- timestamp: 2026-06-05T13:10:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: User noticed Tier 1 anchor `2VXP_A` in pilot50 despite its NMP `coverage_fraction` sitting below the mid-load band (0701 0.144 / 0401 0.379). Root cause: the original pilot admitted all 15 Tier 1 unconditionally, so anchors bypassed the density band. User decided Tier 1 anchors must be band-aligned on `coverage_fraction` (same band as Tier 2), take however many qualify per allele, fill the rest with Tier 2; target ~5 anchors/allele.
+- change_summary: Added reusable `scripts/build_pilot_v2.py` (registered SCRIPTS.md §Module L #11) and rebuilt `if_ready/pilot_v2_<tag>.parquet` (both alleles, n=50, **5 Tier 1 + 45 Tier 2** each). Tier 1 now admitted only if `coverage_fraction ∈ [band_lo - tier1_relax, band_hi]`, capped at 5 via `--max-tier1` (keeps highest-coverage anchors, dropping from the lower band edge up); Tier 2 fills the remainder via 4-sub-bin `sample_uniform_bins`. **0701** band [0.33,0.56], relax 0, `--max-tier1 5` → anchors 6DNB,6HGM,6TN1,1U6T,1ZR3 (the 6th in-band anchor 2ERF@0.344, nearest the lower edge, dropped). **0401** band [0.39,0.64], relax 0.001 to admit near-bar 6DNB (cf 0.389294) → anchors 6DNB,6TN1,5HGJ,4ZIE,2ERF (only 5 qualify, cap inert). Source pool is `fast_v2` (only surviving artifact carrying `coverage_fraction`), so pilot rows are a strict subset of fast_v2 and inherit canonical if_ready schema + the `coverage_fraction` column; pilot Tier 2 ⊂ fast Tier 2 by construction. Previous pilot backed up to `backups/20260605_130737_pilot_rebuild/`.
+- evidence: 0701 pilot coverage_fraction min/median/max = 0.335/0.429/0.551, sub-bins [12,11,11,11]; 0401 = 0.389/0.498/0.640, sub-bins [12,11,11,11]. Both: 2VXP_A absent, 5 Tier 1 + 45 Tier 2, 0 pdb_path/coverage_fraction nulls, all 50 ids present in canonical if_ready and h_maps_v2 (0 missing). `py_compile` clean.
+- impact: scope — pilot diagnostic subset only; canonical main test set and fast_v2 untouched. risk low (backup retained, read-only subset of canonical). The 15-Tier-1-anchor convention still holds for fast_v2 (300 rows, anchors a small fraction).
+- status: done
+- refs:
+  - `L0101` (original pilot/fast build), `L0100` (v2 promotion)
+
+### L0109
+- timestamp: 2026-06-07T16:00:00-04:00
+- type: TOOLING
+- module: IF_EVAL
+- trigger: The 0701 WT immune baseline (full eval_immune over the 3139 superset, covers current 3014) exists, but 0401 had no WT facade and no immune eval at all. The single-job 0701 run took ~7.7 h, so the 0401 baseline is sharded for fast parallel start.
+- change_summary: Added two reusable scripts (registered SCRIPTS.md §Phase B Evaluation Integration #2/#3): `scripts/build_wt_facade.py` (builds the WT `generated.parquet` facade from canonical IF-ready + optional N round-robin shard facades) and `scripts/merge_eval_immune_shards.py` (concatenates per-shard `imm_head/imm_nmp/imm_head_residues/imm_nmp_peptides` + failures into one unified run dir). Extended `scripts/submit_benchmark.slurm` phase_c branch with an additive facade-shard block (only fires when `N_SHARDS`+`SLURM_ARRAY_TASK_ID` are set; inserts `.shardKKofNN` into `GENERATED_PARQUET`/`RUN_ID`). Built the 0401 facade `work/.../if_test_set/wt_generated_v2_HLA-DRB1_04_01.parquet` (3015 rows) + 24 round-robin shards (125–126 each). Uses the npoff 0401 head (`cnn_himp_v1_npoff_drb0401_seed42/.../LC1/seed_42/best.pt`) to match the 0701 baseline's npoff head.
+- evidence: `py_compile` clean on both scripts; `bash -n` clean on the slurm. Login-node 2-protein smoke (evaluate_phase_c `--mode imm --imm-full`, npoff 0401 head, accelerated NMP) produced imm_head(2)/imm_nmp(2)/imm_head_residues(550)/imm_nmp_peptides(7210), 0 failures, ~16s/protein at 2 workers. Submitted array 9358509 (`--array=0-23`, cpu/qos=short, 8 cpus, IMM_FULL=1) + dependent merge 9358510 (`afterok`, `--expected-proteins 3015` → unified `run/benchmark/wt_v2/HLA-DRB1_04_01/wt_v2_HLA-DRB1_04_01_imm_full/`).
+- impact: scope — adds 0401 WT immune baseline + reusable sharding tooling; no change to existing 0701 baseline or non-array benchmark behavior. risk low (additive, smoke-verified).
+- status: done
+- refs:
+  - `L0108` (pilot rebuild), `L0100` (v2 promotion)
+
+
+### L0110
 - timestamp: 2026-06-09T21:55:33-04:00
 - type: VERIFICATION
 - module: RF
