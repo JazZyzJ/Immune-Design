@@ -402,47 +402,95 @@ elif [ "${MODE}" = "train_encoder" ]; then
 elif [ "${MODE}" = "generate_encoder" ]; then
     : "${CHECKPOINT:?set CHECKPOINT for generate_encoder}"
     : "${ENCODER_CHECKPOINT:?set ENCODER_CHECKPOINT for generate_encoder}"
-    # Reuse the refiner runner with the new --encoder-checkpoint flag.
+    # Mirror the generate_refiner branch's full parameter passthrough,
+    # adding only the GeoEGNN-IPA encoder swap flags. Keeping these in
+    # sync ensures generation config (temperature / batch-size / n-designs
+    # / fusion / cath filters) isn't silently dropped.
     EXTRA_FLAGS=()
+    EXTRA_FLAGS+=(--input-source "${INPUT_SOURCE}")
+    if [ "${INPUT_SOURCE}" = "if_test" ]; then
+        : "${TEST_SET_PARQUET:?set TEST_SET_PARQUET for INPUT_SOURCE=if_test}"
+        : "${PDB_ROOT:?set PDB_ROOT for INPUT_SOURCE=if_test}"
+        EXTRA_FLAGS+=(--test-set-parquet "${TEST_SET_PARQUET}")
+        EXTRA_FLAGS+=(--pdb-root "${PDB_ROOT}")
+    elif [ "${INPUT_SOURCE}" = "cath" ]; then
+        : "${CATH_ROOT:?set CATH_ROOT for INPUT_SOURCE=cath}"
+        EXTRA_FLAGS+=(--cath-root "${CATH_ROOT}")
+        EXTRA_FLAGS+=(--cath-split "${CATH_SPLIT}")
+        EXTRA_FLAGS+=(--cath-max-length "${CATH_MAX_LENGTH}")
+        EXTRA_FLAGS+=(--cath-min-resolved-ratio "${CATH_MIN_RESOLVED_RATIO}")
+    else
+        echo "ERROR: INPUT_SOURCE='${INPUT_SOURCE}' (expected if_test|cath)" >&2
+        exit 2
+    fi
     [[ -n "${REFINER_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--refiner-checkpoint "${REFINER_CHECKPOINT}")
     [[ -n "${SIDECAR_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--sidecar-checkpoint "${SIDECAR_CHECKPOINT}")
-    [[ -n "${LIMIT_PROTEINS}" ]]    && EXTRA_FLAGS+=(--limit-proteins "${LIMIT_PROTEINS}")
+    EXTRA_FLAGS+=(--sidecar-scale "${SIDECAR_SCALE}")
+    [[ -n "${ARM}" ]]                && EXTRA_FLAGS+=(--arm "${ARM}")
+    [[ "${ABLATION_MODE}" = "1" ]]   && EXTRA_FLAGS+=(--ablation-mode)
+    [[ -n "${LIMIT_PROTEINS}" ]]     && EXTRA_FLAGS+=(--limit-proteins "${LIMIT_PROTEINS}")
     python -u "${PROJECT_ROOT}/scripts/run_if_imp_refiner.py" \
         --checkpoint "${CHECKPOINT}" \
         --encoder-checkpoint "${ENCODER_CHECKPOINT}" \
         --encoder-kind "${ENCODER_KIND}" \
-        --input-source "${INPUT_SOURCE}" \
-        --test-set-parquet "${TEST_SET_PARQUET}" \
-        --pdb-root "${PDB_ROOT}" \
-        --cath-root "${CATH_ROOT}" \
-        --cath-split "${CATH_SPLIT}" \
         --allele "${ALLELE}" \
         --output-root "${OUTPUT_ROOT}" \
+        --n-designs-per-protein "${N_DESIGNS_PER_PROTEIN}" \
         --seed "${SEED}" \
         --max-iter "${MAX_ITER}" \
+        --temperature "${TEMPERATURE}" \
         --device "${DEVICE}" \
-        "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
+        --batch-size "${GEN_BATCH_SIZE}" \
+        --mc-dropout-passes "${MC_DROPOUT_PASSES}" \
+        --mask-ratio-center "${MASK_RATIO_CENTER}" \
+        --mask-ratio-deviation "${MASK_RATIO_DEVIATION}" \
+        --fusion-temperature "${FUSION_TEMPERATURE}" \
+        --apply-steps "${APPLY_STEPS}" \
+        --fusion-mode "${FUSION_MODE}" \
+        --fusion-alpha "${FUSION_ALPHA}" \
+        --tag "${TAG}" \
+        "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
+        "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
 elif [ "${MODE}" = "diag_encoder" ]; then
     : "${CHECKPOINT:?set CHECKPOINT for diag_encoder}"
     : "${CATH_ROOT:?set CATH_ROOT for diag_encoder}"
     : "${ENCODER_CHECKPOINT:?set ENCODER_CHECKPOINT for diag_encoder}"
+    # Mirror the diag_arms branch's full parameter passthrough, adding
+    # only the encoder swap flags. In particular CATH_MAX_LENGTH /
+    # CATH_MIN_RESOLVED_RATIO must be forwarded so the diagnostic
+    # protein set matches the launcher's filters (the script's own
+    # default resolved-ratio is 0.95, which would otherwise drift from
+    # the launcher default 0.90).
     EXTRA_FLAGS=()
     [[ -n "${REFINER_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--refiner-checkpoint "${REFINER_CHECKPOINT}")
     [[ -n "${SIDECAR_CHECKPOINT}" ]] && EXTRA_FLAGS+=(--sidecar-checkpoint "${SIDECAR_CHECKPOINT}")
+    [[ -n "${DIAG_RUN_ID}" ]]        && EXTRA_FLAGS+=(--run-id "${DIAG_RUN_ID}")
+    [[ -n "${OVERWRITE}" ]]          && EXTRA_FLAGS+=(--overwrite)
     [[ "${DIAG_EMIT_PER_POSITION}" = "1" ]] && EXTRA_FLAGS+=(--emit-per-position)
     [[ -n "${USE_DRAFT_SEQ}" ]] && EXTRA_FLAGS+=(--use-draft-seq "${USE_DRAFT_SEQ}")
-    # shellcheck disable=SC2086
+    # shellcheck disable=SC2086  # we WANT DIAG_ARMS to word-split
     python -u "${PROJECT_ROOT}/scripts/diag_if_imp_arms.py" \
         --checkpoint "${CHECKPOINT}" \
         --encoder-checkpoint "${ENCODER_CHECKPOINT}" \
         --encoder-kind "${ENCODER_KIND}" \
         --cath-root "${CATH_ROOT}" \
         --cath-split "${CATH_SPLIT}" \
+        --cath-max-length "${CATH_MAX_LENGTH}" \
+        --cath-min-resolved-ratio "${CATH_MIN_RESOLVED_RATIO}" \
         --n-proteins "${DIAG_N_PROTEINS}" \
         --seed "${SEED}" \
         --max-iter "${MAX_ITER}" \
+        --temperature "${TEMPERATURE}" \
+        --mc-dropout-passes "${MC_DROPOUT_PASSES}" \
+        --mask-ratio-center "${MASK_RATIO_CENTER}" \
+        --mask-ratio-deviation "${MASK_RATIO_DEVIATION}" \
+        --fusion-temperature "${FUSION_TEMPERATURE}" \
+        --apply-steps "${APPLY_STEPS}" \
+        --fusion-mode "${FUSION_MODE}" \
+        --fusion-alpha "${FUSION_ALPHA}" \
         --device "${DEVICE}" \
         --arms ${DIAG_ARMS} \
+        --progress-every "${DIAG_PROGRESS_EVERY}" \
         --output-dir "${OUTPUT_ROOT}" \
         "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}"
 else

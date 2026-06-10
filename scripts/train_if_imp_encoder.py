@@ -680,6 +680,51 @@ def main(argv: list[str] | None = None) -> int:
     encoder = install_geo_encoder(task=task, args=args, device=args.device)
     encoder.train()
 
+    # Resume (part 1 of 2): restore encoder + adapter state BEFORE the
+    # optimizer is created. ``auto_install_adapter_shape=True`` may swap
+    # the decoder's adapter modules for a different last-N/gated shape;
+    # if that happens after optimizer construction the optimizer would
+    # hold stale Parameter references and silently never update the new
+    # adapters. So checkpoint-load (which can reinstall adapters) must
+    # precede ``trainable_params`` collection. The optimizer-state load
+    # is part 2, after the optimizer exists.
+    start_epoch = 0
+    start_step = 0
+    best_val_recovery = float("-inf")
+    resume_path = None
+    if args.resume_from_ckpt:
+        from inverse_folding.dplm_refiner.geo_encoder.checkpoint import (
+            load_geo_encoder_checkpoint,
+        )
+
+        resume_path = Path(args.resume_from_ckpt).expanduser().resolve()
+        if not resume_path.is_file():
+            raise FileNotFoundError(
+                f"--resume-from-ckpt not found: {resume_path}"
+            )
+        _, report = load_geo_encoder_checkpoint(
+            resume_path,
+            encoder=encoder,
+            decoder=task.model.decoder,
+            map_location=args.device,
+            strict_state=False,
+            auto_install_adapter_shape=True,
+        )
+        recorded_epoch = int(report.extra.get("epoch", -1))
+        start_epoch = recorded_epoch + 1 if recorded_epoch >= 0 else 0
+        start_step = int(report.extra.get("step", 0) or 0)
+        best_val_recovery = float(
+            report.extra.get("val_draft_recovery", float("-inf"))
+            or float("-inf")
+        )
+        print(
+            f"Resumed from {resume_path}: recorded_epoch={recorded_epoch}, "
+            f"start_epoch={start_epoch}, start_step={start_step}, "
+            f"best_val_recovery={best_val_recovery:.4f}, "
+            f"adapter_missing={len(report.adapter_missing_keys)}, "
+            f"adapter_unexpected={len(report.adapter_unexpected_keys)}"
+        )
+
     trainable_names = [
         n for n, p in task.model.named_parameters() if p.requires_grad
     ]
@@ -688,8 +733,26 @@ def main(argv: list[str] | None = None) -> int:
     for n in trainable_names[:20]:
         print(f"  {n}")
 
+    # Collect trainable params AFTER any resume-time adapter reinstall so
+    # the optimizer tracks the live Parameter objects.
     trainable_params = [p for p in task.model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=float(args.lr))
+
+    # Resume (part 2 of 2): restore AdamW momenta from the sibling
+    # optimizer.pt, now that the optimizer exists and tracks the correct
+    # (possibly reinstalled) parameter objects.
+    if resume_path is not None:
+        opt_state_path = resume_path.parent / "optimizer.pt"
+        if opt_state_path.is_file():
+            optimizer.load_state_dict(
+                torch.load(str(opt_state_path), map_location=args.device)
+            )
+            print(f"Restored optimizer state from {opt_state_path}")
+        else:
+            print(
+                f"WARNING: no optimizer.pt next to {resume_path}; starting "
+                "with fresh AdamW state (momenta zeroed)."
+            )
 
     # Reuse the existing CATH loader builder from train_if_imp_refiner.
     from importlib import import_module
@@ -792,58 +855,8 @@ def main(argv: list[str] | None = None) -> int:
     pretrain_budget = int(args.pretrain_aux_only_epochs)
     pretrain_target = float(args.pretrain_target)
     pretrain_exited = pretrain_budget == 0
-    best_val_recovery: float = float("-inf")
-
-    # Resume: restore encoder + adapter from a previous run, plus
-    # AdamW state from a sibling ``optimizer.pt`` if present. The epoch
-    # counter restarts from ``extra["epoch"] + 1`` recorded in the
-    # checkpoint so the run config (--epochs / --lr) governs end-time
-    # but the saved progress isn't repeated.
-    start_epoch = 0
-    start_step = 0
-    if args.resume_from_ckpt:
-        from inverse_folding.dplm_refiner.geo_encoder.checkpoint import (
-            load_geo_encoder_checkpoint,
-        )
-
-        resume_path = Path(args.resume_from_ckpt).expanduser().resolve()
-        if not resume_path.is_file():
-            raise FileNotFoundError(
-                f"--resume-from-ckpt not found: {resume_path}"
-            )
-        _, report = load_geo_encoder_checkpoint(
-            resume_path,
-            encoder=encoder,
-            decoder=task.model.decoder,
-            map_location=args.device,
-            strict_state=False,
-            auto_install_adapter_shape=True,
-        )
-        recorded_epoch = int(report.extra.get("epoch", -1))
-        start_epoch = recorded_epoch + 1 if recorded_epoch >= 0 else 0
-        start_step = int(report.extra.get("step", 0) or 0)
-        best_val_recovery = float(
-            report.extra.get("val_draft_recovery", float("-inf")) or float("-inf")
-        )
-        print(
-            f"Resumed from {resume_path}: recorded_epoch={recorded_epoch}, "
-            f"start_epoch={start_epoch}, "
-            f"start_step={start_step}, "
-            f"best_val_recovery={best_val_recovery:.4f}, "
-            f"adapter_missing={len(report.adapter_missing_keys)}, "
-            f"adapter_unexpected={len(report.adapter_unexpected_keys)}"
-        )
-        opt_state_path = resume_path.parent / "optimizer.pt"
-        if opt_state_path.is_file():
-            optimizer.load_state_dict(
-                torch.load(str(opt_state_path), map_location=args.device)
-            )
-            print(f"Restored optimizer state from {opt_state_path}")
-        else:
-            print(
-                f"WARNING: no optimizer.pt next to {resume_path}; starting "
-                "with fresh AdamW state (momenta zeroed)."
-            )
+    # ``start_epoch`` / ``start_step`` / ``best_val_recovery`` were set
+    # in the resume block above (before optimizer construction).
 
     if start_epoch >= int(args.epochs):
         print(

@@ -36,7 +36,11 @@ class HeadConfig:
 class D2Config:
     enabled: bool = False
     beta: float = 1.0
-    eta: float = 1.0
+    eta: float = 0.7
+    struct_temperature: float = 1.0
+    delta_struct: float = 1.5
+    context_pnll_h0: float = 2.0
+    context_jsd_h0: float = 0.5
     epsilon: float = 1.0e-8
     candidate_mode: str = "structure_topk"
     top_k_tokens: int = 4
@@ -47,6 +51,15 @@ class D2Config:
     min_ess_fraction: float = 0.25
     max_abs_logit_shift: float = 5.0
     paired_uncorrected_sample: bool = True
+    completion_ensemble_enabled: bool = True
+    completion_ensemble_size: int = 3
+    completion_ensemble_scope: str = "local_windows"
+    completion_ensemble_rescore_top_m: int = 8
+    completion_ensemble_use_variance_gate: bool = False
+    sticky_ttl_steps: int = 5
+    sticky_clear_on_selected: bool = True
+    sticky_clear_on_remask: bool = True
+    sticky_overwrite_on_refresh: bool = True
 
 
 @dataclass(frozen=True)
@@ -56,6 +69,10 @@ class D3Config:
     gamma_min: float = 0.40
     gamma_max: float = 0.90
     lambda_commit: float = 1.0
+    alpha_struct: float = 0.3
+    d2_evidence_nu: float = 1.0
+    d2_evidence_ttl_steps: int = 5
+    d2_evidence_requires_benefit: bool = True
     zscore_epsilon: float = 1.0e-6
     same_refresh_grace: bool = True
     final_freeze_steps: int = 1
@@ -305,9 +322,30 @@ def _materialize_d2(payload: Any) -> D2Config:
         raise ControllerConfigError(
             f"controller.d2.beta must be >= 0 (got {beta})"
         )
-    eta = float(payload.get("eta", 1.0))
+    eta = float(payload.get("eta", 0.7))
     if eta < 0.0:
         raise ControllerConfigError(f"controller.d2.eta must be >= 0 (got {eta})")
+    struct_temperature = float(payload.get("struct_temperature", 1.0))
+    if struct_temperature <= 0.0:
+        raise ControllerConfigError(
+            "controller.d2.struct_temperature must be positive "
+            f"(got {struct_temperature})"
+        )
+    delta_struct = float(payload.get("delta_struct", 1.5))
+    if delta_struct <= 0.0:
+        raise ControllerConfigError(
+            f"controller.d2.delta_struct must be positive (got {delta_struct})"
+        )
+    context_pnll_h0 = float(payload.get("context_pnll_h0", 2.0))
+    if context_pnll_h0 <= 0.0:
+        raise ControllerConfigError(
+            f"controller.d2.context_pnll_h0 must be positive (got {context_pnll_h0})"
+        )
+    context_jsd_h0 = float(payload.get("context_jsd_h0", 0.5))
+    if context_jsd_h0 <= 0.0:
+        raise ControllerConfigError(
+            f"controller.d2.context_jsd_h0 must be positive (got {context_jsd_h0})"
+        )
     epsilon = float(payload.get("epsilon", 1.0e-8))
     if epsilon <= 0.0:
         raise ControllerConfigError(
@@ -343,10 +381,49 @@ def _materialize_d2(payload: Any) -> D2Config:
             "controller.d2.max_abs_logit_shift must be positive "
             f"(got {max_abs_logit_shift})"
         )
+    completion_ensemble_size = int(payload.get("completion_ensemble_size", 3))
+    if completion_ensemble_size < 1:
+        raise ControllerConfigError(
+            "controller.d2.completion_ensemble_size must be >= 1 "
+            f"(got {completion_ensemble_size})"
+        )
+    completion_ensemble_scope = str(
+        payload.get("completion_ensemble_scope", "local_windows")
+    )
+    if completion_ensemble_scope != "local_windows":
+        raise ControllerConfigError(
+            "controller.d2.completion_ensemble_scope must be 'local_windows' "
+            f"for Stage A (got {completion_ensemble_scope!r})"
+        )
+    completion_ensemble_rescore_top_m = int(
+        payload.get("completion_ensemble_rescore_top_m", 8)
+    )
+    if completion_ensemble_rescore_top_m < 1:
+        raise ControllerConfigError(
+            "controller.d2.completion_ensemble_rescore_top_m must be >= 1 "
+            f"(got {completion_ensemble_rescore_top_m})"
+        )
+    completion_ensemble_use_variance_gate = bool(
+        payload.get("completion_ensemble_use_variance_gate", False)
+    )
+    if completion_ensemble_use_variance_gate:
+        raise ControllerConfigError(
+            "controller.d2.completion_ensemble_use_variance_gate must be false "
+            "for Stage A"
+        )
+    sticky_ttl_steps = int(payload.get("sticky_ttl_steps", 5))
+    if sticky_ttl_steps < 1:
+        raise ControllerConfigError(
+            f"controller.d2.sticky_ttl_steps must be >= 1 (got {sticky_ttl_steps})"
+        )
     return D2Config(
         enabled=True,
         beta=beta,
         eta=eta,
+        struct_temperature=struct_temperature,
+        delta_struct=delta_struct,
+        context_pnll_h0=context_pnll_h0,
+        context_jsd_h0=context_jsd_h0,
         epsilon=epsilon,
         candidate_mode=candidate_mode,
         top_k_tokens=top_k_tokens,
@@ -357,6 +434,15 @@ def _materialize_d2(payload: Any) -> D2Config:
         min_ess_fraction=min_ess_fraction,
         max_abs_logit_shift=max_abs_logit_shift,
         paired_uncorrected_sample=bool(payload.get("paired_uncorrected_sample", True)),
+        completion_ensemble_enabled=bool(payload.get("completion_ensemble_enabled", True)),
+        completion_ensemble_size=completion_ensemble_size,
+        completion_ensemble_scope=completion_ensemble_scope,
+        completion_ensemble_rescore_top_m=completion_ensemble_rescore_top_m,
+        completion_ensemble_use_variance_gate=completion_ensemble_use_variance_gate,
+        sticky_ttl_steps=sticky_ttl_steps,
+        sticky_clear_on_selected=bool(payload.get("sticky_clear_on_selected", True)),
+        sticky_clear_on_remask=bool(payload.get("sticky_clear_on_remask", True)),
+        sticky_overwrite_on_refresh=bool(payload.get("sticky_overwrite_on_refresh", True)),
     )
 
 
@@ -367,9 +453,6 @@ def _materialize_d3(payload: Any) -> D3Config:
         raise ControllerConfigError("controller.d3 must be a mapping when present")
 
     enabled = bool(payload.get("enabled", False))
-    if not enabled:
-        return D3Config(enabled=False)
-
     projection = str(payload.get("window_to_residue_projection", "max_covering_window"))
     if projection != "max_covering_window":
         raise ControllerConfigError(
@@ -393,6 +476,22 @@ def _materialize_d3(payload: Any) -> D3Config:
         raise ControllerConfigError(
             f"controller.d3.lambda_commit must be >= 0 (got {lambda_commit})"
         )
+    alpha_struct = float(payload.get("alpha_struct", 0.3))
+    if not (0.0 <= alpha_struct <= 1.0):
+        raise ControllerConfigError(
+            f"controller.d3.alpha_struct must lie in [0, 1] (got {alpha_struct})"
+        )
+    d2_evidence_nu = float(payload.get("d2_evidence_nu", 1.0))
+    if d2_evidence_nu < 0.0:
+        raise ControllerConfigError(
+            f"controller.d3.d2_evidence_nu must be >= 0 (got {d2_evidence_nu})"
+        )
+    d2_evidence_ttl_steps = int(payload.get("d2_evidence_ttl_steps", 5))
+    if d2_evidence_ttl_steps < 1:
+        raise ControllerConfigError(
+            "controller.d3.d2_evidence_ttl_steps must be >= 1 "
+            f"(got {d2_evidence_ttl_steps})"
+        )
     zscore_epsilon = float(payload.get("zscore_epsilon", 1.0e-6))
     if zscore_epsilon <= 0.0:
         raise ControllerConfigError(
@@ -405,11 +504,17 @@ def _materialize_d3(payload: Any) -> D3Config:
             f"(got {final_freeze_steps})"
         )
     return D3Config(
-        enabled=True,
+        enabled=enabled,
         window_to_residue_projection=projection,
         gamma_min=gamma_min,
         gamma_max=gamma_max,
         lambda_commit=lambda_commit,
+        alpha_struct=alpha_struct,
+        d2_evidence_nu=d2_evidence_nu,
+        d2_evidence_ttl_steps=d2_evidence_ttl_steps,
+        d2_evidence_requires_benefit=bool(
+            payload.get("d2_evidence_requires_benefit", True)
+        ),
         zscore_epsilon=zscore_epsilon,
         same_refresh_grace=bool(payload.get("same_refresh_grace", True)),
         final_freeze_steps=final_freeze_steps,

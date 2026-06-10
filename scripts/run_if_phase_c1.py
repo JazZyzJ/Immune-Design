@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -53,9 +54,32 @@ from scripts.run_if_phase_c0 import _fmt_hms, write_phase_c_outputs
 
 
 # PLAN_RF.md §"Telemetry migration" — controller_surface_version. D1
-# manifests that lack this field are read as version 1; D2/D3 runs stamp 2 so
+# manifests that lack this field are read as version 1; Stage A runs stamp 3 so
 # downstream analyzers can dispatch on schema lineage without re-running.
-CONTROLLER_SURFACE_VERSION = 2
+CONTROLLER_SURFACE_VERSION = 3
+
+STAGE_A_EVENT_COLUMNS = [
+    "sticky_age_steps",
+    "sticky_created_step",
+    "sticky_selected_flag",
+    "sticky_expired_flag",
+    "realized_benefit_flag",
+    "d2_evidence",
+    "rank_score",
+    "rank_percentile_d2_written",
+    "ell_struct",
+    "ell_sample",
+    "alpha_struct",
+    "d2_evidence_nu",
+    "delta_struct",
+    "struct_temperature",
+    "context_pnll",
+    "g_pnll",
+    "context_jsd",
+    "g_stability",
+    "ensemble_delta_R_std",
+    "ensemble_sign_consistency",
+]
 
 
 def canonical_aa_token_ids(task: Any) -> tuple[int, ...]:
@@ -214,6 +238,13 @@ def compute_per_protein_summary(
 
     d2_rows = [r for r in event_rows if r.get("event_type") == "D2"]
     d3_rows = [r for r in event_rows if r.get("event_type") == "D3"]
+    remask_ledger_rows = [
+        r
+        for r in event_rows
+        if r.get("event_type") == "remask" and r.get("remask_flag") is True
+    ]
+    d3_remask_rows = [r for r in d3_rows if r.get("remask_flag", True) is True]
+    remask_source_rows = remask_ledger_rows if remask_ledger_rows else d3_remask_rows
 
     # D2 candidate feasibility rate: fraction of active blocks (across all
     # refreshes) whose D2 candidate scan produced at least one feasible
@@ -254,12 +285,132 @@ def compute_per_protein_summary(
             if r.get("kl_struct_corrected") is not None
         )
     )
-    total_corrected_positions = len(d2_rows)
-    total_recommits = len(d3_rows)
+    correction_rows_by_key: dict[tuple[int, int, int], list[dict]] = {}
+    for row in d2_rows:
+        pos = row.get("position_i")
+        if pos is None:
+            continue
+        key = (
+            int(row.get("refresh_step", -1)),
+            int(row.get("sticky_created_step", -1))
+            if row.get("sticky_created_step") is not None
+            else -1,
+            int(pos),
+        )
+        correction_rows_by_key.setdefault(key, []).append(row)
+    total_corrected_positions = len(correction_rows_by_key)
+    total_recommits = len(remask_source_rows)
+
+    selected_d2_rows = [r for r in d2_rows if r.get("sticky_selected_flag") is True]
+    selected_rows_by_key: dict[tuple[int, int, int], dict] = {}
+    for row in selected_d2_rows:
+        pos = row.get("position_i")
+        if pos is None:
+            continue
+        key = (
+            int(row.get("refresh_step", -1)),
+            int(row.get("sticky_created_step", -1))
+            if row.get("sticky_created_step") is not None
+            else -1,
+            int(pos),
+        )
+        selected_rows_by_key[key] = row
+    selected_correction_rows = list(selected_rows_by_key.values())
+    paired_rows = [
+        r for r in selected_correction_rows if r.get("paired_disagreement_flag") is not None
+    ]
+    benefit_rows = [
+        r for r in selected_correction_rows if r.get("realized_benefit_flag") is not None
+    ]
+    selected_after_d2_rate = (
+        float(len(selected_rows_by_key)) / float(total_corrected_positions)
+        if total_corrected_positions > 0
+        else 0.0
+    )
+    paired_disagreement_rate = (
+        float(sum(1 for r in paired_rows if r.get("paired_disagreement_flag") is True))
+        / float(len(paired_rows))
+        if paired_rows
+        else 0.0
+    )
+    realized_benefit_rate = (
+        float(sum(1 for r in benefit_rows if r.get("realized_benefit_flag") is True))
+        / float(len(benefit_rows))
+        if benefit_rows
+        else 0.0
+    )
+    remasked_positions = {
+        int(r["position_i"])
+        for r in remask_source_rows
+        if r.get("position_i") is not None and r.get("remask_flag") is True
+    }
+    final_persistent = [
+        r
+        for r in selected_correction_rows
+        if r.get("position_i") is not None
+        and int(r["position_i"]) not in remasked_positions
+    ]
+    final_persistence_rate = (
+        float(len(final_persistent)) / float(len(selected_correction_rows))
+        if selected_correction_rows
+        else 0.0
+    )
+    rates_by_age: dict[str, dict[str, float]] = {}
+    ages = sorted(
+        {
+            int(r["sticky_age_steps"])
+            for r in d2_rows
+            if r.get("sticky_age_steps") is not None
+        }
+    )
+    for age in ages:
+        age_rows = [r for r in d2_rows if r.get("sticky_age_steps") == age]
+        age_selected = [r for r in age_rows if r.get("sticky_selected_flag") is True]
+        age_paired = [
+            r for r in age_selected if r.get("paired_disagreement_flag") is not None
+        ]
+        age_benefit = [
+            r for r in age_selected if r.get("realized_benefit_flag") is not None
+        ]
+        rates_by_age[str(age)] = {
+            "selected_after_d2_rate": (
+                float(len(age_selected)) / float(len(age_rows)) if age_rows else 0.0
+            ),
+            "paired_disagreement_rate": (
+                float(sum(1 for r in age_paired if r.get("paired_disagreement_flag") is True))
+                / float(len(age_paired))
+                if age_paired
+                else 0.0
+            ),
+            "realized_benefit_rate": (
+                float(sum(1 for r in age_benefit if r.get("realized_benefit_flag") is True))
+                / float(len(age_benefit))
+                if age_benefit
+                else 0.0
+            ),
+            "final_persistence_rate": (
+                float(
+                    sum(
+                        1
+                        for r in age_selected
+                        if r.get("position_i") is not None
+                        and int(r["position_i"]) not in remasked_positions
+                    )
+                )
+                / float(len(age_selected))
+                if age_selected
+                else 0.0
+            ),
+        }
+    rank_percentiles = [
+        float(r["rank_percentile_d2_written"])
+        for r in d2_rows
+        if r.get("rank_percentile_d2_written") is not None
+    ]
 
     # Churn rate: residues that were remasked more than once across the run.
     remask_counts: dict[int, int] = {}
-    for row in d3_rows:
+    for row in remask_source_rows:
         pos = row.get("position_i")
         if pos is None:
             continue
@@ -271,14 +422,36 @@ def compute_per_protein_summary(
         else 0.0
     )
 
-    # Same-refresh conflict rate: D2-corrected positions that D3 immediately
-    # remasked in the same refresh window. We use grace_flag=True on D3 rows
-    # as the marker since the D3 path sets grace_flag for any position that
-    # received a D2 correction in the current refresh.
-    grace_remasks = sum(1 for r in d3_rows if r.get("grace_flag") is True)
+    # Same-refresh conflict rate: D2-corrected positions immediately remasked
+    # in the same refresh window. Prefer the mode-independent Stage A remask
+    # ledger; fall back to D3 rows for older D3-only telemetry.
+    grace_remasks = sum(1 for r in remask_source_rows if r.get("grace_flag") is True)
     same_refresh_conflict_rate = (
         float(grace_remasks) / float(total_corrected_positions)
         if total_corrected_positions > 0
+        else 0.0
+    )
+
+    ensemble_std_values: list[float] = []
+    ensemble_sign_values: list[float] = []
+    rank_flip_values: list[float] = []
+    g_ess_values: list[float] = []
+    if refresh_addenda is not None:
+        for addendum in refresh_addenda:
+            if not addendum:
+                continue
+            for diag in addendum.get("d2_block_diagnostics") or []:
+                if diag.get("ensemble_delta_R_std") is not None:
+                    ensemble_std_values.append(float(diag["ensemble_delta_R_std"]))
+                if diag.get("ensemble_sign_consistency") is not None:
+                    ensemble_sign_values.append(float(diag["ensemble_sign_consistency"]))
+                if diag.get("argmax_to_ensemble_rank_flip_rate") is not None:
+                    rank_flip_values.append(float(diag["argmax_to_ensemble_rank_flip_rate"]))
+                if diag.get("g_ESS_candidates") is not None:
+                    g_ess_values.append(float(diag["g_ESS_candidates"]))
+    g_ESS_suppression_rate = (
+        float(sum(1 for x in g_ess_values if x == 0.0)) / float(len(g_ess_values))
+        if g_ess_values
         else 0.0
     )
 
@@ -298,6 +471,26 @@ def compute_per_protein_summary(
         "total_corrected_positions": int(total_corrected_positions),
         "total_recommits": int(total_recommits),
         "total_KL_budget": float(total_KL_budget),
+        "selected_after_d2_rate": float(selected_after_d2_rate),
+        "paired_disagreement_rate": float(paired_disagreement_rate),
+        "realized_benefit_rate": float(realized_benefit_rate),
+        "final_persistence_rate": float(final_persistence_rate),
+        "stage_a_rates_by_sticky_age": rates_by_age,
+        "marginal_d2_final_change_rate": None,
+        "rank_percentile_d2_written_median": (
+            float(np.median(rank_percentiles)) if rank_percentiles else None
+        ),
+        "argmax_to_ensemble_rank_flip_rate": (
+            float(np.mean(rank_flip_values)) if rank_flip_values else None
+        ),
+        "ensemble_delta_R_std_mean": (
+            float(np.mean(ensemble_std_values)) if ensemble_std_values else None
+        ),
+        "ensemble_sign_consistency_mean": (
+            float(np.mean(ensemble_sign_values)) if ensemble_sign_values else None
+        ),
+        "g_ESS_suppression_rate": float(g_ESS_suppression_rate),
+        "structure_not_worse_than_d3_baseline": None,
         # Productive-revisit rates (PLAN_RF.md §D0 Layer B D3-3): computed
         # from the controller's resolved snapshots. When no D3 remask was
         # ever resolved (e.g. monitor_only run, or no remask happened), the
@@ -337,6 +530,8 @@ def _refresh_record_to_jsonable(
     payload["grace_positions"] = None
     payload["d2_block_diagnostics"] = None
     payload["delta_logit_max_refresh"] = None
+    payload["active_sticky_positions"] = None
+    payload["g_ESS_suppression_rate"] = None
     if addendum:
         for key in (
             "e_i",
@@ -345,6 +540,8 @@ def _refresh_record_to_jsonable(
             "grace_positions",
             "d2_block_diagnostics",
             "delta_logit_max_refresh",
+            "active_sticky_positions",
+            "g_ESS_suppression_rate",
         ):
             if key in addendum:
                 payload[key] = addendum[key]
@@ -398,9 +595,10 @@ def write_d1_artifacts(
                 "a_before", "a_after", "a_uncorrected",
                 "delta_R_corrected", "delta_R_uncorrected", "paired_disagreement_flag",
                 "logit_struct", "logit_corrected", "delta_logit_max", "kl_struct_corrected",
-                "delta_R_B", "delta_R_i", "ESS", "rho_B",
+                "delta_R_B", "delta_R_i", "ESS", "ESS_candidates", "rho_B",
                 "m_i", "commit_score", "remask_flag", "grace_flag", "reason",
                 "g_time", "g_comp", "g_ent", "g_ESS",
+                *STAGE_A_EVENT_COLUMNS,
             ]
         ).to_parquet(events_parquet, index=False)
 
@@ -544,12 +742,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     # Phase D controller wiring (optional). When --controller-config is supplied
-    # and the YAML has enabled=true, the D1 monitor-only controller is layered
-    # on top of the C1 sampler without changing logits, schedule, or remask.
+    # and the YAML has enabled=true, the selected monitor/D2/D3 controller mode
+    # is layered on top of the C1 sampler.
     parser.add_argument(
         "--controller-config",
         default=None,
-        help="Phase D controller YAML (e.g. inverse_folding/reference_flow/configs/d1_monitor.yaml).",
+        help=(
+            "Phase D controller YAML (e.g. inverse_folding/reference_flow/configs/"
+            "d_monitor_full.yaml or d2_d3_full.yaml)."
+        ),
     )
     parser.add_argument("--head-checkpoint", default=None)
     parser.add_argument(

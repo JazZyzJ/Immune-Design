@@ -18,6 +18,7 @@ from pathlib import Path
 from textwrap import dedent
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from inverse_folding.reference_flow.controller import D1RefreshRecord
@@ -54,12 +55,16 @@ def _write_d2_d3_yaml(tmp_path: Path) -> Path:
           reliability:
             time_k: 20.0
             entropy_h0: 1.5
-            min_completion_fraction: 0.5
+            min_completion_fraction: 0.0
             min_rho_to_emit_event: 0.0
           d2:
             enabled: true
             beta: 1.0
-            eta: 1.0
+            eta: 0.7
+            struct_temperature: 1.0
+            delta_struct: 1.5
+            context_pnll_h0: 2.0
+            context_jsd_h0: 0.5
             epsilon: 1.0e-8
             candidate_mode: structure_topk
             top_k_tokens: 4
@@ -70,12 +75,25 @@ def _write_d2_d3_yaml(tmp_path: Path) -> Path:
             min_ess_fraction: 0.25
             max_abs_logit_shift: 5.0
             paired_uncorrected_sample: true
+            completion_ensemble_enabled: true
+            completion_ensemble_size: 3
+            completion_ensemble_scope: local_windows
+            completion_ensemble_rescore_top_m: 8
+            completion_ensemble_use_variance_gate: false
+            sticky_ttl_steps: 5
+            sticky_clear_on_selected: true
+            sticky_clear_on_remask: true
+            sticky_overwrite_on_refresh: true
           d3:
             enabled: true
             window_to_residue_projection: max_covering_window
             gamma_min: 0.4
             gamma_max: 0.9
             lambda_commit: 1.0
+            alpha_struct: 0.3
+            d2_evidence_nu: 1.0
+            d2_evidence_ttl_steps: 5
+            d2_evidence_requires_benefit: true
             zscore_epsilon: 1.0e-6
             same_refresh_grace: true
             final_freeze_steps: 1
@@ -132,7 +150,7 @@ def test_d2_d3_manifest_contains_surface_version_and_per_mode_configs(tmp_path: 
         window_k_max=25,
     )
     assert manifest["controller_mode"] == "d2_d3_full"
-    assert manifest["controller_surface_version"] == CONTROLLER_SURFACE_VERSION == 2
+    assert manifest["controller_surface_version"] == CONTROLLER_SURFACE_VERSION == 3
     # D2/D3/attribution/controls config blocks present as top-level views.
     assert manifest["d2_config"]["enabled"] is True
     assert manifest["d2_config"]["beta"] == 1.0
@@ -253,6 +271,191 @@ def test_per_protein_summary_aggregates_d2_d3_event_counts(tmp_path: Path):
     assert summary["same_refresh_conflict_rate"] == pytest.approx(1.0 / 3.0, abs=1e-9)
 
 
+def test_per_protein_summary_aggregates_stage_a_actuation_rates(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_d2_d3_yaml(tmp_path)
+    setup = load_controller_setup(_make_args(tmp_path, ctrl_yaml))
+    assert setup is not None
+    d2_rows = [
+        {
+            "event_type": "D2",
+            "position_i": 4,
+            "sticky_age_steps": 0,
+            "sticky_selected_flag": True,
+            "paired_disagreement_flag": True,
+            "realized_benefit_flag": True,
+            "rank_percentile_d2_written": 0.9,
+            "kl_struct_corrected": 0.1,
+        },
+        {
+            "event_type": "D2",
+            "position_i": 5,
+            "sticky_age_steps": 1,
+            "sticky_selected_flag": True,
+            "paired_disagreement_flag": True,
+            "realized_benefit_flag": False,
+            "rank_percentile_d2_written": 0.5,
+            "kl_struct_corrected": 0.2,
+        },
+        {
+            "event_type": "D2",
+            "position_i": 6,
+            "sticky_age_steps": 1,
+            "sticky_selected_flag": False,
+            "paired_disagreement_flag": None,
+            "realized_benefit_flag": None,
+            "rank_percentile_d2_written": None,
+            "kl_struct_corrected": 0.0,
+        },
+    ]
+    d3_rows = [
+        {"event_type": "D3", "position_i": 5, "remask_flag": True, "grace_flag": False}
+    ]
+    addenda = [
+        {
+            "d2_block_diagnostics": [
+                {
+                    "g_ESS_candidates": 0.0,
+                    "ensemble_delta_R_std": 0.4,
+                    "ensemble_sign_consistency": 0.75,
+                    "argmax_to_ensemble_rank_flip_rate": 0.25,
+                    "candidate_feasibility": True,
+                },
+                {
+                    "g_ESS_candidates": 1.0,
+                    "ensemble_delta_R_std": 0.2,
+                    "ensemble_sign_consistency": 1.0,
+                    "argmax_to_ensemble_rank_flip_rate": 0.0,
+                    "candidate_feasibility": False,
+                },
+            ]
+        }
+    ]
+    summary = compute_per_protein_summary(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        allele="DRB1*01:01",
+        arm=setup.config.mode,
+        refresh_records=[],
+        event_rows=d2_rows + d3_rows,
+        controller_config=setup.config,
+        refresh_addenda=addenda,
+    )
+    assert summary["selected_after_d2_rate"] == pytest.approx(2.0 / 3.0)
+    assert summary["paired_disagreement_rate"] == pytest.approx(1.0)
+    assert summary["realized_benefit_rate"] == pytest.approx(0.5)
+    assert summary["final_persistence_rate"] == pytest.approx(0.5)
+    assert summary["stage_a_rates_by_sticky_age"]["1"]["selected_after_d2_rate"] == pytest.approx(0.5)
+    assert summary["rank_percentile_d2_written_median"] == pytest.approx(0.7)
+    assert summary["argmax_to_ensemble_rank_flip_rate"] == pytest.approx(0.125)
+    assert summary["ensemble_delta_R_std_mean"] == pytest.approx(0.3)
+    assert summary["ensemble_sign_consistency_mean"] == pytest.approx(0.875)
+    assert summary["g_ESS_suppression_rate"] == pytest.approx(0.5)
+
+
+def test_stage_a_selected_after_d2_rate_uses_per_correction_denominator(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_d2_d3_yaml(tmp_path)
+    setup = load_controller_setup(_make_args(tmp_path, ctrl_yaml))
+    assert setup is not None
+    # One sticky correction delivered over three steps; selected once at age 2.
+    d2_rows = [
+        {
+            "event_type": "D2",
+            "refresh_step": 0,
+            "position_i": 4,
+            "sticky_created_step": 5,
+            "sticky_age_steps": 0,
+            "sticky_selected_flag": False,
+            "kl_struct_corrected": 0.1,
+        },
+        {
+            "event_type": "D2",
+            "refresh_step": 0,
+            "position_i": 4,
+            "sticky_created_step": 5,
+            "sticky_age_steps": 1,
+            "sticky_selected_flag": False,
+            "kl_struct_corrected": 0.1,
+        },
+        {
+            "event_type": "D2",
+            "refresh_step": 0,
+            "position_i": 4,
+            "sticky_created_step": 5,
+            "sticky_age_steps": 2,
+            "sticky_selected_flag": True,
+            "paired_disagreement_flag": True,
+            "realized_benefit_flag": True,
+            "kl_struct_corrected": 0.1,
+        },
+    ]
+    summary = compute_per_protein_summary(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        allele="DRB1*01:01",
+        arm=setup.config.mode,
+        refresh_records=[],
+        event_rows=d2_rows,
+        controller_config=setup.config,
+    )
+    assert summary["selected_after_d2_rate"] == pytest.approx(1.0)
+    assert summary["stage_a_rates_by_sticky_age"]["2"]["selected_after_d2_rate"] == pytest.approx(1.0)
+
+
+def test_stage_a_final_persistence_uses_remask_ledger_not_only_d3_rows(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_d2_d3_yaml(tmp_path)
+    setup = load_controller_setup(_make_args(tmp_path, ctrl_yaml))
+    assert setup is not None
+    d2_rows = [
+        {
+            "event_type": "D2",
+            "refresh_step": 0,
+            "position_i": 4,
+            "sticky_created_step": 5,
+            "sticky_age_steps": 0,
+            "sticky_selected_flag": True,
+            "paired_disagreement_flag": True,
+            "realized_benefit_flag": True,
+            "kl_struct_corrected": 0.1,
+        },
+        {
+            "event_type": "D2",
+            "refresh_step": 0,
+            "position_i": 5,
+            "sticky_created_step": 5,
+            "sticky_age_steps": 0,
+            "sticky_selected_flag": True,
+            "paired_disagreement_flag": True,
+            "realized_benefit_flag": True,
+            "kl_struct_corrected": 0.1,
+        },
+    ]
+    remask_rows = [
+        {
+            "event_type": "remask",
+            "position_i": 5,
+            "remask_flag": True,
+            "grace_flag": False,
+        }
+    ]
+    summary = compute_per_protein_summary(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        allele="DRB1*01:01",
+        arm=setup.config.mode,
+        refresh_records=[],
+        event_rows=d2_rows + remask_rows,
+        controller_config=setup.config,
+    )
+    assert summary["final_persistence_rate"] == pytest.approx(0.5)
+    assert summary["total_recommits"] == 1
+
+
 def test_per_protein_summary_aggregates_productive_revisit_outcomes(tmp_path: Path):
     """G2 contract: productive_revisit_* fields come from the controller's
     resolved snapshots, NOT a hard-coded null."""
@@ -353,6 +556,39 @@ def test_refresh_log_includes_nullable_d3_fields_for_monitor_only(tmp_path: Path
     for key in ("e_i", "m_i", "rho_i", "grace_positions"):
         assert key in parsed
         assert parsed[key] is None
+
+
+def test_empty_controller_events_parquet_has_stage_a_columns(tmp_path: Path):
+    write_d1_artifacts(
+        run_dir=tmp_path,
+        refresh_records_all=[],
+        event_rows_all=[],
+        per_protein_summaries=[],
+    )
+    df = pd.read_parquet(tmp_path / "controller_events.parquet")
+    for col in (
+        "sticky_age_steps",
+        "sticky_created_step",
+        "sticky_selected_flag",
+        "realized_benefit_flag",
+        "d2_evidence",
+        "rank_score",
+        "rank_percentile_d2_written",
+        "ell_struct",
+        "ell_sample",
+        "alpha_struct",
+        "d2_evidence_nu",
+        "delta_struct",
+        "struct_temperature",
+        "context_pnll",
+        "g_pnll",
+        "context_jsd",
+        "g_stability",
+        "ensemble_delta_R_std",
+        "ensemble_sign_consistency",
+        "ESS_candidates",
+    ):
+        assert col in df.columns
 
 
 def test_refresh_log_merges_d3_addendum_when_provided(tmp_path: Path):
@@ -482,7 +718,7 @@ def test_startup_prints_resolved_controller_config(tmp_path: Path, capsys):
     out = buf.getvalue()
     assert "[controller] resolved controller config:" in out
     assert "d2_d3_full" in out
-    assert "surface_version=2" in out
+    assert "surface_version=3" in out
     # Every top-level key appears on its own line.
     for top in ("d2", "d3", "attribution", "controls", "head", "reliability"):
         assert f"  {top}:" in out

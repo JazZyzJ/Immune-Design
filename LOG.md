@@ -3057,3 +3057,43 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - status: done
 - refs:
   - `L0104` (uricase case study), `L0098`/`L0100` (Tier 2 v2 + promotion)
+
+### L0107
+- timestamp: 2026-06-09T21:55:33-04:00
+- type: VERIFICATION
+- module: RF
+- trigger: User requested `PLAN_RF.md` Task D2-D3 Stage A Actuation Pipeline implementation, restricted to Stage A scope.
+- change_summary: Implemented Stage A D2/D3 actuation pipeline and post-review fixes for remask-ledger persistence metrics, per-correction D2 selection rates, d2_logits rank/freeze config materialization, ESS schema alignment, d2_d3_full D3 telemetry gating so non-refresh remask steps do not emit stale D3 event rows or productive-revisit snapshots, and current-step Stage A rank caching for remask-ledger rank_score fields.
+- rationale: The pre-Stage-A D2 correction only acted at refresh and could be erased by legacy remask; Stage A tests whether D2-written tokens can reach sampling, earn realized-benefit rank credit, and survive remask without adding Phase C/GR mechanisms. Post-review fixes prevent the A-to-B persistence gate and selected-after-D2 headline metric from being inflated or diluted by telemetry-path artifacts.
+- artifacts:
+  - `inverse_folding/reference_flow/controller_config.py`
+  - `inverse_folding/reference_flow/configs/d2_logits.yaml`
+  - `inverse_folding/reference_flow/configs/d2_d3_full.yaml`
+  - `inverse_folding/reference_flow/configs/d_monitor_full.yaml`
+  - `inverse_folding/reference_flow/controller.py`
+  - `inverse_folding/reference_flow/counterfactual.py`
+  - `inverse_folding/reference_flow/commit.py`
+  - `scripts/run_if_phase_c1.py`
+  - `doc/SCRIPTS.md`
+  - `tests/inverse_folding/test_reference_flow_controller_config.py`
+  - `tests/inverse_folding/test_reference_flow_counterfactual.py`
+  - `tests/inverse_folding/test_reference_flow_commit.py`
+  - `tests/inverse_folding/test_reference_flow_d2_d3_controller.py`
+  - `tests/scripts/test_run_if_phase_c1_d2_d3.py`
+- evidence: |
+    `pytest tests/inverse_folding/test_reference_flow_controller_config.py tests/inverse_folding/test_reference_flow_counterfactual.py tests/inverse_folding/test_reference_flow_commit.py -q` -> 92 passed.
+    `pytest tests/inverse_folding/test_reference_flow_sampler_controller.py tests/inverse_folding/test_reference_flow_d2_d3_controller.py tests/scripts/test_run_if_phase_c1_d2_d3.py -q` -> 60 passed.
+    `pytest tests/inverse_folding/test_reference_flow*.py -q` -> 187 passed, 1 existing amplification clipping warning.
+    `pytest tests/scripts/test_run_if_phase_c1_d2_d3.py -q` -> 13 passed.
+    `python - <<'PY' ... import scripts.run_if_phase_c1 ...` -> `surface 3`.
+    `bash -n scripts/submit_if_phase_c.slurm` -> clean.
+    `git diff --check` on touched Stage A files -> clean.
+- impact:
+  - scope: Reference Flow controller Stage A actuation pipeline and telemetry surfaces only; no Phase C scheduling, GR pressure, hard write-back, post-sampling accept/reject, new driver, or new SLURM script.
+  - risk: medium
+  - confidence: 0.90
+- status: done
+- next_action: Run the planned 2-protein real-head smoke on Della through `scripts/submit_if_phase_c.slurm`, then the 50-protein Stage A pilot with matched no-sticky or `sticky_ttl_steps=1` baseline before advancing to Stage B.
+- refs:
+  - `PLAN_RF.md` Task D2-D3: Stage A Actuation Pipeline
+  - `doc/RF_Controller_Architecture.md`

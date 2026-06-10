@@ -35,7 +35,11 @@ from typing import Callable, Sequence
 import numpy as np
 import torch
 
-from .commit import D3Handler, select_freeze_protected_positions
+from .commit import (
+    D3Handler,
+    compute_stage_a_rank_score,
+    select_freeze_protected_positions,
+)
 from .controller_config import ControllerConfig
 from .counterfactual import D2BlockOutcome, D2Handler, D2RefreshOutcome
 from .head_scoring import HeadScore, OnlineHeadScorer, WindowRiskRecord
@@ -180,6 +184,38 @@ class RefreshState:
     corrected_positions: frozenset[int] = field(default_factory=frozenset)
 
 
+@dataclass
+class PendingD2Correction:
+    """Sticky pre-step D2 correction state.
+
+    This state stores only the pending logit shift and refresh provenance. It
+    is intentionally separate from D2 evidence, which stores post-sampling
+    rank credit after paired disagreement and realized benefit are known.
+    """
+
+    position: int
+    created_step: int
+    refresh_step: int
+    block_id: int
+    omega_indices: tuple[int, ...]
+    delta_logit: dict[int, float]
+    r_current: float
+    gap_a: float
+    rho_B_effective: float
+    block_outcome: D2BlockOutcome
+
+
+@dataclass
+class D2EvidenceWrite:
+    """One positive D2 evidence write used by the Stage A rank face."""
+
+    position: int
+    created_step: int
+    refresh_step: int
+    block_id: int
+    gap_a: float
+
+
 class ReferenceFlowController:
     """Phase D adaptive controller covering all four D-phase modes.
 
@@ -246,6 +282,8 @@ class ReferenceFlowController:
         self._static_head_score: HeadScore | None = None
         self._refresh_state: RefreshState = RefreshState()
         self._latest_d2_outcome: D2RefreshOutcome | None = None
+        self._pending_d2_corrections: dict[int, PendingD2Correction] = {}
+        self._d2_evidence_writes: list[D2EvidenceWrite] = []
         # Per-corrected-position pending event metadata recorded at the
         # refresh step; the post-sampling hook fills the a_after /
         # a_uncorrected / paired_disagreement / chosen-token-logit fields and
@@ -254,6 +292,11 @@ class ReferenceFlowController:
         # Last D3 commit pass output (m_i, commit_score, grace) cached so
         # ``post_remask`` can emit per-remasked-residue D3 event rows.
         self._latest_d3_signal: dict | None = None
+        # Last Stage A rank face output cached for the independent remask
+        # ledger. This is deliberately separate from the D3 signal because
+        # d2_logits / d2_d3_full construct rank scores on non-refresh steps.
+        self._latest_stage_a_rank_scores: np.ndarray | None = None
+        self._latest_stage_a_rank_step: int | None = None
         # Productive-revisit tracking (PLAN_RF.md §D0 Layer B D3 metric 3).
         # ``_d3_pending_snapshots`` records pre-remask state per D3-remasked
         # residue; the next refresh that observes the residue re-committed
@@ -299,10 +342,12 @@ class ReferenceFlowController:
     def step(self, context: SamplerStepContext) -> ControllerStepResult:
         if not self.config.enabled:
             return ControllerStepResult(logits=context.logits, refresh_record=None)
+        self._expire_pending_d2_corrections(step=int(context.step))
         if context.t < self.config.t_start:
             return ControllerStepResult(logits=context.logits, refresh_record=None)
         if context.step % self.config.refresh_interval != 0:
-            return ControllerStepResult(logits=context.logits, refresh_record=None)
+            out_logits = self._apply_pending_d2_corrections_for_step(context)
+            return ControllerStepResult(logits=out_logits, refresh_record=None)
 
         completed_tokens = self._build_hard_completion(context)
         completed_sequence = self._decode_tokens(completed_tokens)
@@ -427,29 +472,32 @@ class ReferenceFlowController:
                 design_idx=self.design_idx,
                 refresh_step=self._refresh_step_counter,
             )
-            if self.config.mode in {"d2_logits", "d2_d3_full"}:
-                out_logits = d2_outcome.corrected_logits
             # Rebuild active_blocks with D2-derived g_ESS so the refresh log /
             # rho_B reflects the candidate-ESS gate when a block was demoted.
             active_blocks = _apply_d2_g_ess_to_blocks(active_blocks, d2_outcome)
-            # Capture per-corrected-position pending event metadata. Only the
-            # actually-applied (d2_logits / d2_d3_full) modes commit a logit
-            # shift; monitor_only still computes diagnostics for D0 attribution
-            # so we record the events anyway and flag the mode.
             applies_correction = self.config.mode in {"d2_logits", "d2_d3_full"}
-            self._pending_d2_events = _build_pending_d2_events(
-                d2_outcome=d2_outcome,
-                completed_tokens=completed_tokens,
-                structural_logits=context.logits,
-                corrected_logits=out_logits if applies_correction else d2_outcome.corrected_logits,
-                refresh_step=self._refresh_step_counter,
-                step=int(context.step),
-                t=float(context.t),
-                protein_id=self.protein_id,
-                design_idx=self.design_idx,
-                seed=self.seed,
-                applies_correction=applies_correction,
-            )
+            if applies_correction:
+                self._install_pending_d2_corrections(
+                    d2_outcome=d2_outcome,
+                    created_step=int(context.step),
+                    refresh_step=int(self._refresh_step_counter),
+                )
+            else:
+                # monitor_only with d2.enabled emits diagnostics, but it must
+                # not install sticky state or alter logits.
+                self._pending_d2_events = _build_pending_d2_events(
+                    d2_outcome=d2_outcome,
+                    completed_tokens=completed_tokens,
+                    structural_logits=context.logits,
+                    corrected_logits=d2_outcome.corrected_logits,
+                    refresh_step=self._refresh_step_counter,
+                    step=int(context.step),
+                    t=float(context.t),
+                    protein_id=self.protein_id,
+                    design_idx=self.design_idx,
+                    seed=self.seed,
+                    applies_correction=False,
+                )
         self._latest_d2_outcome = d2_outcome
 
         # Write D2 per-block diagnostics into the refresh addendum so the
@@ -482,7 +530,24 @@ class ReferenceFlowController:
                         "block_id": int(block.block_id),
                         "candidate_mode": block.candidate_mode,
                         "candidate_count": int(block.candidate_count),
+                        "safe_support_sizes": {
+                            str(k): int(v) for k, v in block.safe_support_sizes.items()
+                        },
+                        "candidate_count_argmax": int(block.candidate_count_argmax),
+                        "candidate_count_ensemble": int(block.candidate_count_ensemble),
                         "candidate_feasibility": bool(block.feasible),
+                        "argmax_best_delta_R_B": float(block.argmax_best_delta_R_B)
+                        if block.candidate_count_argmax
+                        else None,
+                        "ensemble_best_delta_R_B": float(block.ensemble_best_delta_R_B)
+                        if block.candidate_count_ensemble
+                        else None,
+                        "argmax_to_ensemble_rank_flip_flag": bool(
+                            block.argmax_to_ensemble_rank_flip_flag
+                        ),
+                        "argmax_to_ensemble_rank_flip_rate": float(
+                            block.argmax_to_ensemble_rank_flip_rate
+                        ),
                         "best_delta_R_B": float(block.best_delta_R_B)
                         if block.candidate_count
                         else None,
@@ -492,6 +557,13 @@ class ReferenceFlowController:
                         "ESS_B_candidates": float(block.ess),
                         "g_ESS_candidates": float(block.g_ESS_candidates),
                         "rho_B_effective": float(block.rho_B_effective),
+                        "rho_B_stageA": float(block.rho_B_effective),
+                        "context_pnll": block.context_pnll,
+                        "g_pnll": block.g_pnll,
+                        "context_jsd": block.context_jsd,
+                        "g_stability": float(block.g_stability),
+                        "ensemble_delta_R_std": block.ensemble_delta_R_std,
+                        "ensemble_sign_consistency": block.ensemble_sign_consistency,
                         "corrected_positions": list(block.corrected_positions),
                         "skipped_reason": block.skipped_reason,
                         "delta_logit_max_block": float(dl_max),
@@ -500,6 +572,17 @@ class ReferenceFlowController:
             self._refresh_addenda[self._refresh_step_counter] = {
                 "d2_block_diagnostics": block_diagnostics,
                 "delta_logit_max_refresh": float(max_abs_shift),
+                "active_sticky_positions": sorted(
+                    int(p) for p in self._pending_d2_corrections
+                ),
+                "g_ESS_suppression_rate": (
+                    float(
+                        sum(1 for d in block_diagnostics if float(d["g_ESS_candidates"]) == 0.0)
+                    )
+                    / float(len(block_diagnostics))
+                    if block_diagnostics
+                    else 0.0
+                ),
             }
 
         # D1 step 13: new hotspot count uses the same threshold as active windows.
@@ -580,6 +663,9 @@ class ReferenceFlowController:
             corrected_positions=corrected_positions,
         )
 
+        if self.config.mode in {"d2_logits", "d2_d3_full"}:
+            out_logits = self._apply_pending_d2_corrections_for_step(context)
+
         self._refresh_step_counter += 1
         return ControllerStepResult(logits=out_logits, refresh_record=record)
 
@@ -606,7 +692,7 @@ class ReferenceFlowController:
             )
 
         protected: tuple[int, ...] = ()
-        if self.config.d3.enabled:
+        if self.config.mode in {"d2_logits", "d3_revisit", "d2_d3_full"}:
             protected = select_freeze_protected_positions(
                 x_t=context.x_t,
                 mask_token_id=int(context.mask_token_id),
@@ -617,7 +703,10 @@ class ReferenceFlowController:
 
         rank_scores: np.ndarray | None = None
         refresh_addendum: dict | None = None
-        # Reset per-step flag; set below iff we actually return rank_scores.
+        self._latest_stage_a_rank_scores = None
+        self._latest_stage_a_rank_step = None
+        # Reset per-step flag; set below iff the immediately preceding
+        # post_step produced D3-attributable rank scores for this same step.
         self._d3_used_in_last_post_step = False
 
         # D3 commit pathway: refresh step + outside freeze window + handler active.
@@ -640,9 +729,10 @@ class ReferenceFlowController:
                 m_prev=self._refresh_state.m_i,
                 corrected_positions=tuple(self._refresh_state.corrected_positions),
             )
-            # Only emit rank_scores when in a D3 mode; monitor_only with
-            # d3.enabled stays identity per PLAN validation rule 2.
-            if self.config.mode in {"d3_revisit", "d2_d3_full"}:
+            # D3-only comparator keeps the previous refresh-step rank
+            # semantics. D2 modes use the Stage A rank face below after D2
+            # realized benefit/evidence has been filled.
+            if self.config.mode == "d3_revisit":
                 rank_scores = outcome.commit_score
                 self._d3_used_in_last_post_step = True
             # Persist EMA forward for the next refresh regardless of mode.
@@ -668,6 +758,7 @@ class ReferenceFlowController:
         # Cache D3 commit signal so post_remask can attribute D3 events.
         if is_refresh_now:
             self._latest_d3_signal = {
+                "step": int(context.step),
                 "m_i": outcome.m_i,
                 "rho_i": outcome.rho_i,
                 "commit_score": outcome.commit_score,
@@ -708,6 +799,26 @@ class ReferenceFlowController:
                 protein_id=self.protein_id,
                 refresh_step=self._refresh_step_counter - 1,
             )
+        self._record_d2_evidence_from_flushed_rows(
+            flushed=flushed_d2,
+            context=context,
+        )
+        self._clear_selected_pending_d2(context.selected_positions)
+        if self.config.mode in {"d2_logits", "d2_d3_full"}:
+            rank_scores = self._build_stage_a_rank_scores(context)
+            self._latest_stage_a_rank_scores = rank_scores
+            self._latest_stage_a_rank_step = int(context.step)
+            self._fill_rank_fields(flushed=flushed_d2, rank_scores=rank_scores, context=context)
+            latest_signal_matches_step = (
+                self._latest_d3_signal is not None
+                and int(self._latest_d3_signal.get("step", -1)) == int(context.step)
+            )
+            if latest_signal_matches_step:
+                self._latest_d3_signal["commit_score"] = rank_scores
+            if self.config.mode == "d2_d3_full" and self.config.d3.enabled:
+                self._d3_used_in_last_post_step = (
+                    bool(is_refresh_now) and latest_signal_matches_step
+                )
         self._event_rows.extend(flushed_d2)
 
         return PostSamplingResult(
@@ -734,6 +845,14 @@ class ReferenceFlowController:
         Otherwise the remask was driven by legacy ``scores[]`` and must not
         be attributed to D3 telemetry / productive_revisit snapshots.
         """
+        if self.config.enabled and self.config.mode in {"d2_logits", "d2_d3_full"}:
+            self._record_remask_ledger(
+                remasked_positions=remasked_positions,
+                step=int(step),
+                t=float(t),
+            )
+        if self.config.enabled and self.config.d2.enabled and remasked_positions:
+            self._clear_remasked_pending_d2(remasked_positions)
         if not (self.config.enabled and self.config.d3.enabled):
             return
         if not remasked_positions:
@@ -744,6 +863,8 @@ class ReferenceFlowController:
             return
         signal = self._latest_d3_signal
         if signal is None:
+            return
+        if int(signal.get("step", -1)) != int(step):
             return
         m_i = signal["m_i"]
         commit_score = signal["commit_score"]
@@ -829,10 +950,324 @@ class ReferenceFlowController:
                     "g_comp": None,
                     "g_ent": None,
                     "g_ESS": None,
+                    # ---- Stage A nullable columns ----
+                    **_stage_a_event_defaults(),
                 }
             )
 
     # ---------- internals ----------
+
+    def _install_pending_d2_corrections(
+        self,
+        *,
+        d2_outcome: D2RefreshOutcome,
+        created_step: int,
+        refresh_step: int,
+    ) -> None:
+        """Install or refresh sticky D2 corrections keyed by position."""
+        for block in d2_outcome.block_outcomes:
+            if block.skipped_reason is not None:
+                continue
+            by_pos: dict[int, dict[int, float]] = {}
+            for (pos, tok), shift in block.delta_logit.items():
+                by_pos.setdefault(int(pos), {})[int(tok)] = float(shift)
+            for pos in block.corrected_positions:
+                pos_i = int(pos)
+                if (
+                    pos_i in self._pending_d2_corrections
+                    and not self.config.d2.sticky_overwrite_on_refresh
+                ):
+                    continue
+                self._pending_d2_corrections[pos_i] = PendingD2Correction(
+                    position=pos_i,
+                    created_step=int(created_step),
+                    refresh_step=int(refresh_step),
+                    block_id=int(block.block_id),
+                    omega_indices=tuple(int(i) for i in block.omega_indices),
+                    delta_logit=dict(by_pos.get(pos_i, {})),
+                    r_current=float(block.r_current),
+                    gap_a=0.0,
+                    rho_B_effective=float(block.rho_B_effective),
+                    block_outcome=block,
+                )
+
+    def _expire_pending_d2_corrections(self, *, step: int) -> None:
+        ttl = int(self.config.d2.sticky_ttl_steps)
+        expired = [
+            pos
+            for pos, corr in self._pending_d2_corrections.items()
+            if int(step) - int(corr.created_step) >= ttl
+        ]
+        for pos in expired:
+            self._pending_d2_corrections.pop(int(pos), None)
+
+    def _apply_pending_d2_corrections_for_step(
+        self, context: SamplerStepContext
+    ) -> torch.Tensor:
+        if self.config.mode not in {"d2_logits", "d2_d3_full"}:
+            return context.logits
+        if not self._pending_d2_corrections:
+            self._pending_d2_events = []
+            return context.logits
+        corrected = context.logits.clone()
+        delivered: list[PendingD2Correction] = []
+        ttl = int(self.config.d2.sticky_ttl_steps)
+        for pos, corr in sorted(self._pending_d2_corrections.items()):
+            age = int(context.step) - int(corr.created_step)
+            if age < 0 or age >= ttl:
+                continue
+            if int(context.x_t[int(pos)].item()) != int(context.mask_token_id):
+                continue
+            if not corr.delta_logit:
+                continue
+            for tok, shift in corr.delta_logit.items():
+                corrected[int(pos), int(tok)] = corrected[int(pos), int(tok)] + float(shift)
+            delivered.append(corr)
+        self._pending_d2_events = _build_sticky_d2_events(
+            corrections=delivered,
+            structural_logits=context.logits,
+            corrected_logits=corrected,
+            step=int(context.step),
+            t=float(context.t),
+            protein_id=self.protein_id,
+            design_idx=self.design_idx,
+            seed=self.seed,
+            d2_config=self.config.d2,
+            d3_config=self.config.d3,
+        )
+        return corrected if delivered else context.logits
+
+    def _clear_selected_pending_d2(self, selected_positions: np.ndarray) -> None:
+        if not self.config.d2.sticky_clear_on_selected:
+            return
+        for pos in np.asarray(selected_positions, dtype=np.int64).tolist():
+            self._pending_d2_corrections.pop(int(pos), None)
+
+    def _record_remask_ledger(
+        self,
+        *,
+        remasked_positions: tuple[int, ...],
+        step: int,
+        t: float,
+    ) -> None:
+        if not remasked_positions:
+            return
+        signal = self._latest_d3_signal
+        signal_matches_step = (
+            signal is not None and int(signal.get("step", -1)) == int(step)
+        )
+        current_rank_scores = (
+            self._latest_stage_a_rank_scores
+            if self._latest_stage_a_rank_step == int(step)
+            else None
+        )
+        grace_positions = (
+            signal["grace_positions"] if signal_matches_step else set()
+        )
+        m_i = signal["m_i"] if signal is not None else None
+        commit_score = (
+            current_rank_scores
+            if current_rank_scores is not None
+            else signal["commit_score"]
+            if signal_matches_step
+            else None
+        )
+        for pos in remasked_positions:
+            pos_i = int(pos)
+            rank_score = (
+                float(commit_score[pos_i])
+                if commit_score is not None and pos_i < len(commit_score)
+                else None
+            )
+            self._event_rows.append(
+                {
+                    # ---- identity ----
+                    "protein_id": str(self.protein_id),
+                    "design_idx": int(self.design_idx),
+                    "seed": int(self.seed),
+                    "refresh_step": int(self._refresh_step_counter - 1),
+                    "step": int(step),
+                    "t": float(t),
+                    "event_type": "remask",
+                    # ---- locator ----
+                    "block_id": None,
+                    "position_i": int(pos_i),
+                    "window_start": None,
+                    "window_end": None,
+                    # ---- D2 columns ----
+                    "a_before": None,
+                    "a_after": None,
+                    "a_uncorrected": None,
+                    "delta_R_corrected": None,
+                    "delta_R_uncorrected": None,
+                    "paired_disagreement_flag": None,
+                    "logit_struct": None,
+                    "logit_corrected": None,
+                    "delta_logit_max": None,
+                    "kl_struct_corrected": None,
+                    "delta_R_B": None,
+                    "delta_R_i": None,
+                    "ESS": None,
+                    "ESS_candidates": None,
+                    "rho_B": None,
+                    # ---- D3 / remask columns ----
+                    "m_i": float(m_i[pos_i]) if m_i is not None and pos_i < len(m_i) else None,
+                    "commit_score": rank_score,
+                    "remask_flag": True,
+                    "grace_flag": bool(pos_i in grace_positions),
+                    "reason": "stage_a_remask_ledger",
+                    # ---- reliability extras ----
+                    "g_time": None,
+                    "g_comp": None,
+                    "g_ent": None,
+                    "g_ESS": None,
+                    # ---- Stage A ----
+                    **_stage_a_event_defaults(),
+                    "rank_score": rank_score,
+                }
+            )
+
+    def _clear_remasked_pending_d2(self, remasked_positions: tuple[int, ...]) -> None:
+        if not self.config.d2.sticky_clear_on_remask:
+            return
+        for pos in remasked_positions:
+            self._pending_d2_corrections.pop(int(pos), None)
+
+    def _d2_evidence_array(self, *, step: int, sequence_length: int) -> np.ndarray:
+        L = int(sequence_length)
+        out = np.zeros(L, dtype=np.float64)
+        ttl = int(self.config.d3.d2_evidence_ttl_steps)
+        still_live: list[D2EvidenceWrite] = []
+        for write in self._d2_evidence_writes:
+            age = int(step) - int(write.created_step)
+            if age < 0:
+                still_live.append(write)
+                continue
+            if age >= ttl:
+                continue
+            decay = max(0.0, 1.0 - float(age) / float(ttl))
+            value = float(write.gap_a) * decay
+            pos = int(write.position)
+            if 0 <= pos < L and value > out[pos]:
+                out[pos] = value
+            still_live.append(write)
+        self._d2_evidence_writes = still_live
+        return out
+
+    def _record_d2_evidence_from_flushed_rows(
+        self,
+        *,
+        flushed: list[dict],
+        context: PostSamplingContext,
+    ) -> None:
+        if not flushed:
+            return
+        log_probs_struct = torch.log_softmax(
+            context.structural_logits, dim=-1
+        ).detach().cpu()
+        log_probs_corr = torch.log_softmax(
+            context.corrected_logits, dim=-1
+        ).detach().cpu()
+        for row in flushed:
+            if row.get("event_type") != "D2":
+                continue
+            row.setdefault("realized_benefit_flag", None)
+            row.setdefault("d2_evidence", 0.0)
+            if not row.get("sticky_selected_flag"):
+                row["realized_benefit_flag"] = None
+                row["d2_evidence"] = 0.0
+                continue
+            a_after = row.get("a_after")
+            if a_after is None:
+                row["realized_benefit_flag"] = None
+                row["d2_evidence"] = 0.0
+                continue
+            pos = int(row["position_i"])
+            tok = int(a_after)
+            ell_struct = float(log_probs_struct[pos, tok].item())
+            ell_corr = float(log_probs_corr[pos, tok].item())
+            row["logit_struct"] = ell_struct
+            row["logit_corrected"] = ell_corr
+            row["ell_struct"] = ell_struct
+            gap_a = float(ell_corr - ell_struct)
+            dR_corr = row.get("delta_R_corrected")
+            dR_uncorr = row.get("delta_R_uncorrected")
+            benefit = (
+                dR_corr is not None
+                and dR_uncorr is not None
+                and float(dR_corr) < float(dR_uncorr)
+            )
+            row["realized_benefit_flag"] = bool(benefit)
+            disagreement = bool(row.get("paired_disagreement_flag"))
+            benefit_ok = (
+                benefit
+                if self.config.d3.d2_evidence_requires_benefit
+                else True
+            )
+            if disagreement and benefit_ok and gap_a > 0.0:
+                self._d2_evidence_writes.append(
+                    D2EvidenceWrite(
+                        position=pos,
+                        created_step=int(context.step),
+                        refresh_step=int(row["refresh_step"]),
+                        block_id=int(row["block_id"]),
+                        gap_a=float(gap_a),
+                    )
+                )
+                row["d2_evidence"] = float(gap_a)
+            else:
+                row["d2_evidence"] = 0.0
+
+    def _build_stage_a_rank_scores(self, context: PostSamplingContext) -> np.ndarray:
+        if self.config.mode == "d2_d3_full":
+            m_i = self._refresh_state.m_i
+        else:
+            m_i = None
+        d2_evidence = self._d2_evidence_array(
+            step=int(context.step),
+            sequence_length=int(context.sequence_length),
+        )
+        return compute_stage_a_rank_score(
+            structural_logits=context.structural_logits,
+            x_t=context.x_t,
+            scores=context.scores,
+            mask_token_id=int(context.mask_token_id),
+            m_i=m_i,
+            d2_evidence=d2_evidence,
+            alpha_struct=float(self.config.d3.alpha_struct),
+            lambda_commit=float(self.config.d3.lambda_commit),
+            d2_evidence_nu=float(self.config.d3.d2_evidence_nu),
+            zscore_epsilon=float(self.config.d3.zscore_epsilon),
+        )
+
+    def _fill_rank_fields(
+        self,
+        *,
+        flushed: list[dict],
+        rank_scores: np.ndarray,
+        context: PostSamplingContext,
+    ) -> None:
+        if rank_scores is None:
+            return
+        committed = (context.x_t != int(context.mask_token_id)).detach().cpu().numpy()
+        committed_scores = np.asarray(rank_scores, dtype=np.float64)[committed]
+        for row in flushed:
+            if row.get("event_type") != "D2":
+                continue
+            pos = int(row["position_i"])
+            if 0 <= pos < len(rank_scores):
+                row["rank_score"] = float(rank_scores[pos])
+                if committed_scores.size:
+                    row["rank_percentile_d2_written"] = float(
+                        (committed_scores <= float(rank_scores[pos])).mean()
+                    )
+            if row.get("a_after") is not None:
+                idx = {
+                    int(p): int(i)
+                    for i, p in enumerate(np.asarray(context.selected_positions).tolist())
+                }.get(pos)
+                if idx is not None and idx < len(context.scores):
+                    row["ell_sample"] = float(context.scores[pos])
 
     def _build_hard_completion(self, context: SamplerStepContext) -> torch.Tensor:
         x_t = context.x_t.detach().clone()
@@ -929,6 +1364,7 @@ def _build_monitor_event_row(
         "delta_R_B": None,
         "delta_R_i": None,
         "ESS": None,
+        "ESS_candidates": None,
         # ---- reliability gate (D1 owns) ----
         "rho_B": float(block.rho_B),
         # ---- D3 commit / revisit columns (nullable in D1) ----
@@ -943,6 +1379,8 @@ def _build_monitor_event_row(
         "g_comp": float(block.g_comp),
         "g_ent": float(block.g_ent),
         "g_ESS": float(block.g_ESS),
+        # ---- Stage A nullable columns ----
+        **_stage_a_event_defaults(),
     }
 
 
@@ -1138,10 +1576,131 @@ def _build_pending_d2_events(
                     "g_comp": None,
                     "g_ent": None,
                     "g_ESS": float(block.g_ESS_candidates),
+                    # ---- Stage A nullable columns ----
+                    **_stage_a_event_defaults(),
                     # ---- pending fill markers (private) ----
                     "_push_token": int(push_token),
                 }
             )
+    return pending
+
+
+def _stage_a_event_defaults() -> dict:
+    return {
+        "sticky_age_steps": None,
+        "sticky_created_step": None,
+        "sticky_selected_flag": None,
+        "sticky_expired_flag": None,
+        "realized_benefit_flag": None,
+        "d2_evidence": None,
+        "rank_score": None,
+        "rank_percentile_d2_written": None,
+        "ell_struct": None,
+        "ell_sample": None,
+        "alpha_struct": None,
+        "d2_evidence_nu": None,
+        "delta_struct": None,
+        "struct_temperature": None,
+        "context_pnll": None,
+        "g_pnll": None,
+        "context_jsd": None,
+        "g_stability": None,
+        "ensemble_delta_R_std": None,
+        "ensemble_sign_consistency": None,
+    }
+
+
+def _build_sticky_d2_events(
+    *,
+    corrections: Sequence[PendingD2Correction],
+    structural_logits: torch.Tensor,
+    corrected_logits: torch.Tensor,
+    step: int,
+    t: float,
+    protein_id: str,
+    design_idx: int,
+    seed: int,
+    d2_config,
+    d3_config,
+) -> list[dict]:
+    if not corrections:
+        return []
+    log_probs_struct = torch.log_softmax(structural_logits, dim=-1).detach().cpu()
+    log_probs_corr = torch.log_softmax(corrected_logits, dim=-1).detach().cpu()
+    pending: list[dict] = []
+    for corr in corrections:
+        pos = int(corr.position)
+        shifts = corr.delta_logit
+        if not shifts:
+            continue
+        push_token = max(shifts.items(), key=lambda kv: kv[1])[0]
+        delta_logit_max = max(abs(float(v)) for v in shifts.values())
+        kl = _per_position_kl(
+            log_p=log_probs_corr[pos],
+            log_q=log_probs_struct[pos],
+        )
+        block = corr.block_outcome
+        row = {
+            # ---- identity ----
+            "protein_id": str(protein_id),
+            "design_idx": int(design_idx),
+            "seed": int(seed),
+            "refresh_step": int(corr.refresh_step),
+            "step": int(step),
+            "t": float(t),
+            "event_type": "D2",
+            # ---- locator ----
+            "block_id": int(corr.block_id),
+            "position_i": int(pos),
+            "window_start": None,
+            "window_end": None,
+            # ---- D2 token-direction (pre-sampling delivery) ----
+            "a_before": int(torch.argmax(structural_logits[pos]).item()),
+            "a_after": None,
+            "a_uncorrected": None,
+            "delta_R_corrected": None,
+            "delta_R_uncorrected": None,
+            "paired_disagreement_flag": None,
+            "logit_struct": float(log_probs_struct[pos, int(push_token)].item()),
+            "logit_corrected": float(log_probs_corr[pos, int(push_token)].item()),
+            "delta_logit_max": float(delta_logit_max),
+            "kl_struct_corrected": float(kl),
+            "delta_R_B": float(block.best_delta_R_B),
+            "delta_R_i": None,
+            "ESS_candidates": float(block.ess),
+            "rho_B": float(corr.rho_B_effective),
+            # ---- D3 commit / revisit ----
+            "m_i": None,
+            "commit_score": None,
+            "remask_flag": False,
+            "grace_flag": None,
+            # ---- reason ----
+            "reason": "d2_sticky_delivery",
+            # ---- D1 reliability factor breakdown ----
+            "g_time": None,
+            "g_comp": None,
+            "g_ent": None,
+            "g_ESS": float(block.g_ESS_candidates),
+            # ---- Stage A ----
+            **_stage_a_event_defaults(),
+            "sticky_age_steps": int(step) - int(corr.created_step),
+            "sticky_created_step": int(corr.created_step),
+            "sticky_selected_flag": False,
+            "sticky_expired_flag": False,
+            "alpha_struct": float(d3_config.alpha_struct),
+            "d2_evidence_nu": float(d3_config.d2_evidence_nu),
+            "delta_struct": float(d2_config.delta_struct),
+            "struct_temperature": float(d2_config.struct_temperature),
+            "context_pnll": getattr(block, "context_pnll", None),
+            "g_pnll": getattr(block, "g_pnll", None),
+            "context_jsd": getattr(block, "context_jsd", None),
+            "g_stability": getattr(block, "g_stability", None),
+            "ensemble_delta_R_std": getattr(block, "ensemble_delta_R_std", None),
+            "ensemble_sign_consistency": getattr(block, "ensemble_sign_consistency", None),
+            # ---- private ----
+            "_push_token": int(push_token),
+        }
+        pending.append(row)
     return pending
 
 
@@ -1162,6 +1721,9 @@ def _flush_pending_d2_events(
     for row in pending:
         pos = int(row["position_i"])
         idx = sel_to_idx.get(pos)
+        row.setdefault("sticky_selected_flag", False)
+        row.setdefault("sticky_expired_flag", False)
+        row["sticky_selected_flag"] = bool(idx is not None)
         if idx is not None and sampled_tokens_actual.size:
             row["a_after"] = int(sampled_tokens_actual[idx])
         if (
@@ -1272,7 +1834,7 @@ def _fill_realized_delta_R(
     # conflate the two semantics. Only the actual-correction rows are
     # filled; monitor diagnostics stay null for both ΔR fields.
     for row in flushed:
-        if row.get("reason") != "d2_correction_applied":
+        if row.get("reason") not in {"d2_correction_applied", "d2_sticky_delivery"}:
             continue
         bid = int(row["block_id"])
         if bid in block_dR_corrected and row.get("a_after") is not None:
@@ -1434,9 +1996,7 @@ def _apply_d2_g_ess_to_blocks(
             new_blocks.append(blk)
             continue
         g_ESS = float(outcome.g_ESS_candidates)
-        rho_B = float(
-            _clip_unit(blk.g_time * blk.g_comp * blk.g_ent * g_ESS)
-        )
+        rho_B = float(_clip_unit(outcome.rho_B_effective))
         new_blocks.append(
             ActiveBlock(
                 block_id=blk.block_id,

@@ -92,6 +92,44 @@ def build_candidate_support(
     return out
 
 
+def build_safe_candidate_support(
+    *,
+    struct_logits: torch.Tensor,
+    positions: Sequence[int],
+    top_k: int,
+    canonical_token_ids: Sequence[int],
+    delta_struct: float,
+) -> dict[int, tuple[int, ...]]:
+    """Trust-region structural support used by Stage A.
+
+    Tokens are filtered by log-probability drop from the structural top-1
+    canonical token, then capped to ``top_k`` by structural log-prob. The
+    top-1 token is always retained.
+    """
+    canonical_arr = np.asarray(list(canonical_token_ids), dtype=np.int64)
+    if canonical_arr.size == 0:
+        raise ValueError("canonical_token_ids must be non-empty")
+    k = min(int(top_k), int(canonical_arr.shape[0]))
+    out: dict[int, tuple[int, ...]] = {}
+    for i in positions:
+        log_probs_i = torch.log_softmax(struct_logits[int(i), :], dim=-1).detach().cpu()
+        vals = log_probs_i[torch.from_numpy(canonical_arr)].numpy().astype(np.float64)
+        order = np.argsort(-vals)
+        top_val = float(vals[order[0]])
+        safe_order = [
+            int(j)
+            for j in order.tolist()
+            if float(vals[int(j)]) >= top_val - float(delta_struct)
+        ]
+        if not safe_order:
+            safe_order = [int(order[0])]
+        if int(order[0]) not in safe_order:
+            safe_order.insert(0, int(order[0]))
+        safe_order = safe_order[:k]
+        out[int(i)] = tuple(int(canonical_arr[j]) for j in safe_order)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Candidate enumeration (PLAN §D2 step behavior 8)
 # ---------------------------------------------------------------------------
@@ -104,6 +142,7 @@ def enumerate_candidates(
     max_candidates: int,
     struct_logits: torch.Tensor,
     seed_tuple: tuple,
+    struct_temperature: float = 1.0,
 ) -> tuple[tuple[tuple[int, ...], ...], str]:
     """Build the per-block candidate set.
 
@@ -129,7 +168,14 @@ def enumerate_candidates(
     for p, K in zip(pos_list, K_lists):
         K_arr = np.asarray(K, dtype=np.int64)
         per_pos_choice_arrays.append(K_arr)
-        logits_K = struct_logits[int(p), torch.from_numpy(K_arr)].detach().cpu().numpy().astype(np.float64)
+        logits_K = (
+            struct_logits[int(p), torch.from_numpy(K_arr)]
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float64)
+            / float(struct_temperature)
+        )
         logits_K = logits_K - float(logits_K.max())
         probs = np.exp(logits_K)
         probs = probs / probs.sum()
@@ -180,6 +226,7 @@ def compute_Q_B_per_candidate(
     positions: Sequence[int],
     K_i_per_pos: dict[int, tuple[int, ...]],
     struct_logits: torch.Tensor,
+    struct_temperature: float = 1.0,
 ) -> np.ndarray:
     """Joint structural probability of each candidate, factorized over positions."""
     pos_list = list(positions)
@@ -193,6 +240,7 @@ def compute_Q_B_per_candidate(
             .cpu()
             .numpy()
             .astype(np.float64)
+            / float(struct_temperature)
         )
         logits_K = logits_K - float(logits_K.max())
         probs = np.exp(logits_K)
@@ -207,6 +255,76 @@ def compute_Q_B_per_candidate(
             lp += log_prob_lookup[j][int(tok)]
         Q[c_idx] = float(np.exp(lp))
     return Q
+
+
+def compute_context_pnll(
+    *,
+    struct_logits: torch.Tensor,
+    x_t: torch.Tensor,
+    mask_token_id: int,
+    start_0b: int,
+    end_0b: int,
+) -> float | None:
+    """Mean pseudo-NLL over committed context residues in ``[start, end)``."""
+    s = max(0, int(start_0b))
+    e = min(int(x_t.shape[0]), int(end_0b))
+    if e <= s:
+        return None
+    log_probs = torch.log_softmax(struct_logits, dim=-1).detach().cpu()
+    x = x_t.detach().cpu()
+    vals: list[float] = []
+    for i in range(s, e):
+        tok = int(x[i].item())
+        if tok == int(mask_token_id):
+            continue
+        vals.append(-float(log_probs[i, tok].item()))
+    if not vals:
+        return None
+    return float(np.mean(vals))
+
+
+@dataclass(frozen=True)
+class EnsembleDiagnostics:
+    mean_delta_R: dict[int, float]
+    std_delta_R: dict[int, float]
+    sign_consistency: dict[int, float]
+    rank_flip_rate: float
+
+
+def compute_ensemble_diagnostics(
+    *,
+    argmax_delta_R: np.ndarray,
+    ensemble_delta_R_by_candidate: dict[int, np.ndarray],
+) -> EnsembleDiagnostics:
+    """Summarize local-completion ensemble deltas without applying a gate."""
+    argmax_arr = np.asarray(argmax_delta_R, dtype=np.float64)
+    mean_delta: dict[int, float] = {}
+    std_delta: dict[int, float] = {}
+    sign_consistency: dict[int, float] = {}
+    for idx, vals in ensemble_delta_R_by_candidate.items():
+        arr = np.asarray(vals, dtype=np.float64)
+        if arr.size == 0:
+            continue
+        mean_delta[int(idx)] = float(arr.mean())
+        std_delta[int(idx)] = float(arr.std(ddof=0))
+        arg_sign = np.sign(float(argmax_arr[int(idx)])) if int(idx) < argmax_arr.size else 0.0
+        if arg_sign == 0.0:
+            sign_consistency[int(idx)] = 0.0
+        else:
+            sign_consistency[int(idx)] = float((np.sign(arr) == arg_sign).mean())
+    rank_flip_rate = 0.0
+    if mean_delta:
+        indices = sorted(mean_delta)
+        arg_order = sorted(indices, key=lambda i: float(argmax_arr[i]))
+        ens_order = sorted(indices, key=lambda i: float(mean_delta[i]))
+        flips = sum(1 for a, b in zip(arg_order, ens_order) if a != b)
+        rank_flip_rate = float(flips) / float(len(indices))
+    return EnsembleDiagnostics(
+        mean_delta_R=mean_delta,
+        std_delta_R=std_delta,
+        sign_consistency=sign_consistency,
+        rank_flip_rate=rank_flip_rate,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +489,19 @@ class D2BlockOutcome:
     delta_logit: dict[tuple[int, int], float]
     skipped_reason: str | None
     r_current: float = float("nan")
+    safe_support_sizes: dict[int, int] = field(default_factory=dict)
+    candidate_count_argmax: int = 0
+    candidate_count_ensemble: int = 0
+    argmax_best_delta_R_B: float = float("nan")
+    ensemble_best_delta_R_B: float = float("nan")
+    argmax_to_ensemble_rank_flip_rate: float = 0.0
+    argmax_to_ensemble_rank_flip_flag: bool = False
+    ensemble_delta_R_std: float | None = None
+    ensemble_sign_consistency: float | None = None
+    context_pnll: float | None = None
+    g_pnll: float | None = None
+    context_jsd: float | None = None
+    g_stability: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -453,6 +584,100 @@ class D2Handler:
             corrected_positions=frozenset(corrected_positions),
         )
 
+    def _score_completion_ensemble(
+        self,
+        *,
+        candidates: Sequence[tuple[int, ...]],
+        candidate_indices: Sequence[int],
+        editable: Sequence[int],
+        block,
+        structural_logits: torch.Tensor,
+        x_t: torch.Tensor,
+        mask_token_id: int,
+        completed_tokens: torch.Tensor,
+        decode_tokens: Callable[[torch.Tensor], str],
+        scorer: Any,
+        canonical_token_ids: Sequence[int],
+        protein_id: str,
+        seed: int,
+        design_idx: int,
+        refresh_step: int,
+        r_current: float,
+        omega: tuple[int, ...],
+    ) -> dict[int, np.ndarray]:
+        records: list[tuple[str, str]] = []
+        mapping: list[int] = []
+        editable_set = {int(p) for p in editable}
+        canonical_arr = np.asarray(list(canonical_token_ids), dtype=np.int64)
+        for cand_idx in candidate_indices:
+            cand = candidates[int(cand_idx)]
+            for ens_idx in range(int(self.config.completion_ensemble_size)):
+                tokens = completed_tokens.detach().clone()
+                for pos, tok in zip(editable, cand):
+                    tokens[int(pos)] = int(tok)
+                rng = np.random.default_rng(
+                    _seed_from_tuple(
+                        (
+                            int(seed),
+                            str(protein_id),
+                            int(design_idx),
+                            int(refresh_step),
+                            int(block.block_id),
+                            int(cand_idx),
+                            int(ens_idx),
+                        )
+                    )
+                )
+                # Stage A v1 approximates the local Omega(B) completion field
+                # by the merged active-block residue span. The exact union of
+                # all covering scoring-window receptive fields is a Stage B
+                # refinement; keeping the span here avoids changing D1 active
+                # block geometry during the actuation test.
+                for pos in range(
+                    int(block.residue_start_0b), int(block.residue_end_0b)
+                ):
+                    if pos in editable_set:
+                        continue
+                    if int(x_t[pos].item()) != int(mask_token_id):
+                        continue
+                    logits_K = (
+                        structural_logits[pos, torch.from_numpy(canonical_arr)]
+                        .detach()
+                        .cpu()
+                        .numpy()
+                        .astype(np.float64)
+                        / float(self.config.struct_temperature)
+                    )
+                    logits_K = logits_K - float(logits_K.max())
+                    probs = np.exp(logits_K)
+                    probs = probs / probs.sum()
+                    choice = int(rng.choice(canonical_arr.shape[0], p=probs))
+                    tokens[pos] = int(canonical_arr[choice])
+                records.append(
+                    (
+                        f"d2_b{int(block.block_id)}_c{int(cand_idx)}_e{int(ens_idx)}",
+                        decode_tokens(tokens),
+                    )
+                )
+                mapping.append(int(cand_idx))
+        if not records:
+            return {}
+        batch = scorer.score_batch_same_protein(
+            protein_id=str(protein_id), records=records
+        )
+        out: dict[int, list[float]] = {int(i): [] for i in candidate_indices}
+        for score, cand_idx in zip(batch.scores, mapping):
+            risk = compute_local_risk(
+                window_risks=tuple(float(w.z) for w in score.windows),
+                omega_indices=omega,
+                aggregation="LME",
+            )
+            out[int(cand_idx)].append(float(risk - float(r_current)))
+        return {
+            int(idx): np.asarray(vals, dtype=np.float64)
+            for idx, vals in out.items()
+        }
+
     def _process_block(
         self,
         *,
@@ -502,11 +727,40 @@ class D2Handler:
                 r_current=float(r_current_unused),
             )
 
-        K = build_candidate_support(
+        r_current = compute_local_risk(
+            window_risks=current_window_risks,
+            omega_indices=omega,
+            aggregation="LME",
+        )
+        context_pnll = compute_context_pnll(
+            struct_logits=structural_logits,
+            x_t=x_t,
+            mask_token_id=int(mask_token_id),
+            # Same Stage A v1 locality approximation as the completion
+            # ensemble: use the merged active-block span rather than expanding
+            # to every scoring-window receptive-field edge.
+            start_0b=int(block.residue_start_0b),
+            end_0b=int(block.residue_end_0b),
+        )
+        if context_pnll is None:
+            return _empty_block_outcome(
+                block_id=int(block.block_id),
+                omega=omega,
+                reason="no_committed_context",
+                r_current=float(r_current),
+                context_pnll=None,
+                g_pnll=0.0,
+            )
+        g_pnll = float(math.exp(-float(context_pnll) / float(self.config.context_pnll_h0)))
+        g_stability = 1.0
+        context_jsd = None
+
+        K = build_safe_candidate_support(
             struct_logits=structural_logits,
             positions=editable,
             top_k=int(self.config.top_k_tokens),
             canonical_token_ids=canonical_token_ids,
+            delta_struct=float(self.config.delta_struct),
         )
         candidates, mode = enumerate_candidates(
             positions=editable,
@@ -520,6 +774,7 @@ class D2Handler:
                 int(refresh_step),
                 int(block.block_id),
             ),
+            struct_temperature=float(self.config.struct_temperature),
         )
 
         # Build candidate sequences and score in one batch.
@@ -535,12 +790,7 @@ class D2Handler:
             protein_id=str(protein_id), records=records
         )
 
-        r_current = compute_local_risk(
-            window_risks=current_window_risks,
-            omega_indices=omega,
-            aggregation="LME",
-        )
-        delta_R_B = np.array(
+        delta_R_argmax = np.array(
             [
                 compute_local_risk(
                     window_risks=tuple(float(w.z) for w in batch.scores[c_idx].windows),
@@ -552,18 +802,94 @@ class D2Handler:
             ],
             dtype=np.float64,
         )
+        argmax_best_delta_R_B = (
+            float(delta_R_argmax.min()) if delta_R_argmax.size else float("nan")
+        )
+
+        candidate_indices = tuple(range(len(candidates)))
+        ensemble_diag = compute_ensemble_diagnostics(
+            argmax_delta_R=delta_R_argmax,
+            ensemble_delta_R_by_candidate={},
+        )
+        if self.config.completion_ensemble_enabled and len(candidates) > 0:
+            shortlist_size = min(
+                int(self.config.completion_ensemble_rescore_top_m),
+                int(len(candidates)),
+            )
+            candidate_indices = tuple(
+                int(i) for i in np.argsort(delta_R_argmax)[:shortlist_size].tolist()
+            )
+            ensemble_delta_by_idx = self._score_completion_ensemble(
+                candidates=candidates,
+                candidate_indices=candidate_indices,
+                editable=editable,
+                block=block,
+                structural_logits=structural_logits,
+                x_t=x_t,
+                mask_token_id=int(mask_token_id),
+                completed_tokens=completed_tokens,
+                decode_tokens=decode_tokens,
+                scorer=scorer,
+                canonical_token_ids=canonical_token_ids,
+                protein_id=protein_id,
+                seed=seed,
+                design_idx=design_idx,
+                refresh_step=refresh_step,
+                r_current=float(r_current),
+                omega=omega,
+            )
+            ensemble_diag = compute_ensemble_diagnostics(
+                argmax_delta_R=delta_R_argmax,
+                ensemble_delta_R_by_candidate=ensemble_delta_by_idx,
+            )
+            delta_R_B = np.array(
+                [ensemble_diag.mean_delta_R[int(i)] for i in candidate_indices],
+                dtype=np.float64,
+            )
+            candidates_effective = tuple(candidates[int(i)] for i in candidate_indices)
+        else:
+            delta_R_B = delta_R_argmax
+            candidates_effective = tuple(candidates)
+
+        # GUARD (Stage A counterfactual review #7): sampled candidate
+        # enumeration combined with an ensemble shortlist that strictly reduces
+        # the candidate set makes the uniform-over-shortlist Q marginal (built
+        # in the ``mode == "sampled"`` branch of the projection below) a biased
+        # estimate of Q_B^safe — the shortlist is a delta_R-selected subset, not
+        # an i.i.d. Q draw, so the log(pi/Q) correction is distorted. The
+        # canonical Stage A preset never reaches sampled mode
+        # (n_cart = prod(|K_i|) <= max_candidates_per_block → cartesian), so this
+        # path is untested. Fail fast instead of silently emitting a biased
+        # correction. Before widening the candidate budget so n_cart exceeds
+        # max_candidates_per_block, project pi and Q over the FULL candidate set
+        # (argmax delta_R for non-shortlisted candidates, ensemble mean for the
+        # shortlist) so uniform-over-sample stays an unbiased Q estimate.
+        if mode == "sampled" and len(candidates_effective) != len(candidates):
+            raise NotImplementedError(
+                "D2 sampled candidate mode combined with ensemble shortlisting "
+                "is not supported in Stage A: the uniform-over-shortlist Q "
+                "marginal is a biased estimate of Q_B^safe. Keep the candidate "
+                "budget so enumeration stays cartesian "
+                "(prod(|K_i|) <= max_candidates_per_block), or implement "
+                "full-candidate-set projection before enabling this path."
+            )
+
+        ensemble_best_delta_R_B = (
+            float(delta_R_B.min()) if delta_R_B.size else float("nan")
+        )
 
         Q_B = compute_Q_B_per_candidate(
-            candidates=candidates,
+            candidates=candidates_effective,
             positions=editable,
             K_i_per_pos=K,
             struct_logits=structural_logits,
+            struct_temperature=float(self.config.struct_temperature),
         )
         weights = compute_weights(
             mode=mode, Q_B=Q_B, delta_R_B=delta_R_B, beta=float(self.config.beta)
         )
         ess = compute_ess(weights)
-        ess_fraction = ess / float(len(candidates)) if candidates else 0.0
+        ess_fraction = ess / float(len(candidates_effective)) if candidates_effective else 0.0
         feasible, best_dR = compute_feasibility(
             delta_R_B=delta_R_B,
             min_delta_R_improvement=float(self.config.min_delta_R_improvement),
@@ -578,7 +904,7 @@ class D2Handler:
                 editable_positions=tuple(editable),
                 K_i_per_pos=K,
                 candidate_mode=mode,
-                candidate_count=len(candidates),
+                candidate_count=len(candidates_effective),
                 delta_R_B=tuple(float(x) for x in delta_R_B.tolist()),
                 Q_B=tuple(float(x) for x in Q_B.tolist()),
                 weights_unnormalized=tuple(float(x) for x in weights.tolist()),
@@ -593,6 +919,19 @@ class D2Handler:
                 delta_logit={},
                 skipped_reason="low_ess",
                 r_current=float(r_current),
+                safe_support_sizes={int(p): len(K[int(p)]) for p in editable},
+                candidate_count_argmax=len(candidates),
+                candidate_count_ensemble=len(candidates_effective),
+                argmax_best_delta_R_B=float(argmax_best_delta_R_B),
+                ensemble_best_delta_R_B=float(ensemble_best_delta_R_B),
+                argmax_to_ensemble_rank_flip_rate=float(ensemble_diag.rank_flip_rate),
+                argmax_to_ensemble_rank_flip_flag=bool(ensemble_diag.rank_flip_rate > 0.0),
+                ensemble_delta_R_std=_mean_optional(ensemble_diag.std_delta_R),
+                ensemble_sign_consistency=_mean_optional(ensemble_diag.sign_consistency),
+                context_pnll=float(context_pnll),
+                g_pnll=float(g_pnll),
+                context_jsd=context_jsd,
+                g_stability=float(g_stability),
             )
         g_ESS_candidates = 1.0
 
@@ -603,7 +942,7 @@ class D2Handler:
                 editable_positions=tuple(editable),
                 K_i_per_pos=K,
                 candidate_mode=mode,
-                candidate_count=len(candidates),
+                candidate_count=len(candidates_effective),
                 delta_R_B=tuple(float(x) for x in delta_R_B.tolist()),
                 Q_B=tuple(float(x) for x in Q_B.tolist()),
                 weights_unnormalized=tuple(float(x) for x in weights.tolist()),
@@ -618,12 +957,62 @@ class D2Handler:
                 delta_logit={},
                 skipped_reason="not_feasible",
                 r_current=float(r_current),
+                safe_support_sizes={int(p): len(K[int(p)]) for p in editable},
+                candidate_count_argmax=len(candidates),
+                candidate_count_ensemble=len(candidates_effective),
+                argmax_best_delta_R_B=float(argmax_best_delta_R_B),
+                ensemble_best_delta_R_B=float(ensemble_best_delta_R_B),
+                argmax_to_ensemble_rank_flip_rate=float(ensemble_diag.rank_flip_rate),
+                argmax_to_ensemble_rank_flip_flag=bool(ensemble_diag.rank_flip_rate > 0.0),
+                ensemble_delta_R_std=_mean_optional(ensemble_diag.std_delta_R),
+                ensemble_sign_consistency=_mean_optional(ensemble_diag.sign_consistency),
+                context_pnll=float(context_pnll),
+                g_pnll=float(g_pnll),
+                context_jsd=context_jsd,
+                g_stability=float(g_stability),
+            )
+
+        if float(self.config.beta) == 0.0:
+            return D2BlockOutcome(
+                block_id=int(block.block_id),
+                omega_indices=omega,
+                editable_positions=tuple(editable),
+                K_i_per_pos=K,
+                candidate_mode=mode,
+                candidate_count=len(candidates_effective),
+                delta_R_B=tuple(float(x) for x in delta_R_B.tolist()),
+                Q_B=tuple(float(x) for x in Q_B.tolist()),
+                weights_unnormalized=tuple(float(x) for x in weights.tolist()),
+                ess=float(ess),
+                ess_fraction=float(ess_fraction),
+                g_ESS_candidates=float(g_ESS_candidates),
+                feasible=True,
+                best_delta_R_B=float(best_dR),
+                mean_delta_R_B=float(mean_dR),
+                rho_B_effective=0.0,
+                corrected_positions=(),
+                delta_logit={},
+                skipped_reason="beta_zero",
+                r_current=float(r_current),
+                safe_support_sizes={int(p): len(K[int(p)]) for p in editable},
+                candidate_count_argmax=len(candidates),
+                candidate_count_ensemble=len(candidates_effective),
+                argmax_best_delta_R_B=float(argmax_best_delta_R_B),
+                ensemble_best_delta_R_B=float(ensemble_best_delta_R_B),
+                argmax_to_ensemble_rank_flip_rate=float(ensemble_diag.rank_flip_rate),
+                argmax_to_ensemble_rank_flip_flag=bool(ensemble_diag.rank_flip_rate > 0.0),
+                ensemble_delta_R_std=_mean_optional(ensemble_diag.std_delta_R),
+                ensemble_sign_consistency=_mean_optional(ensemble_diag.sign_consistency),
+                context_pnll=float(context_pnll),
+                g_pnll=float(g_pnll),
+                context_jsd=context_jsd,
+                g_stability=float(g_stability),
             )
 
         w_sum = float(weights.sum())
         w_norm = weights / w_sum if w_sum > 0.0 else weights
         pi = project_marginals(
-            candidates=candidates,
+            candidates=candidates_effective,
             weights_normalized=w_norm,
             positions=editable,
             K_i_per_pos=K,
@@ -641,27 +1030,45 @@ class D2Handler:
         #   both ``pi`` and ``Q`` from the same draws so beta=0 yields a
         #   strict null (PLAN_RF.md §"D2 step behavior" 19).
         if mode == "sampled":
-            n_cand = len(candidates)
+            # ``candidates_effective`` here is the FULL i.i.d. sample: the
+            # review-#7 guard above rejects sampled mode whenever the ensemble
+            # shortlist reduced the candidate set, so uniform-over-sample is an
+            # unbiased empirical estimate of the Q_B^safe marginal (projecting
+            # both pi and Q from the same draws also keeps the beta=0 null
+            # strict, PLAN_RF.md §"D2 step behavior" 19).
+            n_cand = len(candidates_effective)
             uniform = (
                 np.full(n_cand, 1.0 / float(n_cand), dtype=np.float64)
                 if n_cand > 0
                 else np.zeros(0, dtype=np.float64)
             )
             Q_marg = project_marginals(
-                candidates=candidates,
+                candidates=candidates_effective,
                 weights_normalized=uniform,
+                positions=editable,
+                K_i_per_pos=K,
+            )
+        elif len(candidates_effective) != len(candidates):
+            q_sum = float(Q_B.sum())
+            q_norm = Q_B / q_sum if q_sum > 0.0 else Q_B
+            Q_marg = project_marginals(
+                candidates=candidates_effective,
+                weights_normalized=q_norm,
                 positions=editable,
                 K_i_per_pos=K,
             )
         else:
             Q_marg = _per_position_Q_marginal(
-                positions=editable, K_i_per_pos=K, struct_logits=structural_logits
+                positions=editable,
+                K_i_per_pos=K,
+                struct_logits=structural_logits,
+                struct_temperature=float(self.config.struct_temperature),
             )
 
         rho_B_effective = (
             float(block.g_time)
-            * float(block.g_comp)
-            * float(block.g_ent)
+            * float(g_pnll)
+            * float(g_stability)
             * float(g_ESS_candidates)
         )
         rho_B_effective = max(0.0, min(1.0, rho_B_effective))
@@ -681,7 +1088,7 @@ class D2Handler:
             editable_positions=tuple(editable),
             K_i_per_pos=K,
             candidate_mode=mode,
-            candidate_count=len(candidates),
+            candidate_count=len(candidates_effective),
             delta_R_B=tuple(float(x) for x in delta_R_B.tolist()),
             Q_B=tuple(float(x) for x in Q_B.tolist()),
             weights_unnormalized=tuple(float(x) for x in weights.tolist()),
@@ -696,6 +1103,19 @@ class D2Handler:
             delta_logit=delta,
             skipped_reason=None,
             r_current=float(r_current),
+            safe_support_sizes={int(p): len(K[int(p)]) for p in editable},
+            candidate_count_argmax=len(candidates),
+            candidate_count_ensemble=len(candidates_effective),
+            argmax_best_delta_R_B=float(argmax_best_delta_R_B),
+            ensemble_best_delta_R_B=float(ensemble_best_delta_R_B),
+            argmax_to_ensemble_rank_flip_rate=float(ensemble_diag.rank_flip_rate),
+            argmax_to_ensemble_rank_flip_flag=bool(ensemble_diag.rank_flip_rate > 0.0),
+            ensemble_delta_R_std=_mean_optional(ensemble_diag.std_delta_R),
+            ensemble_sign_consistency=_mean_optional(ensemble_diag.sign_consistency),
+            context_pnll=float(context_pnll),
+            g_pnll=float(g_pnll),
+            context_jsd=context_jsd,
+            g_stability=float(g_stability),
         )
 
 
@@ -705,6 +1125,8 @@ def _empty_block_outcome(
     omega: tuple[int, ...],
     reason: str,
     r_current: float = float("nan"),
+    context_pnll: float | None = None,
+    g_pnll: float | None = None,
 ) -> D2BlockOutcome:
     return D2BlockOutcome(
         block_id=block_id,
@@ -727,7 +1149,18 @@ def _empty_block_outcome(
         delta_logit={},
         skipped_reason=reason,
         r_current=float(r_current),
+        context_pnll=context_pnll,
+        g_pnll=g_pnll,
     )
+
+
+def _mean_optional(values: dict[int, float]) -> float | None:
+    if not values:
+        return None
+    arr = np.asarray(list(values.values()), dtype=np.float64)
+    if arr.size == 0:
+        return None
+    return float(arr.mean())
 
 
 def _per_position_Q_marginal(
@@ -735,6 +1168,7 @@ def _per_position_Q_marginal(
     positions: Sequence[int],
     K_i_per_pos: dict[int, tuple[int, ...]],
     struct_logits: torch.Tensor,
+    struct_temperature: float = 1.0,
 ) -> dict[int, dict[int, float]]:
     out: dict[int, dict[int, float]] = {}
     for p in positions:
@@ -746,6 +1180,7 @@ def _per_position_Q_marginal(
             .cpu()
             .numpy()
             .astype(np.float64)
+            / float(struct_temperature)
         )
         logits_K = logits_K - float(logits_K.max())
         probs = np.exp(logits_K)

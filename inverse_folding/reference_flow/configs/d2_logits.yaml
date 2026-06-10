@@ -1,8 +1,8 @@
 # Phase D2-only preset: active-block hard-counterfactual logit correction.
 #
 # PLAN_RF.md §D2-D3 validation rule 3: mode=d2_logits requires
-# d2.enabled=true and d3.enabled=false. D3 commit/revisit is OFF; remask
-# ranking falls back to the legacy ``scores[]`` path.
+# d2.enabled=true and d3.enabled=false. D3 commit/revisit is OFF, but Stage A
+# still emits non-null rank_scores with D3 EMA/evidence terms set to zero.
 controller:
   enabled: true
   mode: d2_logits
@@ -22,12 +22,16 @@ controller:
   reliability:
     time_k: 20.0
     entropy_h0: 1.5
-    min_completion_fraction: 0.50
+    min_completion_fraction: 0.0
     min_rho_to_emit_event: 0.0
   d2:
     enabled: true
     beta: 1.0
-    eta: 1.0
+    eta: 0.7
+    struct_temperature: 1.0
+    delta_struct: 1.5
+    context_pnll_h0: 2.0
+    context_jsd_h0: 0.5
     epsilon: 1.0e-8
     candidate_mode: structure_topk
     top_k_tokens: 4
@@ -38,6 +42,15 @@ controller:
     min_ess_fraction: 0.25
     max_abs_logit_shift: 5.0
     paired_uncorrected_sample: true
+    completion_ensemble_enabled: true
+    completion_ensemble_size: 3
+    completion_ensemble_scope: local_windows
+    completion_ensemble_rescore_top_m: 8
+    completion_ensemble_use_variance_gate: false
+    sticky_ttl_steps: 5
+    sticky_clear_on_selected: true
+    sticky_clear_on_remask: true
+    sticky_overwrite_on_refresh: true
   d3:
     enabled: false
   attribution:

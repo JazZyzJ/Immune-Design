@@ -13,6 +13,7 @@ from inverse_folding.reference_flow.commit import (
     compute_commit_score,
     compute_ema_gamma,
     compute_residue_reliability,
+    compute_stage_a_rank_score,
     project_window_excess_to_residue,
     select_freeze_protected_positions,
     update_ema,
@@ -237,3 +238,69 @@ def test_freeze_final_freeze_steps_one_aligns_with_last_step():
         x_t=x_t, mask_token_id=MASK_TOKEN_ID, step=9, n_steps=10, final_freeze_steps=1
     )
     assert set(protected) == {0, 1}
+
+
+# ---------------------------------------------------------------------------
+# Stage A multi-objective rank face
+# ---------------------------------------------------------------------------
+
+
+def test_stage_a_rank_score_combines_active_terms_over_all_committed_residues():
+    L = 4
+    logits = torch.full((L, VOCAB_SIZE), -3.0)
+    logits[0, 5] = 4.0
+    logits[1, 6] = 3.0
+    logits[2, 7] = 2.0
+    logits[3, 8] = 1.0
+    x_t = torch.tensor([5, 6, MASK_TOKEN_ID, 8])
+    scores = np.array([-0.1, -2.0, -np.inf, -0.5], dtype=np.float64)
+    m_i = np.array([0.0, 2.0, 100.0, 1.0], dtype=np.float64)
+    d2 = np.array([0.0, 1.5, 0.0, 0.5], dtype=np.float64)
+    scores_before = scores.copy()
+
+    rank = compute_stage_a_rank_score(
+        structural_logits=logits,
+        x_t=x_t,
+        scores=scores,
+        mask_token_id=MASK_TOKEN_ID,
+        m_i=m_i,
+        d2_evidence=d2,
+        alpha_struct=0.25,
+        lambda_commit=0.5,
+        d2_evidence_nu=2.0,
+        zscore_epsilon=1.0e-6,
+    )
+
+    eligibility = np.array([True, True, False, True])
+    ell_struct = compute_chosen_token_logprob(
+        struct_logits=logits, x_t=x_t, mask_token_id=MASK_TOKEN_ID
+    )
+    expected = (
+        0.25 * z_score(values=ell_struct, eligibility_mask=eligibility, zscore_epsilon=1e-6)
+        + 0.75 * z_score(values=scores, eligibility_mask=eligibility, zscore_epsilon=1e-6)
+        - 0.5 * z_score(values=m_i, eligibility_mask=eligibility, zscore_epsilon=1e-6)
+        + 2.0 * z_score(values=d2, eligibility_mask=eligibility, zscore_epsilon=1e-6)
+    )
+    np.testing.assert_allclose(rank, expected, rtol=1e-6)
+    assert rank[2] == 0.0
+    np.testing.assert_array_equal(scores, scores_before)
+
+
+def test_stage_a_rank_degenerate_terms_contribute_zero():
+    L = 3
+    logits = torch.zeros((L, VOCAB_SIZE))
+    x_t = torch.tensor([5, MASK_TOKEN_ID, MASK_TOKEN_ID])
+    scores = np.array([-0.1, -np.inf, -np.inf])
+    rank = compute_stage_a_rank_score(
+        structural_logits=logits,
+        x_t=x_t,
+        scores=scores,
+        mask_token_id=MASK_TOKEN_ID,
+        m_i=None,
+        d2_evidence=np.zeros(L, dtype=np.float64),
+        alpha_struct=0.3,
+        lambda_commit=1.0,
+        d2_evidence_nu=1.0,
+        zscore_epsilon=1.0e-6,
+    )
+    np.testing.assert_allclose(rank, np.zeros(L, dtype=np.float64))

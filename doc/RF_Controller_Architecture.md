@@ -1,7 +1,7 @@
-# D2 Trust-Region Logit Pipeline
+# Reference Flow Adaptive Controller: Actuation and Unified Actionability
 
-**Status**: design contract. Staged rollout in §2.10 — Stage A (actuation, §2.1–2.7) implementation-ready; Stage B (targeting field, §2.9) gated on Stage A; Stage C (global-risk temperature + Phase C schedule) deferred.
-**Scope**: Phase D D2 logit correction, structure–head balance
+**Status**: design contract. Staged rollout in §2.9 — Stage A (actuation, §2.1–2.7) implementation-ready; Stage B (targeting field, §2.8) gated on Stage A; Stage C (global-risk temperature + Phase C schedule) deferred.
+**Scope**: Phase D adaptive controller — D2 actuation pipeline + unified GR × Phase C/D actionability field
 **Related**: `doc/Reference_Flow_Derivation.md` §4.7 D2, `PLAN_RF.md` Task D2/D3, `report/Experimentresults0522.md` §14
 
 ---
@@ -24,7 +24,16 @@ The fix is a coherent pipeline, not isolated patches. Calling each piece "an alt
 
 ---
 
-## 2. The D2 Trust-Region Logit Pipeline
+## 2. Controller design
+
+The controller has two layers, and they fix two different bottlenecks. §2.9 makes the ordering between them load-bearing:
+
+- **Part I — Actuation pipeline (§2.1–2.7)**: whether an immune-steered token survives to the final sequence.
+- **Part II — Unified controller (§2.8–2.9)**: where the controller should act, and how global pressure and the Phase C schedule consume one shared actionability field.
+
+---
+
+**Part I — Actuation pipeline (§2.1–2.7).**
 
 **One-line definition**: D2 constructs an immune-favored posterior within a structurally-acceptable candidate space, delivers the resulting logit shift as a sparse sticky field over the refresh interval, samples through the existing categorical machinery, and lets a multi-objective commit score decide whether the resulting token is worth keeping.
 
@@ -172,7 +181,7 @@ immune pressure / structural pressure  ~=  beta relative to T_struct
 - $\alpha$ and $\nu$ are the post-sampling Pareto retention terms: they decide whether an immune-steered token gets enough rank credit to survive reparam while still retaining structural sanity.
 - $\lambda$ is the D3 immune-risk pressure on already committed residues.
 
-For v1, these remain separate fields because each one diagnoses a different failure mode in the three-filter bottleneck. The longer-term goal is to collapse part of this surface into a smaller controller-level temperature after P1/P2 proves that D2 can land and persist. In particular, a future global-risk temperature may scale both D2's $\beta$ and D3's $\lambda$ so low-risk proteins are not over-steered while high-risk proteins still receive strong intervention.
+For v1, these remain separate fields because each one diagnoses a different failure mode in the three-filter bottleneck. The longer-term goal is to collapse part of this surface into a smaller controller-level temperature after Stage A proves that D2 can land and persist. That controller-level temperature is the global-risk scalar `g_GR` defined in §2.8, which scales both D2's $\beta$ and D3's $\lambda$ so low-risk proteins are not over-steered while high-risk proteins still receive strong intervention.
 
 ### 2.6 Context reliability for $\rho_B$
 
@@ -254,47 +263,15 @@ Upgrade conditions:
 - If ensemble variance is high but sign consistency remains high for beneficial candidates, do **not** suppress those candidates; variance is then likely identifying a real immune opportunity rather than bad context.
 - If ensemble variance is high and sign consistency is near random, delay D2 onset or strengthen `g_pnll` / `g_stability`; the problem is context reliability, not candidate weighting.
 
-### 2.8 Phase C schedule coupling: editability, not static-prior ordering
+---
 
-The same bottleneck that motivates sticky delivery (§2.2) also changes how Phase C should use the scheduler. A static WT-derived prior is no longer a reliable general-purpose schedule field when generated sequences drift far from WT. More importantly, a pure "high risk means later unmask" rule can conflict with D2: if the controller has already found a useful correction, keeping the target position masked too long lowers `selected_after_d2_rate` and prevents the correction from reaching the final sequence.
+**Part II — Unified controller (§2.8–2.9).**
 
-For Phase C, the scheduler should therefore be interpreted as an **editability controller** rather than a static ordering device. Online active regions should be discovered from current-state actionability, not from the static-subtractive excess currently sketched in [`PLAN_RF.md` Task D1](../PLAN_RF.md#task-d1-reliability-gated-online-refresh-and-active-blocks). In particular, the current rule
+Part I makes a steered token survive. Part II decides *where* to steer, *how hard* globally, and *when* the Phase C schedule should expose or lock a region — all from one shared actionability field. The rollout (§2.9) keeps these layered: the field is only worth building once actuation (Part I) is proven.
 
-```text
-window_excess = max(0, z_dyn - z_static - excess_threshold)
-```
+### 2.8 Typed actionability state: GR × Phase C/D
 
-is too load-bearing for both Phase C and D2/D3. It can hide persistent WT hotspots that remain high in the generated state, and it can bias active-block discovery when the WT prior is weak or misleading. The active-block definition in [`PLAN_RF.md` Task D2-D3](../PLAN_RF.md#task-d2-d3-hard-counterfactual-logits-and-ema-commitrevisit) should be revised around the current online landscape:
-
-$$
-u_i^{\mathrm{risk}}(t) = \mathrm{Proj}_i\!\left(H(C(x_t,q_t))\right),
-$$
-
-with static WT and NoD baselines reserved for attribution, reporting, and negative controls rather than runtime subtraction.
-
-The Phase C schedule surface should then have three modes:
-
-1. **Hold**: when context is unreliable or no structurally safe candidate exists, active risky regions remain editable and are delayed.
-2. **Execute**: when a D2 posterior correction exists inside the sticky TTL (§2.2) and passes the trust-region / reliability logic (§2.1, §2.6, §2.7), the scheduler should increase the chance that still-masked target positions actually unmask during that TTL.
-3. **Freeze**: when online risk drops and the commit face (§2.4) assigns high multi-objective rank, the region should stop churning and move toward final commitment.
-
-A minimal schedule-coupling form is:
-
-$$
-\tilde{p}_i^{\mathrm{unmask}}(t)
-\propto
-p_i^{\mathrm{base}}(t)
-\exp\!\left(-\alpha_{\mathrm{hold}}(t)u_i^{\mathrm{hold}}(t)\right)
-\left(1+\alpha_{\mathrm{exec}}(t)u_i^{\mathrm{exec}}(t)\right),
-$$
-
-where $u_i^{\mathrm{exec}}(t)$ is nonzero only for positions with a live sticky D2 correction in $\mathcal{P}_{\mathrm{D2}}(t)$. The hold term preserves late editable space for risky regions; the execute term prevents immune-favored logits from being computed but never sampled. The total unmask budget should be normalized per step so this coupling changes **which** positions receive edit opportunity, not the overall denoising rate.
-
-This connects the four D2 faces to Phase C directly: the trust region (§2.1) decides whether schedule execution is structurally allowed; sticky delivery (§2.2) defines the execution window; the commit face (§2.4) defines freeze readiness; and the Pareto temperature view (§2.5) suggests that $\alpha_{\mathrm{hold}}$, $\alpha_{\mathrm{exec}}$, $\beta$, and $\lambda$ should eventually be coupled by one controller-level pressure. The deferred Bernoulli-rate idea (§6.C) is therefore not just an appendix trick: it is the Phase C scheduler counterpart of the logit pipeline, but it should be introduced only after the active-block definition is fixed and the sticky-logit persistence metrics are measurable.
-
-### 2.9 Typed actionability state: GR × Phase C/D
-
-**Rollout note — read before implementing this section.** Everything in §2.9 is *targeting* infrastructure: it defines *where* the controller acts. It does **not** address *actuation* — whether a steered token survives to the final sequence — which is the job of §2.1–2.4. The D3 pilot makes the ordering non-negotiable: targeting was faithful (recommit enrichment ≈ 2.7×) while actuation was empty (productive revisit ≈ coin flip, final immune ≈ NoD). Replacing D3's scalar `m_i` with the richer typed `A_i(t)` below does **not** change that outcome unless actuation is fixed first. The value of this entire field is therefore gated on D2 actuation being proven (**Stage A in §2.10**); do not implement `A_i(t)` before final-sequence persistence is demonstrated.
+**Rollout note — read before implementing this section.** Everything in §2.8 is *targeting* infrastructure: it defines *where* the controller acts. It does **not** address *actuation* — whether a steered token survives to the final sequence — which is the job of §2.1–2.4. The D3 pilot makes the ordering non-negotiable: targeting was faithful (recommit enrichment ≈ 2.7×) while actuation was empty (productive revisit ≈ coin flip, final immune ≈ NoD). Replacing D3's scalar `m_i` with the richer typed `A_i(t)` below does **not** change that outcome unless actuation is fixed first. The value of this entire field is therefore gated on D2 actuation being proven (**Stage A in §2.9**); do not implement `A_i(t)` before final-sequence persistence is demonstrated.
 
 The unified architecture should not force GR, Phase C, D1, D2, and D3 to consume one universal scalar. The common object is a **typed local actionability state** that preserves evidence provenance:
 
@@ -347,6 +324,14 @@ Additional control channels:
 | `f_rank_i(t)` | structure/sample/commit stability | supports D3 freeze/protection |
 
 `b_env_i(t)` may reuse the local-completion machinery from §2.7, but it must not be computed from the already-selected D2 active blocks it is meant to justify. In Stage B, compute proposal-envelope evidence from a pre-D2 current-landscape seed set or coarse residue/window sweep, then use that evidence to refine active-block discovery.
+
+The current-burden channel is the residue-level projection of the head on the current hard completion:
+
+$$
+b_i^{\mathrm{cur}}(t) = \mathrm{Proj}_i\!\left(H(C(x_t,q_t))\right),
+$$
+
+which is exactly the online actionability signal that replaces the static-subtractive excess `z_dyn − z_static` (see *Static prior status* below) in active-block discovery.
 
 `b_mem_i(t)` is the runtime replacement for the old static-prior role. The static prior tried to remember where a protein is intrinsically risky, but it used the WT sequence. `b_mem_i(t)` is the sequence-conditioned version: it records where this generation trajectory repeatedly becomes risky. It must cold-start from a neutral state and update only from fresh runtime evidence (`b_cur` / `b_env`), not from WT or static-prior initialization. Static prior is therefore not conceptually deleted; its intended role is upgraded into dynamic trajectory memory.
 
@@ -416,6 +401,26 @@ u_freeze = low b_cur, low b_env, low b_mem, high r_ctx, high f_rank
 
 `u_freeze` belongs mainly to the committed-residue / D3 surface, not to masked-position unmask allocation.
 
+#### Phase C schedule coupling (Stage C)
+
+The derived `u_hold` / `u_exec` fields drive the Phase C scheduler. This coupling **acts only in Stage C** (§2.9); Stage B computes the fields but does not change unmask allocation. A pure "high risk means later unmask" rule conflicts with D2: if the controller has already found a useful correction, keeping the target position masked too long lowers `selected_after_d2_rate` and prevents the correction from reaching the final sequence. The scheduler is therefore an **editability controller**, not a static ordering device, with three modes:
+
+1. **Hold**: when context is unreliable or no structurally safe candidate exists, active risky regions remain editable and are delayed.
+2. **Execute**: when a D2 posterior correction exists inside the sticky TTL (§2.2) and passes the trust-region / reliability logic (§2.1, §2.6, §2.7), the scheduler should increase the chance that still-masked target positions actually unmask during that TTL.
+3. **Freeze**: when online risk drops and the commit face (§2.4) assigns high multi-objective rank, the region should stop churning and move toward final commitment.
+
+A minimal schedule-coupling form is:
+
+$$
+\tilde{p}_i^{\mathrm{unmask}}(t)
+\propto
+p_i^{\mathrm{base}}(t)
+\exp\!\left(-\alpha_{\mathrm{hold}}(t)u_i^{\mathrm{hold}}(t)\right)
+\left(1+\alpha_{\mathrm{exec}}(t)u_i^{\mathrm{exec}}(t)\right),
+$$
+
+where $u_i^{\mathrm{exec}}(t)$ is nonzero only for positions with a live sticky D2 correction in $\mathcal{P}_{\mathrm{D2}}(t)$. The hold term preserves late editable space for risky regions; the execute term prevents immune-favored logits from being computed but never sampled. The total unmask budget should be normalized per step so this coupling changes **which** positions receive edit opportunity, not the overall denoising rate. The deferred Bernoulli-rate idea (§6.C) is the Phase C scheduler counterpart of the logit pipeline; it should be introduced only after the active-block definition is fixed and the sticky-logit persistence metrics are measurable.
+
 #### GR aggregation: focal versus broad burden
 
 `G(t)` should be length-normalized thresholded mass, not a max score. A first theoretical form is:
@@ -450,6 +455,20 @@ broad prominent burden:
 ```
 
 The division by $L$ is required; otherwise global pressure would scale with protein length.
+
+**GR is residue-landscape based, not average-window based.** The local D2 proposal face stays window-level because the immune head scores peptide windows. Controller-level GR is instead computed from a residue-level landscape projected from window scores, matching the scientific claim that the method operates on a risk landscape, not an unordered pile of overlapping windows. The dataflow is:
+
+```text
+window scores z_w
+  -> residue landscape h_i
+  -> landscape burden / prominence / concentration descriptors
+  -> G(t)
+  -> g_GR(t)
+```
+
+Residue-level GR can express coherent hotspot clusters rather than isolated window outliers, smooth burden over a region rather than duplicated risk from many overlapping window lengths, landscape concentration (whether burden is localized enough to be actionable), and downstream compatibility with D3's residue revisit mechanism.
+
+**No calibrated safe threshold in v1.** The head was not trained with an absolute calibrated "safe" threshold, so any threshold inside GR is a **background reference / calibration point**, not a biological safety threshold. Avoid language like `z_w < tau_safe means safe`; use `tau_ref defines the background level used to measure relative landscape burden`. The exact `tau_ref` calibration is an open design item — it may be corpus-based, per-protein robust, WT-distribution based for reporting, or NMP-aligned after calibration.
 
 The pressure mapping remains a separate calibration layer:
 
@@ -499,9 +518,20 @@ z_dyn - z_static
 
 should be demoted from runtime controller signal to attribution / negative-control telemetry. Static prior remains useful for explaining which WT hotspots were resolved and for demonstrating why static-prior Phase C was insufficient, but it should not define runtime actionability.
 
+WT- and NoD-relative quantities are evaluation deltas, not runtime objects. Keep them named distinctly so they are never confused with the runtime field:
+
+```text
+delta_GR_vs_WT
+delta_GR_vs_NoD
+new_hotspot_rate
+resolved_hotspot_rate
+```
+
+Goal: high-burden proteins receive strong D2/D3 pressure, while already-low-burden proteins avoid over-steering and unnecessary sequence churn. This is the low-burden over-intervention problem recorded in the D3 pilot, and it is solved as a controller-level temperature (`g_GR`) in Stage C, not as part of the actuation fix.
+
 #### V1 theory boundary
 
-The first version should be tightly scoped. It needs only the core pieces required to test whether the unified controller is doing the right kind of work:
+This whole section is **Stage B** (§2.9). Its first version should be tightly scoped to the core pieces required to test whether the unified controller is doing the right kind of work:
 
 ```text
 b_cur, b_env, b_mem, r_ctx, c_ready
@@ -509,7 +539,7 @@ b_cur, b_env, b_mem, r_ctx, c_ready
   -> G(t), g_GR(t)
 ```
 
-Expected Stage B outcomes (per §2.10 this whole section is **Stage B**; `G(t)` / `g_GR(t)` and Phase C `u_exec` are computed and logged here but only *act* in Stage C):
+Expected Stage B outcomes (`G(t)` / `g_GR(t)` and Phase C `u_exec` are computed and logged here but only *act* in Stage C):
 
 - the typed channels are populated and telemetry can separate failures across current observation, proposal envelope, memory, pressure mapping, and actuator execution;
 - focal hotspots remain locally visible in `u_risk` without inflating `G(t)`;
@@ -517,19 +547,19 @@ Expected Stage B outcomes (per §2.10 this whole section is **Stage B**; `G(t)` 
 - low-burden proteins become *identifiable* through smaller `G(t)` / `g_GR(t)`, so Stage C can later suppress over-intervention — Stage B itself does **not** yet scale β/λ;
 - dynamic `A_i(t)` targeting is testable head-to-head against static `z_dyn − z_static` (the B→C gate).
 
-### 2.10 Rollout: actuation before targeting
+### 2.9 Rollout: actuation before targeting
 
-§2.1–2.7 are the D2 **actuation** pipeline — whether a steered token survives to the final sequence. §2.9 is the **targeting** field — where the controller acts. These are different bottlenecks and must be validated in order. A stage boundary is a decision point: a place where a null result changes direction, and where attribution must stay separable.
+§2.1–2.7 are the D2 **actuation** pipeline — whether a steered token survives to the final sequence. §2.8 is the **targeting** field — where the controller acts. These are different bottlenecks and must be validated in order. A stage boundary is a decision point: a place where a null result changes direction, and where attribution must stay separable.
 
 | Stage | Content | Decision point (failure → action) | Iteration |
 |---|---|---|---|
-| **A — actuation** | D2 sticky delivery + multi-objective commit + trust region + ensemble (§2.1–2.7 = current P1+P2). Uses the **existing** active-block definition; does **not** touch the §2.9 field. | Does a steered token survive to the final sequence, cost no structure, and lower local risk where D2 fired? (local checks only — **not** global Pareto). Fail → the logit mechanism does not work; fall back to revisit-only (§6.D). | one 50-protein run |
-| **B — targeting** | Replace the active-block signal `z_dyn − z_static` with the typed `A_i(t)` field (§2.9). `b_cur + b_env + b_mem + r_ctx` land **together**. `G(t)` / `g_GR(t)` are computed and logged here as telemetry but do **not** scale β/λ yet (that is Stage C). | Does dynamic actionability beat the static signal source on the same pilot? Fail → targeting was not the bottleneck; stop at the Stage A pipeline. | one 50-protein run |
-| **C — global + schedule** | `g_GR` global-pressure temperature + Phase C editability (hold/exec/freeze, §2.8). | Does over-steering of low-burden proteins need global control? Optimization, not a direction decision. | deferred |
+| **A — actuation** | D2 sticky delivery + multi-objective commit + trust region + ensemble (§2.1–2.7). Uses the **existing** active-block definition; does **not** touch the §2.8 field. | Does a steered token survive to the final sequence, cost no structure, and lower local risk where D2 fired? (local checks only — **not** global Pareto). Fail → the logit mechanism does not work; fall back to revisit-only (§6.D). | one 50-protein run |
+| **B — targeting** | Replace the active-block signal `z_dyn − z_static` with the typed `A_i(t)` field (§2.8). `b_cur + b_env + b_mem + r_ctx` land **together**. `G(t)` / `g_GR(t)` are computed and logged here as telemetry but do **not** scale β/λ yet (that is Stage C). | Does dynamic actionability beat the static signal source on the same pilot? Fail → targeting was not the bottleneck; stop at the Stage A pipeline. | one 50-protein run |
+| **C — global + schedule** | `g_GR` global-pressure temperature + Phase C editability (hold/exec/freeze, §2.8 Phase C coupling). | Does over-steering of low-burden proteins need global control? Optimization, not a direction decision. | deferred |
 
 Two rules fix these boundaries.
 
-**Stage B collapses the per-channel rollout (compression).** `b_cur`, `b_env`, `b_mem`, `r_ctx` all derive from one online computation (current head, the completion machinery specified in §2.7, a cross-refresh EMA). Introducing them one channel per cluster run buys little attribution: channel contribution is diagnosable from provenance telemetry, while causal channel ablations can be added later only if those diagnostics warrant them. The "v1 theory boundary" inside §2.9 is therefore the scope of **Stage B**, landed in a single stage — not a fourth thing done alongside Stage A.
+**Stage B collapses the per-channel rollout (compression).** `b_cur`, `b_env`, `b_mem`, `r_ctx` all derive from one online computation (current head, the completion machinery specified in §2.7, a cross-refresh EMA). Introducing them one channel per cluster run buys little attribution: channel contribution is diagnosable from provenance telemetry, while causal channel ablations can be added later only if those diagnostics warrant them. The "v1 theory boundary" inside §2.8 is therefore the scope of **Stage B**, landed in a single stage — not a fourth thing done alongside Stage A.
 
 **Stage A and Stage B cannot merge (attribution floor).** This is a correctness constraint, not conservatism. Stage A changes actuation; Stage B changes the targeting signal source. Run together, a null result cannot be separated into "the token did not persist" versus "the targeting signal was wrong" — two failure modes with opposite next actions. Three stages is the attribution-minimal floor; compressing to two fuses these modes.
 
@@ -543,27 +573,29 @@ Gate conditions:
 
 ---
 
-## 3. Implementation priority
+## 3. Implementation stages
 
-Single-mechanism pipeline, but three priority tiers because faces have different dependency relationships.
+The rollout in §2.9 defines three stages by attribution boundary. This section gives their implementation content. Stage A is the current focus; within it, two sub-steps land in order.
 
-### P1: persistence pipeline (must come first)
+### Stage A — actuation (current focus)
 
-Delivery Face (sticky) + Sampling Face (existing) + Commit Face (multi-objective rank, $\nu > 0$). Without P1 the D2 signal never reaches the final sequence regardless of any other parameter sweep.
+Must come first; proves a steered token survives without structural cost (the §2.9 A→B gate). It is a single-mechanism pipeline with two sub-steps because the faces have different dependency relationships.
 
-Why all three together: sticky alone increases `selected_after_d2_rate` but the landed tokens still get remasked by the broken commit ranking. The multi-objective rank alone protects D2 tokens that land, but with same-step rate at 7% there are barely any to protect.
+**A.1 — persistence core.** Delivery Face (sticky, §2.2) + Sampling Face (§2.3) + Commit Face (multi-objective rank, $\nu > 0$, §2.4). Without A.1 the D2 signal never reaches the final sequence regardless of any other parameter sweep. All three together: sticky alone increases `selected_after_d2_rate` but the landed tokens still get remasked by the broken commit ranking; the multi-objective rank alone protects D2 tokens that land, but with same-step rate at 7% there are barely any to protect.
 
-### P2: structure trust region + ensemble scoring (part of main method)
+**A.2 — structural safety + head-input reliability.** Proposal Face trust region ($\delta_{\mathrm{struct}}$, §2.1) + local-window completion ensemble (§2.7) + pseudo-NLL context reliability (§2.6). $\delta_{\mathrm{struct}}$ is *required*, not an ablation — without it D2 is structurally unconstrained and any immune improvement is inseparable from potential structural cost. The ensemble is the head-input reliability fix; $\delta_{\mathrm{struct}}$ is the structural-output safety fix. Both are needed before a D2 immune gain counts as a meaningful structure-preserving steering signal. Do not add a separate manual maneuverability condition: the only structural support control in v1 is the safety filter that builds $Q_B^{\mathrm{safe}}$.
 
-Proposal Face with $\delta_{\mathrm{struct}}$. This is *not* an ablation — without it, D2 is structurally unconstrained and any immune improvement is inseparable from potential structural cost.
+### Stage B — targeting field
 
-Do not add a separate manual maneuverability condition in P2. The only structural support control in v1 is the safety filter that builds $Q_B^{\mathrm{safe}}$; whether D2 has useful room to steer is then determined by the resulting posterior, ESS, and $\rho_B$.
+Replace static active-block selection with the typed `A_i(t)` field (§2.8). Gated on Stage A. Channels (`b_cur + b_env + b_mem + r_ctx`) land together; `G(t)` / `g_GR(t)` are computed and logged but do not yet scale β/λ.
 
-Local-window completion ensemble (§2.7) is also P2. It is the head-input reliability fix for D2 candidate scoring, whereas $\delta_{\mathrm{struct}}$ is the structural-output safety fix. Both are needed before interpreting a D2 immune gain as a meaningful structure-preserving steering signal.
+### Stage C — global pressure + schedule
 
-### P3: time schedule (deferred)
+`g_GR` scaling β/λ + Phase C editability (§2.8 Phase C coupling). Deferred second-order optimization; addresses low-burden over-intervention only after A+B reliably lower immune risk.
 
-$\beta(t)$, $\eta(t)$, $\alpha(t)$ as t-curves. Only consider after P1+P2 yields measurable persistence and a clear immune signal. The three-phase ramp (burn-in → edit window → freeze) is the natural target shape, but v1 keeps scalars to limit the hyperparameter surface.
+### Deferred: time schedule
+
+$\beta(t)$, $\eta(t)$, $\alpha(t)$ as t-curves (§6.A) are orthogonal to the stage sequence. Consider only after Stage A yields measurable persistence and a clear immune signal. The three-phase ramp (burn-in → edit window → freeze) is the natural target shape, but v1 keeps scalars to limit the hyperparameter surface.
 
 ---
 
@@ -638,12 +670,12 @@ After running the v1 config on the same 50-protein pilot:
 1. If `selected_after_d2_rate` does not rise markedly above 7%: Delivery Face is broken; sticky cache lifecycle has a bug. Stop and inspect.
 2. If `selected_after_d2_rate` rises but `final_persistence_rate` stays ≈ 0%: Commit Face is broken; $\alpha$ or $\nu$ is not effective. Verify rank_scores are being consumed in d2_logits mode and that Z-scoring uses the correct base population.
 3. If all three filter rates rise and `final_persistence_rate` ≥ 10% but structure preservation drops below D3-only baseline: $\delta_{\mathrm{struct}}$ too loose. Tighten to 1.0 nat and retry.
-4. If all three filter rates rise, `final_persistence_rate` ≥ 10%, structure preserved, but immune Pareto rate does not improve over D3-only: D2's posterior is firing but its directional information is not useful at this candidate-space size. Check ensemble diagnostics first. If argmax-to-ensemble rank flips are high, increase ensemble coverage; if ensemble is stable, consider expanding M / top_K.
+4. If all three filter rates rise, `final_persistence_rate` ≥ 10%, structure preserved, but immune Pareto rate does not improve over D3-only: D2's posterior is firing but its directional information is not useful at this candidate-space size. Check ensemble diagnostics first. If argmax-to-ensemble rank flips are high, increase ensemble coverage; if ensemble is stable, consider expanding M / top_K. (Per §2.9, a Stage A Pareto miss does not block Stage B — targeting is what Stage B changes.)
 5. If filter rates, structure, and immune all improve: pipeline succeeds. Proceed to multi-seed scale-up.
 
 ### 5.3 Falsification
 
-The unified pipeline framework is falsified if **(1) and (4) both hold**: the engineering works (filter rates rise, structure preserved) but D2 adds < 5 percentage points to D3-only Pareto rate. In that case, D2's logit-layer mechanism does not carry net information beyond what D3's revisit captures, and D2 should be deprioritized to "revisit-only" form (§6.D).
+The unified pipeline framework is falsified if **(1) and (4) both hold**: the engineering works (filter rates rise, structure preserved) but D2 adds < 5 percentage points to D3-only Pareto rate. In that case, D2's logit-layer mechanism does not carry net information beyond what D3's revisit captures, and D2 should be deprioritized to "revisit-only" form (§6.D). This end-to-end test is the **Stage B → C** gate (§2.9), applied after the targeting field is in place — not at the Stage A boundary, where a Pareto miss can be a targeting artifact.
 
 ---
 
@@ -651,14 +683,14 @@ The unified pipeline framework is falsified if **(1) and (4) both hold**: the en
 
 The unified pipeline above is the v1 main method. The following ideas are not part of it but are recorded here for future iteration.
 
-### 6.A Time schedule (P3 of §3)
+### 6.A Time schedule (deferred per §3)
 
 Three-phase $\beta(t)$, $\eta(t)$, $\alpha(t)$ ramp:
 - Burn-in $t \in [0, t_{\mathrm{start}}]$: $\beta = 0$, structure-only
 - Edit window $t \in [t_{\mathrm{start}}, t_{\mathrm{ramp\_off}}]$: $\beta$ at peak, D2 actively shapes posterior
 - Freeze $t \in [t_{\mathrm{ramp\_off}}, 1]$: $\beta$ decays, D3 finalizes
 
-The implicit denoising temperature (head reliability is low at both ends of $t$) motivates the shape. Considered after v1 pipeline shows measurable persistence.
+The implicit denoising temperature (head reliability is low at both ends of $t$) motivates the shape. Considered after the Stage A pipeline shows measurable persistence.
 
 ### 6.B Post-sampling structural accept/reject
 
@@ -672,109 +704,15 @@ This is a structural veto filter, not strict Metropolis-Hastings (no proposal-ra
 
 ### 6.C Bernoulli rate coupling
 
-At refresh step, raise $\dot \kappa_i$ for positions in active blocks so they unmask at higher per-step probability. This invades Theorem 1's protected schedule and changes the ordering interpretation. Lower priority than sticky delivery (§2.2) because sticky achieves similar footprint expansion without touching the rate schedule.
+At refresh step, raise $\dot \kappa_i$ for positions in active blocks so they unmask at higher per-step probability. This invades Theorem 1's protected schedule and changes the ordering interpretation. Lower priority than sticky delivery (§2.2) because sticky achieves similar footprint expansion without touching the rate schedule. It is the Phase C scheduler counterpart referenced in §2.8.
 
 ### 6.D Revisit-only D2 (fallback)
 
-D2 doesn't push logits at all; only flags positions for D3 commit/revisit re-ranking. Loses the directional "which token" information from D2; keeps only the "where to revisit" signal. This is the natural fallback if the unified pipeline cannot demonstrate that the logit-layer directional information adds value beyond D3's revisit selection.
+D2 doesn't push logits at all; only flags positions for D3 commit/revisit re-ranking. Loses the directional "which token" information from D2; keeps only the "where to revisit" signal. This is the natural fallback if the unified pipeline cannot demonstrate that the logit-layer directional information adds value beyond D3's revisit selection (the §5.3 / Stage B→C falsification outcome).
 
-### 6.E Controller-level temperature and global-risk over-steering control
+### 6.E Controller-level GR temperature
 
-Current v1 does **not** implement the global-risk controller, but the design boundary is now fixed enough to prevent the next PLAN from drifting.
-
-The existing `global_risk` is log-mean-exp over all scored windows. That is a useful exported head aggregate, but it is too crude for controller pressure: it does not distinguish low-burden proteins from true hotspot-bearing proteins, and it does not know whether high score comes from a coherent immune landscape or from many overlapping windows inflating the same local signal.
-
-Use only three GR-facing names:
-
-| Term | Role | Runtime use |
-|---|---|---|
-| `GR(x)` | static/reporting immune-burden score for one completed sequence | no direct steering by itself |
-| `G(t)` | runtime aggregate of the typed local actionability field from §2.9 | summarizes current controller-level actionability |
-| `g_GR(t)` | bounded controller temperature derived from `G(t)` | scales global D2/D3 pressure |
-
-Do **not** introduce separate named GR objects for WT-relative or NoD-relative comparisons. Those are evaluation deltas:
-
-```text
-delta_GR_vs_WT
-delta_GR_vs_NoD
-new_hotspot_rate
-resolved_hotspot_rate
-```
-
-The controller-facing multiplier should initially affect only the global pressure knobs:
-
-```text
-beta_eff   = beta   * g_GR(t)
-lambda_eff = lambda * g_GR(t)
-```
-
-This keeps attribution clean:
-
-- D2 local $\Delta R_B$ still decides which candidate direction is useful.
-- D3 residue memory $m_i$ still decides which committed residues should be revisited.
-- `g_GR(t)` only decides how hard the whole controller should push.
-
-For the first diagnostic implementation, do not let `g_GR(t)` also change active-block selection, `max_windows`, $\rho_B$, or the Bernoulli schedule. Coupling too many knobs would make over-steering hard to diagnose. This is a staging rule, not a theoretical restriction; the fully coupled architecture is the typed actionability state `A_i(t)` and its projections in §2.9.
-
-#### GR should be residue-landscape based, not average-window based
-
-The local D2 proposal face should remain window-level because the immune head scores peptide windows. Controller-level GR should instead be computed from a residue-level landscape projected from window scores. This matches the scientific claim: the method operates on a risk landscape, not on an unordered pile of overlapping windows.
-
-The intended dataflow is:
-
-```text
-window scores z_w
-  -> residue landscape h_i
-  -> completed-sequence reporting: GR(x)
-  -> runtime actionability aggregate: G(t)
-  -> controller pressure: g_GR(t)
-```
-
-Residue-level GR is preferred because it can express:
-
-- coherent hotspot clusters rather than isolated window outliers;
-- smooth burden over a region rather than duplicated risk from many overlapping window lengths;
-- landscape concentration, e.g. whether burden is localized enough to be actionable;
-- downstream compatibility with D3's residue revisit mechanism.
-
-#### No calibrated safe threshold in v1
-
-The head was not trained with an absolute calibrated "safe" threshold. Therefore any threshold used inside GR must be described as a **background reference / calibration point**, not as a biological safety threshold.
-
-Avoid language like:
-
-```text
-z_w < tau_safe means safe
-```
-
-Use language like:
-
-```text
-tau_ref defines the background level used to measure relative landscape burden
-```
-
-The exact `tau_ref` calibration is not fixed in this document. It may be corpus-based, per-protein robust, WT-distribution based for reporting, or NMP-aligned after calibration. This is still an open design item.
-
-#### Runtime should not subtract the static prior by default
-
-The current D1/D2 excess-risk definition in `PLAN_RF.md` uses a static-vs-dynamic difference:
-
-```text
-window_excess = max(0, z_dyn - z_static - excess_threshold)
-```
-
-That is now considered suspect as a runtime actionability signal. If a WT/static hotspot remains high in the dynamic state, subtracting the static prior can hide exactly the hotspot that should be repaired. If the static prior is weak or misleading, it can also bias active-block discovery.
-
-The preferred direction for the next GR/D1 revision is:
-
-```text
-runtime actionability: current-state landscape burden / prominence
-evaluation attribution: WT-relative and NoD-relative deltas
-```
-
-Static WT and matched NoD remain important, but primarily for final reporting: resolved original burden, new hotspot burden, NMP burden change, and structure-preserving Pareto status. They should not be the primary subtractive baseline for deciding whether the controller should act during generation.
-
-Goal: high-burden proteins should receive strong D2/D3 pressure, while already-low-burden proteins avoid over-steering and unnecessary sequence churn. This is the same problem exposed by the D3 pilot-v2 low-burden over-intervention record and should be solved as a controller-level temperature / global-risk normalization layer, not as part of the sticky-logit persistence fix.
+**Superseded by §2.8.** The GR controller temperature, the GR three-way split (`GR(x)` / `G(t)` / `g_GR(t)`), residue-landscape-based aggregation, the focal-vs-broad `G(t)` form, the `tau_ref` background-reference caveat, the "no calibrated safe threshold" warning, the `beta_eff` / `lambda_eff` scaling, the staging rule (do not couple other knobs first), and the evaluation deltas (`delta_GR_vs_WT`, `delta_GR_vs_NoD`, `new_hotspot_rate`, `resolved_hotspot_rate`) now live in §2.8's *GR aggregation* and *Static prior status* subsections. This entry is retained as a pointer only; do not duplicate the GR spec here. Runtime implementation is Stage C (§2.9).
 
 ### 6.F Head-variance as a controller gate
 
@@ -798,24 +736,27 @@ Because these sources are not identifiable from variance alone, head-variance ga
 
 ## 8. PLAN readiness check
 
+All "ready" pieces below are **Stage A** (§2.9); Stage B (typed field) and Stage C (global risk + Phase C schedule) are gated and deferred.
+
 The following pieces are ready to move into `PLAN_RF.md` as implementation tasks:
 
 | Piece | PLAN status | Notes |
 |---|---|---|
-| Sticky D2 pending-logit cache | ready | required for delivery footprint |
-| Benefit-gated D2 evidence | ready | required to prove D2 effort is useful, not just different |
-| Multi-objective commit rank | ready | use all-committed global z-score in v1 |
-| Structure trust region | ready | $\delta_{\mathrm{struct}}$ is required, not an ablation |
-| Pseudo-NLL context reliability | ready | replaces whole-block entropy as primary reliability signal |
-| Local-window completion ensemble | ready | use two-stage shortlist + K=3 local completions |
+| Sticky D2 pending-logit cache | ready (A.1) | required for delivery footprint |
+| Benefit-gated D2 evidence | ready (A.1) | required to prove D2 effort is useful, not just different |
+| Multi-objective commit rank | ready (A.1) | use all-committed global z-score in v1 |
+| Structure trust region | ready (A.2) | $\delta_{\mathrm{struct}}$ is required, not an ablation |
+| Pseudo-NLL context reliability | ready (A.2) | replaces whole-block entropy as primary reliability signal |
+| Local-window completion ensemble | ready (A.2) | use two-stage shortlist + K=3 local completions |
 | Process metrics / falsification tree | ready | required before interpreting immune/structure aggregate metrics |
 
 Not ready for the current PLAN layer:
 
 | Piece | Reason |
 |---|---|
-| Controller-level global-risk temperature | conceptual boundary settled, but descriptor composition and threshold calibration remain open |
-| Time-varying $\beta(t), \eta(t), \alpha(t)$ | deferred P3; not needed to validate the v1 persistence and candidate-scoring pipeline |
+| Typed actionability field (`A_i(t)`) | Stage B; gated on Stage A persistence being proven |
+| Controller-level global-risk temperature | Stage C; conceptual boundary settled, but descriptor composition and threshold calibration remain open |
+| Time-varying $\beta(t), \eta(t), \alpha(t)$ | deferred; not needed to validate the Stage A persistence and candidate-scoring pipeline |
 | Head-variance gate | variance is logged by ensemble, but not identifiable enough to gate in v1 |
 
-Conclusion: the D2 trust-region pipeline is PLAN-ready. The GR layer is no longer conceptually open-ended, but it still needs one more design pass before being promoted to `PLAN_RF.md`.
+Conclusion: the D2 actuation pipeline (Stage A) is PLAN-ready. The targeting field (Stage B) and GR layer (Stage C) are conceptually settled but gated; promote them to `PLAN_RF.md` only after the Stage A persistence and structure gates pass.

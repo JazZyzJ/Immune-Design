@@ -210,6 +210,79 @@ def compute_commit_score(
     return score
 
 
+def compute_stage_a_rank_score(
+    *,
+    structural_logits: torch.Tensor,
+    x_t: torch.Tensor,
+    scores: np.ndarray,
+    mask_token_id: int,
+    m_i: np.ndarray | None,
+    d2_evidence: np.ndarray | None,
+    alpha_struct: float,
+    lambda_commit: float,
+    d2_evidence_nu: float,
+    zscore_epsilon: float,
+) -> np.ndarray:
+    """Stage A multi-objective rank face for D2 actuation.
+
+    ``scores`` is the sampler's sampled-token log-prob under the actually used
+    logits. It is copied into a local array and never mutated here.
+    """
+    L = int(x_t.shape[0])
+    eligibility = (x_t != int(mask_token_id)).detach().cpu().numpy()
+    ell_struct = compute_chosen_token_logprob(
+        struct_logits=structural_logits,
+        x_t=x_t,
+        mask_token_id=int(mask_token_id),
+    )
+    ell_sample = np.asarray(scores, dtype=np.float64).copy()
+    if ell_sample.shape != (L,):
+        raise ValueError(f"scores must have shape ({L},), got {ell_sample.shape}")
+    if m_i is None:
+        m_arr = np.zeros(L, dtype=np.float64)
+    else:
+        m_arr = np.asarray(m_i, dtype=np.float64)
+        if m_arr.shape != (L,):
+            raise ValueError(f"m_i must have shape ({L},), got {m_arr.shape}")
+    if d2_evidence is None:
+        d2_arr = np.zeros(L, dtype=np.float64)
+    else:
+        d2_arr = np.asarray(d2_evidence, dtype=np.float64)
+        if d2_arr.shape != (L,):
+            raise ValueError(
+                f"d2_evidence must have shape ({L},), got {d2_arr.shape}"
+            )
+
+    z_ell_struct = z_score(
+        values=ell_struct,
+        eligibility_mask=eligibility,
+        zscore_epsilon=float(zscore_epsilon),
+    )
+    z_ell_sample = z_score(
+        values=ell_sample,
+        eligibility_mask=eligibility,
+        zscore_epsilon=float(zscore_epsilon),
+    )
+    z_m = z_score(
+        values=m_arr,
+        eligibility_mask=eligibility,
+        zscore_epsilon=float(zscore_epsilon),
+    )
+    z_d2 = z_score(
+        values=d2_arr,
+        eligibility_mask=eligibility,
+        zscore_epsilon=float(zscore_epsilon),
+    )
+    alpha = float(alpha_struct)
+    rank = (
+        alpha * z_ell_struct
+        + (1.0 - alpha) * z_ell_sample
+        - float(lambda_commit) * z_m
+        + float(d2_evidence_nu) * z_d2
+    )
+    return np.where(eligibility, rank, 0.0).astype(np.float64, copy=False)
+
+
 # ---------------------------------------------------------------------------
 # Final freeze (PLAN §D3-12, validation rule 13)
 # ---------------------------------------------------------------------------

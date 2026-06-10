@@ -11,7 +11,10 @@ import torch
 from inverse_folding.reference_flow.counterfactual import (
     apply_logit_correction,
     build_candidate_support,
+    build_safe_candidate_support,
+    compute_context_pnll,
     compute_delta_logit,
+    compute_ensemble_diagnostics,
     compute_ess,
     compute_feasibility,
     compute_local_risk,
@@ -116,6 +119,31 @@ def test_candidate_support_top_k_clamped_to_canonical_alphabet():
     assert len(K[0]) == len(CANONICAL_TOKENS)
 
 
+def test_safe_candidate_support_filters_by_structural_logprob_drop_and_keeps_top1():
+    logits = torch.full((1, VOCAB_SIZE), -50.0)
+    logits[0, 10] = 5.0
+    logits[0, 11] = 4.3
+    logits[0, 12] = 3.4
+    logits[0, 13] = -1.0
+    K = build_safe_candidate_support(
+        struct_logits=logits,
+        positions=(0,),
+        top_k=4,
+        canonical_token_ids=CANONICAL_TOKENS,
+        delta_struct=1.0,
+    )
+    assert K[0] == (10, 11)
+
+    K_top1 = build_safe_candidate_support(
+        struct_logits=logits,
+        positions=(0,),
+        top_k=1,
+        canonical_token_ids=CANONICAL_TOKENS,
+        delta_struct=1.0,
+    )
+    assert K_top1[0] == (10,)
+
+
 # ---------------------------------------------------------------------------
 # enumerate_candidates
 # ---------------------------------------------------------------------------
@@ -197,6 +225,27 @@ def test_enumerate_sampled_retains_duplicates():
     assert cands2.count((10, 10, 10, 10)) >= 7
 
 
+def test_enumerate_sampled_uses_safe_support_and_temperature():
+    logits = torch.full((3, VOCAB_SIZE), -50.0)
+    for i in range(3):
+        logits[i, 10] = 20.0
+        logits[i, 11] = 19.0
+        logits[i, 12] = -20.0
+    K = {0: (10, 11), 1: (10, 11), 2: (10, 11)}
+    cands, mode = enumerate_candidates(
+        positions=(0, 1, 2),
+        K_i_per_pos=K,
+        max_candidates=4,
+        struct_logits=logits,
+        seed_tuple=("safe", 1),
+        struct_temperature=0.5,
+    )
+    assert mode == "sampled"
+    assert len(cands) == 4
+    assert all(all(tok in {10, 11} for tok in cand) for cand in cands)
+    assert len(set(cands)) < len(cands)
+
+
 # ---------------------------------------------------------------------------
 # Local risk + per-candidate Q_B
 # ---------------------------------------------------------------------------
@@ -249,6 +298,23 @@ def test_compute_Q_B_factorizes_over_positions():
     ])
     np.testing.assert_allclose(Q, expected, rtol=1e-6)
     assert Q.sum() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_compute_Q_B_uses_struct_temperature_after_safe_filtering():
+    logits = torch.full((1, VOCAB_SIZE), -50.0)
+    logits[0, 10] = 2.0
+    logits[0, 11] = 0.0
+    K = {0: (10, 11)}
+    Q = compute_Q_B_per_candidate(
+        candidates=((10,), (11,)),
+        positions=(0,),
+        K_i_per_pos=K,
+        struct_logits=logits,
+        struct_temperature=2.0,
+    )
+    expected = np.exp([1.0, 0.0])
+    expected = expected / expected.sum()
+    np.testing.assert_allclose(Q, expected, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +438,52 @@ def test_feasibility_fails_when_no_candidate_meets_threshold():
     # best is -0.05 but threshold needs ΔR < -0.1; fails.
     assert feasible is False
     assert best == pytest.approx(-0.05)
+
+
+# ---------------------------------------------------------------------------
+# Stage A context reliability and local ensemble diagnostics
+# ---------------------------------------------------------------------------
+
+
+def test_context_pnll_uses_committed_context_and_skips_masks():
+    logits = torch.full((4, VOCAB_SIZE), -5.0)
+    logits[0, 10] = 5.0
+    logits[1, 11] = -1.0
+    logits[2, 12] = 5.0
+    x_t = torch.tensor([10, MASK_TOKEN_ID, 12, MASK_TOKEN_ID])
+    pnll = compute_context_pnll(
+        struct_logits=logits,
+        x_t=x_t,
+        mask_token_id=MASK_TOKEN_ID,
+        start_0b=0,
+        end_0b=4,
+    )
+    assert pnll is not None
+    assert pnll < 1e-2
+    assert compute_context_pnll(
+        struct_logits=logits,
+        x_t=torch.tensor([MASK_TOKEN_ID] * 4),
+        mask_token_id=MASK_TOKEN_ID,
+        start_0b=0,
+        end_0b=4,
+    ) is None
+
+
+def test_ensemble_diagnostics_use_mean_variance_and_sign_consistency_without_gating():
+    argmax_delta = np.array([-2.0, -0.5, 0.2])
+    ensemble = {
+        0: np.array([-1.0, -1.5, -2.0]),
+        1: np.array([0.2, -0.1, 0.4]),
+    }
+    diag = compute_ensemble_diagnostics(
+        argmax_delta_R=argmax_delta,
+        ensemble_delta_R_by_candidate=ensemble,
+    )
+    assert diag.mean_delta_R[0] == pytest.approx(-1.5)
+    assert diag.std_delta_R[0] == pytest.approx(np.std([-1.0, -1.5, -2.0]))
+    assert diag.sign_consistency[0] == pytest.approx(1.0)
+    assert diag.sign_consistency[1] == pytest.approx(1.0 / 3.0)
+    assert diag.rank_flip_rate >= 0.0
 
 
 # ---------------------------------------------------------------------------

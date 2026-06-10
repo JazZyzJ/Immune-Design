@@ -464,3 +464,84 @@ def test_submit_if_imp_slurm_forwards_resume_and_val_iter_flags():
         assert env in text, f"submit_if_imp.slurm missing env {env}"
     for cli in ("--val-max-iters", "--resume-from-ckpt", "--train-recovery-on-val"):
         assert cli in text, f"submit_if_imp.slurm missing CLI {cli}"
+
+
+def _slurm_branch(text: str, marker: str) -> str:
+    """Return the slice of submit_if_imp.slurm for one MODE branch."""
+    start = text.index(marker)
+    # Branch ends at the next ``elif [ "${MODE}"`` or the final ``else``.
+    rest = text[start + len(marker):]
+    candidates = [
+        rest.find('elif [ "${MODE}"'),
+        rest.find("\nelse\n"),
+    ]
+    ends = [c for c in candidates if c >= 0]
+    end = min(ends) if ends else len(rest)
+    return rest[:end]
+
+
+def test_generate_encoder_branch_forwards_full_generation_params():
+    """P1 regression: generate_encoder must not silently drop generation
+    parameters. Mirror the generate_refiner passthrough."""
+    text = (ROOT / "scripts/submit_if_imp.slurm").read_text()
+    branch = _slurm_branch(text, 'elif [ "${MODE}" = "generate_encoder" ]; then')
+    for flag in (
+        "--n-designs-per-protein",
+        "--temperature",
+        "--batch-size",
+        "--mc-dropout-passes",
+        "--fusion-mode",
+        "--fusion-alpha",
+        "--apply-steps",
+        "--sidecar-scale",
+        "--tag",
+        "--cath-max-length",
+        "--cath-min-resolved-ratio",
+        "--encoder-checkpoint",
+        "--encoder-kind",
+    ):
+        assert flag in branch, f"generate_encoder branch missing {flag}"
+
+
+def test_diag_encoder_branch_forwards_cath_filters_and_diag_params():
+    """P1 regression: diag_encoder must forward CATH filters (so the
+    diagnostic protein set matches) and the diagnostic knobs."""
+    text = (ROOT / "scripts/submit_if_imp.slurm").read_text()
+    branch = _slurm_branch(text, 'elif [ "${MODE}" = "diag_encoder" ]; then')
+    for flag in (
+        "--cath-max-length",
+        "--cath-min-resolved-ratio",
+        "--temperature",
+        "--mc-dropout-passes",
+        "--mask-ratio-center",
+        "--mask-ratio-deviation",
+        "--fusion-temperature",
+        "--fusion-mode",
+        "--fusion-alpha",
+        "--apply-steps",
+        "--progress-every",
+        "--encoder-checkpoint",
+        "--encoder-kind",
+    ):
+        assert flag in branch, f"diag_encoder branch missing {flag}"
+
+
+def test_resume_loads_checkpoint_before_optimizer_construction():
+    """P1 regression: ``load_geo_encoder_checkpoint`` (which may reinstall
+    adapter modules via auto_install_adapter_shape) must run BEFORE the
+    optimizer is constructed, otherwise the optimizer holds stale param
+    references and never updates a reshaped adapter."""
+    text = (ROOT / "scripts/train_if_imp_encoder.py").read_text()
+    # Restrict to main() so we don't match the import inside the loader.
+    main_start = text.index("def main(")
+    main_body = text[main_start:]
+    load_idx = main_body.index("load_geo_encoder_checkpoint(\n")
+    optim_idx = main_body.index("torch.optim.AdamW(")
+    assert load_idx < optim_idx, (
+        "load_geo_encoder_checkpoint must precede optimizer construction "
+        "so adapter-shape reinstall doesn't strand stale param refs"
+    )
+    # The optimizer-state restore (optimizer.pt) must come AFTER the
+    # optimizer exists.
+    opt_state_idx = main_body.index("optimizer.load_state_dict(")
+    assert optim_idx < opt_state_idx

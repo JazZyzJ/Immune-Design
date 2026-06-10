@@ -21,6 +21,27 @@ D1_MONITOR_PRESET_PATH = (
     / "configs"
     / "d1_monitor.yaml"
 )
+D2_LOGITS_PRESET_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding"
+    / "reference_flow"
+    / "configs"
+    / "d2_logits.yaml"
+)
+D2_D3_FULL_PRESET_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding"
+    / "reference_flow"
+    / "configs"
+    / "d2_d3_full.yaml"
+)
+D_MONITOR_FULL_PRESET_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding"
+    / "reference_flow"
+    / "configs"
+    / "d_monitor_full.yaml"
+)
 
 
 def _write_yaml(tmp_path: Path, body: str) -> Path:
@@ -161,7 +182,11 @@ def _d2_block(enabled: bool = True, **overrides: object) -> str:
     fields = {
         "enabled": "true" if enabled else "false",
         "beta": "1.0",
-        "eta": "1.0",
+        "eta": "0.7",
+        "struct_temperature": "1.0",
+        "delta_struct": "1.5",
+        "context_pnll_h0": "2.0",
+        "context_jsd_h0": "0.5",
         "epsilon": "1.0e-8",
         "candidate_mode": "structure_topk",
         "top_k_tokens": "4",
@@ -172,6 +197,15 @@ def _d2_block(enabled: bool = True, **overrides: object) -> str:
         "min_ess_fraction": "0.25",
         "max_abs_logit_shift": "5.0",
         "paired_uncorrected_sample": "true",
+        "completion_ensemble_enabled": "true",
+        "completion_ensemble_size": "3",
+        "completion_ensemble_scope": "local_windows",
+        "completion_ensemble_rescore_top_m": "8",
+        "completion_ensemble_use_variance_gate": "false",
+        "sticky_ttl_steps": "5",
+        "sticky_clear_on_selected": "true",
+        "sticky_clear_on_remask": "true",
+        "sticky_overwrite_on_refresh": "true",
     }
     for k, v in overrides.items():
         fields[k] = str(v)
@@ -187,6 +221,10 @@ def _d3_block(enabled: bool = True, **overrides: object) -> str:
         "gamma_min": "0.40",
         "gamma_max": "0.90",
         "lambda_commit": "1.0",
+        "alpha_struct": "0.3",
+        "d2_evidence_nu": "1.0",
+        "d2_evidence_ttl_steps": "5",
+        "d2_evidence_requires_benefit": "true",
         "zscore_epsilon": "1.0e-6",
         "same_refresh_grace": "true",
         "final_freeze_steps": "1",
@@ -229,7 +267,7 @@ def _full_d2_d3_body(
           reliability:
             time_k: 20.0
             entropy_h0: 1.5
-            min_completion_fraction: 0.5
+            min_completion_fraction: 0.0
             min_rho_to_emit_event: 0.0
         """
     pieces = [dedent(base).rstrip()]
@@ -277,6 +315,33 @@ def test_d2_logits_with_d2_enabled_validates(tmp_path: Path):
     assert cfg.d3.enabled is False
 
 
+def test_d2_logits_materializes_rank_face_fields_when_d3_disabled(tmp_path: Path):
+    cfg = load_controller_config(
+        _write_yaml(
+            tmp_path,
+            _full_d2_d3_body(
+                mode="d2_logits",
+                d3_enabled=False,
+                d3_overrides={
+                    "alpha_struct": "0.8",
+                    "lambda_commit": "0.25",
+                    "d2_evidence_nu": "2.5",
+                    "d2_evidence_ttl_steps": "7",
+                    "zscore_epsilon": "1.0e-5",
+                    "final_freeze_steps": "3",
+                },
+            ),
+        )
+    )
+    assert cfg.d3.enabled is False
+    assert cfg.d3.alpha_struct == 0.8
+    assert cfg.d3.lambda_commit == 0.25
+    assert cfg.d3.d2_evidence_nu == 2.5
+    assert cfg.d3.d2_evidence_ttl_steps == 7
+    assert cfg.d3.zscore_epsilon == 1.0e-5
+    assert cfg.d3.final_freeze_steps == 3
+
+
 def test_d3_revisit_with_d3_enabled_validates(tmp_path: Path):
     cfg = load_controller_config(
         _write_yaml(tmp_path, _full_d2_d3_body(mode="d3_revisit", d2_enabled=False))
@@ -291,8 +356,48 @@ def test_d2_d3_full_validates(tmp_path: Path):
     assert cfg.mode == "d2_d3_full"
     assert cfg.d2.enabled is True
     assert cfg.d3.enabled is True
+    assert cfg.reliability.min_completion_fraction == 0.0
+    assert cfg.d2.eta == 0.7
+    assert cfg.d2.delta_struct == 1.5
+    assert cfg.d2.struct_temperature == 1.0
+    assert cfg.d2.context_pnll_h0 == 2.0
+    assert cfg.d2.context_jsd_h0 == 0.5
+    assert cfg.d2.completion_ensemble_enabled is True
+    assert cfg.d2.completion_ensemble_size == 3
+    assert cfg.d2.completion_ensemble_scope == "local_windows"
+    assert cfg.d2.completion_ensemble_rescore_top_m == 8
+    assert cfg.d2.completion_ensemble_use_variance_gate is False
+    assert cfg.d2.sticky_ttl_steps == 5
+    assert cfg.d2.sticky_clear_on_selected is True
+    assert cfg.d2.sticky_clear_on_remask is True
+    assert cfg.d2.sticky_overwrite_on_refresh is True
+    assert cfg.d3.alpha_struct == 0.3
+    assert cfg.d3.d2_evidence_nu == 1.0
+    assert cfg.d3.d2_evidence_ttl_steps == 5
+    assert cfg.d3.d2_evidence_requires_benefit is True
     assert cfg.attribution.productive_delta_logp == 0.5
     assert cfg.controls.allow_shuffled_head is True
+
+
+def test_stage_a_canonical_presets_validate_and_use_stage_a_defaults():
+    for path in (D2_LOGITS_PRESET_PATH, D2_D3_FULL_PRESET_PATH, D_MONITOR_FULL_PRESET_PATH):
+        cfg = load_controller_config(path)
+        assert cfg.enabled is True
+        assert cfg.t_start == 0.5
+        assert cfg.reliability.min_completion_fraction == 0.0
+        assert cfg.d2.enabled is True
+        assert cfg.d2.eta == 0.7
+        assert cfg.d2.delta_struct == 1.5
+        assert cfg.d2.struct_temperature == 1.0
+        assert cfg.d2.completion_ensemble_scope == "local_windows"
+        assert cfg.d2.completion_ensemble_use_variance_gate is False
+        assert cfg.d2.sticky_ttl_steps == 5
+        if cfg.mode == "d2_logits":
+            assert cfg.d3.enabled is False
+        else:
+            assert cfg.d3.enabled is True
+            assert cfg.d3.alpha_struct == 0.3
+            assert cfg.d3.d2_evidence_nu == 1.0
 
 
 def test_d2_logits_with_d3_enabled_rejected(tmp_path: Path):
@@ -378,6 +483,33 @@ def test_d2_beta_zero_accepted(tmp_path: Path):
     assert cfg.d2.beta == 0.0
 
 
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("delta_struct", "0.0"),
+        ("struct_temperature", "0.0"),
+        ("context_pnll_h0", "0.0"),
+        ("sticky_ttl_steps", "0"),
+        ("completion_ensemble_size", "0"),
+        ("completion_ensemble_rescore_top_m", "0"),
+        ("completion_ensemble_scope", "global"),
+        ("completion_ensemble_use_variance_gate", "true"),
+    ],
+)
+def test_stage_a_d2_invalid_fields_rejected(tmp_path: Path, field: str, bad_value: str):
+    with pytest.raises(ControllerConfigError, match=field):
+        load_controller_config(
+            _write_yaml(
+                tmp_path,
+                _full_d2_d3_body(
+                    mode="d2_logits",
+                    d3_enabled=False,
+                    d2_overrides={field: bad_value},
+                ),
+            )
+        )
+
+
 def test_d2_min_ess_fraction_out_of_range_rejected(tmp_path: Path):
     with pytest.raises(ControllerConfigError, match="min_ess_fraction"):
         load_controller_config(
@@ -435,6 +567,28 @@ def test_d3_final_freeze_steps_min_one(tmp_path: Path):
                 tmp_path,
                 _full_d2_d3_body(
                     mode="d3_revisit", d2_enabled=False, d3_overrides={"final_freeze_steps": "0"}
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("alpha_struct", "-0.1"),
+        ("alpha_struct", "1.1"),
+        ("d2_evidence_nu", "-0.1"),
+        ("d2_evidence_ttl_steps", "0"),
+    ],
+)
+def test_stage_a_d3_invalid_fields_rejected(tmp_path: Path, field: str, bad_value: str):
+    with pytest.raises(ControllerConfigError, match=field):
+        load_controller_config(
+            _write_yaml(
+                tmp_path,
+                _full_d2_d3_body(
+                    mode="d2_d3_full",
+                    d3_overrides={field: bad_value},
                 ),
             )
         )

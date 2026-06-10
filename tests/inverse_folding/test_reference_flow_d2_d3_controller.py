@@ -10,6 +10,7 @@ PLAN's identity / correction / freeze semantics.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 
 import numpy as np
@@ -109,6 +110,9 @@ def _make_config(
     min_completion_fraction: float = 0.0,
     refresh_interval: int = 5,
     t_start: float = 0.5,
+    sticky_ttl_steps: int = 5,
+    d2_evidence_ttl_steps: int = 5,
+    d2_evidence_requires_benefit: bool = True,
 ) -> ControllerConfig:
     return ControllerConfig(
         enabled=True,
@@ -132,7 +136,11 @@ def _make_config(
         d2=D2Config(
             enabled=d2_enabled,
             beta=beta,
-            eta=1.0,
+            eta=0.7,
+            struct_temperature=1.0,
+            delta_struct=1.5,
+            context_pnll_h0=2.0,
+            context_jsd_h0=0.5,
             epsilon=1.0e-8,
             top_k_tokens=4,
             max_positions_per_block=max_positions,
@@ -141,6 +149,15 @@ def _make_config(
             min_ess_fraction=min_ess_fraction,
             max_abs_logit_shift=10.0,
             paired_uncorrected_sample=True,
+            completion_ensemble_enabled=True,
+            completion_ensemble_size=2,
+            completion_ensemble_scope="local_windows",
+            completion_ensemble_rescore_top_m=8,
+            completion_ensemble_use_variance_gate=False,
+            sticky_ttl_steps=sticky_ttl_steps,
+            sticky_clear_on_selected=True,
+            sticky_clear_on_remask=True,
+            sticky_overwrite_on_refresh=True,
         ),
         d3=D3Config(
             enabled=d3_enabled,
@@ -148,6 +165,10 @@ def _make_config(
             gamma_min=0.4,
             gamma_max=0.9,
             lambda_commit=1.0,
+            alpha_struct=0.3,
+            d2_evidence_nu=1.0,
+            d2_evidence_ttl_steps=d2_evidence_ttl_steps,
+            d2_evidence_requires_benefit=d2_evidence_requires_benefit,
             zscore_epsilon=1.0e-6,
             same_refresh_grace=True,
             final_freeze_steps=final_freeze_steps,
@@ -246,6 +267,264 @@ def test_d2_logits_mode_corrects_supported_tokens_at_active_block_positions():
     # the active block spans [0,8). Positions [8, L) are untouched at ALL tokens.
     for i in range(8, L):
         assert torch.allclose(res.logits[i], logits[i], atol=1e-12)
+
+
+def test_stage_a_d2_sampled_mode_with_shortlist_raises_guard():
+    """Review #7 guard: sampled candidate enumeration combined with an ensemble
+    shortlist that strictly reduces the candidate set would build a biased
+    uniform-over-shortlist Q marginal (the shortlist is a delta_R-selected
+    subset, not an i.i.d. Q draw). The controller fails fast instead of silently
+    emitting a biased correction. Unreachable with Stage A defaults, where
+    n_cart = |K_i|^max_positions stays <= max_candidates_per_block (cartesian)."""
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    # Force sampled enumeration (n_cart = 2^2 = 4 > max_candidates = 2) AND a
+    # shortlist that strictly reduces the 2 sampled candidates (rescore_top_m=1).
+    cfg = _make_config(
+        mode="d2_logits", d2_enabled=True, d3_enabled=False, max_candidates=2
+    )
+    cfg = dataclasses.replace(
+        cfg, d2=dataclasses.replace(cfg.d2, completion_ensemble_rescore_top_m=1)
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=cfg,
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    with pytest.raises(NotImplementedError, match="sampled candidate mode"):
+        controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+
+
+def test_stage_a_d2_sampled_mode_without_shortlist_reduction_is_allowed():
+    """The guard is specific to shortlist-induced bias. Sampled mode whose
+    shortlist does not reduce the candidate set keeps a uniform-over-FULL-sample
+    Q marginal (an unbiased Q estimate), so no guard fires and step() returns
+    normally."""
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    # Sampled (n_cart = 4 > max_candidates = 2) but rescore_top_m >= the sampled
+    # candidate count, so the shortlist keeps all candidates (no reduction).
+    cfg = _make_config(
+        mode="d2_logits", d2_enabled=True, d3_enabled=False, max_candidates=2
+    )
+    cfg = dataclasses.replace(
+        cfg, d2=dataclasses.replace(cfg.d2, completion_ensemble_rescore_top_m=8)
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=cfg,
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    res = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    assert res is not None
+
+
+def test_stage_a_sticky_applies_on_non_refresh_step_and_expires_by_ttl():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(
+            mode="d2_logits",
+            d2_enabled=True,
+            d3_enabled=False,
+            sticky_ttl_steps=2,
+        ),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    first = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    assert (first.logits - logits).abs().max().item() > 1e-3
+    assert controller._pending_d2_corrections
+
+    second = controller.step(_make_context(x_t=x_t, logits=logits, step=6, t=0.6))
+    assert (second.logits - logits).abs().max().item() > 1e-3
+
+    expired = controller.step(_make_context(x_t=x_t, logits=logits, step=7, t=0.7))
+    assert torch.equal(expired.logits, logits)
+    assert not controller._pending_d2_corrections
+
+
+def test_stage_a_sticky_clears_on_selected_and_remasked_positions():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    pre = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    pos = sorted(controller._pending_d2_corrections)[0]
+    x_t_selected = x_t.clone()
+    x_t_selected[pos] = _LOW_RISK
+    controller.post_step(
+        PostSamplingContext(
+            x_t=x_t_selected,
+            scores=np.zeros(L, dtype=np.float64),
+            structural_logits=logits,
+            corrected_logits=pre.logits,
+            selected_positions=np.array([pos], dtype=np.int64),
+            sampled_tokens_actual=np.array([_LOW_RISK], dtype=np.int64),
+            sampled_tokens_uncorrected=np.array([_HIGH_RISK], dtype=np.int64),
+            step=5,
+            t=0.5,
+            n_steps=10,
+            mask_token_id=_MASK_ID,
+            protein_id="P1",
+            design_idx=0,
+            sequence_length=L,
+        )
+    )
+    assert pos not in controller._pending_d2_corrections
+
+    # A separate controller proves remask cleanup uses post_remask(), not the
+    # selected-position path.
+    controller2 = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    controller2.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    pos2 = sorted(controller2._pending_d2_corrections)[0]
+    controller2.post_remask(remasked_positions=(pos2,), step=5, t=0.5)
+    assert pos2 not in controller2._pending_d2_corrections
+
+
+def test_stage_a_sticky_refresh_overwrites_same_position():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(
+            mode="d2_logits",
+            d2_enabled=True,
+            d3_enabled=False,
+            sticky_ttl_steps=99,
+        ),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    pos = sorted(controller._pending_d2_corrections)[0]
+    assert controller._pending_d2_corrections[pos].created_step == 5
+    controller.step(_make_context(x_t=x_t, logits=logits, step=10, t=0.6))
+    assert controller._pending_d2_corrections[pos].created_step == 10
+
+
+def test_stage_a_low_completion_fraction_does_not_hard_disable_d2_when_context_exists():
+    L = 10
+    logits = _struct_logits(L)
+    # Only one committed context residue inside the active block. With the old
+    # completion gate this is below 0.9 and would zero rho_B.
+    x_t = torch.tensor([_HIGH_RISK] + [_MASK_ID] * (L - 1), dtype=torch.long)
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(
+            mode="d2_logits",
+            d2_enabled=True,
+            d3_enabled=False,
+            min_completion_fraction=0.9,
+        ),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    assert controller._pending_d2_corrections
+    assert any(
+        out.rho_B_effective > 0.0
+        for out in controller._latest_d2_outcome.block_outcomes
+        if out.skipped_reason is None
+    )
+
+
+def test_stage_a_no_committed_context_skips_d2_correction():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_MASK_ID] * L, dtype=torch.long)
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    res = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    assert torch.equal(res.logits, logits)
+    assert not controller._pending_d2_corrections
+    assert {
+        out.skipped_reason for out in controller._latest_d2_outcome.block_outcomes
+    } == {"no_committed_context"}
+
+
+def test_stage_a_high_context_pnll_lowers_effective_rho():
+    L = 10
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    low_pnll_logits = _struct_logits(L)
+    high_pnll_logits = _struct_logits(L)
+    high_pnll_logits[:4, _HIGH_RISK] = -8.0
+    high_pnll_logits[:4, _LOW_RISK] = 8.0
+
+    def _rho_for(logits: torch.Tensor) -> float:
+        controller = ReferenceFlowController(
+            protein_id="P1",
+            design_idx=0,
+            seed=42,
+            static_sequence="A" * L,
+            scorer=_StubScorer(),
+            config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+            decode_tokens=_decode,
+            canonical_token_ids=_CANONICAL,
+        )
+        controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+        return max(out.rho_B_effective for out in controller._latest_d2_outcome.block_outcomes)
+
+    assert _rho_for(high_pnll_logits) < _rho_for(low_pnll_logits)
 
 
 def test_monitor_only_with_d2_enabled_returns_identity_logits():
@@ -721,6 +1000,292 @@ def test_d2_event_row_carries_realized_delta_R_corrected_and_uncorrected():
         # must be strictly less than uncorrected ΔR for the stub scorer
         # (which counts Y residues over the window).
         assert row["delta_R_corrected"] < row["delta_R_uncorrected"]
+
+
+def test_stage_a_benefit_gate_requires_realized_improvement_for_d2_evidence():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(
+            mode="d2_logits",
+            d2_enabled=True,
+            d3_enabled=False,
+            d2_evidence_requires_benefit=True,
+        ),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    pre = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    pos = sorted(controller._pending_d2_corrections)[0]
+
+    # Paired disagreement is true, but the corrected branch is worse: actual
+    # receives high-risk Y while paired receives low-risk A.
+    x_t_post = x_t.clone()
+    x_t_post[pos] = _HIGH_RISK
+    res = controller.post_step(
+        PostSamplingContext(
+            x_t=x_t_post,
+            scores=np.zeros(L, dtype=np.float64),
+            structural_logits=logits,
+            corrected_logits=pre.logits,
+            selected_positions=np.array([pos], dtype=np.int64),
+            sampled_tokens_actual=np.array([_HIGH_RISK], dtype=np.int64),
+            sampled_tokens_uncorrected=np.array([_LOW_RISK], dtype=np.int64),
+            step=5,
+            t=0.5,
+            n_steps=10,
+            mask_token_id=_MASK_ID,
+            protein_id="P1",
+            design_idx=0,
+            sequence_length=L,
+        )
+    )
+    assert res.rank_scores is not None
+    assert controller._d2_evidence_writes == []
+    rows = [r for r in res.post_event_rows if r["event_type"] == "D2"]
+    assert rows
+    assert rows[0]["paired_disagreement_flag"] is True
+    assert rows[0]["realized_benefit_flag"] is False
+    assert rows[0]["d2_evidence"] == 0.0
+
+
+def test_stage_a_beneficial_disagreement_writes_ttl_decayed_d2_evidence():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(
+            mode="d2_logits",
+            d2_enabled=True,
+            d3_enabled=False,
+            d2_evidence_ttl_steps=4,
+        ),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    pre = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    pos = sorted(controller._pending_d2_corrections)[0]
+    x_t_post = x_t.clone()
+    x_t_post[pos] = _LOW_RISK
+    res = controller.post_step(
+        PostSamplingContext(
+            x_t=x_t_post,
+            scores=np.zeros(L, dtype=np.float64),
+            structural_logits=logits,
+            corrected_logits=pre.logits,
+            selected_positions=np.array([pos], dtype=np.int64),
+            sampled_tokens_actual=np.array([_LOW_RISK], dtype=np.int64),
+            sampled_tokens_uncorrected=np.array([_HIGH_RISK], dtype=np.int64),
+            step=5,
+            t=0.5,
+            n_steps=10,
+            mask_token_id=_MASK_ID,
+            protein_id="P1",
+            design_idx=0,
+            sequence_length=L,
+        )
+    )
+    assert res.rank_scores is not None
+    assert len(controller._d2_evidence_writes) == 1
+    now = controller._d2_evidence_array(step=5, sequence_length=L)
+    later = controller._d2_evidence_array(step=7, sequence_length=L)
+    expired = controller._d2_evidence_array(step=9, sequence_length=L)
+    assert now[pos] > 0.0
+    assert later[pos] == pytest.approx(now[pos] * 0.5)
+    assert expired[pos] == 0.0
+
+
+def test_stage_a_d2_logits_returns_rank_scores_without_d3_enabled():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_LOW_RISK] * L, dtype=torch.long)
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    res = controller.post_step(
+        PostSamplingContext(
+            x_t=x_t,
+            scores=np.linspace(-1.0, -0.1, L),
+            structural_logits=logits,
+            corrected_logits=logits,
+            selected_positions=np.array([], dtype=np.int64),
+            sampled_tokens_actual=np.array([], dtype=np.int64),
+            sampled_tokens_uncorrected=None,
+            step=6,
+            t=0.6,
+            n_steps=10,
+            mask_token_id=_MASK_ID,
+            protein_id="P1",
+            design_idx=0,
+            sequence_length=L,
+        )
+    )
+    assert res.rank_scores is not None
+    assert res.rank_scores.shape == (L,)
+
+
+def test_stage_a_d2_logits_final_freeze_protects_committed_positions():
+    L = 8
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_LOW_RISK if i % 2 == 0 else _MASK_ID for i in range(L)], dtype=torch.long)
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(
+            mode="d2_logits",
+            d2_enabled=True,
+            d3_enabled=False,
+            final_freeze_steps=2,
+        ),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    res = controller.post_step(
+        PostSamplingContext(
+            x_t=x_t,
+            scores=np.zeros(L, dtype=np.float64),
+            structural_logits=logits,
+            corrected_logits=logits,
+            selected_positions=np.array([], dtype=np.int64),
+            sampled_tokens_actual=np.array([], dtype=np.int64),
+            sampled_tokens_uncorrected=None,
+            step=8,
+            t=0.8,
+            n_steps=10,
+            mask_token_id=_MASK_ID,
+            protein_id="P1",
+            design_idx=0,
+            sequence_length=L,
+        )
+    )
+    assert set(res.protected_positions) == {0, 2, 4, 6}
+
+
+def test_stage_a_d2_logits_post_remask_records_independent_remask_ledger():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    controller.post_remask(remasked_positions=(4,), step=5, t=0.5)
+    rows = controller.controller_event_rows()
+    remask_rows = [r for r in rows if r["event_type"] == "remask"]
+    assert len(remask_rows) == 1
+    assert remask_rows[0]["position_i"] == 4
+    assert remask_rows[0]["remask_flag"] is True
+    assert [r for r in rows if r["event_type"] == "D3"] == []
+
+
+def test_stage_a_d2_d3_full_post_remask_emits_d3_rows_after_rank_face():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_LOW_RISK] * 4 + [_MASK_ID] * 2, dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_d3_full", d2_enabled=True, d3_enabled=True),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    post_ctx = PostSamplingContext(
+        x_t=x_t,
+        scores=np.zeros(L, dtype=np.float64),
+        structural_logits=logits,
+        corrected_logits=logits,
+        selected_positions=np.array([], dtype=np.int64),
+        sampled_tokens_actual=np.array([], dtype=np.int64),
+        sampled_tokens_uncorrected=None,
+        step=5,
+        t=0.5,
+        n_steps=10,
+        mask_token_id=_MASK_ID,
+        protein_id="P1",
+        design_idx=0,
+        sequence_length=L,
+    )
+    res = controller.post_step(post_ctx)
+    assert res.rank_scores is not None
+    controller.post_remask(remasked_positions=(2,), step=5, t=0.5)
+    rows = controller.controller_event_rows()
+    assert [r for r in rows if r["event_type"] == "remask"]
+    d3_rows = [r for r in rows if r["event_type"] == "D3"]
+    assert len(d3_rows) == 1
+    assert len(controller._d3_pending_snapshots) == 1
+
+    d3_count_after_refresh = len(d3_rows)
+    snapshot_count_after_refresh = len(controller._d3_pending_snapshots)
+    nonrefresh_logits = logits.clone()
+    nonrefresh_logits[3, _HIGH_RISK] = logits[3, _HIGH_RISK] - 10.0
+    nonrefresh_ctx = PostSamplingContext(
+        x_t=x_t,
+        scores=np.zeros(L, dtype=np.float64),
+        structural_logits=nonrefresh_logits,
+        corrected_logits=nonrefresh_logits,
+        selected_positions=np.array([], dtype=np.int64),
+        sampled_tokens_actual=np.array([], dtype=np.int64),
+        sampled_tokens_uncorrected=None,
+        step=6,
+        t=0.6,
+        n_steps=10,
+        mask_token_id=_MASK_ID,
+        protein_id="P1",
+        design_idx=0,
+        sequence_length=L,
+    )
+    nonrefresh_res = controller.post_step(nonrefresh_ctx)
+    assert nonrefresh_res.rank_scores is not None
+    controller.post_remask(remasked_positions=(3,), step=6, t=0.6)
+    rows = controller.controller_event_rows()
+    remask_rows = [r for r in rows if r["event_type"] == "remask"]
+    assert any(r["position_i"] == 3 for r in remask_rows)
+    nonrefresh_remask = [r for r in remask_rows if r["position_i"] == 3][0]
+    assert nonrefresh_remask["rank_score"] == pytest.approx(
+        float(nonrefresh_res.rank_scores[3])
+    )
+    assert len([r for r in rows if r["event_type"] == "D3"]) == d3_count_after_refresh
+    assert len(controller._d3_pending_snapshots) == snapshot_count_after_refresh
 
 
 def test_monitor_only_d2_diagnostic_rows_keep_realized_delta_R_null():
