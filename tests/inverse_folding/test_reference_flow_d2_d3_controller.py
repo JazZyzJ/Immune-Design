@@ -1110,6 +1110,60 @@ def test_stage_a_beneficial_disagreement_writes_ttl_decayed_d2_evidence():
     assert expired[pos] == 0.0
 
 
+def test_stage_a_d2_rows_carry_structural_top4_support_gaps():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    pre = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    pos = sorted(controller._pending_d2_corrections)[0]
+    x_t_post = x_t.clone()
+    x_t_post[pos] = _LOW_RISK
+    res = controller.post_step(
+        PostSamplingContext(
+            x_t=x_t_post,
+            scores=np.zeros(L, dtype=np.float64),
+            structural_logits=logits,
+            corrected_logits=pre.logits,
+            selected_positions=np.array([pos], dtype=np.int64),
+            sampled_tokens_actual=np.array([_LOW_RISK], dtype=np.int64),
+            sampled_tokens_uncorrected=np.array([_HIGH_RISK], dtype=np.int64),
+            step=5,
+            t=0.5,
+            n_steps=10,
+            mask_token_id=_MASK_ID,
+            protein_id="P1",
+            design_idx=0,
+            sequence_length=L,
+        )
+    )
+    row = [r for r in res.post_event_rows if r["event_type"] == "D2"][0]
+    canonical = torch.tensor(_CANONICAL, dtype=torch.long)
+    log_probs = torch.log_softmax(logits[int(row["position_i"])], dim=-1)
+    vals, idx = torch.topk(log_probs[canonical], k=4)
+    expected_tokens = canonical[idx].tolist()
+    for rank in range(1, 5):
+        assert row[f"struct_top{rank}_token"] == expected_tokens[rank - 1]
+        assert row[f"struct_top{rank}_logprob"] == pytest.approx(
+            float(vals[rank - 1].item())
+        )
+    for rank in range(2, 5):
+        assert row[f"struct_top{rank}_gap"] == pytest.approx(
+            float((vals[0] - vals[rank - 1]).item())
+        )
+
+
 def test_stage_a_d2_logits_returns_rank_scores_without_d3_enabled():
     L = 10
     logits = _struct_logits(L)

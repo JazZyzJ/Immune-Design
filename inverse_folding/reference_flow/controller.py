@@ -490,6 +490,7 @@ class ReferenceFlowController:
                     completed_tokens=completed_tokens,
                     structural_logits=context.logits,
                     corrected_logits=d2_outcome.corrected_logits,
+                    canonical_token_ids=self._canonical_token_ids or (),
                     refresh_step=self._refresh_step_counter,
                     step=int(context.step),
                     t=float(context.t),
@@ -1027,6 +1028,7 @@ class ReferenceFlowController:
             corrections=delivered,
             structural_logits=context.logits,
             corrected_logits=corrected,
+            canonical_token_ids=self._canonical_token_ids or (),
             step=int(context.step),
             t=float(context.t),
             protein_id=self.protein_id,
@@ -1491,6 +1493,7 @@ def _build_pending_d2_events(
     completed_tokens: torch.Tensor,
     structural_logits: torch.Tensor,
     corrected_logits: torch.Tensor,
+    canonical_token_ids: Sequence[int],
     refresh_step: int,
     step: int,
     t: float,
@@ -1578,6 +1581,11 @@ def _build_pending_d2_events(
                     "g_ESS": float(block.g_ESS_candidates),
                     # ---- Stage A nullable columns ----
                     **_stage_a_event_defaults(),
+                    **_structural_top4_support_fields(
+                        log_probs=log_probs_struct,
+                        position=int(pos),
+                        canonical_token_ids=canonical_token_ids,
+                    ),
                     # ---- pending fill markers (private) ----
                     "_push_token": int(push_token),
                 }
@@ -1596,6 +1604,17 @@ def _stage_a_event_defaults() -> dict:
         "rank_score": None,
         "rank_percentile_d2_written": None,
         "ell_struct": None,
+        "struct_top1_token": None,
+        "struct_top1_logprob": None,
+        "struct_top2_token": None,
+        "struct_top2_logprob": None,
+        "struct_top2_gap": None,
+        "struct_top3_token": None,
+        "struct_top3_logprob": None,
+        "struct_top3_gap": None,
+        "struct_top4_token": None,
+        "struct_top4_logprob": None,
+        "struct_top4_gap": None,
         "ell_sample": None,
         "alpha_struct": None,
         "d2_evidence_nu": None,
@@ -1615,6 +1634,7 @@ def _build_sticky_d2_events(
     corrections: Sequence[PendingD2Correction],
     structural_logits: torch.Tensor,
     corrected_logits: torch.Tensor,
+    canonical_token_ids: Sequence[int],
     step: int,
     t: float,
     protein_id: str,
@@ -1683,6 +1703,11 @@ def _build_sticky_d2_events(
             "g_ESS": float(block.g_ESS_candidates),
             # ---- Stage A ----
             **_stage_a_event_defaults(),
+            **_structural_top4_support_fields(
+                log_probs=log_probs_struct,
+                position=pos,
+                canonical_token_ids=canonical_token_ids,
+            ),
             "sticky_age_steps": int(step) - int(corr.created_step),
             "sticky_created_step": int(corr.created_step),
             "sticky_selected_flag": False,
@@ -1973,6 +1998,57 @@ def _per_position_kl(*, log_p: torch.Tensor, log_q: torch.Tensor) -> float:
     contrib = p * diff
     contrib = torch.where(torch.isfinite(contrib), contrib, torch.zeros_like(contrib))
     return float(contrib.sum().item())
+
+
+def _structural_top4_support_fields(
+    *,
+    log_probs: torch.Tensor,
+    position: int,
+    canonical_token_ids: Sequence[int],
+) -> dict:
+    """Structural top-4 canonical-token support telemetry for one target.
+
+    ``delta_struct`` defines a trust region relative to the structural top
+    token. Persisting top-rank log-prob gaps makes that threshold auditable
+    without re-running the model.
+    """
+    empty = {
+        "struct_top1_token": None,
+        "struct_top1_logprob": None,
+        "struct_top2_token": None,
+        "struct_top2_logprob": None,
+        "struct_top2_gap": None,
+        "struct_top3_token": None,
+        "struct_top3_logprob": None,
+        "struct_top3_gap": None,
+        "struct_top4_token": None,
+        "struct_top4_logprob": None,
+        "struct_top4_gap": None,
+    }
+    if log_probs.ndim != 2:
+        return dict(empty)
+    pos = int(position)
+    if pos < 0 or pos >= int(log_probs.shape[0]):
+        return dict(empty)
+    vocab = int(log_probs.shape[1])
+    canonical = [int(t) for t in canonical_token_ids if 0 <= int(t) < vocab]
+    if not canonical:
+        return dict(empty)
+
+    canonical_tensor = torch.tensor(canonical, dtype=torch.long, device=log_probs.device)
+    vals = log_probs[pos, canonical_tensor]
+    k = min(4, int(vals.numel()))
+    top_vals, top_idx = torch.topk(vals, k=k)
+    top_tokens = canonical_tensor[top_idx]
+    out = dict(empty)
+    top1 = float(top_vals[0].item())
+    for rank in range(1, k + 1):
+        val = float(top_vals[rank - 1].item())
+        out[f"struct_top{rank}_token"] = int(top_tokens[rank - 1].item())
+        out[f"struct_top{rank}_logprob"] = val
+        if rank > 1:
+            out[f"struct_top{rank}_gap"] = float(top1 - val)
+    return out
 
 
 def _apply_d2_g_ess_to_blocks(
