@@ -1230,4 +1230,6 @@ sbatch scripts/submit_if_phase_c.slurm
 6. If local gates fail, stop Stage B work and inspect by the decision tree in `doc/RF_Controller_Architecture.md` §5.2.
 7. If the Stage A pilot still shows high ESS suppression, treat it as a candidate-space concentration problem rather than a reliability-gate failure. First inspect the `g_ESS_candidates` distribution, then consider relaxing `max_positions_per_block` or `top_k_tokens` to dilute posterior concentration before changing the ESS gate.
 
+**Next-plan pointer**: Stage B/C are not part of this Stage A D2-D3 actuation contract. The cross-phase unified controller plan lives in `PLAN_RF_UNI_CTRL.md`, gated on the A to B local gates above: typed actionability targeting first, then GR pressure and Phase C editability control.
+
 ---

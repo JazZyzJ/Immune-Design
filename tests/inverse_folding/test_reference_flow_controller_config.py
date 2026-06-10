@@ -11,6 +11,7 @@ from inverse_folding.reference_flow.controller_config import (
     ControllerConfigError,
     controller_config_hash,
     load_controller_config,
+    materialize_controller_config,
 )
 
 
@@ -612,3 +613,153 @@ def test_controller_config_hash_sensitive_to_d2_field(tmp_path: Path):
         )
     )
     assert controller_config_hash(cfg1) != controller_config_hash(cfg2)
+
+
+# ---------------------------------------------------------------------------
+# Stage B typed-targeting config (PLAN_RF_UNI_CTRL.md Task B2)
+# ---------------------------------------------------------------------------
+
+
+def _base_enabled_payload() -> dict:
+    """Minimal valid enabled controller payload with all required sections."""
+    return {
+        "controller": {
+            "enabled": True,
+            "mode": "monitor_only",
+            "t_start": 0.5,
+            "refresh_interval": 5,
+            "completion": {"method": "argmax"},
+            "head": {
+                "score_scale": "raw_logit",
+                "static_cache_policy": "lazy_write",
+                "local_risk_aggregation": "LME",
+            },
+            "active_windows": {
+                "excess_threshold": 0.0,
+                "max_windows": 16,
+                "selection": "threshold_then_top_n",
+                "merge_overlapping_scoring_windows": True,
+            },
+            "reliability": {
+                "time_k": 20.0,
+                "entropy_h0": 1.5,
+                "min_completion_fraction": 0.0,
+                "min_rho_to_emit_event": 0.0,
+            },
+            "d2": {"enabled": False},
+            "d3": {"enabled": False},
+            "attribution": {
+                "write_paired_counterfactual": False,
+                "write_independent_delta_R_i": False,
+                "productive_delta_logp": 0.5,
+            },
+            "controls": {
+                "allow_wrong_allele_head": True,
+                "allow_shuffled_head": True,
+            },
+            "telemetry": {
+                "write_refresh_log": True,
+                "write_controller_events": True,
+                "write_per_protein_summary": True,
+            },
+        }
+    }
+
+
+def test_targeting_config_defaults_to_static_excess():
+    config = materialize_controller_config(_base_enabled_payload())
+    assert config.targeting.mode == "static_excess"
+    assert config.targeting.use_cluster_for_active_blocks is False
+    assert config.global_pressure.enabled is False
+    assert config.d3.evidence_source == "legacy_window_excess"
+
+
+def test_typed_targeting_config_validates_modes():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {
+        "enabled": False,
+        "evidence_source": "typed_fresh",
+    }
+    config = materialize_controller_config(payload)
+    assert config.targeting.mode == "typed_actionability"
+    assert config.d3.evidence_source == "typed_fresh"
+
+
+def test_targeting_unknown_mode_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "bogus"}
+    with pytest.raises(ControllerConfigError, match="targeting.mode"):
+        materialize_controller_config(payload)
+
+
+def test_d3_evidence_source_unknown_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["d3"] = {"enabled": False, "evidence_source": "bogus"}
+    with pytest.raises(ControllerConfigError, match="evidence_source"):
+        materialize_controller_config(payload)
+
+
+def test_first_reliable_refresh_median_reserved_not_implemented():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "tau_ref_source": "first_reliable_refresh_median",
+    }
+    with pytest.raises(NotImplementedError, match="first_reliable_refresh_median"):
+        materialize_controller_config(payload)
+
+
+def test_targeting_unknown_tau_ref_source_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "tau_ref_source": "bogus",
+    }
+    with pytest.raises(ControllerConfigError, match="tau_ref_source"):
+        materialize_controller_config(payload)
+
+
+def test_targeting_env_ensemble_size_min_one():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "env_ensemble_size": 0,
+    }
+    with pytest.raises(ControllerConfigError, match="env_ensemble_size"):
+        materialize_controller_config(payload)
+
+
+def test_targeting_mem_half_life_must_be_positive():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "mem_half_life_refreshes": 0.0,
+    }
+    with pytest.raises(ControllerConfigError, match="mem_half_life_refreshes"):
+        materialize_controller_config(payload)
+
+
+def test_targeting_r_ctx_floor_in_unit_interval():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "r_ctx_floor": 1.5,
+    }
+    with pytest.raises(ControllerConfigError, match="r_ctx_floor"):
+        materialize_controller_config(payload)
+
+
+def test_global_pressure_g_max_below_g_min_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["global_pressure"] = {"g_min": 1.0, "g_max": 0.5}
+    with pytest.raises(ControllerConfigError, match="g_max"):
+        materialize_controller_config(payload)
+
+
+def test_targeting_config_hash_sensitive_to_mode():
+    base = materialize_controller_config(_base_enabled_payload())
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    typed = materialize_controller_config(payload)
+    assert controller_config_hash(base) != controller_config_hash(typed)

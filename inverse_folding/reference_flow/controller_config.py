@@ -19,6 +19,12 @@ _ALLOWED_MODES = frozenset({"monitor_only", "d2_logits", "d3_revisit", "d2_d3_fu
 _MODES_REQUIRING_D2 = frozenset({"d2_logits", "d2_d3_full"})
 _MODES_REQUIRING_D3 = frozenset({"d3_revisit", "d2_d3_full"})
 
+# Stage B typed-targeting allowed values (PLAN_RF_UNI_CTRL.md Task B2).
+_ALLOWED_TARGETING_MODES = frozenset({"static_excess", "typed_actionability"})
+_ALLOWED_TAU_REF_SOURCES = frozenset({"static_median", "first_reliable_refresh_median"})
+_RESERVED_TAU_REF_SOURCES = frozenset({"first_reliable_refresh_median"})
+_ALLOWED_D3_EVIDENCE_SOURCES = frozenset({"legacy_window_excess", "typed_fresh"})
+
 
 @dataclass(frozen=True)
 class CompletionConfig:
@@ -76,6 +82,10 @@ class D3Config:
     zscore_epsilon: float = 1.0e-6
     same_refresh_grace: bool = True
     final_freeze_steps: int = 1
+    # Stage B (PLAN_RF_UNI_CTRL.md Task B5): which residue-level evidence drives
+    # the D3 EMA ``m_i``. ``legacy_window_excess`` keeps the Stage A projection;
+    # ``typed_fresh`` feeds the typed ``e_fresh`` field (d2_d3_full_stageB only).
+    evidence_source: str = "legacy_window_excess"
 
 
 @dataclass(frozen=True)
@@ -89,6 +99,52 @@ class AttributionConfig:
 class ControlsConfig:
     allow_wrong_allele_head: bool = True
     allow_shuffled_head: bool = True
+
+
+@dataclass(frozen=True)
+class TargetingConfig:
+    """Stage B typed-actionability targeting (PLAN_RF_UNI_CTRL.md Task B2).
+
+    ``mode='static_excess'`` (default) keeps the legacy ``z_dyn - z_static``
+    active-window path bit-for-bit. ``mode='typed_actionability'`` builds the
+    typed ``A_i(t)`` field and selects active windows from ``v_target``.
+    """
+
+    mode: str = "static_excess"
+    tau_ref_source: str = "static_median"
+    tau_ref_quantile: float = 0.50
+    projection: str = "max_covering_window"
+    env_seed_top_current: int = 16
+    env_seed_top_uncertain: int = 16
+    env_seed_max_windows: int = 32
+    env_ensemble_size: int = 3
+    env_consistency_floor: float = 1.0 / 3.0
+    softor_tau: float = 0.5
+    r_ctx_floor: float = 0.25
+    mem_half_life_refreshes: float = 3.0
+    mem_cold_start: str = "zero"
+    cluster_radius: int = 4
+    cluster_min_mass: float = 3.0
+    cluster_floor: float = 0.25
+    use_cluster_for_active_blocks: bool = False
+    active_window_source: str = "v_target"
+    active_window_min_excess: float = 0.0
+    write_actionability_telemetry: bool = True
+
+
+@dataclass(frozen=True)
+class GlobalPressureConfig:
+    """Stage C global-pressure scalar config (PLAN_RF_UNI_CTRL.md Task B2).
+
+    Stage B computes and logs ``G(t)`` / ``g_GR(t)`` for telemetry only; it
+    never scales beta/lambda. ``enabled`` stays ``False`` until Stage C.
+    """
+
+    enabled: bool = False
+    g_min: float = 0.25
+    g_max: float = 1.0
+    G0_source: str = "stageB_pilot_median"
+    s_G_source: str = "stageB_pilot_iqr_half"
 
 
 @dataclass(frozen=True)
@@ -136,6 +192,8 @@ class ControllerConfig:
     attribution: AttributionConfig = AttributionConfig()
     controls: ControlsConfig = ControlsConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
+    targeting: TargetingConfig = TargetingConfig()
+    global_pressure: GlobalPressureConfig = GlobalPressureConfig()
 
 
 def load_controller_config(path: str | Path) -> ControllerConfig:
@@ -263,6 +321,10 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
     _cross_validate_mode(mode=mode, d2=d2, d3=d3)
     attribution = _materialize_attribution(controller_payload.get("attribution"))
     controls = _materialize_controls(controller_payload.get("controls"))
+    targeting = _materialize_targeting(controller_payload.get("targeting"))
+    global_pressure = _materialize_global_pressure(
+        controller_payload.get("global_pressure")
+    )
 
     tel_payload = controller_payload.get("telemetry", {})
     if not isinstance(tel_payload, dict):
@@ -287,6 +349,8 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
         attribution=attribution,
         controls=controls,
         telemetry=telemetry,
+        targeting=targeting,
+        global_pressure=global_pressure,
     )
 
 
@@ -503,6 +567,12 @@ def _materialize_d3(payload: Any) -> D3Config:
             "controller.d3.final_freeze_steps must be >= 1 "
             f"(got {final_freeze_steps})"
         )
+    evidence_source = str(payload.get("evidence_source", "legacy_window_excess"))
+    if evidence_source not in _ALLOWED_D3_EVIDENCE_SOURCES:
+        raise ControllerConfigError(
+            "controller.d3.evidence_source must be one of "
+            f"{sorted(_ALLOWED_D3_EVIDENCE_SOURCES)} (got {evidence_source!r})"
+        )
     return D3Config(
         enabled=enabled,
         window_to_residue_projection=projection,
@@ -518,6 +588,7 @@ def _materialize_d3(payload: Any) -> D3Config:
         zscore_epsilon=zscore_epsilon,
         same_refresh_grace=bool(payload.get("same_refresh_grace", True)),
         final_freeze_steps=final_freeze_steps,
+        evidence_source=evidence_source,
     )
 
 
@@ -547,6 +618,208 @@ def _materialize_controls(payload: Any) -> ControlsConfig:
     return ControlsConfig(
         allow_wrong_allele_head=bool(payload.get("allow_wrong_allele_head", True)),
         allow_shuffled_head=bool(payload.get("allow_shuffled_head", True)),
+    )
+
+
+def _materialize_targeting(payload: Any) -> TargetingConfig:
+    if payload is None:
+        return TargetingConfig()
+    if not isinstance(payload, dict):
+        raise ControllerConfigError(
+            "controller.targeting must be a mapping when present"
+        )
+    defaults = TargetingConfig()
+
+    mode = str(payload.get("mode", defaults.mode))
+    if mode not in _ALLOWED_TARGETING_MODES:
+        raise ControllerConfigError(
+            "controller.targeting.mode must be one of "
+            f"{sorted(_ALLOWED_TARGETING_MODES)} (got {mode!r})"
+        )
+
+    tau_ref_source = str(payload.get("tau_ref_source", defaults.tau_ref_source))
+    if tau_ref_source not in _ALLOWED_TAU_REF_SOURCES:
+        raise ControllerConfigError(
+            "controller.targeting.tau_ref_source must be one of "
+            f"{sorted(_ALLOWED_TAU_REF_SOURCES)} (got {tau_ref_source!r})"
+        )
+    if tau_ref_source in _RESERVED_TAU_REF_SOURCES:
+        raise NotImplementedError(
+            "controller.targeting.tau_ref_source='first_reliable_refresh_median' "
+            "is reserved but not implemented in Stage B v1; only 'static_median' "
+            "is available. Provide a static window cache instead."
+        )
+
+    tau_ref_quantile = float(payload.get("tau_ref_quantile", defaults.tau_ref_quantile))
+    if not (0.0 <= tau_ref_quantile <= 1.0):
+        raise ControllerConfigError(
+            "controller.targeting.tau_ref_quantile must lie in [0, 1] "
+            f"(got {tau_ref_quantile})"
+        )
+
+    projection = str(payload.get("projection", defaults.projection))
+    if projection != "max_covering_window":
+        raise ControllerConfigError(
+            "controller.targeting.projection must be 'max_covering_window' for "
+            f"Stage B v1 (got {projection!r})"
+        )
+
+    env_seed_top_current = int(
+        payload.get("env_seed_top_current", defaults.env_seed_top_current)
+    )
+    env_seed_top_uncertain = int(
+        payload.get("env_seed_top_uncertain", defaults.env_seed_top_uncertain)
+    )
+    env_seed_max_windows = int(
+        payload.get("env_seed_max_windows", defaults.env_seed_max_windows)
+    )
+    for name, val in (
+        ("env_seed_top_current", env_seed_top_current),
+        ("env_seed_top_uncertain", env_seed_top_uncertain),
+        ("env_seed_max_windows", env_seed_max_windows),
+    ):
+        if val < 0:
+            raise ControllerConfigError(
+                f"controller.targeting.{name} must be >= 0 (got {val})"
+            )
+
+    env_ensemble_size = int(payload.get("env_ensemble_size", defaults.env_ensemble_size))
+    if env_ensemble_size < 1:
+        raise ControllerConfigError(
+            "controller.targeting.env_ensemble_size must be >= 1 "
+            f"(got {env_ensemble_size})"
+        )
+
+    env_consistency_floor = float(
+        payload.get("env_consistency_floor", defaults.env_consistency_floor)
+    )
+    if not (0.0 <= env_consistency_floor <= 1.0):
+        raise ControllerConfigError(
+            "controller.targeting.env_consistency_floor must lie in [0, 1] "
+            f"(got {env_consistency_floor})"
+        )
+
+    softor_tau = float(payload.get("softor_tau", defaults.softor_tau))
+    if softor_tau <= 0.0:
+        raise ControllerConfigError(
+            f"controller.targeting.softor_tau must be positive (got {softor_tau})"
+        )
+
+    r_ctx_floor = float(payload.get("r_ctx_floor", defaults.r_ctx_floor))
+    if not (0.0 <= r_ctx_floor <= 1.0):
+        raise ControllerConfigError(
+            f"controller.targeting.r_ctx_floor must lie in [0, 1] (got {r_ctx_floor})"
+        )
+
+    mem_half_life_refreshes = float(
+        payload.get("mem_half_life_refreshes", defaults.mem_half_life_refreshes)
+    )
+    if mem_half_life_refreshes <= 0.0:
+        raise ControllerConfigError(
+            "controller.targeting.mem_half_life_refreshes must be positive "
+            f"(got {mem_half_life_refreshes})"
+        )
+
+    mem_cold_start = str(payload.get("mem_cold_start", defaults.mem_cold_start))
+    if mem_cold_start != "zero":
+        raise ControllerConfigError(
+            "controller.targeting.mem_cold_start must be 'zero' for Stage B v1 "
+            f"(got {mem_cold_start!r})"
+        )
+
+    cluster_radius = int(payload.get("cluster_radius", defaults.cluster_radius))
+    if cluster_radius < 0:
+        raise ControllerConfigError(
+            f"controller.targeting.cluster_radius must be >= 0 (got {cluster_radius})"
+        )
+    cluster_min_mass = float(payload.get("cluster_min_mass", defaults.cluster_min_mass))
+    if cluster_min_mass <= 0.0:
+        raise ControllerConfigError(
+            "controller.targeting.cluster_min_mass must be positive "
+            f"(got {cluster_min_mass})"
+        )
+    cluster_floor = float(payload.get("cluster_floor", defaults.cluster_floor))
+    if not (0.0 <= cluster_floor <= 1.0):
+        raise ControllerConfigError(
+            f"controller.targeting.cluster_floor must lie in [0, 1] (got {cluster_floor})"
+        )
+
+    active_window_source = str(
+        payload.get("active_window_source", defaults.active_window_source)
+    )
+    if active_window_source != "v_target":
+        raise ControllerConfigError(
+            "controller.targeting.active_window_source must be 'v_target' for "
+            f"Stage B v1 (got {active_window_source!r})"
+        )
+    active_window_min_excess = float(
+        payload.get("active_window_min_excess", defaults.active_window_min_excess)
+    )
+    if active_window_min_excess < 0.0:
+        raise ControllerConfigError(
+            "controller.targeting.active_window_min_excess must be >= 0 "
+            f"(got {active_window_min_excess})"
+        )
+
+    return TargetingConfig(
+        mode=mode,
+        tau_ref_source=tau_ref_source,
+        tau_ref_quantile=tau_ref_quantile,
+        projection=projection,
+        env_seed_top_current=env_seed_top_current,
+        env_seed_top_uncertain=env_seed_top_uncertain,
+        env_seed_max_windows=env_seed_max_windows,
+        env_ensemble_size=env_ensemble_size,
+        env_consistency_floor=env_consistency_floor,
+        softor_tau=softor_tau,
+        r_ctx_floor=r_ctx_floor,
+        mem_half_life_refreshes=mem_half_life_refreshes,
+        mem_cold_start=mem_cold_start,
+        cluster_radius=cluster_radius,
+        cluster_min_mass=cluster_min_mass,
+        cluster_floor=cluster_floor,
+        use_cluster_for_active_blocks=bool(
+            payload.get(
+                "use_cluster_for_active_blocks",
+                defaults.use_cluster_for_active_blocks,
+            )
+        ),
+        active_window_source=active_window_source,
+        active_window_min_excess=active_window_min_excess,
+        write_actionability_telemetry=bool(
+            payload.get(
+                "write_actionability_telemetry",
+                defaults.write_actionability_telemetry,
+            )
+        ),
+    )
+
+
+def _materialize_global_pressure(payload: Any) -> GlobalPressureConfig:
+    if payload is None:
+        return GlobalPressureConfig()
+    if not isinstance(payload, dict):
+        raise ControllerConfigError(
+            "controller.global_pressure must be a mapping when present"
+        )
+    defaults = GlobalPressureConfig()
+    g_min = float(payload.get("g_min", defaults.g_min))
+    g_max = float(payload.get("g_max", defaults.g_max))
+    if g_min < 0.0:
+        raise ControllerConfigError(
+            f"controller.global_pressure.g_min must be >= 0 (got {g_min})"
+        )
+    if g_max < g_min:
+        raise ControllerConfigError(
+            "controller.global_pressure.g_max must be >= g_min "
+            f"(got g_min={g_min}, g_max={g_max})"
+        )
+    return GlobalPressureConfig(
+        enabled=bool(payload.get("enabled", defaults.enabled)),
+        g_min=g_min,
+        g_max=g_max,
+        G0_source=str(payload.get("G0_source", defaults.G0_source)),
+        s_G_source=str(payload.get("s_G_source", defaults.s_G_source)),
     )
 
 
