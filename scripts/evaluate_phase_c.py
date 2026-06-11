@@ -96,6 +96,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Default off preserves prior Phase C behavior."
         ),
     )
+    parser.add_argument(
+        "--no-nmp",
+        action="store_true",
+        help=(
+            "imm mode: score immunogenicity with the epitope head only and "
+            "skip NetMHCIIpan entirely. No NMP binary is launched and "
+            "imm_nmp.parquet is not produced; only imm_head.parquet is "
+            "required/written. Useful for fast head-only iteration."
+        ),
+    )
     parser.add_argument("--pdb-root", default=None)
     parser.add_argument("--refold-model", choices=("esmfold", "af3"), default="esmfold")
     parser.add_argument("--tmalign-bin", default="TMalign")
@@ -265,6 +275,7 @@ def evaluate_immunogenicity_rows(
     progress_every: int = 25,
     hotspot_threshold: float = 0.5,
     full: bool = False,
+    run_nmp: bool = True,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -330,9 +341,12 @@ def evaluate_immunogenicity_rows(
             )
 
     # NMP scoring is batched, but temp IDs must be unique across designs.
+    # When run_nmp is False (head-only mode) the whole NetMHCIIpan pass is
+    # skipped: no binary is launched and nmp_df is returned empty.
     nmp_started = time.time()
     row_records = list(generated_df.to_dict("records"))
-    for chunk_start in range(0, len(row_records), nmp_batch_size):
+    nmp_chunk_iter = range(0, len(row_records), nmp_batch_size) if run_nmp else range(0)
+    for chunk_start in nmp_chunk_iter:
         chunk = row_records[chunk_start:chunk_start + nmp_batch_size]
         entries: list[tuple[str, str]] = []
         row_by_temp_id: dict[str, dict[str, Any]] = {}
@@ -688,9 +702,11 @@ def output_paths(run_dir: str | Path) -> dict[str, Path]:
     }
 
 
-def mode_outputs_exist(mode: str, paths: dict[str, Path]) -> tuple[bool, list[Path]]:
+def mode_outputs_exist(
+    mode: str, paths: dict[str, Path], *, no_nmp: bool = False
+) -> tuple[bool, list[Path]]:
     if mode == "imm":
-        required = [paths["imm_head"], paths["imm_nmp"]]
+        required = [paths["imm_head"]] if no_nmp else [paths["imm_head"], paths["imm_nmp"]]
     elif mode == "struct":
         required = [paths["structural"]]
     else:
@@ -705,6 +721,7 @@ def ensure_run_dir_state(
     requested_modes: list[str],
     paths: dict[str, Path],
     overwrite: bool,
+    no_nmp: bool = False,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     if overwrite:
@@ -713,7 +730,7 @@ def ensure_run_dir_state(
         return
     missing_for_requested = False
     for mode in requested_modes:
-        mode_complete, existing = mode_outputs_exist(mode, paths)
+        mode_complete, existing = mode_outputs_exist(mode, paths, no_nmp=no_nmp)
         if existing and not mode_complete:
             raise FileExistsError(
                 f"run_dir contains partial outputs for mode={mode}; rerun with --overwrite"
@@ -819,19 +836,26 @@ def run_mode_imm(
     generated_df: pd.DataFrame,
     paths: dict[str, Path],
 ) -> tuple[int, float, list[dict[str, Any]]]:
+    no_nmp = bool(getattr(args, "no_nmp", False))
     predictor = build_head_predictor(
         checkpoint_path=args.epitope_ckpt,
         config_dir=args.epitope_config_dir,
         variant_id=args.epitope_variant_id,
         device=args.device,
     )
-    nmp_runner = build_nmp_runner(
-        binary_path=args.netmhciipan_bin,
-        batch_size=args.nmp_batch_size,
-        n_workers=args.nmp_workers,
-        timeout=args.nmp_timeout,
-        max_lengths_per_call=args.nmp_max_lengths_per_call,
+    nmp_runner = (
+        None
+        if no_nmp
+        else build_nmp_runner(
+            binary_path=args.netmhciipan_bin,
+            batch_size=args.nmp_batch_size,
+            n_workers=args.nmp_workers,
+            timeout=args.nmp_timeout,
+            max_lengths_per_call=args.nmp_max_lengths_per_call,
+        )
     )
+    if no_nmp:
+        print("[imm] --no-nmp: head-only scoring, NetMHCIIpan skipped", flush=True)
     started = time.time()
     head_df, nmp_df, failures, residues_df, peptides_df = evaluate_immunogenicity_rows(
         generated_df,
@@ -843,6 +867,7 @@ def run_mode_imm(
         progress_every=args.progress_every,
         hotspot_threshold=args.hotspot_threshold,
         full=bool(getattr(args, "imm_full", False)),
+        run_nmp=not no_nmp,
     )
     failed_keys = {
         (row["protein_id"], int(row["design_idx"]))
@@ -856,14 +881,16 @@ def run_mode_imm(
         raise RuntimeError("imm mode exceeded fail-pct-threshold")
 
     validate_dataframe(head_df, IMMUNOGENICITY_HEAD_COLUMNS)
-    validate_dataframe(nmp_df, IMMUNOGENICITY_NMP_COLUMNS)
     head_df.to_parquet(paths["imm_head"], index=False)
-    nmp_df.to_parquet(paths["imm_nmp"], index=False)
+    if not no_nmp:
+        validate_dataframe(nmp_df, IMMUNOGENICITY_NMP_COLUMNS)
+        nmp_df.to_parquet(paths["imm_nmp"], index=False)
     if bool(getattr(args, "imm_full", False)):
         # Long-tables are best-effort: emit even if empty so callers can
         # detect the run was --imm-full vs aggregate-only.
         residues_df.to_parquet(paths["imm_head_residues"], index=False)
-        peptides_df.to_parquet(paths["imm_nmp_peptides"], index=False)
+        if not no_nmp:
+            peptides_df.to_parquet(paths["imm_nmp_peptides"], index=False)
         print(
             f"[imm-full] wrote {len(residues_df)} residue rows -> "
             f"{paths['imm_head_residues'].name}, {len(peptides_df)} peptide rows -> "
@@ -983,12 +1010,17 @@ def main(argv: list[str] | None = None) -> int:
         requested_modes=requested_modes,
         paths=paths,
         overwrite=args.overwrite,
+        no_nmp=args.no_nmp,
     )
     print_resolved_hyperparams(args, run_dir=run_dir, n_designs=len(generated_df))
 
     if "imm" in requested_modes:
-        if args.epitope_ckpt is None or args.netmhciipan_bin is None:
-            raise ValueError("--epitope-ckpt and --netmhciipan-bin are required for imm/all mode")
+        if args.epitope_ckpt is None:
+            raise ValueError("--epitope-ckpt is required for imm/all mode")
+        if args.netmhciipan_bin is None and not args.no_nmp:
+            raise ValueError(
+                "--netmhciipan-bin is required for imm/all mode (or pass --no-nmp for head-only)"
+            )
     if "struct" in requested_modes:
         if args.pdb_root is None:
             raise ValueError("--pdb-root is required for struct/all mode")
@@ -1035,7 +1067,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         for mode in requested_modes:
-            complete, existing = mode_outputs_exist(mode, paths)
+            complete, existing = mode_outputs_exist(mode, paths, no_nmp=args.no_nmp)
             if complete and not args.overwrite:
                 print(f"[skip] mode={mode} outputs already exist in {run_dir}", flush=True)
                 modes_run.append(f"{mode}:skipped")

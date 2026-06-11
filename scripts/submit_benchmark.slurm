@@ -247,6 +247,7 @@ elif [ "${MODE}" = "phase_c" ]; then
     TMALIGN_BIN="${TMALIGN_BIN:-TMalign}"
     TAG="${TAG:-}"
     IMM_FULL="${IMM_FULL:-0}"
+    NMP_OFF="${NMP_OFF:-0}"   # 1 = imm head-only (skip NetMHCIIpan); affects imm/all modes
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
         TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
         PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0701}"
@@ -303,10 +304,14 @@ elif [ "${MODE}" = "phase_c" ]; then
     echo "  NMP timeout       : ${NMP_TIMEOUT}s"
     echo "  Strong threshold  : ${STRONG_BINDER_THRESHOLD}%"
     echo "  IMM_FULL          : ${IMM_FULL} (1 = also emit per-residue + per-peptide long tables)"
+    echo "  NMP_OFF           : ${NMP_OFF} (1 = imm head-only, skip NetMHCIIpan)"
 
     EXTRA_ARGS=()
     if [ "${IMM_FULL}" = "1" ]; then
         EXTRA_ARGS+=(--imm-full)
+    fi
+    if [ "${NMP_OFF}" = "1" ]; then
+        EXTRA_ARGS+=(--no-nmp)
     fi
     if [ -n "${RUN_ID:-}" ]; then
         EXTRA_ARGS+=(--run-id "${RUN_ID}")
