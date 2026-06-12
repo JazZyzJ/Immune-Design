@@ -1,0 +1,67 @@
+# Stage B monitor-only preset: typed actionability targeting + telemetry, no
+# D2/D3 actuation (PLAN_RF_UNI_CTRL.md Task B6). Use this for telemetry smoke
+# runs that exercise the full A_i(t) field (tau_ref_B, b_cur/b_env/b_mem,
+# r_ctx, v_target, u_pressure, G/g_GR) and emit the actionability sidecars
+# without any logit correction or revisit. D2/D3 stay disabled (no nested
+# sections), so the controller returns identity logits and legacy remask
+# ranking while still computing and logging the typed field.
+controller:
+  enabled: true
+  mode: monitor_only
+  t_start: 0.50
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+    local_risk_aggregation: LME
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 16
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    # Required for Stage B: completion must not become a hard disable gate.
+    min_completion_fraction: 0.0
+    min_rho_to_emit_event: 0.0
+  attribution:
+    write_paired_counterfactual: true
+    write_independent_delta_R_i: true
+    productive_delta_logp: 0.5
+  controls:
+    allow_wrong_allele_head: true
+    allow_shuffled_head: true
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true
+  targeting:
+    mode: typed_actionability
+    tau_ref_source: static_median
+    tau_ref_quantile: 0.50
+    projection: max_covering_window
+    env_seed_top_current: 16
+    env_seed_top_uncertain: 16
+    env_seed_max_windows: 32
+    env_ensemble_size: 3
+    env_consistency_floor: 0.3333333333
+    softor_tau: 0.5
+    r_ctx_floor: 0.25
+    mem_half_life_refreshes: 3
+    mem_cold_start: zero
+    cluster_radius: 4
+    cluster_min_mass: 3.0
+    cluster_floor: 0.25
+    use_cluster_for_active_blocks: false
+    active_window_source: v_target
+    active_window_min_excess: 0.0
+    write_actionability_telemetry: true
+  global_pressure:
+    enabled: false
+    g_min: 0.25
+    g_max: 1.0
+    G0_source: stageB_pilot_median
+    s_G_source: stageB_pilot_iqr_half

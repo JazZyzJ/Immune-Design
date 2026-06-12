@@ -41,6 +41,7 @@ from inverse_folding.reference_flow.controller_config import (
     controller_config_hash,
     controller_config_to_dict,
     load_controller_config,
+    validate_global_pressure_runtime,
 )
 from inverse_folding.reference_flow.head_scoring import OnlineHeadScorer
 from scripts.run_if_phase_c0 import _fmt_hms, write_phase_c_outputs
@@ -121,6 +122,25 @@ class ControllerSetup:
     head_window_batch_size: int | None
     head_allele_idx: int
     allele: str
+    # Stage C.1 global-pressure calibration JSON (PLAN_RF_UNI_CTRL.md C1.3).
+    # When pressure is enabled, ``config.global_pressure`` carries the stamped
+    # B_low/B_high so the config hash reflects them. When pressure is disabled,
+    # a provided path/hash is retained only as manifest provenance.
+    global_pressure_calibration_path: Path | None = None
+    global_pressure_calibration_hash: str | None = None
+
+
+def _calibration_file_provenance(path: str) -> tuple[Path, str]:
+    """Resolve and hash a calibration file without parsing/stamping it."""
+    p = Path(path)
+    if not p.exists():
+        print(
+            f"ERROR: --global-pressure-calibration-json not found: {p}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    raw = p.read_bytes()
+    return p.resolve(), hashlib.sha256(raw).hexdigest()
 
 
 def _compute_head_config_hash(config_dir: Path) -> str:
@@ -134,12 +154,47 @@ def _compute_head_config_hash(config_dir: Path) -> str:
     return h.hexdigest()
 
 
+def _load_global_pressure_calibration(path: str) -> tuple[float, float, str]:
+    """Load (B_low, B_high) from a Stage C calibration JSON; fail fast.
+
+    PLAN_RF_UNI_CTRL.md C1.3: the band is computed offline from a Stage B/Aopen
+    pilot and passed by CLI, never hardcoded. Requires both keys, numeric, with
+    ``B_high > B_low`` (no placeholder anchors — CLAUDE.md fail-fast rule).
+    Returns ``(B_low, B_high, sha256_hex)`` where the hash is over the file bytes.
+    """
+    p, calib_hash = _calibration_file_provenance(path)
+    raw = p.read_bytes()
+    payload = json.loads(raw.decode("utf-8"))
+    if "B_low" not in payload or "B_high" not in payload:
+        print(
+            "ERROR: global-pressure calibration JSON must contain B_low and B_high "
+            f"(got keys {sorted(payload)})",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    B_low = float(payload["B_low"])
+    B_high = float(payload["B_high"])
+    if not (B_high > B_low):
+        print(
+            f"ERROR: global-pressure calibration requires B_high > B_low "
+            f"(got B_low={B_low}, B_high={B_high})",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return B_low, B_high, calib_hash
+
+
 def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
     """Resolve --controller-config + head flags into a ControllerSetup.
 
     Returns None if the controller is not requested or if the loaded YAML has
     ``enabled=False``. Calls ``sys.exit`` (via parser.error semantics) when the
     controller is enabled but the required head flags are missing.
+
+    When ``global_pressure.enabled`` (Stage C.1), the ``--global-pressure-
+    calibration-json`` flag is required: its ``B_low``/``B_high`` are stamped into
+    the config via ``dataclasses.replace`` BEFORE the config hash is computed, so
+    provenance reflects the calibrated band (PLAN_RF_UNI_CTRL.md C1.3).
     """
     config_path = getattr(args, "controller_config", None)
     if not config_path:
@@ -147,6 +202,33 @@ def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
     config = load_controller_config(config_path)
     if not config.enabled:
         return None
+
+    calib_path = getattr(args, "global_pressure_calibration_json", None)
+    calib_resolved: Path | None = None
+    calib_hash: str | None = None
+    if config.global_pressure.enabled:
+        if not calib_path:
+            print(
+                "ERROR: controller.global_pressure.enabled=true requires "
+                "--global-pressure-calibration-json (the B_low/B_high band must be "
+                "calibrated from a Stage B pilot, never hardcoded)",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        B_low, B_high, calib_hash = _load_global_pressure_calibration(calib_path)
+        config = replace(
+            config,
+            global_pressure=replace(
+                config.global_pressure, B_low=B_low, B_high=B_high
+            ),
+        )
+        # Fail fast if the stamped band is still incomplete/inverted.
+        validate_global_pressure_runtime(config.global_pressure)
+        calib_resolved = Path(calib_path).resolve()
+    elif calib_path:
+        # PLAN C1.3: pressure-off runs ignore the calibration band, but retain
+        # path/hash in manifest provenance when the flag is explicitly supplied.
+        calib_resolved, calib_hash = _calibration_file_provenance(calib_path)
 
     missing = []
     if not getattr(args, "head_checkpoint", None):
@@ -178,6 +260,8 @@ def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
         ),
         head_allele_idx=int(getattr(args, "head_allele_idx", 0)),
         allele=str(getattr(args, "allele", "")),
+        global_pressure_calibration_path=calib_resolved,
+        global_pressure_calibration_hash=calib_hash,
     )
 
 
@@ -518,7 +602,9 @@ def compute_per_protein_summary(
 
 
 def _refresh_record_to_jsonable(
-    record: D1RefreshRecord, addendum: dict | None = None
+    record: D1RefreshRecord,
+    addendum: dict | None = None,
+    actionability_pointer: dict | None = None,
 ) -> dict[str, Any]:
     """Serialize one refresh record plus any D2 / D3 controller addendum.
 
@@ -556,7 +642,143 @@ def _refresh_record_to_jsonable(
         ):
             if key in addendum:
                 payload[key] = addendum[key]
+    # Stage B: compact sidecar pointers (paths + targeting_mode + G/g_GR). Only
+    # present on typed runs; static runs keep the legacy refresh_log schema.
+    if actionability_pointer is not None:
+        payload.update(actionability_pointer)
     return payload
+
+
+# Stage B typed-actionability telemetry sidecars (PLAN_RF_UNI_CTRL.md Task B6).
+ACTIONABILITY_RESIDUES_FILE = "actionability_residues.parquet"
+ACTIONABILITY_SUMMARY_FILE = "actionability_refresh_summary.jsonl"
+
+_ACTIONABILITY_RESIDUE_COLUMNS = [
+    "protein_id", "design_idx", "seed", "refresh_step", "t", "residue_index_0b",
+    "tau_ref_B", "h_cur", "b_cur", "b_env", "env_peak", "env_consistency",
+    "env_coverage_flag", "b_mem", "e_fresh", "r_ctx", "context_pnll",
+    "g_time_pre", "g_comp_pre", "g_ent_pre", "g_pnll_pre", "g_stability_pre",
+    "v_target", "u_pressure", "active_target_flag", "cluster_support",
+    "legacy_residue_excess", "active_block_id", "d3_fresh_input_flag",
+]
+
+
+def _actionability_state_to_records(
+    state,
+    *,
+    protein_id: str,
+    design_idx: int,
+    seed: int,
+    targeting_mode: str,
+    tau_ref_source: str,
+    d3_evidence_source: str,
+) -> tuple[list[dict], dict]:
+    """Explode one typed actionability state into residue rows + a summary row.
+
+    ``d3_fresh_input_flag`` is True iff the run feeds the typed ``e_fresh`` into
+    the D3 EMA (``d3.evidence_source == 'typed_fresh'``), i.e. d2_d3_full_stageB.
+    NaN ``context_pnll`` (no committed context in the source span) serializes to
+    null.
+    """
+    L = int(state.v_target.shape[0])
+    d3_flag = bool(d3_evidence_source == "typed_fresh")
+
+    def _opt(x: float) -> float | None:
+        return None if (x is None or (isinstance(x, float) and np.isnan(x))) else float(x)
+
+    rows: list[dict] = []
+    for i in range(L):
+        rows.append(
+            {
+                "protein_id": protein_id,
+                "design_idx": int(design_idx),
+                "seed": int(seed),
+                "refresh_step": int(state.refresh_step),
+                "t": float(state.t),
+                "residue_index_0b": int(i),
+                "tau_ref_B": float(state.tau_ref_B),
+                "h_cur": float(state.h_cur[i]),
+                "b_cur": float(state.b_cur[i]),
+                "b_env": float(state.b_env[i]),
+                "env_peak": float(state.env_peak[i]),
+                "env_consistency": float(state.env_consistency[i]),
+                "env_coverage_flag": bool(state.env_coverage_flag[i]),
+                "b_mem": float(state.b_mem[i]),
+                "e_fresh": float(state.e_fresh[i]),
+                "r_ctx": float(state.r_ctx[i]),
+                "context_pnll": _opt(float(state.context_pnll[i])),
+                "g_time_pre": float(state.g_time_pre[i]),
+                "g_comp_pre": float(state.g_comp_pre[i]),
+                "g_ent_pre": float(state.g_ent_pre[i]),
+                "g_pnll_pre": float(state.g_pnll_pre[i]),
+                "g_stability_pre": float(state.g_stability_pre[i]),
+                "v_target": float(state.v_target[i]),
+                "u_pressure": float(state.u_pressure[i]),
+                "active_target_flag": bool(state.active_target_flag[i]),
+                "cluster_support": float(state.cluster_support[i]),
+                "legacy_residue_excess": float(state.legacy_residue_excess[i]),
+                "active_block_id": int(state.active_block_id[i]),
+                "d3_fresh_input_flag": d3_flag,
+            }
+        )
+    summary = {
+        "protein_id": protein_id,
+        "design_idx": int(design_idx),
+        "seed": int(seed),
+        "refresh_step": int(state.refresh_step),
+        "t": float(state.t),
+        "targeting_mode": targeting_mode,
+        "tau_ref_source": tau_ref_source,
+        "tau_ref_B": float(state.tau_ref_B),
+        "G": float(state.G),
+        "g_GR_diagnostic": float(state.g_GR_diagnostic),
+        # Stage C.1 trajectory-level global pressure (PLAN_RF_UNI_CTRL.md C1.4);
+        # all None when global_pressure.enabled=false. ``G`` above is the column
+        # the calibration command (C1.1) medians per (protein_id, design_idx, seed).
+        "B_GR": state.B_GR,
+        "g_GR_effective": state.g_GR_effective,
+        "pressure_burden_bin": state.pressure_burden_bin,
+        "pressure_reliable": state.pressure_reliable,
+        "beta_base": state.beta_base,
+        "beta_eff": state.beta_eff,
+        "lambda_base": state.lambda_base,
+        "lambda_eff": state.lambda_eff,
+        "num_seed_windows": int(state.num_seed_windows),
+        "num_env_head_calls": int(state.num_env_head_calls),
+        "num_actionable_windows_pre_cap": int(state.num_actionable_windows_pre_cap),
+        "num_active_windows": int(state.num_active_windows),
+        "num_active_blocks": int(state.num_active_blocks),
+        "mean_b_cur": float(np.mean(state.b_cur)) if L else 0.0,
+        "mean_b_env": float(np.mean(state.b_env)) if L else 0.0,
+        "mean_b_mem": float(np.mean(state.b_mem)) if L else 0.0,
+        "max_v_target": float(np.max(state.v_target)) if L else 0.0,
+        "max_u_pressure": float(np.max(state.u_pressure)) if L else 0.0,
+        "stability_available": bool(state.stability_available),
+        "d3_evidence_source": d3_evidence_source,
+    }
+    return rows, summary
+
+
+def write_actionability_artifacts(
+    *,
+    run_dir: Path,
+    residue_rows: list[dict],
+    summaries: list[dict],
+) -> None:
+    """Write actionability_residues.parquet + actionability_refresh_summary.jsonl."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    residues_path = run_dir / ACTIONABILITY_RESIDUES_FILE
+    if residue_rows:
+        pd.DataFrame(residue_rows).to_parquet(residues_path, index=False)
+    else:
+        pd.DataFrame(columns=_ACTIONABILITY_RESIDUE_COLUMNS).to_parquet(
+            residues_path, index=False
+        )
+    summary_path = run_dir / ACTIONABILITY_SUMMARY_FILE
+    with open(summary_path, "w") as f:
+        for s in summaries:
+            f.write(json.dumps(s, default=str))
+            f.write("\n")
 
 
 def write_d1_artifacts(
@@ -566,6 +788,8 @@ def write_d1_artifacts(
     event_rows_all: list[dict],
     per_protein_summaries: list[dict],
     refresh_addenda_by_key: dict[tuple[str, int, int], dict] | None = None,
+    actionability_constant_pointer: dict | None = None,
+    actionability_g_by_key: dict[tuple[str, int, int], dict] | None = None,
 ) -> None:
     """Write refresh_log.jsonl, controller_events.parquet, per_protein_summary.json.
 
@@ -578,14 +802,21 @@ def write_d1_artifacts(
     refresh_log = run_dir / "refresh_log.jsonl"
     with open(refresh_log, "w") as f:
         for record in refresh_records_all:
+            key = (record.protein_id, int(record.design_idx), int(record.refresh_step))
             addendum = None
             if refresh_addenda_by_key is not None:
-                addendum = refresh_addenda_by_key.get(
-                    (record.protein_id, int(record.design_idx), int(record.refresh_step))
-                )
+                addendum = refresh_addenda_by_key.get(key)
+            pointer = None
+            if actionability_constant_pointer is not None:
+                pointer = dict(actionability_constant_pointer)
+                g = (actionability_g_by_key or {}).get(key)
+                if g:
+                    pointer.update(g)
             f.write(
                 json.dumps(
-                    _refresh_record_to_jsonable(record, addendum=addendum),
+                    _refresh_record_to_jsonable(
+                        record, addendum=addendum, actionability_pointer=pointer
+                    ),
                     default=str,
                 )
             )
@@ -651,6 +882,30 @@ def d1_manifest_provenance(
         "d3_config": controller_config_to_dict(setup.config)["d3"],
         "attribution_config": controller_config_to_dict(setup.config)["attribution"],
         "controls_config": controller_config_to_dict(setup.config)["controls"],
+        # Stage B typed-targeting provenance (PLAN_RF_UNI_CTRL.md Task B6).
+        "targeting_config": controller_config_to_dict(setup.config)["targeting"],
+        "global_pressure_config": controller_config_to_dict(setup.config)[
+            "global_pressure"
+        ],
+        # Stage C.1 calibration provenance (PLAN_RF_UNI_CTRL.md C1.3). The band is
+        # stamped into ``global_pressure_config`` above; these flat accessors plus
+        # the file path/hash let a resumed run detect calibration drift.
+        "global_pressure_calibration_path": (
+            str(setup.global_pressure_calibration_path)
+            if setup.global_pressure_calibration_path is not None
+            else None
+        ),
+        "global_pressure_calibration_hash": setup.global_pressure_calibration_hash,
+        "global_pressure_B_low": setup.config.global_pressure.B_low,
+        "global_pressure_B_high": setup.config.global_pressure.B_high,
+        "global_pressure_pressure_source": setup.config.global_pressure.pressure_source,
+        "targeting_config_hash": hashlib.sha256(
+            json.dumps(
+                controller_config_to_dict(setup.config)["targeting"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
         "head_checkpoint_path": str(setup.head_checkpoint),
         "head_checkpoint_digest": head_checkpoint_digest,
         "head_variant_id": setup.head_variant_id,
@@ -718,6 +973,31 @@ def build_head_scorer(
     )
 
 
+def _make_head_scorer(
+    controller_setup: ControllerSetup,
+    *,
+    window_k_min: int,
+    window_k_max: int,
+    static_cache_path: Path | None,
+    static_cache_meta_path: Path | None,
+) -> OnlineHeadScorer:
+    """Driver seam: build the scorer honoring the config's static cache policy.
+
+    The static cache policy (``lazy_write`` | ``read_only``) is a config-level
+    contract — Stage B ``tau_ref_B`` relies on a real static baseline, so the
+    driver must not hardcode it. This thin wrapper exists so the forwarding is
+    unit-testable without the head dependencies.
+    """
+    return build_head_scorer(
+        controller_setup,
+        window_k_min=window_k_min,
+        window_k_max=window_k_max,
+        static_cache_path=static_cache_path,
+        static_cache_meta_path=static_cache_meta_path,
+        static_cache_policy=controller_setup.config.head.static_cache_policy,
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Phase C1: sampling-only position-dependent DFM on the IF test set.",
@@ -773,6 +1053,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--head-device", default="cpu")
     parser.add_argument("--head-window-batch-size", type=int, default=None)
     parser.add_argument("--head-allele-idx", type=int, default=0)
+    parser.add_argument(
+        "--global-pressure-calibration-json",
+        default=None,
+        help=(
+            "Stage C.1 global-pressure calibration JSON providing B_low/B_high "
+            "(PLAN_RF_UNI_CTRL.md C1.3). Required when "
+            "controller.global_pressure.enabled=true; ignored (manifest provenance "
+            "only) otherwise."
+        ),
+    )
 
     from inverse_folding.observability import add_wandb_cli_args
 
@@ -1169,6 +1459,10 @@ def main(argv: list[str] | None = None) -> int:
     refresh_addenda_by_key: dict[tuple[str, int, int], dict] = {}
     event_rows_all: list[dict] = []
     per_protein_summaries: list[dict] = []
+    # Stage B typed-actionability telemetry accumulators (PLAN_RF_UNI_CTRL.md B6).
+    actionability_rows_all: list[dict] = []
+    actionability_summary_all: list[dict] = []
+    actionability_g_by_key: dict[tuple[str, int, int], dict] = {}
     window_k_min_resolved = 0
     window_k_max_resolved = 0
     if controller_setup is not None:
@@ -1178,6 +1472,29 @@ def main(argv: list[str] | None = None) -> int:
         print("[controller] resolved controller config:", flush=True)
         for top_key, top_val in resolved_controller_cfg.items():
             print(f"[controller]   {top_key}: {top_val}", flush=True)
+        # Stage B: print the resolved targeting / global_pressure configs one key
+        # per line so the typed-actionability hyperparameters are explicit in the
+        # run log (CLAUDE.md feedback "print hyperparams").
+        print("[controller] resolved targeting config:", flush=True)
+        for key, val in resolved_controller_cfg["targeting"].items():
+            print(f"[controller]   targeting.{key}: {val}", flush=True)
+        print("[controller] resolved global_pressure config:", flush=True)
+        for key, val in resolved_controller_cfg["global_pressure"].items():
+            print(f"[controller]   global_pressure.{key}: {val}", flush=True)
+        if controller_setup.config.global_pressure.enabled:
+            # Stage C.1: echo the calibration source so the run log records which
+            # pilot produced the stamped B_low/B_high band (CLAUDE.md "print
+            # hyperparams"; band values already printed in the loop above).
+            print(
+                "[controller]   global_pressure.calibration_json: "
+                f"{controller_setup.global_pressure_calibration_path}",
+                flush=True,
+            )
+            print(
+                "[controller]   global_pressure.calibration_hash: "
+                f"{controller_setup.global_pressure_calibration_hash}",
+                flush=True,
+            )
         print(
             f"[controller] surface_version={CONTROLLER_SURFACE_VERSION} "
             f"mode={controller_setup.config.mode}",
@@ -1208,13 +1525,12 @@ def main(argv: list[str] | None = None) -> int:
             inf_section = inf_payload.get("inference", {}) if isinstance(inf_payload, dict) else {}
             window_k_min_resolved = int(inf_section.get("min_k", 12))
             window_k_max_resolved = int(inf_section.get("max_k", 25))
-        head_scorer = build_head_scorer(
+        head_scorer = _make_head_scorer(
             controller_setup,
             window_k_min=window_k_min_resolved,
             window_k_max=window_k_max_resolved,
             static_cache_path=static_cache_path,
             static_cache_meta_path=static_cache_meta_path,
-            static_cache_policy="lazy_write",
         )
 
     resume_signature = {
@@ -1456,6 +1772,30 @@ def main(argv: list[str] | None = None) -> int:
                         refresh_addenda=design_addenda_list,
                     )
                 )
+                # Stage B: collect per-refresh typed actionability snapshots
+                # (PLAN_RF_UNI_CTRL.md Task B6). Empty in static_excess mode.
+                tcfg = controller_setup.config.targeting
+                if tcfg.write_actionability_telemetry and hasattr(
+                    d1_controller, "actionability_states"
+                ):
+                    for state in d1_controller.actionability_states():
+                        rows, summary = _actionability_state_to_records(
+                            state,
+                            protein_id=protein_id,
+                            design_idx=int(design_idx),
+                            seed=design_seed,
+                            targeting_mode=tcfg.mode,
+                            tau_ref_source=tcfg.tau_ref_source,
+                            d3_evidence_source=controller_setup.config.d3.evidence_source,
+                        )
+                        actionability_rows_all.extend(rows)
+                        actionability_summary_all.append(summary)
+                        actionability_g_by_key[
+                            (protein_id, int(design_idx), int(state.refresh_step))
+                        ] = {
+                            "G": float(state.G),
+                            "g_GR_diagnostic": float(state.g_GR_diagnostic),
+                        }
 
         if args.save_trajectories:
             _write_trajectories(run_dir=run_dir, protein_id=protein_id, rows=trajectory_rows)
@@ -1614,12 +1954,34 @@ def main(argv: list[str] | None = None) -> int:
     # reuse; a manifest pointing at a missing cache would silently break D0
     # downstream tooling.
     if controller_setup is not None and head_scorer is not None:
+        # Stage B: emit typed actionability sidecars + thread compact refresh_log
+        # pointers (PLAN_RF_UNI_CTRL.md Task B6). Only typed runs with telemetry
+        # enabled produce states, so static runs keep the legacy artifact set.
+        actionability_pointer = None
+        if (
+            controller_setup.config.targeting.write_actionability_telemetry
+            and actionability_summary_all
+        ):
+            write_actionability_artifacts(
+                run_dir=run_dir,
+                residue_rows=actionability_rows_all,
+                summaries=actionability_summary_all,
+            )
+            actionability_pointer = {
+                "actionability_residues_path": ACTIONABILITY_RESIDUES_FILE,
+                "actionability_refresh_summary_path": ACTIONABILITY_SUMMARY_FILE,
+                "targeting_mode": controller_setup.config.targeting.mode,
+            }
+            manifest["actionability_residues_path"] = ACTIONABILITY_RESIDUES_FILE
+            manifest["actionability_refresh_summary_path"] = ACTIONABILITY_SUMMARY_FILE
         write_d1_artifacts(
             run_dir=run_dir,
             refresh_records_all=refresh_records_all,
             event_rows_all=event_rows_all,
             per_protein_summaries=per_protein_summaries,
             refresh_addenda_by_key=refresh_addenda_by_key,
+            actionability_constant_pointer=actionability_pointer,
+            actionability_g_by_key=actionability_g_by_key,
         )
         head_scorer.flush_static_cache(
             source_dataset=str(Path(args.test_set_parquet).resolve()),

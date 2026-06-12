@@ -35,13 +35,32 @@ from typing import Callable, Sequence
 import numpy as np
 import torch
 
+from .actionability import (
+    cluster_support_multiplier,
+    compute_fresh_evidence,
+    compute_target_evidence,
+    envelope_burden_from_excess_samples,
+    excess_over_tau,
+    global_pressure_mass,
+    global_pressure_scalar,
+    max_covering_window_projection,
+    protein_pressure_burden,
+    smoothstep_pressure,
+    update_memory,
+)
 from .commit import (
     D3Handler,
     compute_stage_a_rank_score,
     select_freeze_protected_positions,
 )
-from .controller_config import ControllerConfig
-from .counterfactual import D2BlockOutcome, D2Handler, D2RefreshOutcome
+from .controller_config import ControllerConfig, validate_global_pressure_runtime
+from .counterfactual import (
+    D2BlockOutcome,
+    D2Handler,
+    D2RefreshOutcome,
+    _seed_from_tuple,
+    compute_context_pnll,
+)
 from .head_scoring import HeadScore, OnlineHeadScorer, WindowRiskRecord
 
 
@@ -216,6 +235,80 @@ class D2EvidenceWrite:
     gap_a: float
 
 
+@dataclass
+class UnifiedActionabilityState:
+    """Stage B typed actionability field ``A_i(t)`` for one refresh.
+
+    Computed pre-D2 at a typed-targeting refresh. ``v_target`` drives
+    active-block discovery; ``u_pressure`` aggregates to ``G(t)``. The per-
+    residue reliability components and envelope diagnostics are carried for the
+    ``actionability_residues.parquet`` telemetry sidecar
+    (PLAN_RF_UNI_CTRL.md "Stage B Telemetry Contract"). Mutable so the
+    selection-dependent fields (``active_target_flag`` / counts) can be filled
+    after active-window selection without recomputing the field.
+    """
+
+    tau_ref_B: float
+    h_cur: np.ndarray
+    b_cur: np.ndarray
+    b_env: np.ndarray
+    env_peak: np.ndarray
+    env_consistency: np.ndarray
+    e_fresh: np.ndarray
+    b_mem: np.ndarray
+    r_ctx: np.ndarray
+    v_target: np.ndarray
+    u_pressure: np.ndarray
+    G: float
+    g_GR_diagnostic: float
+    # Per-residue reliability provenance (broadcast from the max-z source window).
+    context_pnll: np.ndarray
+    g_time_pre: np.ndarray
+    g_comp_pre: np.ndarray
+    g_ent_pre: np.ndarray
+    g_pnll_pre: np.ndarray
+    g_stability_pre: np.ndarray
+    cluster_support: np.ndarray
+    env_coverage_flag: np.ndarray
+    # Legacy per-window-subtraction residue excess (the exact quantity D2's
+    # select_editable_positions consumes). Carried so the B4.4 in-block confound
+    # diagnostic can flag edits in legacy_excess=0 regions — distinct from b_cur,
+    # which uses the scalar static-median baseline.
+    legacy_residue_excess: np.ndarray
+    # Filled after active-window selection.
+    active_target_flag: np.ndarray
+    # Per-residue active-block id (>=0 if covered, -1 otherwise); same block
+    # numbering as controller_events.parquet so the confound diagnostic can do a
+    # clean per-block join.
+    active_block_id: np.ndarray
+    num_seed_windows: int
+    num_env_head_calls: int
+    num_active_windows: int
+    num_active_blocks: int
+    stability_available: bool
+    refresh_step: int
+    step: int
+    t: float
+    # Count of windows with positive actionability BEFORE the max_windows cap.
+    # Reveals saturation that num_active_windows (post-cap) hides; filled after
+    # selection (PLAN_RF_UNI_CTRL.md §"Background Reference").
+    num_actionable_windows_pre_cap: int = 0
+    # Stage C.1 trajectory-level global pressure (PLAN_RF_UNI_CTRL.md C1.4).
+    # Filled by ``_update_pressure_state`` only when global_pressure.enabled;
+    # all None in Stage B / static runs so their telemetry stays unchanged.
+    # ``G`` above is the per-refresh G_step; ``B_GR`` is the running median over
+    # reliable refreshes; ``g_GR_effective`` is the smoothstep actuator that
+    # scales D2 ``beta`` (``beta_eff``) and D3 ``lambda`` (``lambda_eff``).
+    B_GR: float | None = None
+    g_GR_effective: float | None = None
+    pressure_burden_bin: str | None = None
+    pressure_reliable: bool | None = None
+    beta_base: float | None = None
+    beta_eff: float | None = None
+    lambda_base: float | None = None
+    lambda_eff: float | None = None
+
+
 class ReferenceFlowController:
     """Phase D adaptive controller covering all four D-phase modes.
 
@@ -268,6 +361,15 @@ class ReferenceFlowController:
                 "ReferenceFlowController requires canonical_token_ids when "
                 "controller.d2.enabled=true"
             )
+        if (
+            config.targeting.mode == "typed_actionability"
+            and self._canonical_token_ids is None
+        ):
+            raise ValueError(
+                "ReferenceFlowController requires canonical_token_ids when "
+                "controller.targeting.mode='typed_actionability' (the proposal "
+                "envelope resamples masked residues over canonical tokens)"
+            )
         self._d2_handler: D2Handler | None = (
             D2Handler(config.d2) if config.d2.enabled else None
         )
@@ -311,6 +413,29 @@ class ReferenceFlowController:
         # non-refresh remasks share the same sampler hook so post_remask
         # must gate on this flag to avoid attributing legacy remasks to D3.
         self._d3_used_in_last_post_step: bool = False
+        # Stage B typed actionability (PLAN_RF_UNI_CTRL.md Task B4).
+        # ``_b_mem_prev`` is the cross-refresh actionability memory (separate
+        # from D3 ``m_i``); ``_actionability_states`` accumulates per-refresh
+        # typed field snapshots for the telemetry sidecar. Both stay empty/None
+        # in static_excess mode so legacy behavior is bit-for-bit unchanged.
+        self._b_mem_prev: np.ndarray | None = None
+        self._latest_actionability: UnifiedActionabilityState | None = None
+        self._actionability_states: list[UnifiedActionabilityState] = []
+        # Stage C.1 trajectory-level global pressure (PLAN_RF_UNI_CTRL.md C1.4).
+        # Accumulates reliable per-refresh G within ONE (protein, design, seed)
+        # trajectory; the controller is re-instantiated per trajectory so this
+        # resets automatically (no cross-trajectory leakage). Inert (never read
+        # by the D2/D3 actuators) unless global_pressure.enabled. ``_pressure_g_GR``
+        # defaults to 1.0 (identity scaling) so any accidental read pre-refresh
+        # leaves beta/lambda unchanged.
+        if config.global_pressure.enabled:
+            # Fail fast at construction if the band was never stamped; the run
+            # script also checks this post-stamp (PLAN_RF_UNI_CTRL.md C1.3).
+            validate_global_pressure_runtime(config.global_pressure)
+        self._pressure_G_values: list[float] = []
+        self._pressure_B_GR: float | None = None
+        self._pressure_g_GR: float = 1.0
+        self._pressure_reliable: bool = False
 
     # ---------- public accessors for telemetry flush ----------
 
@@ -336,6 +461,16 @@ class ReferenceFlowController:
         """
 
         return list(self._d3_resolved)
+
+    def actionability_states(self) -> list["UnifiedActionabilityState"]:
+        """Per-refresh typed actionability snapshots (Stage B telemetry).
+
+        Empty in ``static_excess`` mode; the script-level telemetry writer uses
+        this to emit ``actionability_residues.parquet`` /
+        ``actionability_refresh_summary.jsonl``.
+        """
+
+        return list(self._actionability_states)
 
     # ---------- hook ----------
 
@@ -399,13 +534,53 @@ class ReferenceFlowController:
             resolved_sink=self._d3_resolved,
         )
 
-        # Threshold first, then top-N by excess.
-        active_indices = [i for i, e in enumerate(window_excess) if e > 0.0]
-        max_windows = self.config.active_windows.max_windows
-        if len(active_indices) > max_windows:
-            active_indices = sorted(
-                active_indices, key=lambda i: window_excess[i], reverse=True
-            )[:max_windows]
+        per_pos_entropy = _per_position_entropy(context.logits)
+
+        # Stage B typed actionability (PLAN_RF_UNI_CTRL.md Task B4). Computed
+        # pre-D2 so ``v_target`` can drive active-window discovery. In
+        # static_excess mode this is skipped entirely and the legacy
+        # z_dyn - z_static path below is bit-for-bit unchanged.
+        actionability: UnifiedActionabilityState | None = None
+        if self.config.targeting.mode == "typed_actionability":
+            actionability = self._compute_actionability_state(
+                context=context,
+                dyn_windows=dyn_score.windows,
+                static_windows=static_score.windows,
+                window_excess=window_excess,
+                completed_tokens=completed_tokens,
+                per_pos_entropy=per_pos_entropy,
+            )
+            self._b_mem_prev = actionability.b_mem
+            # Stage C.1: fold this refresh's G into the trajectory pressure state
+            # BEFORE the D2 call below, so beta_eff reflects the running median
+            # (PLAN_RF_UNI_CTRL.md C1.4). No-op unless global_pressure.enabled.
+            self._update_pressure_state(actionability)
+
+        # Active-window selection. Stage B.0 narrow boundary: only the selection
+        # SOURCE changes in typed mode; the legacy ``window_excess`` is still
+        # computed above and still feeds new_hotspot_count / D1RefreshRecord /
+        # D2 residue excess unchanged.
+        num_actionable_pre_cap = 0
+        if actionability is not None:
+            # active_window_source selects which typed field scores the windows;
+            # v_target is the only Stage B v1 source (config materialization
+            # enforces this). The mapping makes the field genuinely consumed and
+            # keeps a single seam for adding future sources.
+            active_window_field = {"v_target": actionability.v_target}[
+                self.config.targeting.active_window_source
+            ]
+            active_indices, num_actionable_pre_cap = self._select_active_windows_typed(
+                dyn_windows=dyn_score.windows,
+                v_target=active_window_field,
+            )
+        else:
+            # Legacy: threshold first, then top-N by excess.
+            active_indices = [i for i, e in enumerate(window_excess) if e > 0.0]
+            max_windows = self.config.active_windows.max_windows
+            if len(active_indices) > max_windows:
+                active_indices = sorted(
+                    active_indices, key=lambda i: window_excess[i], reverse=True
+                )[:max_windows]
 
         # Window-id-indexed (start, end) spans.
         active_window_spans = [
@@ -413,8 +588,6 @@ class ReferenceFlowController:
             for i in active_indices
         ]
         merged_blocks = _merge_overlapping_spans(active_window_spans)
-
-        per_pos_entropy = _per_position_entropy(context.logits)
 
         active_blocks: list[ActiveBlock] = []
         for block_id, (start_0b, end_0b, window_indices) in enumerate(merged_blocks):
@@ -471,6 +644,11 @@ class ReferenceFlowController:
                 seed=self.seed,
                 design_idx=self.design_idx,
                 refresh_step=self._refresh_step_counter,
+                # Stage C.1: scale beta by the trajectory pressure g_GR (None when
+                # disabled / scale_beta=False → legacy beta). g_GR_effective is
+                # passed for telemetry attribution (PLAN_RF_UNI_CTRL.md C1.5).
+                beta_override=self._effective_beta_override(),
+                g_GR_effective=self._current_g_GR_effective(),
             )
             # Rebuild active_blocks with D2-derived g_ESS so the refresh log /
             # rho_B reflects the candidate-ESS gate when a block was demoted.
@@ -568,6 +746,10 @@ class ReferenceFlowController:
                         "corrected_positions": list(block.corrected_positions),
                         "skipped_reason": block.skipped_reason,
                         "delta_logit_max_block": float(dl_max),
+                        # Stage C.1 global-pressure attribution (C1.5).
+                        "beta_base": block.beta_base,
+                        "beta_eff": block.beta_eff,
+                        "g_GR_effective": block.g_GR_effective,
                     }
                 )
             self._refresh_addenda[self._refresh_step_counter] = {
@@ -650,6 +832,25 @@ class ReferenceFlowController:
         # structural distribution (PLAN §D3-7). corrected_positions are the
         # positions whose logits actually received a D2 shift this refresh;
         # they drive the same-refresh grace rule.
+        # Finalize Stage B typed actionability with selection-dependent fields
+        # and persist for telemetry (PLAN_RF_UNI_CTRL.md Task B4 / "Stage B
+        # Telemetry Contract").
+        if actionability is not None:
+            flag = np.zeros(int(context.sequence_length), dtype=bool)
+            block_id = np.full(int(context.sequence_length), -1, dtype=int)
+            for blk in active_blocks:
+                flag[int(blk.residue_start_0b) : int(blk.residue_end_0b)] = True
+                block_id[int(blk.residue_start_0b) : int(blk.residue_end_0b)] = int(
+                    blk.block_id
+                )
+            actionability.active_target_flag = flag
+            actionability.active_block_id = block_id
+            actionability.num_active_windows = len(active_indices)
+            actionability.num_active_blocks = len(active_blocks)
+            actionability.num_actionable_windows_pre_cap = int(num_actionable_pre_cap)
+            self._latest_actionability = actionability
+            self._actionability_states.append(actionability)
+
         corrected_positions = (
             d2_outcome.corrected_positions if d2_outcome is not None else frozenset()
         )
@@ -719,6 +920,16 @@ class ReferenceFlowController:
             and self._refresh_state.structural_logits is not None
         )
         if is_refresh_now:
+            # Stage B (PLAN_RF_UNI_CTRL.md Task B5): in d2_d3_full_stageB the D3
+            # memory consumes the typed e_fresh (memory-excluded) instead of the
+            # legacy window-excess projection. _latest_actionability is the field
+            # computed by step() for this same refresh.
+            typed_fresh = None
+            if (
+                self.config.d3.evidence_source == "typed_fresh"
+                and self._latest_actionability is not None
+            ):
+                typed_fresh = self._latest_actionability.e_fresh
             outcome = self._d3_handler.run_refresh(
                 windows=self._refresh_state.windows,
                 window_excess=self._refresh_state.window_excess,
@@ -729,6 +940,11 @@ class ReferenceFlowController:
                 mask_token_id=int(context.mask_token_id),
                 m_prev=self._refresh_state.m_i,
                 corrected_positions=tuple(self._refresh_state.corrected_positions),
+                typed_fresh=typed_fresh,
+                # Stage C.1: scale the immune-penalty lambda by the trajectory
+                # g_GR (None when disabled / scale_lambda=False → legacy lambda).
+                lambda_override=self._effective_lambda_commit(),
+                g_GR_effective=self._current_g_GR_effective(),
             )
             # D3-only comparator keeps the previous refresh-step rank
             # semantics. D2 modes use the Stage A rank face below after D2
@@ -744,6 +960,10 @@ class ReferenceFlowController:
                 "m_i": outcome.m_i.tolist(),
                 "rho_i": outcome.rho_i.tolist(),
                 "grace_positions": list(outcome.grace_positions),
+                # Stage C.1 global-pressure attribution (PLAN_RF_UNI_CTRL.md C1.6).
+                "lambda_base": outcome.lambda_base,
+                "lambda_eff": outcome.lambda_eff,
+                "g_GR_effective": outcome.g_GR_effective,
             }
             # Persist by refresh_step so telemetry writers can zip with the
             # corresponding refresh record. The most recent record was just
@@ -764,6 +984,10 @@ class ReferenceFlowController:
                 "rho_i": outcome.rho_i,
                 "commit_score": outcome.commit_score,
                 "grace_positions": set(int(p) for p in outcome.grace_positions),
+                # Stage C.1 global-pressure attribution for the D3 event row (C1.6).
+                "lambda_base": outcome.lambda_base,
+                "lambda_eff": outcome.lambda_eff,
+                "g_GR_effective": outcome.g_GR_effective,
             }
 
         # Cache the post-sampling / pre-remask x_t snapshot so post_remask
@@ -953,6 +1177,10 @@ class ReferenceFlowController:
                     "g_ESS": None,
                     # ---- Stage A nullable columns ----
                     **_stage_a_event_defaults(),
+                    # ---- Stage C.1 global-pressure attribution (C1.6) ----
+                    "lambda_base": signal.get("lambda_base"),
+                    "lambda_eff": signal.get("lambda_eff"),
+                    "g_GR_effective": signal.get("g_GR_effective"),
                 }
             )
 
@@ -1229,6 +1457,13 @@ class ReferenceFlowController:
             step=int(context.step),
             sequence_length=int(context.sequence_length),
         )
+        # Stage C.1 (PLAN_RF_UNI_CTRL.md C1.6): scale the immune-penalty lambda by
+        # the trajectory g_GR. Falls back to the configured lambda_commit when
+        # pressure is disabled / scale_lambda=False so legacy ranks are unchanged.
+        lambda_eff = self._effective_lambda_commit()
+        lambda_commit = (
+            float(self.config.d3.lambda_commit) if lambda_eff is None else float(lambda_eff)
+        )
         return compute_stage_a_rank_score(
             structural_logits=context.structural_logits,
             x_t=context.x_t,
@@ -1237,7 +1472,7 @@ class ReferenceFlowController:
             m_i=m_i,
             d2_evidence=d2_evidence,
             alpha_struct=float(self.config.d3.alpha_struct),
-            lambda_commit=float(self.config.d3.lambda_commit),
+            lambda_commit=lambda_commit,
             d2_evidence_nu=float(self.config.d3.d2_evidence_nu),
             zscore_epsilon=float(self.config.d3.zscore_epsilon),
         )
@@ -1278,6 +1513,476 @@ class ReferenceFlowController:
             argmax_tokens = context.logits.argmax(dim=-1)
             x_t[mask] = argmax_tokens[mask].to(dtype=x_t.dtype)
         return x_t
+
+    # ---------- Stage B typed actionability (PLAN_RF_UNI_CTRL.md Task B4) ----------
+
+    def _update_pressure_state(
+        self, actionability: "UnifiedActionabilityState"
+    ) -> None:
+        """Stage C.1: fold this refresh's ``G`` into the trajectory pressure state.
+
+        No-op (and no telemetry) unless ``global_pressure.enabled``, so Stage B /
+        static runs stay bit-for-bit unchanged. Append-then-compute ordering per
+        PLAN_RF_UNI_CTRL.md C1.4: the current refresh's ``G`` is included in the
+        median that scales the same refresh's ``beta``/``lambda``. Until
+        ``min_reliable_refreshes`` reliable refreshes have accrued, ``g_GR`` falls
+        back to ``unready_g`` and ``B_GR`` stays ``None``. The resulting
+        ``g_GR_effective`` and effective ``beta``/``lambda`` are written back onto
+        the (mutable) actionability state for the summary sidecar; the controller
+        also caches ``_pressure_g_GR`` so the same-step D2 call and post_step D3 /
+        rank face can scale by it (C1.5 / C1.6).
+        """
+        gp = self.config.global_pressure
+        if not gp.enabled:
+            return
+        reliable = _pressure_refresh_reliable(actionability)
+        if reliable:
+            self._pressure_G_values.append(float(actionability.G))
+        if len(self._pressure_G_values) < int(gp.min_reliable_refreshes):
+            B_GR: float | None = None
+            g_GR = float(gp.unready_g)
+        else:
+            B_GR = protein_pressure_burden(self._pressure_G_values)
+            g_GR = smoothstep_pressure(
+                B_GR,
+                B_low=float(gp.B_low),
+                B_high=float(gp.B_high),
+                g_min=float(gp.g_min),
+                g_max=float(gp.g_max),
+            )
+        g_GR = float(g_GR)
+        self._pressure_B_GR = B_GR
+        self._pressure_g_GR = g_GR
+        self._pressure_reliable = bool(reliable)
+
+        beta_base = float(self.config.d2.beta)
+        lambda_base = float(self.config.d3.lambda_commit)
+        beta_eff = beta_base * g_GR if gp.scale_beta else beta_base
+        lambda_eff = lambda_base * g_GR if gp.scale_lambda else lambda_base
+
+        actionability.B_GR = B_GR
+        actionability.g_GR_effective = g_GR
+        actionability.pressure_burden_bin = _pressure_burden_bin(
+            B_GR, B_low=gp.B_low, B_high=gp.B_high
+        )
+        actionability.pressure_reliable = bool(reliable)
+        actionability.beta_base = beta_base
+        actionability.beta_eff = float(beta_eff)
+        actionability.lambda_base = lambda_base
+        actionability.lambda_eff = float(lambda_eff)
+
+    def _effective_beta_override(self) -> float | None:
+        """Stage C.1 D2 ``beta_eff`` to pass as ``beta_override`` (C1.5).
+
+        ``None`` when pressure is disabled or ``scale_beta=False`` so D2 uses its
+        configured ``beta`` unchanged (legacy path is untouched). When enabled and
+        scaling beta, returns ``beta * g_GR`` using the trajectory ``g_GR`` cached
+        at this refresh's ``_update_pressure_state``.
+        """
+        gp = self.config.global_pressure
+        if not gp.enabled or not gp.scale_beta:
+            return None
+        return float(self.config.d2.beta) * float(self._pressure_g_GR)
+
+    def _effective_lambda_commit(self) -> float | None:
+        """Stage C.1 D3/rank ``lambda_eff`` to pass as ``lambda_override`` (C1.6).
+
+        ``None`` when pressure is disabled or ``scale_lambda=False`` so the commit
+        / Stage-A rank face uses the configured ``lambda_commit`` unchanged.
+        """
+        gp = self.config.global_pressure
+        if not gp.enabled or not gp.scale_lambda:
+            return None
+        return float(self.config.d3.lambda_commit) * float(self._pressure_g_GR)
+
+    def _current_g_GR_effective(self) -> float | None:
+        """The trajectory ``g_GR`` actuator value for telemetry; None if disabled."""
+        if not self.config.global_pressure.enabled:
+            return None
+        return float(self._pressure_g_GR)
+
+    def _select_active_windows_typed(
+        self,
+        *,
+        dyn_windows: Sequence[WindowRiskRecord],
+        v_target: np.ndarray,
+    ) -> tuple[list[int], int]:
+        """Typed active-window selection: window score = max ``v_target`` in span.
+
+        Replaces the legacy ``window_excess > 0`` selection in typed mode.
+        Windows with ``window_actionability > active_window_min_excess`` are
+        sorted descending and capped by ``active_windows.max_windows``; the
+        existing span/block merge logic then runs unchanged. Returns the capped
+        index list plus the pre-cap count of positive-actionability windows so
+        telemetry can detect ``active_window_min_excess`` saturation.
+        """
+        min_excess = float(self.config.targeting.active_window_min_excess)
+        max_windows = int(self.config.active_windows.max_windows)
+        L = int(v_target.shape[0])
+        scored: list[tuple[int, float]] = []
+        for i, w in enumerate(dyn_windows):
+            s = max(0, int(w.start_0b))
+            e = min(L, int(w.end_0b))
+            seg = v_target[s:e]
+            wa = float(seg.max()) if seg.size else 0.0
+            if wa > min_excess:
+                scored.append((i, wa))
+        num_pre_cap = len(scored)
+        scored.sort(key=lambda x: x[1], reverse=True)
+        if len(scored) > max_windows:
+            scored = scored[:max_windows]
+        return [i for i, _ in scored], num_pre_cap
+
+    def _compute_actionability_state(
+        self,
+        *,
+        context: SamplerStepContext,
+        dyn_windows: Sequence[WindowRiskRecord],
+        static_windows: Sequence[WindowRiskRecord],
+        window_excess: Sequence[float],
+        completed_tokens: torch.Tensor,
+        per_pos_entropy: torch.Tensor,
+    ) -> UnifiedActionabilityState:
+        """Build the typed ``A_i(t)`` field for one refresh (pre-D2)."""
+        cfg = self.config.targeting
+        L = int(context.sequence_length)
+
+        # Legacy per-window-subtraction residue excess — the exact quantity D2's
+        # select_editable_positions consumes (Stage B.0 leaves D2 in-block
+        # selection on this signal). Attached for the B4.4 confound diagnostic.
+        legacy_residue_excess = _residue_excess_from_windows(
+            windows=dyn_windows,
+            window_excess=window_excess,
+            sequence_length=L,
+        )
+
+        # tau_ref_B: scalar background = quantile over the static window cache.
+        static_z = np.asarray([float(w.z) for w in static_windows], dtype=float)
+        if static_z.size == 0:
+            raise WindowMismatchError(
+                "typed targeting requires a non-empty static window cache to "
+                f"compute tau_ref_B for protein_id={self.protein_id!r}"
+            )
+        tau_ref_B = float(np.quantile(static_z, float(cfg.tau_ref_quantile)))
+
+        # b_cur: max-covering projection of dynamic window z, excess over tau_ref.
+        cur_windows = [
+            {"start": int(w.start_0b), "end": int(w.end_0b), "score": float(w.z)}
+            for w in dyn_windows
+        ]
+        h_cur = max_covering_window_projection(length=L, windows=cur_windows)
+        b_cur = excess_over_tau(h_cur, tau_ref=tau_ref_B)
+
+        # Pre-D2 residue reliability, broadcast from the max-z source window.
+        (
+            r_ctx,
+            ctx_pnll,
+            g_time_res,
+            g_comp_res,
+            g_ent_res,
+            g_pnll_res,
+            g_stab_res,
+        ) = self._compute_residue_reliability(context, dyn_windows, per_pos_entropy)
+
+        # b_env: K_env global envelope completions over the seed-window union.
+        (
+            b_env,
+            env_peak,
+            env_consistency,
+            env_coverage_flag,
+            num_seed_windows,
+            num_env_head_calls,
+        ) = self._compute_envelope_burden(
+            context=context,
+            dyn_windows=dyn_windows,
+            completed_tokens=completed_tokens,
+            tau_ref_B=tau_ref_B,
+        )
+
+        e_fresh = compute_fresh_evidence(
+            b_cur=b_cur,
+            b_env=b_env,
+            r_ctx=r_ctx,
+            r_ctx_floor=float(cfg.r_ctx_floor),
+            tau=float(cfg.softor_tau),
+        )
+        b_mem = update_memory(
+            previous_b_mem=self._b_mem_prev,
+            e_fresh=e_fresh,
+            half_life_refreshes=float(cfg.mem_half_life_refreshes),
+        )
+        v_target = compute_target_evidence(
+            fresh_evidence=e_fresh, b_mem=b_mem, tau=float(cfg.softor_tau)
+        )
+
+        support = cluster_support_multiplier(
+            v_target,
+            tau=float(cfg.softor_tau),
+            radius=int(cfg.cluster_radius),
+            min_mass=float(cfg.cluster_min_mass),
+        )
+        floor = float(cfg.cluster_floor)
+        u_pressure = v_target * (floor + (1.0 - floor) * support)
+        G = global_pressure_mass(u_pressure)
+        gp = self.config.global_pressure
+        # Stage B diagnostic only: G0/s_G are calibrated from the Stage B pilot
+        # in Stage C; here we use the raw-sigmoid anchors (G0=0, s_G=1).
+        g_GR = global_pressure_scalar(
+            G, g_min=float(gp.g_min), g_max=float(gp.g_max), G0=0.0, s_G=1.0
+        )
+
+        return UnifiedActionabilityState(
+            tau_ref_B=tau_ref_B,
+            h_cur=h_cur,
+            b_cur=b_cur,
+            b_env=b_env,
+            env_peak=env_peak,
+            env_consistency=env_consistency,
+            e_fresh=e_fresh,
+            b_mem=b_mem,
+            r_ctx=r_ctx,
+            v_target=v_target,
+            u_pressure=u_pressure,
+            G=float(G),
+            g_GR_diagnostic=float(g_GR),
+            context_pnll=ctx_pnll,
+            g_time_pre=g_time_res,
+            g_comp_pre=g_comp_res,
+            g_ent_pre=g_ent_res,
+            g_pnll_pre=g_pnll_res,
+            g_stability_pre=g_stab_res,
+            cluster_support=support,
+            env_coverage_flag=env_coverage_flag,
+            legacy_residue_excess=legacy_residue_excess,
+            active_target_flag=np.zeros(L, dtype=bool),
+            active_block_id=np.full(L, -1, dtype=int),
+            num_seed_windows=int(num_seed_windows),
+            num_env_head_calls=int(num_env_head_calls),
+            num_active_windows=0,
+            num_active_blocks=0,
+            stability_available=False,
+            refresh_step=int(self._refresh_step_counter),
+            step=int(context.step),
+            t=float(context.t),
+        )
+
+    def _compute_residue_reliability(
+        self,
+        context: SamplerStepContext,
+        dyn_windows: Sequence[WindowRiskRecord],
+        per_pos_entropy: torch.Tensor,
+    ) -> tuple[np.ndarray, ...]:
+        """Pre-D2 per-window ``r_ctx_B`` broadcast to residues via max-z source.
+
+        ``r_ctx_B = g_time * g_comp * g_ent * g_pnll * g_stability`` (all pre-D2,
+        independent of ``D2BlockOutcome``). ``g_pnll`` uses the existing free
+        function :func:`compute_context_pnll`; if a window span has no committed
+        context, ``g_pnll = 0`` so ``r_ctx_B = 0`` there. ``g_stability`` is 1.0
+        in Stage B v1.
+        """
+        rel = self.config.reliability
+        h0 = float(self.config.d2.context_pnll_h0)
+        L = int(context.sequence_length)
+        g_time = _g_time(
+            float(context.t), float(self.config.t_start), float(rel.time_k)
+        )
+
+        win_r: list[float] = []
+        win_pnll: list[float | None] = []
+        win_gcomp: list[float] = []
+        win_gent: list[float] = []
+        win_gpnll: list[float] = []
+        for w in dyn_windows:
+            s, e = int(w.start_0b), int(w.end_0b)
+            g_comp = _g_comp(
+                _completion_fraction(context, s, e), rel.min_completion_fraction
+            )
+            g_ent = _g_ent(
+                _mean_block_entropy(per_pos_entropy, s, e), rel.entropy_h0
+            )
+            pnll = compute_context_pnll(
+                struct_logits=context.logits,
+                x_t=context.x_t,
+                mask_token_id=int(context.mask_token_id),
+                start_0b=s,
+                end_0b=e,
+            )
+            g_pnll = 0.0 if pnll is None else float(math.exp(-float(pnll) / h0))
+            win_pnll.append(pnll)
+            win_gcomp.append(float(g_comp))
+            win_gent.append(float(g_ent))
+            win_gpnll.append(float(g_pnll))
+            win_r.append(_clip_unit(g_time * g_comp * g_ent * g_pnll * 1.0))
+
+        r_ctx = np.zeros(L, dtype=float)
+        ctx_pnll = np.full(L, np.nan, dtype=float)
+        g_time_res = np.zeros(L, dtype=float)
+        g_comp_res = np.zeros(L, dtype=float)
+        g_ent_res = np.zeros(L, dtype=float)
+        g_pnll_res = np.zeros(L, dtype=float)
+        g_stab_res = np.zeros(L, dtype=float)
+        best_z = np.full(L, -np.inf, dtype=float)
+        for j, w in enumerate(dyn_windows):
+            z = float(w.z)
+            s = max(0, int(w.start_0b))
+            e = min(L, int(w.end_0b))
+            for i in range(s, e):
+                if z > best_z[i]:
+                    best_z[i] = z
+                    r_ctx[i] = win_r[j]
+                    ctx_pnll[i] = (
+                        float(win_pnll[j]) if win_pnll[j] is not None else np.nan
+                    )
+                    g_time_res[i] = g_time
+                    g_comp_res[i] = win_gcomp[j]
+                    g_ent_res[i] = win_gent[j]
+                    g_pnll_res[i] = win_gpnll[j]
+                    g_stab_res[i] = 1.0
+        return (
+            r_ctx,
+            ctx_pnll,
+            g_time_res,
+            g_comp_res,
+            g_ent_res,
+            g_pnll_res,
+            g_stab_res,
+        )
+
+    def _compute_envelope_burden(
+        self,
+        *,
+        context: SamplerStepContext,
+        dyn_windows: Sequence[WindowRiskRecord],
+        completed_tokens: torch.Tensor,
+        tau_ref_B: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int]:
+        """K_env global envelope completions over the seed-window union.
+
+        Resamples only masked residues inside the union of seed-window spans
+        (canonical tokens, structural temperature, deterministic per-sample
+        seed), scores each whole completion once, and consumes only windows
+        overlapping the union — so the cost is ``K_env`` head sequences per
+        refresh, not ``num_seed_windows * K_env`` (PLAN "Proposal-Envelope
+        Burden").
+        """
+        cfg = self.config.targeting
+        L = int(context.sequence_length)
+        K = int(cfg.env_ensemble_size)
+        zeros = np.zeros(L, dtype=float)
+
+        indexed = list(enumerate(dyn_windows))
+        top_current = sorted(
+            indexed, key=lambda iw: float(iw[1].z), reverse=True
+        )[: int(cfg.env_seed_top_current)]
+
+        def _masked_fraction(w: WindowRiskRecord) -> float:
+            return 1.0 - _completion_fraction(context, int(w.start_0b), int(w.end_0b))
+
+        top_uncertain = sorted(
+            indexed, key=lambda iw: _masked_fraction(iw[1]), reverse=True
+        )[: int(cfg.env_seed_top_uncertain)]
+
+        seed_idx: list[int] = []
+        seen: set[int] = set()
+        for j, _w in top_current + top_uncertain:
+            if j not in seen:
+                seen.add(j)
+                seed_idx.append(j)
+        if len(seed_idx) > int(cfg.env_seed_max_windows):
+            seed_idx = seed_idx[: int(cfg.env_seed_max_windows)]
+        seed_windows = [dyn_windows[j] for j in seed_idx]
+        num_seed_windows = len(seed_windows)
+
+        union_mask = np.zeros(L, dtype=bool)
+        for w in seed_windows:
+            union_mask[max(0, int(w.start_0b)) : min(L, int(w.end_0b))] = True
+
+        if num_seed_windows == 0 or not bool(union_mask.any()):
+            return zeros, zeros.copy(), zeros.copy(), union_mask, num_seed_windows, 0
+
+        canonical_arr = np.asarray(self._canonical_token_ids or (), dtype=np.int64)
+        if canonical_arr.size == 0:
+            raise ValueError(
+                "typed targeting envelope requires non-empty canonical_token_ids"
+            )
+        masked_union = [
+            i
+            for i in range(L)
+            if bool(union_mask[i])
+            and int(context.x_t[i].item()) == int(context.mask_token_id)
+        ]
+        struct_temp = float(self.config.d2.struct_temperature)
+
+        # When the seed-window union has no masked residue the K_env completions
+        # are identical (nothing to resample), so a single head call suffices —
+        # peak/consistency are unchanged versus K identical samples.
+        k_eff = K if masked_union else 1
+
+        records: list[tuple[str, str]] = []
+        for s_idx in range(k_eff):
+            tokens = completed_tokens.detach().clone()
+            rng = np.random.default_rng(
+                _seed_from_tuple(
+                    (
+                        int(self.seed),
+                        str(self.protein_id),
+                        int(self.design_idx),
+                        int(self._refresh_step_counter),
+                        int(s_idx),
+                        "env",
+                    )
+                )
+            )
+            for pos in masked_union:
+                logits_K = (
+                    context.logits[pos, torch.from_numpy(canonical_arr)]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.float64)
+                    / struct_temp
+                )
+                logits_K = logits_K - float(logits_K.max())
+                probs = np.exp(logits_K)
+                probs = probs / probs.sum()
+                choice = int(rng.choice(canonical_arr.shape[0], p=probs))
+                tokens[pos] = int(canonical_arr[choice])
+            records.append((f"env_s{s_idx}", self._decode_tokens(tokens)))
+
+        batch = self.scorer.score_batch_same_protein(
+            protein_id=self.protein_id, records=records
+        )
+        num_env_head_calls = len(records)
+
+        excess_samples = np.zeros((k_eff, L), dtype=float)
+        for s_idx, score in enumerate(batch.scores):
+            consumed = [
+                {"start": int(w.start_0b), "end": int(w.end_0b), "score": float(w.z)}
+                for w in score.windows
+                if bool(
+                    union_mask[
+                        max(0, int(w.start_0b)) : min(L, int(w.end_0b))
+                    ].any()
+                )
+            ]
+            if not consumed:
+                continue
+            proj = max_covering_window_projection(length=L, windows=consumed)
+            excess_samples[s_idx] = excess_over_tau(proj, tau_ref=tau_ref_B)
+
+        b_env = envelope_burden_from_excess_samples(
+            excess_samples, consistency_floor=float(cfg.env_consistency_floor)
+        )
+        env_peak = excess_samples.max(axis=0)
+        env_consistency = (excess_samples > 0.0).mean(axis=0)
+        return (
+            b_env,
+            env_peak,
+            env_consistency,
+            union_mask,
+            num_seed_windows,
+            num_env_head_calls,
+        )
 
 
 # ---------- helpers ----------
@@ -1487,6 +2192,43 @@ def _residue_excess_from_windows(
     return out
 
 
+def _pressure_refresh_reliable(actionability: "UnifiedActionabilityState") -> bool:
+    """Stage C.1 reliability gate for a refresh's contribution to ``B_GR``.
+
+    PLAN_RF_UNI_CTRL.md Stage C.1 Runtime Definitions: a refresh is reliable iff
+    the typed actionability state exists and ``G_step``, ``mean(v_target)`` and
+    ``mean(u_pressure)`` are all finite. ``mean(u_pressure) == G`` by construction
+    (``global_pressure_mass`` is the mean of ``u_pressure``), so the ``G`` check
+    covers it; ``mean(v_target)`` is the additional guard. Empty fields are
+    treated as unreliable.
+    """
+    if not math.isfinite(float(actionability.G)):
+        return False
+    v = np.asarray(actionability.v_target, dtype=float)
+    u = np.asarray(actionability.u_pressure, dtype=float)
+    if v.size == 0 or u.size == 0:
+        return False
+    return bool(np.isfinite(v.mean()) and np.isfinite(u.mean()))
+
+
+def _pressure_burden_bin(
+    B_GR: float | None, *, B_low: float | None, B_high: float | None
+) -> str | None:
+    """Stage C.1 burden bin from the final per-design ``B_GR`` (PLAN C1.4).
+
+    ``low: B_GR <= B_low``, ``mid: B_low < B_GR < B_high``, ``high: B_GR >= B_high``.
+    Returns ``None`` if the band or ``B_GR`` is unavailable (pre-calibration /
+    unready refresh).
+    """
+    if B_GR is None or B_low is None or B_high is None:
+        return None
+    if B_GR <= float(B_low):
+        return "low"
+    if B_GR >= float(B_high):
+        return "high"
+    return "mid"
+
+
 def _build_pending_d2_events(
     *,
     d2_outcome: D2RefreshOutcome,
@@ -1586,6 +2328,10 @@ def _build_pending_d2_events(
                         position=int(pos),
                         canonical_token_ids=canonical_token_ids,
                     ),
+                    # ---- Stage C.1 global-pressure attribution (C1.5) ----
+                    "beta_base": block.beta_base,
+                    "beta_eff": block.beta_eff,
+                    "g_GR_effective": block.g_GR_effective,
                     # ---- pending fill markers (private) ----
                     "_push_token": int(push_token),
                 }
@@ -1626,6 +2372,14 @@ def _stage_a_event_defaults() -> dict:
         "g_stability": None,
         "ensemble_delta_R_std": None,
         "ensemble_sign_consistency": None,
+        # Stage C.1 global-pressure attribution (PLAN_RF_UNI_CTRL.md C1.5/C1.6).
+        # beta_* set on D2 rows, lambda_* on D3 rows, g_GR_effective on both;
+        # None on every other event type (and in legacy / pressure-off runs).
+        "beta_base": None,
+        "beta_eff": None,
+        "lambda_base": None,
+        "lambda_eff": None,
+        "g_GR_effective": None,
     }
 
 
@@ -1722,6 +2476,12 @@ def _build_sticky_d2_events(
             "g_stability": getattr(block, "g_stability", None),
             "ensemble_delta_R_std": getattr(block, "ensemble_delta_R_std", None),
             "ensemble_sign_consistency": getattr(block, "ensemble_sign_consistency", None),
+            # ---- Stage C.1 global-pressure attribution (C1.5) ----
+            # Sticky re-delivery reuses the beta_eff baked into the stored block
+            # outcome at refresh creation; beta is never recomputed here.
+            "beta_base": getattr(block, "beta_base", None),
+            "beta_eff": getattr(block, "beta_eff", None),
+            "g_GR_effective": getattr(block, "g_GR_effective", None),
             # ---- private ----
             "_push_token": int(push_token),
         }
@@ -2009,8 +2769,8 @@ def _structural_top4_support_fields(
     """Structural top-4 canonical-token support telemetry for one target.
 
     ``delta_struct`` defines a trust region relative to the structural top
-    token. Persisting top-rank log-prob gaps makes that threshold auditable
-    without re-running the model.
+    token. Persisting top-rank log-prob gaps makes that threshold
+    auditable without re-running the model.
     """
     empty = {
         "struct_top1_token": None,

@@ -9,9 +9,11 @@ import pytest
 
 from inverse_folding.reference_flow.controller_config import (
     ControllerConfigError,
+    GlobalPressureConfig,
     controller_config_hash,
     load_controller_config,
     materialize_controller_config,
+    validate_global_pressure_runtime,
 )
 
 
@@ -678,12 +680,127 @@ def test_typed_targeting_config_validates_modes():
     payload = _base_enabled_payload()
     payload["controller"]["targeting"] = {"mode": "typed_actionability"}
     payload["controller"]["d3"] = {
-        "enabled": False,
+        "enabled": True,
         "evidence_source": "typed_fresh",
     }
     config = materialize_controller_config(payload)
     assert config.targeting.mode == "typed_actionability"
     assert config.d3.evidence_source == "typed_fresh"
+
+
+def test_global_pressure_defaults_are_stage_c_fields():
+    gp = GlobalPressureConfig()
+    assert gp.enabled is False
+    assert gp.g_min == 0.0  # PLAN C1.2: primary Stage C.1 floor (was 0.25 in Stage B).
+    assert gp.g_max == 1.0
+    assert gp.pressure_source == "trajectory_median_G"
+    assert gp.mapping == "smoothstep"
+    assert gp.B_low is None
+    assert gp.B_high is None
+    assert gp.min_reliable_refreshes == 1
+    assert gp.unready_g == 0.0
+    assert gp.scale_beta is True
+    assert gp.scale_lambda is True
+
+
+def test_global_pressure_enabled_requires_typed_targeting():
+    # Stage C.1 actuation builds g_GR from the typed pressure field, so it is
+    # invalid under static_excess targeting (PLAN C1.2: must be typed).
+    payload = _base_enabled_payload()
+    payload["controller"]["global_pressure"] = {"enabled": True}
+    with pytest.raises(ControllerConfigError, match="global_pressure.enabled"):
+        materialize_controller_config(payload)
+
+
+def test_global_pressure_enabled_typed_actionability_ok():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "typed_fresh"}
+    payload["controller"]["global_pressure"] = {
+        "enabled": True,
+        "g_min": 0.0,
+        "g_max": 1.0,
+        "B_low": 0.02,
+        "B_high": 0.10,
+        "scale_beta": True,
+        "scale_lambda": False,
+    }
+    config = materialize_controller_config(payload)
+    assert config.global_pressure.enabled is True
+    assert config.global_pressure.B_low == 0.02
+    assert config.global_pressure.B_high == 0.10
+    assert config.global_pressure.scale_lambda is False
+
+
+def test_global_pressure_enabled_bad_band_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "typed_fresh"}
+    payload["controller"]["global_pressure"] = {
+        "enabled": True,
+        "B_low": 0.10,
+        "B_high": 0.10,
+    }
+    with pytest.raises(ControllerConfigError, match="B_high"):
+        materialize_controller_config(payload)
+
+
+def test_global_pressure_mapping_must_be_smoothstep():
+    payload = _base_enabled_payload()
+    payload["controller"]["global_pressure"] = {"mapping": "sigmoid"}
+    with pytest.raises(ControllerConfigError, match="mapping"):
+        materialize_controller_config(payload)
+
+
+def test_global_pressure_pressure_source_must_be_trajectory_median():
+    payload = _base_enabled_payload()
+    payload["controller"]["global_pressure"] = {"pressure_source": "raw_G_step"}
+    with pytest.raises(ControllerConfigError, match="pressure_source"):
+        materialize_controller_config(payload)
+
+
+def test_global_pressure_min_reliable_refreshes_at_least_one():
+    payload = _base_enabled_payload()
+    payload["controller"]["global_pressure"] = {"min_reliable_refreshes": 0}
+    with pytest.raises(ControllerConfigError, match="min_reliable_refreshes"):
+        materialize_controller_config(payload)
+
+
+def test_validate_global_pressure_runtime_requires_stamped_band():
+    # The primary C.1 YAML sets enabled=true but omits B_low/B_high; they are
+    # stamped from the calibration JSON at run setup. materialize tolerates the
+    # gap, but the runtime check must fail fast if they were never stamped.
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "typed_fresh"}
+    payload["controller"]["global_pressure"] = {"enabled": True}
+    config = materialize_controller_config(payload)  # no band yet -> OK at load
+    assert config.global_pressure.B_low is None
+    with pytest.raises(ControllerConfigError, match="B_low"):
+        validate_global_pressure_runtime(config.global_pressure)
+
+
+def test_validate_global_pressure_runtime_passes_when_band_present():
+    gp = GlobalPressureConfig(enabled=True, B_low=0.02, B_high=0.10)
+    validate_global_pressure_runtime(gp)  # no raise
+    # disabled config is always runtime-valid regardless of band.
+    validate_global_pressure_runtime(GlobalPressureConfig(enabled=False))
+
+
+def test_typed_fresh_requires_typed_targeting():
+    # typed_fresh D3 input only exists when targeting builds the typed field.
+    payload = _base_enabled_payload()
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "typed_fresh"}
+    with pytest.raises(ControllerConfigError, match="typed_actionability"):
+        materialize_controller_config(payload)
+
+
+def test_typed_fresh_requires_d3_enabled():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {"enabled": False, "evidence_source": "typed_fresh"}
+    with pytest.raises(ControllerConfigError, match="d3.enabled"):
+        materialize_controller_config(payload)
 
 
 def test_targeting_unknown_mode_rejected():

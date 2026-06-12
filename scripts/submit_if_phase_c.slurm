@@ -72,6 +72,10 @@ HEAD_VARIANT_ID="${HEAD_VARIANT_ID:-}"
 HEAD_DEVICE="${HEAD_DEVICE:-cpu}"
 HEAD_WINDOW_BATCH_SIZE="${HEAD_WINDOW_BATCH_SIZE:-}"
 HEAD_ALLELE_IDX="${HEAD_ALLELE_IDX:-0}"
+# Stage C.1 global-pressure calibration JSON (PLAN_RF_UNI_CTRL.md C1.3). Required
+# only when the controller config has global_pressure.enabled=true; empty → not
+# forwarded (the controller fails fast at load if the band is needed).
+GLOBAL_PRESSURE_CALIBRATION_JSON="${GLOBAL_PRESSURE_CALIBRATION_JSON:-}"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -181,6 +185,7 @@ case "${MODE}" in
             echo "  Head device     : ${HEAD_DEVICE}"
             echo "  Head WBS        : ${HEAD_WINDOW_BATCH_SIZE:-<predictor default>}"
             echo "  Head allele idx : ${HEAD_ALLELE_IDX}"
+            echo "  GR calibration  : ${GLOBAL_PRESSURE_CALIBRATION_JSON:-<none / pressure off>}"
         fi
         EXTRA_FLAGS=()
         if [[ -n "${H_CORPUS_STATS}" ]]; then
@@ -217,6 +222,10 @@ case "${MODE}" in
             EXTRA_FLAGS+=(--head-allele-idx "${HEAD_ALLELE_IDX}")
             if [[ -n "${HEAD_WINDOW_BATCH_SIZE}" ]]; then
                 EXTRA_FLAGS+=(--head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}")
+            fi
+            # Stage C.1 global-pressure calibration (PLAN_RF_UNI_CTRL.md C1.3).
+            if [[ -n "${GLOBAL_PRESSURE_CALIBRATION_JSON}" ]]; then
+                EXTRA_FLAGS+=(--global-pressure-calibration-json "${GLOBAL_PRESSURE_CALIBRATION_JSON}")
             fi
         fi
 

@@ -3132,3 +3132,81 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN_RF.md` Task D2-D3: Stage A Actuation Pipeline
   - `doc/RF_Controller_Architecture.md`
+
+
+### L0111
+- timestamp: 2026-06-10T00:00:42-04:00
+- type: FEATURE
+- module: RF
+- trigger: User requested `PLAN_RF_UNI_CTRL.md` Stage B (typed actionability targeting) implementation, with Stage C kept as gated plan only; alignment on r_ctx/b_env/scope resolved before coding.
+- change_summary: Implemented the Stage B unified-controller typed actionability field `A_i(t)`. New pure-function module `actionability.py` (max-covering projection, anchored SoftOR, b_env peak×consistency, fresh-evidence/memory firewall, target-vs-pressure split, cluster support, G/g_GR). Added `controller.targeting` (`static_excess | typed_actionability`) + `controller.global_pressure` config blocks and `controller.d3.evidence_source` (`legacy_window_excess | typed_fresh`) with validation (`static_median` only; `first_reliable_refresh_median` reserved→NotImplementedError). Controller computes the typed field pre-D2 each refresh (tau_ref_B from static window cache; b_cur via max-covering excess; discovery-before-D2 r_ctx = g_time·g_comp·g_ent·g_pnll·g_stability with g_pnll from `compute_context_pnll`; b_env via K_env=3 global envelope completions over the seed-window union; b_mem EMA; v_target SoftOR) and routes active-window selection from `v_target` in typed mode while leaving the legacy `z_dyn − z_static` path bit-for-bit unchanged in static mode. D3 EMA `m_i` consumes the memory-excluded `e_fresh` in d2_d3_full_stageB via a `compute_d3_evidence_input` firewall. Added Stage B presets `d_monitor_stageB.yaml` / `d2_d3_full_stageB.yaml` and `actionability_residues.parquet` + `actionability_refresh_summary.jsonl` telemetry sidecars, compact refresh_log pointers, manifest `targeting_config`/`global_pressure_config`/`targeting_config_hash`, and startup prints. Stage C (g_GR scaling β/λ + Phase C editability) NOT implemented — gated plan only; `global_pressure.enabled=false` so G/g_GR are diagnostic-only.
+- rationale: Stage B isolates the targeting bottleneck (where to steer) from Stage A actuation (whether a steered token persists). The typed field replaces the static-prior runtime subtraction with sequence-conditioned, refresh-local evidence (b_cur/b_env/b_mem) so dynamic targeting can be tested head-to-head against the static source on the same pilot. The memory firewall (e_fresh excludes b_mem; update_memory signature rejects v_target/u_pressure/m_i) prevents memory-inflated targeting from feeding back into the D3 commit memory. r_ctx is defined pre-D2 (not from `D2BlockOutcome.g_pnll`) because v_target must discover the blocks before D2 runs and monitor mode has no D2; b_env uses global envelope samples (K_env head calls/refresh, not num_seed_windows×K_env) to bound cost.
+- artifacts:
+  - `inverse_folding/reference_flow/actionability.py` (new)
+  - `inverse_folding/reference_flow/controller_config.py`
+  - `inverse_folding/reference_flow/controller.py`
+  - `inverse_folding/reference_flow/commit.py`
+  - `inverse_folding/reference_flow/configs/d2_d3_full_stageB.yaml` (new)
+  - `inverse_folding/reference_flow/configs/d_monitor_stageB.yaml` (new)
+  - `scripts/run_if_phase_c1.py`
+  - `doc/SCRIPTS.md`
+  - `tests/inverse_folding/test_reference_flow_actionability.py` (new)
+  - `tests/inverse_folding/test_reference_flow_controller_config.py`
+  - `tests/inverse_folding/test_reference_flow_d1_controller.py`
+  - `tests/inverse_folding/test_reference_flow_d2_d3_controller.py`
+  - `tests/inverse_folding/test_reference_flow_commit.py`
+  - `tests/scripts/test_run_if_phase_c1_d2_d3.py`
+- evidence: |
+    TDD red→green per task (B1–B6).
+    `pytest tests/inverse_folding/test_reference_flow_actionability.py tests/inverse_folding/test_reference_flow_controller_config.py tests/inverse_folding/test_reference_flow_d1_controller.py tests/inverse_folding/test_reference_flow_d2_d3_controller.py tests/inverse_folding/test_reference_flow_commit.py tests/scripts/test_run_if_phase_c1_d2_d3.py -q` -> 167 passed (Stage B acceptance set).
+    `pytest tests/inverse_folding/ tests/scripts/test_run_if_phase_c1_d2_d3.py -k "reference_flow or run_if_phase_c1" -q` -> 235 passed, 2 skipped, 1 pre-existing amplification clipping warning.
+    Legacy bit-equivalence: 108 pre-B4 controller/commit/counterfactual tests unchanged after typed integration; static_excess refresh emits no actionability states and 1 dyn head call (no envelope).
+    Both Stage B presets load via `load_controller_config`; `ast.parse` clean on `run_if_phase_c1.py`.
+- impact:
+  - scope: Reference Flow controller targeting layer (Stage B) + telemetry/manifest + two presets only; no model retraining, no NetMHC guidance, no Stage C actuation, no new SLURM script. `runtime.py` untouched (manifest authority lives in `run_if_phase_c1.d1_manifest_provenance`).
+  - risk: medium
+  - confidence: 0.88
+- status: done
+- next_action: Real-head 2-protein smoke on Della with `d_monitor_stageB.yaml` to confirm the actionability sidecars + manifest fields, then the 50-protein Stage B gate (dynamic A_i(t) vs static z_dyn−z_static on realized_benefit_rate; end-to-end ≥5pp Pareto over D3-only; focal/memory-firewall diagnostics). Stage B deployment is gated on Stage A local gates (final_persistence_rate ≥ 10%, structure ≥ D3-only, realized_benefit_rate > 0) passing first.
+- refs:
+  - `PLAN_RF_UNI_CTRL.md` Stage B
+  - `doc/RF_Controller_Architecture.md` §2.8-§2.9
+  - `L0110` (Stage A actuation)
+
+### L0112
+- timestamp: 2026-06-11T00:00:00-04:00
+- type: FEATURE
+- module: RF
+- trigger: User requested `PLAN_RF_UNI_CTRL.md` Stage C.1 (trajectory-level global-pressure scaling) implementation, with Stage C.2 (Phase C editability allocation) kept as gated plan only; alignment confirmed `g_min` default 0.25→0.0 (PLAN-literal) before coding.
+- change_summary: Implemented Stage C.1 global-pressure actuation as an actuator-only change over the Stage B typed controller. Added pure `smoothstep_pressure(B_GR; B_low,B_high,g_min,g_max)` (clipped cubic smoothstep, distinct from the Stage B `global_pressure_scalar` sigmoid diagnostic) and `protein_pressure_burden` (median of reliable per-refresh G) to `actionability.py`. Extended `GlobalPressureConfig` with the Stage C fields (`pressure_source`, `mapping`, `B_low/B_high`, `min_reliable_refreshes`, `unready_g`, `scale_beta`, `scale_lambda`; `g_min` default 0.25→0.0), added `validate_global_pressure_runtime` (band-presence fail-fast), and replaced the Stage-B `enabled=true` rejection with `_cross_validate_stage_bc` (enabled ⇒ typed_actionability). The controller now maintains a per-trajectory pressure state (`_pressure_G_values/_B_GR/_g_GR`, reliability-filtered, append-then-compute) and scales D2 `beta` (`correct_logits(beta_override=…)`, beta_eff baked into the sticky deltas at refresh creation — never recomputed on re-delivery) and D3/rank `lambda_commit` (`run_refresh(lambda_override=…)` + `_build_stage_a_rank_scores`) by the trajectory `g_GR`, gated independently by `scale_beta`/`scale_lambda`. `run_if_phase_c1.py` loads `--global-pressure-calibration-json` and stamps `B_low/B_high` into the config via `dataclasses.replace` before the config hash (fail-fast on missing flag / missing keys / inverted band). New primary config `d2_d3_full_stageC_pressure_aopen.yaml` (copies the Stage B unified-aopen preset, only enables `global_pressure`); `submit_if_phase_c.slurm` forwards `GLOBAL_PRESSURE_CALIBRATION_JSON`. Stage C.2 (`c_ready_i`/`f_rank_i` + schedule editability) NOT implemented — gated plan only.
+- rationale: RAR 0005/0001 found the aggregate immune outcome is masked by a controller-wide low-burden over-intervention; typed targeting (Stage B) still fires on each protein's top positions regardless of absolute burden, so only trajectory-level `g_GR` pressure (Stage C) can suppress it. The actuator reads a stable per-design `B_GR = median(reliable G_step)` and a hard-saturating smoothstep (not the Stage B per-refresh sigmoid) so low-burden trajectories reach exactly `g_min=0` (PLAN G1/G2). `beta_eff` is frozen into each D2 correction at refresh creation (sticky re-delivery replays stored deltas) so within-TTL pressure is consistent and β is never recomputed (PLAN G8). `B_low/B_high` come from the Stage B/Aopen pilot via a CLI calibration JSON, never hardcoded (no placeholder anchors). All pressure scaling and Stage C telemetry are gated on `global_pressure.enabled`, so Stage B / legacy runs are byte-for-byte unchanged.
+- artifacts:
+  - `inverse_folding/reference_flow/actionability.py`
+  - `inverse_folding/reference_flow/controller_config.py`
+  - `inverse_folding/reference_flow/controller.py`
+  - `inverse_folding/reference_flow/commit.py`
+  - `inverse_folding/reference_flow/configs/d2_d3_full_stageC_pressure_aopen.yaml` (new)
+  - `scripts/run_if_phase_c1.py`
+  - `scripts/submit_if_phase_c.slurm`
+  - `doc/SCRIPTS.md`
+  - `tests/inverse_folding/test_reference_flow_actionability.py`
+  - `tests/inverse_folding/test_reference_flow_controller_config.py`
+  - `tests/inverse_folding/test_reference_flow_d1_controller.py`
+  - `tests/inverse_folding/test_reference_flow_d2_d3_controller.py`
+  - `tests/scripts/test_run_if_phase_c1_d2_d3.py`
+- evidence: |
+    TDD red→green per task (C1.1–C1.8).
+    `pytest tests/inverse_folding/test_reference_flow_actionability.py tests/inverse_folding/test_reference_flow_controller_config.py tests/inverse_folding/test_reference_flow_d1_controller.py tests/inverse_folding/test_reference_flow_d2_d3_controller.py tests/inverse_folding/test_reference_flow_commit.py tests/scripts/test_run_if_phase_c1_d2_d3.py tests/scripts/test_run_if_phase_c1_d1.py -q` -> 216 passed (Stage C.1 acceptance set).
+    `pytest tests/inverse_folding/ tests/scripts/ -q` (excluding 3 pre-existing Biopython-broken files) -> 777 passed, 42 skipped; `git diff --check` clean.
+    Adversarial multi-agent review (6 dimensions: math, byte-identity, config, sticky-D2, lambda-D3-telemetry, script/PLAN-checklist) -> 0 confirmed findings.
+    Key invariants verified: g_GR=1.0 ⇒ D2-corrected logits and Stage-A rank match the Stage B typed arm bit-for-bit at the same seed; g_GR=0.0 ⇒ beta-zero posterior (identity logits) and lambda immune penalty drops out (== lambda_commit=0); B_GR is the trajectory median (not the latest spike); sticky re-delivery replays the beta_eff-baked deltas; `global_pressure.enabled=false` leaves all Stage B telemetry / sampling unchanged.
+- impact:
+  - scope: Reference Flow controller actuation layer (Stage C.1) + calibration wiring + telemetry/manifest + one new config; no model retraining, no NetMHC guidance, no Stage C.2 schedule editability, no new SLURM script.
+  - risk: medium
+  - confidence: 0.86
+- status: done
+- next_action: Build the calibration JSON from the returned Stage B/Aopen typed `actionability_refresh_summary.jsonl` (median G_step per (protein,design,seed); B_low/B_high = 1/3, 2/3 quantiles), then run the 50-protein Stage C.1 arm (`d2_d3_full_stageC_pressure_aopen.yaml` + `--global-pressure-calibration-json`) against the matched static Aopen comparator (RAR 0005). Read-out: burden-stratified low-bin suppression (dhead ≤ +0.5), high-bin retention (dhead ≤ −2.0), aggregate movement toward the GR ideal (mean dhead ≤ −0.8), structure ≥ matched D3-only; fall back to `scale_lambda=false` sensitivity if high-bin retention fails.
+- refs:
+  - `PLAN_RF_UNI_CTRL.md` Stage C.1
+  - `doc/RF_Controller_Architecture.md` §2.8-§2.9
+  - `L0111` (Stage B typed targeting)

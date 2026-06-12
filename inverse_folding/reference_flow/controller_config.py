@@ -25,6 +25,10 @@ _ALLOWED_TAU_REF_SOURCES = frozenset({"static_median", "first_reliable_refresh_m
 _RESERVED_TAU_REF_SOURCES = frozenset({"first_reliable_refresh_median"})
 _ALLOWED_D3_EVIDENCE_SOURCES = frozenset({"legacy_window_excess", "typed_fresh"})
 
+# Stage C.1 global-pressure actuator allowed values (PLAN_RF_UNI_CTRL.md C1.2).
+_ALLOWED_PRESSURE_MAPPINGS = frozenset({"smoothstep"})
+_ALLOWED_PRESSURE_SOURCES = frozenset({"trajectory_median_G"})
+
 
 @dataclass(frozen=True)
 class CompletionConfig:
@@ -134,15 +138,39 @@ class TargetingConfig:
 
 @dataclass(frozen=True)
 class GlobalPressureConfig:
-    """Stage C global-pressure scalar config (PLAN_RF_UNI_CTRL.md Task B2).
+    """Global-pressure actuator config (PLAN_RF_UNI_CTRL.md Task B2 / C1.2).
 
-    Stage B computes and logs ``G(t)`` / ``g_GR(t)`` for telemetry only; it
-    never scales beta/lambda. ``enabled`` stays ``False`` until Stage C.
+    Stage B keeps ``enabled=False`` and only logs ``G(t)`` / the diagnostic
+    ``g_GR(t)``; it never scales beta/lambda. Stage C.1 sets ``enabled=True`` and
+    scales D2 ``beta`` (when ``scale_beta``) and D3 ``lambda`` (when
+    ``scale_lambda``) by the trajectory-level smoothstep pressure ``g_GR`` =
+    ``smoothstep(B_GR; B_low, B_high, g_min, g_max)`` where ``B_GR`` is the median
+    of reliable per-refresh ``G_step`` (PLAN_RF_UNI_CTRL.md Stage C.1).
+
+    ``B_low`` / ``B_high`` come from a calibration JSON stamped at run setup
+    (never hardcoded). The primary C.1 YAML sets ``enabled=true`` but omits the
+    band; materialization therefore tolerates a missing band, and
+    :func:`validate_global_pressure_runtime` fails fast at run setup if the band
+    was never stamped. ``g_min`` defaults to ``0.0`` so low-burden trajectories
+    reach zero pressure (PLAN G1); the Stage B diagnostic ``0.25`` floor must be
+    pinned explicitly in any config that still wants it.
     """
 
     enabled: bool = False
-    g_min: float = 0.25
+    g_min: float = 0.0
     g_max: float = 1.0
+    # Stage C.1 actuator (smoothstep of the trajectory-median burden ``B_GR``).
+    pressure_source: str = "trajectory_median_G"
+    mapping: str = "smoothstep"
+    B_low: float | None = None
+    B_high: float | None = None
+    min_reliable_refreshes: int = 1
+    unready_g: float = 0.0
+    scale_beta: bool = True
+    scale_lambda: bool = True
+    # Stage B diagnostic-sigmoid provenance. The diagnostic ``g_GR`` uses
+    # hardcoded ``G0=0`` / ``s_G=1`` anchors, so these strings are inert metadata
+    # retained for back-compat; they do not drive the Stage C.1 actuator.
     G0_source: str = "stageB_pilot_median"
     s_G_source: str = "stageB_pilot_iqr_half"
 
@@ -324,6 +352,9 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
     targeting = _materialize_targeting(controller_payload.get("targeting"))
     global_pressure = _materialize_global_pressure(
         controller_payload.get("global_pressure")
+    )
+    _cross_validate_stage_bc(
+        targeting=targeting, global_pressure=global_pressure, d3=d3
     )
 
     tel_payload = controller_payload.get("telemetry", {})
@@ -803,6 +834,7 @@ def _materialize_global_pressure(payload: Any) -> GlobalPressureConfig:
             "controller.global_pressure must be a mapping when present"
         )
     defaults = GlobalPressureConfig()
+    enabled = bool(payload.get("enabled", defaults.enabled))
     g_min = float(payload.get("g_min", defaults.g_min))
     g_max = float(payload.get("g_max", defaults.g_max))
     if g_min < 0.0:
@@ -814,13 +846,121 @@ def _materialize_global_pressure(payload: Any) -> GlobalPressureConfig:
             "controller.global_pressure.g_max must be >= g_min "
             f"(got g_min={g_min}, g_max={g_max})"
         )
+    mapping = str(payload.get("mapping", defaults.mapping))
+    if mapping not in _ALLOWED_PRESSURE_MAPPINGS:
+        raise ControllerConfigError(
+            "controller.global_pressure.mapping must be one of "
+            f"{sorted(_ALLOWED_PRESSURE_MAPPINGS)} (got {mapping!r})"
+        )
+    pressure_source = str(payload.get("pressure_source", defaults.pressure_source))
+    if pressure_source not in _ALLOWED_PRESSURE_SOURCES:
+        raise ControllerConfigError(
+            "controller.global_pressure.pressure_source must be one of "
+            f"{sorted(_ALLOWED_PRESSURE_SOURCES)} (got {pressure_source!r})"
+        )
+    raw_B_low = payload.get("B_low", defaults.B_low)
+    raw_B_high = payload.get("B_high", defaults.B_high)
+    B_low = None if raw_B_low is None else float(raw_B_low)
+    B_high = None if raw_B_high is None else float(raw_B_high)
+    # Fail fast on a hardcoded inverted band. Presence (band must exist when
+    # enabled) is deferred to validate_global_pressure_runtime, because the
+    # primary C.1 YAML omits the band and stamps it from the calibration JSON
+    # after load (PLAN_RF_UNI_CTRL.md C1.3).
+    if B_low is not None and B_high is not None and not (B_high > B_low):
+        raise ControllerConfigError(
+            "controller.global_pressure requires B_high > B_low "
+            f"(got B_low={B_low}, B_high={B_high})"
+        )
+    min_reliable_refreshes = int(
+        payload.get("min_reliable_refreshes", defaults.min_reliable_refreshes)
+    )
+    if min_reliable_refreshes < 1:
+        raise ControllerConfigError(
+            "controller.global_pressure.min_reliable_refreshes must be >= 1 "
+            f"(got {min_reliable_refreshes})"
+        )
+    unready_g = float(payload.get("unready_g", defaults.unready_g))
+    if not (0.0 <= unready_g <= g_max):
+        raise ControllerConfigError(
+            "controller.global_pressure.unready_g must be within [0, g_max] "
+            f"(got unready_g={unready_g}, g_max={g_max})"
+        )
     return GlobalPressureConfig(
-        enabled=bool(payload.get("enabled", defaults.enabled)),
+        enabled=enabled,
         g_min=g_min,
         g_max=g_max,
+        pressure_source=pressure_source,
+        mapping=mapping,
+        B_low=B_low,
+        B_high=B_high,
+        min_reliable_refreshes=min_reliable_refreshes,
+        unready_g=unready_g,
+        scale_beta=bool(payload.get("scale_beta", defaults.scale_beta)),
+        scale_lambda=bool(payload.get("scale_lambda", defaults.scale_lambda)),
         G0_source=str(payload.get("G0_source", defaults.G0_source)),
         s_G_source=str(payload.get("s_G_source", defaults.s_G_source)),
     )
+
+
+def validate_global_pressure_runtime(global_pressure: GlobalPressureConfig) -> None:
+    """Fail fast if Stage C.1 pressure is enabled but its band is not stamped.
+
+    Called at run setup AFTER the calibration JSON is stamped into the config
+    (PLAN_RF_UNI_CTRL.md C1.3). ``_materialize_global_pressure`` deliberately
+    tolerates ``enabled=true`` with a missing ``B_low``/``B_high`` so the primary
+    C.1 YAML can be loaded before the band is known; this guard ensures no run
+    ever actuates with an un-calibrated (or inverted) band — no placeholder
+    anchors allowed (CLAUDE.md fail-fast rule).
+    """
+    if not global_pressure.enabled:
+        return
+    if global_pressure.B_low is None or global_pressure.B_high is None:
+        raise ControllerConfigError(
+            "controller.global_pressure.enabled=true requires B_low and B_high to "
+            "be stamped from the Stage C calibration JSON "
+            "(--global-pressure-calibration-json); neither may be hardcoded"
+        )
+    if not (global_pressure.B_high > global_pressure.B_low):
+        raise ControllerConfigError(
+            "controller.global_pressure requires B_high > B_low "
+            f"(got B_low={global_pressure.B_low}, B_high={global_pressure.B_high})"
+        )
+
+
+def _cross_validate_stage_bc(
+    *,
+    targeting: TargetingConfig,
+    global_pressure: GlobalPressureConfig,
+    d3: D3Config,
+) -> None:
+    """Enforce the Stage B/C cross-config contract (PLAN_RF_UNI_CTRL.md C1.2).
+
+    Stage C.1 builds ``g_GR`` from the typed pressure field, so global-pressure
+    actuation is only valid under typed targeting. The typed ``e_fresh`` D3 input
+    likewise only exists when typed targeting builds the field and D3 is active.
+    Catching these at materialization turns a mid-run crash (missing ``e_fresh``
+    / no-op pressure) into a config-time fail-fast. The presence of a calibrated
+    ``B_low``/``B_high`` band is checked separately at run setup by
+    :func:`validate_global_pressure_runtime` (the band is stamped post-load).
+    """
+    if global_pressure.enabled and targeting.mode != "typed_actionability":
+        raise ControllerConfigError(
+            "controller.global_pressure.enabled=true (Stage C.1 actuation) requires "
+            "controller.targeting.mode='typed_actionability'; g_GR is built from the "
+            "typed pressure field"
+        )
+    if d3.evidence_source == "typed_fresh":
+        if targeting.mode != "typed_actionability":
+            raise ControllerConfigError(
+                "controller.d3.evidence_source='typed_fresh' requires "
+                "controller.targeting.mode='typed_actionability' (the typed "
+                "e_fresh field only exists under typed targeting)"
+            )
+        if not d3.enabled:
+            raise ControllerConfigError(
+                "controller.d3.evidence_source='typed_fresh' requires "
+                "controller.d3.enabled=true (D3 must be active to consume it)"
+            )
 
 
 def _cross_validate_mode(*, mode: str, d2: D2Config, d3: D3Config) -> None:

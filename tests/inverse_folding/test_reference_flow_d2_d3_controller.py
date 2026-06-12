@@ -32,8 +32,10 @@ from inverse_folding.reference_flow.controller_config import (
     ControlsConfig,
     D2Config,
     D3Config,
+    GlobalPressureConfig,
     HeadConfig,
     ReliabilityConfig,
+    TargetingConfig,
     TelemetryConfig,
 )
 from inverse_folding.reference_flow.head_scoring import (
@@ -1625,3 +1627,291 @@ def test_d1_alias_constructor_still_works():
         decode_tokens=_decode,
     )
     assert controller is not None
+
+
+# ---------------------------------------------------------------------------
+# Stage B D3 evidence-source firewall, controller level (PLAN_RF_UNI_CTRL.md B5)
+# ---------------------------------------------------------------------------
+
+
+def _post_ctx_for(L: int, x_t: torch.Tensor, logits: torch.Tensor, corrected_logits):
+    return PostSamplingContext(
+        x_t=x_t.clone(),
+        scores=np.zeros(L, dtype=np.float64),
+        structural_logits=logits,
+        corrected_logits=corrected_logits,
+        selected_positions=np.array([], dtype=np.int64),
+        sampled_tokens_actual=np.array([], dtype=np.int64),
+        sampled_tokens_uncorrected=None,
+        step=5,
+        t=0.5,
+        n_steps=10,
+        mask_token_id=_MASK_ID,
+        protein_id="P1",
+        design_idx=0,
+        sequence_length=L,
+    )
+
+
+def test_d2_d3_full_stageB_drives_d3_memory_from_typed_fresh():
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+
+    base = _make_config(mode="d2_d3_full", d2_enabled=True, d3_enabled=True)
+    typed_cfg = dataclasses.replace(
+        base,
+        targeting=TargetingConfig(mode="typed_actionability"),
+        d3=dataclasses.replace(base.d3, evidence_source="typed_fresh"),
+    )
+
+    typed = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(), config=typed_cfg, decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    pre_t = typed.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    res_t = typed.post_step(_post_ctx_for(L, x_t, logits, pre_t.logits))
+    state = typed.actionability_states()[-1]
+    m_typed = np.asarray(res_t.refresh_addendum["m_i"], dtype=np.float64)
+    # Cold-start EMA → m_i equals the selected evidence == typed e_fresh.
+    np.testing.assert_allclose(m_typed, state.e_fresh)
+
+    # Legacy d2_d3_full feeds the window-excess projection, which is numerically
+    # different from e_fresh — proving the firewall actually switched the input.
+    legacy = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(), config=base, decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    pre_l = legacy.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    res_l = legacy.post_step(_post_ctx_for(L, x_t, logits, pre_l.logits))
+    m_legacy = np.asarray(res_l.refresh_addendum["m_i"], dtype=np.float64)
+    assert legacy.actionability_states() == []
+    assert not np.allclose(m_typed, m_legacy)
+
+
+# ---------------------------------------------------------------------------
+# Stage C.1 global-pressure actuation, controller level (PLAN_RF_UNI_CTRL.md C1.5/C1.6)
+# ---------------------------------------------------------------------------
+
+
+def _typed_pressure_config(
+    *,
+    mode,
+    d2_enabled,
+    d3_enabled,
+    g_target,
+    beta=3.0,
+    scale_beta=True,
+    scale_lambda=True,
+    enabled=True,
+):
+    """Typed config with global pressure forced to saturate g_GR at 0.0 or 1.0.
+
+    The band is chosen so the smoothstep clips to ``g_min``/``g_max`` regardless
+    of the (test-dependent) realized ``B_GR``: g_target=1.0 puts the whole band
+    below any non-negative ``B_GR``; g_target=0.0 puts it far above. This lets
+    the actuation tests assert exact beta/lambda scaling without hand-computing G.
+    """
+    base = _make_config(mode=mode, d2_enabled=d2_enabled, d3_enabled=d3_enabled, beta=beta)
+    if g_target >= 1.0:
+        B_low, B_high = -2.0, -1.0   # B_GR >= B_high → g_GR = g_max = 1.0
+    elif g_target <= 0.0:
+        B_low, B_high = 1.0e6, 2.0e6  # B_GR <= B_low → g_GR = g_min = 0.0
+    else:
+        raise ValueError("helper only forces g_target in {0.0, 1.0}")
+    gp = GlobalPressureConfig(
+        enabled=enabled,
+        g_min=0.0,
+        g_max=1.0,
+        B_low=B_low,
+        B_high=B_high,
+        scale_beta=scale_beta,
+        scale_lambda=scale_lambda,
+    )
+    return dataclasses.replace(
+        base,
+        targeting=TargetingConfig(mode="typed_actionability"),
+        global_pressure=gp,
+    )
+
+
+def _typed_stage_b_config(*, mode, d2_enabled, d3_enabled, beta=3.0):
+    """Typed config with global pressure OFF (Stage B comparator)."""
+    return dataclasses.replace(
+        _make_config(mode=mode, d2_enabled=d2_enabled, d3_enabled=d3_enabled, beta=beta),
+        targeting=TargetingConfig(mode="typed_actionability"),
+    )
+
+
+def test_c1_g_gr_one_matches_stage_b_d2_correction():
+    # With g_GR=1.0, beta_eff = beta * 1 == beta, so the D2-corrected logits must
+    # match the Stage B typed arm bit-for-bit at the same seed (PLAN C1.5).
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+
+    ctrl_b = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_typed_stage_b_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode, canonical_token_ids=_CANONICAL,
+    )
+    res_b = ctrl_b.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    assert (res_b.logits - logits).abs().max().item() > 1e-3  # non-trivial correction
+
+    ctrl_c = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_typed_pressure_config(
+            mode="d2_logits", d2_enabled=True, d3_enabled=False, g_target=1.0
+        ),
+        decode_tokens=_decode, canonical_token_ids=_CANONICAL,
+    )
+    res_c = ctrl_c.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    torch.testing.assert_close(res_c.logits, res_b.logits, atol=1e-6, rtol=0)
+
+    diag = list(ctrl_c.refresh_addenda().values())[0]["d2_block_diagnostics"]
+    assert any(
+        d["g_GR_effective"] == 1.0 and d["beta_eff"] == 3.0 and d["beta_base"] == 3.0
+        for d in diag
+    )
+
+
+def test_c1_g_gr_zero_suppresses_d2_to_identity():
+    # With g_GR=0.0, beta_eff=0 → the beta-zero posterior → no logit correction.
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    ctrl = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_typed_pressure_config(
+            mode="d2_logits", d2_enabled=True, d3_enabled=False, g_target=0.0
+        ),
+        decode_tokens=_decode, canonical_token_ids=_CANONICAL,
+    )
+    res = ctrl.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    torch.testing.assert_close(res.logits, logits, atol=1e-6, rtol=0)
+    diag = list(ctrl.refresh_addenda().values())[0]["d2_block_diagnostics"]
+    assert diag, "expected at least one active block"
+    assert all(d["beta_eff"] == 0.0 and d["g_GR_effective"] == 0.0 for d in diag)
+    assert any(d["skipped_reason"] == "beta_zero" for d in diag)
+
+
+def test_c1_sticky_replays_baked_beta_eff_within_ttl():
+    # Sticky re-delivery on a non-refresh step replays the deltas baked with
+    # beta_eff at refresh creation; it never recomputes beta (PLAN C1.5 sticky).
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    ctrl = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_typed_pressure_config(
+            mode="d2_logits", d2_enabled=True, d3_enabled=False, g_target=1.0
+        ),
+        decode_tokens=_decode, canonical_token_ids=_CANONICAL,
+    )
+    res5 = ctrl.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    assert (res5.logits - logits).abs().max().item() > 1e-3
+    res6 = ctrl.step(_make_context(x_t=x_t, logits=logits, step=6, t=0.5))
+    torch.testing.assert_close(res6.logits, res5.logits, atol=1e-6, rtol=0)
+
+
+def _run_full_rank(cfg, *, L, logits, x_t):
+    ctrl = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(), config=cfg, decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+    pre = ctrl.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    res = ctrl.post_step(_post_ctx_for(L, x_t, logits, pre.logits))
+    return res.rank_scores
+
+
+def test_c1_d3_lambda_g_gr_one_matches_stage_b_rank():
+    # g_GR=1.0 → lambda_eff = lambda → the d2_d3_full Stage-A rank face must match
+    # the Stage B typed arm bit-for-bit (PLAN C1.6).
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    rank_b = _run_full_rank(
+        _typed_stage_b_config(mode="d2_d3_full", d2_enabled=True, d3_enabled=True),
+        L=L, logits=logits, x_t=x_t,
+    )
+    rank_c = _run_full_rank(
+        _typed_pressure_config(mode="d2_d3_full", d2_enabled=True, d3_enabled=True, g_target=1.0),
+        L=L, logits=logits, x_t=x_t,
+    )
+    np.testing.assert_allclose(rank_c, rank_b, atol=1e-6)
+
+
+def test_c1_d3_lambda_g_gr_zero_drops_immune_penalty():
+    # g_GR=0 with scale_lambda only (beta held fixed) must zero the immune
+    # penalty in the rank face — equal to Stage B with lambda_commit=0.
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    cfg_c1 = _typed_pressure_config(
+        mode="d2_d3_full", d2_enabled=True, d3_enabled=True, g_target=0.0,
+        scale_beta=False, scale_lambda=True,
+    )
+    base = _typed_stage_b_config(mode="d2_d3_full", d2_enabled=True, d3_enabled=True)
+    cfg_b = dataclasses.replace(base, d3=dataclasses.replace(base.d3, lambda_commit=0.0))
+    np.testing.assert_allclose(
+        _run_full_rank(cfg_c1, L=L, logits=logits, x_t=x_t),
+        _run_full_rank(cfg_b, L=L, logits=logits, x_t=x_t),
+        atol=1e-6,
+    )
+
+
+def test_c1_d3_revisit_legacy_unaffected_when_pressure_off():
+    # Legacy d3_revisit (static targeting, pressure off): lambda actuation is
+    # inert — the refresh addendum reports the configured lambda and no g_GR.
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    ctrl = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d3_revisit", d2_enabled=False, d3_enabled=True),
+        decode_tokens=_decode, canonical_token_ids=_CANONICAL,
+    )
+    pre = ctrl.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    res = ctrl.post_step(_post_ctx_for(L, x_t, logits, pre.logits))
+    assert res.rank_scores is not None
+    add = res.refresh_addendum
+    assert add["lambda_base"] == 1.0 and add["lambda_eff"] == 1.0
+    assert add["g_GR_effective"] is None
+
+
+def test_c1_event_rows_carry_pressure_attribution():
+    # The D2 controller_events rows must carry beta_base/beta_eff/g_GR_effective
+    # (not None-overwritten by the Stage-A defaults spread) — PLAN C1.5 telemetry.
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    ctrl = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_typed_pressure_config(mode="d2_d3_full", d2_enabled=True, d3_enabled=True, g_target=1.0),
+        decode_tokens=_decode, canonical_token_ids=_CANONICAL,
+    )
+    pre = ctrl.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    post = PostSamplingContext(
+        x_t=x_t.clone(), scores=np.zeros(L, dtype=np.float64), structural_logits=logits,
+        corrected_logits=pre.logits,
+        selected_positions=np.array([4, 5], dtype=np.int64),
+        sampled_tokens_actual=np.array([_LOW_RISK, _LOW_RISK], dtype=np.int64),
+        sampled_tokens_uncorrected=None, step=5, t=0.5, n_steps=10,
+        mask_token_id=_MASK_ID, protein_id="P1", design_idx=0, sequence_length=L,
+    )
+    ctrl.post_step(post)
+    d2_rows = [r for r in ctrl.controller_event_rows() if r.get("event_type") == "D2"]
+    assert d2_rows, "expected D2 event rows"
+    for r in d2_rows:
+        assert r["beta_base"] == 3.0
+        assert r["beta_eff"] == 3.0   # g_GR=1.0
+        assert r["g_GR_effective"] == 1.0

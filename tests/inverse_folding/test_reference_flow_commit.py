@@ -11,6 +11,7 @@ import torch
 from inverse_folding.reference_flow.commit import (
     compute_chosen_token_logprob,
     compute_commit_score,
+    compute_d3_evidence_input,
     compute_ema_gamma,
     compute_residue_reliability,
     compute_stage_a_rank_score,
@@ -19,6 +20,7 @@ from inverse_folding.reference_flow.commit import (
     update_ema,
     z_score,
 )
+from inverse_folding.reference_flow.controller_config import D3Config
 
 
 VOCAB_SIZE = 16
@@ -304,3 +306,32 @@ def test_stage_a_rank_degenerate_terms_contribute_zero():
         zscore_epsilon=1.0e-6,
     )
     np.testing.assert_allclose(rank, np.zeros(L, dtype=np.float64))
+
+
+# ---------------------------------------------------------------------------
+# Stage B D3 evidence-source firewall (PLAN_RF_UNI_CTRL.md Task B5)
+# ---------------------------------------------------------------------------
+
+
+def test_d3_evidence_input_legacy_keeps_window_excess():
+    cfg = D3Config(enabled=True, evidence_source="legacy_window_excess")
+    out = compute_d3_evidence_input(
+        d3_config=cfg, legacy_e_i=np.array([1.0]), typed_fresh_i=np.array([9.0])
+    )
+    np.testing.assert_allclose(out, [1.0])
+
+
+def test_d3_evidence_input_typed_fresh_uses_e_fresh():
+    cfg = D3Config(enabled=True, evidence_source="typed_fresh")
+    out = compute_d3_evidence_input(
+        d3_config=cfg, legacy_e_i=np.array([1.0]), typed_fresh_i=np.array([9.0])
+    )
+    np.testing.assert_allclose(out, [9.0])
+
+
+def test_d3_evidence_input_typed_fresh_requires_typed_array():
+    cfg = D3Config(enabled=True, evidence_source="typed_fresh")
+    with pytest.raises(ValueError, match="typed_fresh"):
+        compute_d3_evidence_input(
+            d3_config=cfg, legacy_e_i=np.array([1.0]), typed_fresh_i=None
+        )

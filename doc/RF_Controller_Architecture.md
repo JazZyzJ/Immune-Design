@@ -1,6 +1,6 @@
 # Reference Flow Adaptive Controller: Actuation and Unified Actionability
 
-**Status**: design contract. Staged rollout in §2.9 — Stage A (actuation, §2.1–2.7) implementation-ready; Stage B (targeting field, §2.8) gated on Stage A; Stage C (global-risk temperature + Phase C schedule) deferred.
+**Status**: design contract. Staged rollout in §2.9 — Stage A (actuation, §2.1–2.7) **done** (local gates passed, RAR 0003); Stage B (targeting field, §2.8) **demoted to a mechanism check**; Stage C (global-risk temperature, §2.8) **promoted to a co-primary first-order lever, run together with B**. See the **Empirical update** at the end of §2.9 (RAR 0005 / 0001).
 **Scope**: Phase D adaptive controller — D2 actuation pipeline + unified GR × Phase C/D actionability field
 **Related**: `doc/Reference_Flow_Derivation.md` §4.7 D2, `PLAN_RF.md` Task D2/D3, `report/Experimentresults0522.md` §14
 
@@ -181,7 +181,7 @@ immune pressure / structural pressure  ~=  beta relative to T_struct
 - $\alpha$ and $\nu$ are the post-sampling Pareto retention terms: they decide whether an immune-steered token gets enough rank credit to survive reparam while still retaining structural sanity.
 - $\lambda$ is the D3 immune-risk pressure on already committed residues.
 
-For v1, these remain separate fields because each one diagnoses a different failure mode in the three-filter bottleneck. The longer-term goal is to collapse part of this surface into a smaller controller-level temperature after Stage A proves that D2 can land and persist. That controller-level temperature is the global-risk scalar `g_GR` defined in §2.8, which scales both D2's $\beta$ and D3's $\lambda$ so low-risk proteins are not over-steered while high-risk proteins still receive strong intervention.
+For v1, these remain separate fields because each one diagnoses a different failure mode in the three-filter bottleneck. The longer-term goal is to collapse part of this surface into a smaller controller-level temperature after Stage A proves that D2 can land and persist. That controller-level temperature is the global-risk scalar `g_GR` defined in §2.8, which scales both D2's $\beta$ and D3's $\lambda$ so low-risk proteins are not over-steered while high-risk proteins still receive strong intervention. In Stage C.1, the actuator uses a stable per-trajectory burden aggregate `B_GR`, not the raw per-refresh `G(t)`.
 
 ### 2.6 Context reliability for $\rho_B$
 
@@ -423,22 +423,17 @@ where $u_i^{\mathrm{exec}}(t)$ is nonzero only for positions with a live sticky 
 
 #### GR aggregation: focal versus broad burden
 
-`G(t)` should be length-normalized thresholded mass, not a max score. A first theoretical form is:
+`G(t)` should be length-normalized thresholded mass, not a max score. In the implemented typed field, the thresholding already happens upstream: `u_pressure_i(t)` is cluster-supported positive excess above `tau_ref_B`. Therefore runtime Stage C uses:
 
 $$
 G(t)
 =
 \frac{1}{L}
 \sum_i
-\mathrm{ReLU}
-\left(
-u_i^{\mathrm{risk}}(t)
--
-\tau_{\mathrm{ref}}
-\right)
+u_i^{\mathrm{pressure}}(t)
 $$
 
-`tau_ref` is a background calibration reference, not a biological safety threshold. This formula gives the desired focal-vs-broad behavior:
+Do **not** subtract `tau_ref` a second time at the `G(t)` layer. `tau_ref` is a background calibration reference, not a biological safety threshold, and it is consumed when building `b_cur` / `b_env` / `e_fresh`. This formula gives the desired focal-vs-broad behavior:
 
 ```text
 sharp focal hotspot:
@@ -470,20 +465,22 @@ Residue-level GR can express coherent hotspot clusters rather than isolated wind
 
 **No calibrated safe threshold in v1.** The head was not trained with an absolute calibrated "safe" threshold, so any threshold inside GR is a **background reference / calibration point**, not a biological safety threshold. Avoid language like `z_w < tau_safe means safe`; use `tau_ref defines the background level used to measure relative landscape burden`. The exact `tau_ref` calibration is an open design item — it may be corpus-based, per-protein robust, WT-distribution based for reporting, or NMP-aligned after calibration.
 
-The pressure mapping remains a separate calibration layer:
+The pressure mapping remains a separate calibration layer. Stage B may log a per-refresh diagnostic scalar, but the Stage C.1 actuator must use a stable per-trajectory aggregate:
 
 ```text
-g_GR(t) = bounded_temperature(G(t))
+G_step(t) = mean_i u_pressure_i(t)
+B_GR(t)  = median({G_step(r): r <= t, r reliable})
+g_GR(t)  = smoothstep(B_GR(t); B_low, B_high, g_min=0, g_max=1)
 ```
 
-For the first diagnostic actuator, `g_GR(t)` should primarily scale global immune pressure:
+For the first actuator, `g_GR(t)` should primarily scale global immune pressure:
 
 ```text
 beta_eff   = beta   * g_GR(t)
 lambda_eff = lambda * g_GR(t)
 ```
 
-Do not immediately let `g_GR` also change active-block thresholds, `max_windows`, $\rho_B$, or the Bernoulli schedule. Those couplings belong to the full architecture, but the first actuator should keep attribution readable.
+Do not immediately let `g_GR` also change active-block thresholds, `max_windows`, $\rho_B$, or the Bernoulli schedule. Those couplings belong to the full architecture, but the first actuator should keep attribution readable. The per-step `G_step(t)` remains telemetry; it is not the pressure actuator.
 
 #### Module read/write contract
 
@@ -549,37 +546,47 @@ Expected Stage B outcomes (`G(t)` / `g_GR(t)` and Phase C `u_exec` are computed 
 
 ### 2.9 Rollout: actuation before targeting
 
-§2.1–2.7 are the D2 **actuation** pipeline — whether a steered token survives to the final sequence. §2.8 is the **targeting** field — where the controller acts. These are different bottlenecks and must be validated in order. A stage boundary is a decision point: a place where a null result changes direction, and where attribution must stay separable.
+§2.1–2.7 are the D2 **actuation** pipeline — whether a steered token survives to the final sequence. §2.8 is the unified **targeting + pressure** field — where the controller acts and how hard it acts. These are different bottlenecks, but RAR 0005 changes the rollout interpretation: after actuation is proven, Stage B is a mechanism check and Stage C is the outcome lever. B and C are developed in the same campaign, with attribution separated by telemetry and matched configs rather than by a serial Pareto gate.
 
 | Stage | Content | Decision point (failure → action) | Iteration |
 |---|---|---|---|
-| **A — actuation** | D2 sticky delivery + multi-objective commit + trust region + ensemble (§2.1–2.7). Uses the **existing** active-block definition; does **not** touch the §2.8 field. | Does a steered token survive to the final sequence, cost no structure, and lower local risk where D2 fired? (local checks only — **not** global Pareto). Fail → the logit mechanism does not work; fall back to revisit-only (§6.D). | one 50-protein run |
-| **B — targeting** | Replace the active-block signal `z_dyn − z_static` with the typed `A_i(t)` field (§2.8). `b_cur + b_env + b_mem + r_ctx` land **together**. `G(t)` / `g_GR(t)` are computed and logged here as telemetry but do **not** scale β/λ yet (that is Stage C). | Does dynamic actionability beat the static signal source on the same pilot? Fail → targeting was not the bottleneck; stop at the Stage A pipeline. | one 50-protein run |
-| **C — global + schedule** | `g_GR` global-pressure temperature + Phase C editability (hold/exec/freeze, §2.8 Phase C coupling). | Does over-steering of low-burden proteins need global control? Optimization, not a direction decision. | deferred |
+| **A — actuation** | D2 sticky delivery + multi-objective commit + trust region + ensemble (§2.1–2.7). Uses the **existing** active-block definition; does **not** touch the §2.8 field. | Local actuation gate: steered tokens survive, preserve structure, and lower local risk where D2 fired. This gate has passed (RAR 0003); A_open shows a larger non-empty action space at low structural cost (RAR 0005). | done |
+| **B — targeting mechanism** | Replace the active-block signal `z_dyn − z_static` with the typed `A_i(t)` field (§2.8). `b_cur + b_env + b_mem + r_ctx` land **together**. `G(t)` / `g_GR(t)` are computed and logged but do **not** scale β/λ in the B-only mechanism arm. | Does typed actionability populate, obey the firewall, and redistribute D2 fire relative to the matched static A_open comparator? Fail → fix typed-field wiring or targeting diagnostics; do **not** treat this as a D2 directional falsification. | one typed A_open arm |
+| **C — global + schedule** | `g_GR` global-pressure temperature + Phase C editability (hold/exec/freeze, §2.8 Phase C coupling). | Does trajectory-level pressure suppress low-burden over-intervention while preserving high-burden D2 gain? This is the aggregate outcome/Pareto layer. | same campaign after B field sanity |
 
-Two rules fix these boundaries.
+Three rules fix these boundaries.
 
 **Stage B collapses the per-channel rollout (compression).** `b_cur`, `b_env`, `b_mem`, `r_ctx` all derive from one online computation (current head, the completion machinery specified in §2.7, a cross-refresh EMA). Introducing them one channel per cluster run buys little attribution: channel contribution is diagnosable from provenance telemetry, while causal channel ablations can be added later only if those diagnostics warrant them. The "v1 theory boundary" inside §2.8 is therefore the scope of **Stage B**, landed in a single stage — not a fourth thing done alongside Stage A.
 
-**Stage A and Stage B cannot merge (attribution floor).** This is a correctness constraint, not conservatism. Stage A changes actuation; Stage B changes the targeting signal source. Run together, a null result cannot be separated into "the token did not persist" versus "the targeting signal was wrong" — two failure modes with opposite next actions. Three stages is the attribution-minimal floor; compressing to two fuses these modes.
+**Stage A and Stage B/C cannot merge (actuation attribution floor).** This is a correctness constraint, not conservatism. Stage A changes actuation; Stage B changes the targeting signal source; Stage C changes global pressure. Run together, a null result cannot be separated into "the token did not persist" versus "the targeting signal was wrong" versus "global pressure was miscalibrated". Stage A is already separated by RAR 0003/0005.
 
-**This is not slow.** Reaching a v1 conclusion needs only two gating iterations (A, B); Stage C is deferred optimization, off the critical path. Each iteration is one 50-protein run — persistence and targeting are per-event statistics with sufficient sample at n = 50 × 1 seed, so scale-up is a single final step before paper, not a per-stage cost. Parameter-tuning load concentrates in Stage C (`α_hold/exec/catch`, `τ_ref`, the `g_GR` mapping), which is deferred; Stage A reuses the §4 config and Stage B adds only a few knobs (EMA decay, SoftOR temperature).
+**B/C attribution is telemetry-separated, not serial-Pareto-gated.** RAR 0005 showed that a flat aggregate Pareto under fixed β and no GR is expected because low-burden over-intervention is controller-wide. Therefore Stage B is judged on typed-field mechanism and redistribution, while Stage C owns the aggregate Pareto and D2-vs-D3-only verdict once `g_GR` is active.
+
+**This is still not slow.** The next campaign needs one typed A_open mechanism arm plus the Stage C pressure arm(s). Stage B's readout is per-refresh/per-residue telemetry; Stage C's readout is burden-stratified aggregate outcome.
 
 Gate conditions:
 
-- **A → B**: three **local** actuation checks, all required — `final_persistence_rate ≥ 10%`, structure not worse than D3-only (`ΔscTM ≥` D3-only baseline), and `realized_benefit_rate > 0` (at positions where D2 actually changed the token, the corrected branch has lower local head risk than the paired structural branch, §5.1). These prove the token survives, costs no structure, and lowers risk *where D2 fired* — independent of whether the old static targeting picked good positions. **Beating D3-only on global Pareto is a strong-pass signal, not a hard gate**: Stage A runs on the existing static active-block, so a Pareto miss can mean bad targeting (which Stage B exists to fix), not bad actuation. Gating Stage A on global Pareto would let a targeting failure veto entry into the stage that fixes targeting. If the three local checks fail, the logit mechanism does not work; fall back to revisit-only (§6.D).
-- **B → C**: dynamic `A_i(t)` targeting beats static `z_dyn − z_static` on the same pilot, **and** the full pipeline now passes the end-to-end §5.3 falsification (D2 adds ≥ 5 pp Pareto over D3-only). The end-to-end Pareto test belongs here, not at A→B, because only after Stage B is the targeting signal good enough for a global-efficacy verdict on the D2 logit mechanism. This gate is also the decisive test of the "is the static prior worth keeping" question — M1 measured static coverage ≈ 25% but never tested dynamic-vs-static head-to-head as a runtime signal.
-- **C**: entered only after B; addresses the low-burden over-intervention recorded in the D3 pilot, a second-order problem visible only once A+B reliably lower immune risk.
+- **A → B/C**: three local actuation checks passed in RAR 0003, and A_open in RAR 0005 provides the operating point for B/C by opening a larger disagreement space without structural collapse.
+- **B mechanism check**: typed `A_i(t)` populates, obeys the `b_mem`/D3 firewall, and measurably redistributes active blocks or editable positions against the matched static A_open comparator. Aggregate immune/Pareto is not a B gate.
+- **C outcome check**: after `g_GR` is active, low-burden over-intervention must decrease without erasing high-burden D2 gains. The D2-vs-D3-only Pareto verdict and revisit-only fallback are evaluated here, not in B.
+
+**Empirical update (A_open feasibility, 2026-06-11; RAR 0005 / 0001 / 0003).** Stage A passed its local gates (0003). A candidate-space-opening run (A_open: δ_struct=3, β=3, top_k=8, max_pos=4, min_ess=0) then revised the B/C boundary above on three counts:
+
+1. Opening the action space gave 5× more persisted beneficial edits at ~0 structural cost, but did **not** improve the aggregate immune outcome. Candidate-space size is therefore not the binding constraint on outcome — it is the *test substrate* that makes the static-vs-typed targeting contrast measurable (A0's ~64 disagreements are too few; A_open's ~405 are enough).
+2. The aggregate is masked by a low-burden over-intervention that is **controller-wide** (present in D3-only too, 0001) and **first-order, not second-order**: the GR-idealized counterfactual (zero low-burden steering) recovers a ~5× larger aggregate improvement, while the real D2 gain is concentrated and significant on high-burden proteins (internal-head median −2.57, 69% of designs) and masked elsewhere. Opening the space did **not** raise the high-burden ceiling (A_open ≈ A0 there), so β/space aggression is not the lever.
+3. Typed targeting alone cannot fix the masking (it still fires on each protein's top positions regardless of absolute burden); only `g_GR` pressure driven by a stable per-trajectory burden aggregate does.
+
+Consequences: **Stage B is demoted to a mechanism check** (does the typed field run and redistribute D2's fire on a non-empty operating point), and **Stage B and Stage C are developed and run together**, not B-gated-then-C. `g_GR` (Stage C) is promoted from deferred second-order optimization to the **co-primary, first-order outcome lever**. The B→C "D2 adds ≥5 pp Pareto over D3-only" verdict and the §5.3 / §6.D revisit-only fallback are **deferred to after `g_GR` is active** — a flat aggregate Pareto under fixed β with no GR is expected, not a falsification of D2. The attribution floor is preserved by **telemetry** (burden-stratified, typed-vs-static; implemented in Stage C), not by serial staging. NetMHCIIpan confirmation stays low-priority: the success criterion is steering visible on the internal head first. The implementation contract for this update lives in `PLAN_RF_UNI_CTRL.md`.
 
 ---
 
 ## 3. Implementation stages
 
-The rollout in §2.9 defines three stages by attribution boundary. This section gives their implementation content. Stage A is the current focus; within it, two sub-steps land in order.
+The rollout in §2.9 defines stages by attribution boundary. Stage A is complete as a local actuation gate (RAR 0003) and A_open provides the current operating point for B/C (RAR 0005). This section records implementation content; the active implementation contract for B/C lives in `PLAN_RF_UNI_CTRL.md`.
 
-### Stage A — actuation (current focus)
+### Stage A — actuation (completed)
 
-Must come first; proves a steered token survives without structural cost (the §2.9 A→B gate). It is a single-mechanism pipeline with two sub-steps because the faces have different dependency relationships.
+Stage A proves a steered token can survive without structural cost. It is a single-mechanism pipeline with two sub-steps because the faces have different dependency relationships.
 
 **A.1 — persistence core.** Delivery Face (sticky, §2.2) + Sampling Face (§2.3) + Commit Face (multi-objective rank, $\nu > 0$, §2.4). Without A.1 the D2 signal never reaches the final sequence regardless of any other parameter sweep. All three together: sticky alone increases `selected_after_d2_rate` but the landed tokens still get remasked by the broken commit ranking; the multi-objective rank alone protects D2 tokens that land, but with same-step rate at 7% there are barely any to protect.
 
@@ -587,11 +594,11 @@ Must come first; proves a steered token survives without structural cost (the §
 
 ### Stage B — targeting field
 
-Replace static active-block selection with the typed `A_i(t)` field (§2.8). Gated on Stage A. Channels (`b_cur + b_env + b_mem + r_ctx`) land together; `G(t)` / `g_GR(t)` are computed and logged but do not yet scale β/λ.
+Replace static active-block selection with the typed `A_i(t)` field (§2.8). Channels (`b_cur + b_env + b_mem + r_ctx`) land together. In the B-only mechanism arm, `G(t)` / `g_GR(t)` are computed and logged but do not scale β/λ. The B readout is mechanism and redistribution, not aggregate Pareto.
 
 ### Stage C — global pressure + schedule
 
-`g_GR` scaling β/λ + Phase C editability (§2.8 Phase C coupling). Deferred second-order optimization; addresses low-burden over-intervention only after A+B reliably lower immune risk.
+`g_GR` scaling β/λ + Phase C editability (§2.8 Phase C coupling). This is the co-primary outcome lever after RAR 0005: it addresses controller-wide low-burden over-intervention and owns the aggregate Pareto / D2-vs-D3-only verdict once active.
 
 ### Deferred: time schedule
 
@@ -665,17 +672,25 @@ Marginal product is the "D2 actually changed the final sequence" rate: under the
 
 ### 5.2 Decision tree
 
-After running the v1 config on the same 50-protein pilot:
+After running the Stage A/A_open and B/C configs on matched 50-protein pilots:
 
 1. If `selected_after_d2_rate` does not rise markedly above 7%: Delivery Face is broken; sticky cache lifecycle has a bug. Stop and inspect.
 2. If `selected_after_d2_rate` rises but `final_persistence_rate` stays ≈ 0%: Commit Face is broken; $\alpha$ or $\nu$ is not effective. Verify rank_scores are being consumed in d2_logits mode and that Z-scoring uses the correct base population.
 3. If all three filter rates rise and `final_persistence_rate` ≥ 10% but structure preservation drops below D3-only baseline: $\delta_{\mathrm{struct}}$ too loose. Tighten to 1.0 nat and retry.
-4. If all three filter rates rise, `final_persistence_rate` ≥ 10%, structure preserved, but immune Pareto rate does not improve over D3-only: D2's posterior is firing but its directional information is not useful at this candidate-space size. Check ensemble diagnostics first. If argmax-to-ensemble rank flips are high, increase ensemble coverage; if ensemble is stable, consider expanding M / top_K. (Per §2.9, a Stage A Pareto miss does not block Stage B — targeting is what Stage B changes.)
-5. If filter rates, structure, and immune all improve: pipeline succeeds. Proceed to multi-seed scale-up.
+4. If all three filter rates rise, `final_persistence_rate` ≥ 10%, and structure is preserved, but pre-GR aggregate Pareto is flat: this is not a D2 falsification. Check burden-stratified deltas; if high-burden designs improve while low-burden designs regress, proceed to Stage C `g_GR`.
+5. If typed Stage B does not populate the field or does not redistribute active blocks / editable positions against the static A_open comparator: fix `actionability.py` / controller integration before judging outcome.
+6. If `g_GR` suppresses low-burden over-intervention but the high-burden D2 marginal disappears or aggregate Pareto remains flat, then the directional value of D2 beyond D3 revisit is questionable.
 
 ### 5.3 Falsification
 
-The unified pipeline framework is falsified if **(1) and (4) both hold**: the engineering works (filter rates rise, structure preserved) but D2 adds < 5 percentage points to D3-only Pareto rate. In that case, D2's logit-layer mechanism does not carry net information beyond what D3's revisit captures, and D2 should be deprioritized to "revisit-only" form (§6.D). This end-to-end test is the **Stage B → C** gate (§2.9), applied after the targeting field is in place — not at the Stage A boundary, where a Pareto miss can be a targeting artifact.
+The old pre-GR "B → C" Pareto gate is superseded by the empirical update in §2.9. A flat aggregate Pareto under fixed β and no `g_GR` is expected and does not falsify D2. The unified pipeline is falsified only after:
+
+1. Stage A/Aopen actuation is working and structure is preserved;
+2. Stage B typed fields populate and redistribute relative to the static A_open comparator;
+3. Stage C `g_GR` is active and demonstrably suppresses low-burden steering;
+4. D2 still adds no high-burden marginal value beyond D3 revisit, or the aggregate Pareto remains flat despite low-burden suppression.
+
+Only then should D2 be deprioritized toward the revisit-only fallback (§6.D).
 
 ---
 
@@ -736,7 +751,7 @@ Because these sources are not identifiable from variance alone, head-variance ga
 
 ## 8. PLAN readiness check
 
-All "ready" pieces below are **Stage A** (§2.9); Stage B (typed field) and Stage C (global risk + Phase C schedule) are gated and deferred.
+Stage A pieces are implemented and locally validated. Stage B/C now live in the dedicated unified-controller plan; `PLAN_RF.md` remains the Stage A / baseline plan surface.
 
 The following pieces are ready to move into `PLAN_RF.md` as implementation tasks:
 
@@ -750,13 +765,13 @@ The following pieces are ready to move into `PLAN_RF.md` as implementation tasks
 | Local-window completion ensemble | ready (A.2) | use two-stage shortlist + K=3 local completions |
 | Process metrics / falsification tree | ready | required before interpreting immune/structure aggregate metrics |
 
-Not ready for the current PLAN layer:
+Owned by `PLAN_RF_UNI_CTRL.md`:
 
 | Piece | Reason |
 |---|---|
-| Typed actionability field (`A_i(t)`) | Stage B; gated on Stage A persistence being proven |
-| Controller-level global-risk temperature | Stage C; conceptual boundary settled, but descriptor composition and threshold calibration remain open |
-| Time-varying $\beta(t), \eta(t), \alpha(t)$ | deferred; not needed to validate the Stage A persistence and candidate-scoring pipeline |
+| Typed actionability field (`A_i(t)`) | Stage B mechanism check on the A_open operating point |
+| Controller-level global-risk temperature | Stage C outcome lever; evaluates low-burden suppression and high-burden D2 marginal |
+| Time-varying $\beta(t), \eta(t), \alpha(t)$ | deferred v2 shape after scalar `g_GR` is understood |
 | Head-variance gate | variance is logged by ensemble, but not identifiable enough to gate in v1 |
 
-Conclusion: the D2 actuation pipeline (Stage A) is PLAN-ready. The targeting field (Stage B) and GR layer (Stage C) are conceptually settled but gated; promote them to `PLAN_RF.md` only after the Stage A persistence and structure gates pass.
+Conclusion: keep `PLAN_RF.md` scoped to Stage A and use `PLAN_RF_UNI_CTRL.md` for Stage B/C. Do not move B/C back under the Stage A task heading.

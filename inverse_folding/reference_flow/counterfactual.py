@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import product
 from typing import Any, Callable, Sequence
 
@@ -502,6 +502,14 @@ class D2BlockOutcome:
     g_pnll: float | None = None
     context_jsd: float | None = None
     g_stability: float = 1.0
+    # Stage C.1 global-pressure actuation provenance (PLAN_RF_UNI_CTRL.md C1.5).
+    # ``beta_base`` is the configured beta; ``beta_eff`` is the value actually used
+    # for candidate weights (``beta_base * g_GR`` when scaling, else ``beta_base``);
+    # ``g_GR_effective`` is the trajectory pressure scalar. All None in Stage B /
+    # static runs (no override passed), so legacy telemetry is unchanged.
+    beta_base: float | None = None
+    beta_eff: float | None = None
+    g_GR_effective: float | None = None
 
 
 @dataclass(frozen=True)
@@ -542,7 +550,18 @@ class D2Handler:
         seed: int,
         design_idx: int,
         refresh_step: int,
+        beta_override: float | None = None,
+        g_GR_effective: float | None = None,
     ) -> D2RefreshOutcome:
+        # Stage C.1 (PLAN_RF_UNI_CTRL.md C1.5): ``beta_override`` is the EFFECTIVE
+        # beta (``beta * g_GR``) supplied by the controller's global-pressure
+        # actuator; ``None`` keeps the configured beta (legacy / pressure-off).
+        # The delta logits are computed ONCE here with ``beta_eff``; the sticky
+        # re-delivery path replays the stored deltas and never recomputes beta.
+        beta_base = float(self.config.beta)
+        beta_eff = beta_base if beta_override is None else float(beta_override)
+        g_eff = None if g_GR_effective is None else float(g_GR_effective)
+
         block_outcomes: list[D2BlockOutcome] = []
         delta_logit_acc: dict[tuple[int, int], float] = {}
         corrected_positions: set[int] = set()
@@ -564,6 +583,15 @@ class D2Handler:
                 seed=seed,
                 design_idx=design_idx,
                 refresh_step=refresh_step,
+                beta_eff=beta_eff,
+            )
+            # Stamp pressure provenance on every block outcome (including the
+            # skipped early-return paths) so telemetry attribution is complete.
+            outcome = replace(
+                outcome,
+                beta_base=beta_base,
+                beta_eff=beta_eff,
+                g_GR_effective=g_eff,
             )
             block_outcomes.append(outcome)
             if outcome.skipped_reason is None:
@@ -696,7 +724,11 @@ class D2Handler:
         seed: int,
         design_idx: int,
         refresh_step: int,
+        beta_eff: float | None = None,
     ) -> D2BlockOutcome:
+        # ``beta_eff`` is the Stage C.1 effective beta (PLAN_RF_UNI_CTRL.md C1.5);
+        # None falls back to the configured beta so legacy callers are unchanged.
+        beta_used = float(self.config.beta) if beta_eff is None else float(beta_eff)
         omega = tuple(int(i) for i in block.window_indices)
         editable = select_editable_positions(
             start_0b=int(block.residue_start_0b),
@@ -886,7 +918,7 @@ class D2Handler:
             struct_temperature=float(self.config.struct_temperature),
         )
         weights = compute_weights(
-            mode=mode, Q_B=Q_B, delta_R_B=delta_R_B, beta=float(self.config.beta)
+            mode=mode, Q_B=Q_B, delta_R_B=delta_R_B, beta=beta_used
         )
         ess = compute_ess(weights)
         ess_fraction = ess / float(len(candidates_effective)) if candidates_effective else 0.0
@@ -972,7 +1004,11 @@ class D2Handler:
                 g_stability=float(g_stability),
             )
 
-        if float(self.config.beta) == 0.0:
+        if beta_used == 0.0:
+            # Reached either by a configured beta=0 or by a Stage C.1 g_GR that
+            # drives beta_eff to 0 (low-burden suppression): both yield the
+            # uncorrected / beta=0 posterior. The optional "global_pressure_zero"
+            # skip reason is intentionally deferred (PLAN_RF_UNI_CTRL.md C1.5).
             return D2BlockOutcome(
                 block_id=int(block.block_id),
                 omega_indices=omega,

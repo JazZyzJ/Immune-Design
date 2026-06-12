@@ -58,6 +58,35 @@ def project_window_excess_to_residue(
 
 
 # ---------------------------------------------------------------------------
+# Stage B D3 evidence-source firewall (PLAN_RF_UNI_CTRL.md Task B5)
+# ---------------------------------------------------------------------------
+
+
+def compute_d3_evidence_input(
+    *,
+    d3_config: D3Config,
+    legacy_e_i: np.ndarray,
+    typed_fresh_i: np.ndarray | None,
+) -> np.ndarray:
+    """Select the residue evidence that drives the D3 EMA ``m_i``.
+
+    ``legacy_window_excess`` (default and every existing D3-only config) keeps
+    the Stage A window-excess projection. ``typed_fresh`` (d2_d3_full_stageB)
+    feeds the typed ``e_fresh`` field, which by construction excludes ``b_mem``
+    — so this never lets memory-inflated targeting flow back into the D3 memory
+    update (PLAN "Fresh Evidence And Memory Firewall").
+    """
+    if d3_config.evidence_source == "typed_fresh":
+        if typed_fresh_i is None:
+            raise ValueError(
+                "d3.evidence_source='typed_fresh' requires a typed_fresh_i array "
+                "(the Stage B e_fresh field); got None"
+            )
+        return np.asarray(typed_fresh_i, dtype=np.float64)
+    return np.asarray(legacy_e_i, dtype=np.float64)
+
+
+# ---------------------------------------------------------------------------
 # Residue-level reliability (PLAN §D3-4)
 # ---------------------------------------------------------------------------
 
@@ -326,6 +355,13 @@ class D3RefreshOutcome:
     m_i: np.ndarray
     rho_i: np.ndarray
     grace_positions: tuple[int, ...]
+    # Stage C.1 global-pressure attribution (PLAN_RF_UNI_CTRL.md C1.6). ``lambda_eff``
+    # is the value used in the commit-score immune penalty (``lambda_commit * g_GR``
+    # when scaling, else the configured ``lambda_commit``). All None in legacy /
+    # pressure-off runs so existing telemetry is unchanged.
+    lambda_base: float | None = None
+    lambda_eff: float | None = None
+    g_GR_effective: float | None = None
 
 
 class D3Handler:
@@ -350,11 +386,26 @@ class D3Handler:
         mask_token_id: int,
         m_prev: np.ndarray | None,
         corrected_positions: Sequence[int],
+        typed_fresh: np.ndarray | None = None,
+        lambda_override: float | None = None,
+        g_GR_effective: float | None = None,
     ) -> D3RefreshOutcome:
-        e_i = project_window_excess_to_residue(
+        # Stage C.1 (PLAN_RF_UNI_CTRL.md C1.6): ``lambda_override`` is the EFFECTIVE
+        # immune-penalty weight (``lambda_commit * g_GR``) from the controller's
+        # pressure actuator; ``None`` keeps the configured ``lambda_commit``.
+        lambda_base = float(self.config.lambda_commit)
+        lambda_eff = lambda_base if lambda_override is None else float(lambda_override)
+        legacy_e_i = project_window_excess_to_residue(
             windows=windows,
             window_excess=window_excess,
             sequence_length=int(sequence_length),
+        )
+        # Stage B firewall (PLAN_RF_UNI_CTRL.md Task B5): d2_d3_full_stageB feeds
+        # the typed e_fresh; every legacy config keeps the window-excess input.
+        e_i = compute_d3_evidence_input(
+            d3_config=self.config,
+            legacy_e_i=legacy_e_i,
+            typed_fresh_i=typed_fresh,
         )
         rho_i = compute_residue_reliability(
             active_blocks=active_blocks, sequence_length=int(sequence_length)
@@ -390,7 +441,7 @@ class D3Handler:
         commit_score = compute_commit_score(
             z_ell=z_ell,
             z_m=z_m,
-            lambda_commit=float(self.config.lambda_commit),
+            lambda_commit=lambda_eff,
             grace_positions=grace_positions if grace_positions else None,
         )
         return D3RefreshOutcome(
@@ -399,4 +450,7 @@ class D3Handler:
             m_i=m_i,
             rho_i=rho_i,
             grace_positions=grace_positions,
+            lambda_base=lambda_base,
+            lambda_eff=lambda_eff,
+            g_GR_effective=(None if g_GR_effective is None else float(g_GR_effective)),
         )

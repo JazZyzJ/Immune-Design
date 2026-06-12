@@ -21,16 +21,69 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from inverse_folding.reference_flow.controller import D1RefreshRecord
+from inverse_folding.reference_flow.controller import (
+    D1RefreshRecord,
+    UnifiedActionabilityState,
+)
 from inverse_folding.reference_flow.head_scoring import WindowRiskRecord
 from scripts.run_if_phase_c1 import (
     CONTROLLER_SURFACE_VERSION,
     compute_per_protein_summary,
     d1_manifest_provenance,
     load_controller_setup,
+    write_actionability_artifacts,
     write_d1_artifacts,
+    _actionability_state_to_records,
     _refresh_record_to_jsonable,
 )
+
+
+_STAGEB_PRESET = (
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding"
+    / "reference_flow"
+    / "configs"
+    / "d2_d3_full_stageB.yaml"
+)
+
+
+def _make_actionability_state(L: int, refresh_step: int = 0) -> UnifiedActionabilityState:
+    arange = np.arange(L, dtype=float)
+    return UnifiedActionabilityState(
+        tau_ref_B=0.5,
+        h_cur=arange,
+        b_cur=arange * 0.1,
+        b_env=arange * 0.2,
+        env_peak=arange * 0.2,
+        env_consistency=np.ones(L),
+        e_fresh=arange * 0.15,
+        b_mem=arange * 0.05,
+        r_ctx=np.full(L, 0.3),
+        v_target=arange * 0.25,
+        u_pressure=arange * 0.2,
+        G=0.041,
+        g_GR_diagnostic=0.52,
+        context_pnll=np.where(arange > 0, arange, np.nan),
+        g_time_pre=np.full(L, 0.9),
+        g_comp_pre=np.full(L, 0.5),
+        g_ent_pre=np.full(L, 0.8),
+        g_pnll_pre=np.full(L, 0.4),
+        g_stability_pre=np.ones(L),
+        cluster_support=np.full(L, 0.7),
+        env_coverage_flag=np.ones(L, dtype=bool),
+        legacy_residue_excess=np.zeros(L),
+        active_target_flag=np.array([i >= L - 2 for i in range(L)]),
+        active_block_id=np.array([0 if i >= L - 2 else -1 for i in range(L)]),
+        num_seed_windows=8,
+        num_env_head_calls=3,
+        num_active_windows=2,
+        num_active_blocks=1,
+        stability_available=False,
+        refresh_step=int(refresh_step),
+        step=5,
+        t=0.6,
+        num_actionable_windows_pre_cap=6,
+    )
 
 
 def _write_d2_d3_yaml(tmp_path: Path) -> Path:
@@ -111,7 +164,7 @@ def _write_d2_d3_yaml(tmp_path: Path) -> Path:
     return path
 
 
-def _make_args(tmp_path: Path, ctrl_yaml: Path):
+def _make_args(tmp_path: Path, ctrl_yaml: Path, *, global_pressure_calibration_json=None):
     from types import SimpleNamespace
 
     return SimpleNamespace(
@@ -123,6 +176,7 @@ def _make_args(tmp_path: Path, ctrl_yaml: Path):
         head_window_batch_size=64,
         head_allele_idx=0,
         allele="DRB1*01:01",
+        global_pressure_calibration_json=global_pressure_calibration_json,
     )
 
 
@@ -733,3 +787,350 @@ def test_startup_prints_resolved_controller_config(tmp_path: Path, capsys):
     # Every top-level key appears on its own line.
     for top in ("d2", "d3", "attribution", "controls", "head", "reliability"):
         assert f"  {top}:" in out
+
+
+# ---------------------------------------------------------------------------
+# Stage B telemetry + manifest (PLAN_RF_UNI_CTRL.md Task B6)
+# ---------------------------------------------------------------------------
+
+
+def test_stageB_manifest_contains_targeting_config_and_hash(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    args = _make_args(tmp_path, _STAGEB_PRESET)
+    setup = load_controller_setup(args)
+    assert setup is not None
+    manifest = d1_manifest_provenance(
+        setup,
+        static_cache_path=tmp_path / "cache.parquet",
+        static_cache_meta_path=tmp_path / "cache.meta.json",
+        window_k_min=12,
+        window_k_max=25,
+    )
+    assert manifest["targeting_config"]["mode"] == "typed_actionability"
+    assert manifest["global_pressure_config"]["enabled"] is False
+    assert manifest["targeting_config_hash"]
+    assert manifest["d3_config"]["evidence_source"] == "typed_fresh"
+
+
+# ---------------------------------------------------------------------------
+# Stage C.1 global-pressure calibration wiring (PLAN_RF_UNI_CTRL.md C1.3)
+# ---------------------------------------------------------------------------
+
+
+def _write_stage_c_yaml(tmp_path: Path) -> Path:
+    """Stage C.1 config: typed targeting + d3 typed_fresh + global_pressure
+    ENABLED but with the B_low/B_high band omitted (stamped from the calibration
+    JSON at load time, per PLAN C1.3). Reuses the full d2/d3 blocks."""
+    base = _write_d2_d3_yaml(tmp_path).read_text()
+    # Explicit 2-space indent so targeting/global_pressure nest under controller:
+    # (the d2/d3 sections in the base sit at 2 spaces, fields at 4).
+    extra = (
+        "  targeting:\n"
+        "    mode: typed_actionability\n"
+        "  global_pressure:\n"
+        "    enabled: true\n"
+        "    pressure_source: trajectory_median_G\n"
+        "    mapping: smoothstep\n"
+        "    g_min: 0.0\n"
+        "    g_max: 1.0\n"
+        "    min_reliable_refreshes: 1\n"
+        "    unready_g: 0.0\n"
+        "    scale_beta: true\n"
+        "    scale_lambda: true\n"
+    )
+    # The base d3 block defaults to legacy evidence; Stage C.1 uses typed_fresh.
+    base = base.replace(
+        "            final_freeze_steps: 1\n",
+        "            final_freeze_steps: 1\n            evidence_source: typed_fresh\n",
+    )
+    path = tmp_path / "controller_stage_c.yaml"
+    path.write_text(base + extra)
+    return path
+
+
+def _write_calibration_json(tmp_path, *, B_low=0.02, B_high=0.10, name="calib.json", drop_high=False):
+    payload = {
+        "pressure_source": "trajectory_median_G",
+        "low_quantile": 1.0 / 3.0,
+        "high_quantile": 2.0 / 3.0,
+        "B_low": B_low,
+        "n_units": 50,
+        "source_artifact": "actionability_refresh_summary.jsonl",
+    }
+    if not drop_high:
+        payload["B_high"] = B_high
+    p = tmp_path / name
+    p.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return p
+
+
+def test_stage_c_calibration_stamps_band_and_provenance(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_stage_c_yaml(tmp_path)
+    calib = _write_calibration_json(tmp_path, B_low=0.02, B_high=0.10)
+    setup = load_controller_setup(
+        _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(calib))
+    )
+    assert setup is not None
+    # Band stamped into the config from the JSON.
+    assert setup.config.global_pressure.enabled is True
+    assert setup.config.global_pressure.B_low == 0.02
+    assert setup.config.global_pressure.B_high == 0.10
+    assert setup.global_pressure_calibration_path == calib.resolve()
+    assert setup.global_pressure_calibration_hash
+    # Manifest carries flat accessors + the calibration provenance.
+    manifest = d1_manifest_provenance(
+        setup,
+        static_cache_path=None,
+        static_cache_meta_path=None,
+        window_k_min=12,
+        window_k_max=25,
+    )
+    assert manifest["global_pressure_config"]["enabled"] is True
+    assert manifest["global_pressure_config"]["B_low"] == 0.02
+    assert manifest["global_pressure_B_low"] == 0.02
+    assert manifest["global_pressure_B_high"] == 0.10
+    assert manifest["global_pressure_pressure_source"] == "trajectory_median_G"
+    assert manifest["global_pressure_calibration_path"] == str(calib.resolve())
+    assert manifest["global_pressure_calibration_hash"] == setup.global_pressure_calibration_hash
+
+
+def test_stage_c_band_is_reflected_in_config_hash(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_stage_c_yaml(tmp_path)
+    setup_a = load_controller_setup(
+        _make_args(
+            tmp_path, ctrl_yaml,
+            global_pressure_calibration_json=str(
+                _write_calibration_json(tmp_path, B_low=0.02, B_high=0.10, name="a.json")
+            ),
+        )
+    )
+    setup_b = load_controller_setup(
+        _make_args(
+            tmp_path, ctrl_yaml,
+            global_pressure_calibration_json=str(
+                _write_calibration_json(tmp_path, B_low=0.05, B_high=0.20, name="b.json")
+            ),
+        )
+    )
+    assert setup_a.config_hash != setup_b.config_hash
+
+
+def test_stage_c_enabled_requires_calibration_flag(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_stage_c_yaml(tmp_path)
+    with pytest.raises(SystemExit):
+        load_controller_setup(_make_args(tmp_path, ctrl_yaml))  # no calibration json
+
+
+def test_stage_c_calibration_missing_key_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_stage_c_yaml(tmp_path)
+    bad = _write_calibration_json(tmp_path, B_low=0.02, drop_high=True, name="bad.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_stage_c_calibration_inverted_band_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_stage_c_yaml(tmp_path)
+    bad = _write_calibration_json(tmp_path, B_low=0.20, B_high=0.10, name="inv.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_disabled_global_pressure_ignores_calibration_flag(tmp_path: Path):
+    # The Stage B preset keeps global_pressure disabled; passing a calibration
+    # JSON is harmless and is NOT stamped; path/hash are manifest provenance only.
+    _fake_head_dir(tmp_path)
+    calib = _write_calibration_json(tmp_path, B_low=0.02, B_high=0.10)
+    setup = load_controller_setup(
+        _make_args(tmp_path, _STAGEB_PRESET, global_pressure_calibration_json=str(calib))
+    )
+    assert setup is not None
+    assert setup.config.global_pressure.enabled is False
+    assert setup.global_pressure_calibration_path == calib.resolve()
+    assert setup.global_pressure_calibration_hash
+    assert setup.config.global_pressure.B_low is None
+    assert setup.config.global_pressure.B_high is None
+
+    manifest = d1_manifest_provenance(
+        setup,
+        static_cache_path=None,
+        static_cache_meta_path=None,
+        window_k_min=12,
+        window_k_max=25,
+    )
+    assert manifest["global_pressure_config"]["enabled"] is False
+    assert manifest["global_pressure_config"]["B_low"] is None
+    assert manifest["global_pressure_calibration_path"] == str(calib.resolve())
+    assert manifest["global_pressure_calibration_hash"] == setup.global_pressure_calibration_hash
+
+
+def test_actionability_state_records_explode_to_residue_rows_and_summary():
+    L = 4
+    state = _make_actionability_state(L)
+    rows, summary = _actionability_state_to_records(
+        state, protein_id="P1", design_idx=0, seed=42,
+        targeting_mode="typed_actionability", tau_ref_source="static_median",
+        d3_evidence_source="typed_fresh",
+    )
+    assert len(rows) == L
+    # required telemetry columns present
+    for col in (
+        "protein_id", "design_idx", "seed", "refresh_step", "t", "residue_index_0b",
+        "tau_ref_B", "h_cur", "b_cur", "b_env", "env_peak", "env_consistency",
+        "env_coverage_flag", "b_mem", "e_fresh", "r_ctx", "context_pnll",
+        "g_time_pre", "g_comp_pre", "g_ent_pre", "g_pnll_pre", "g_stability_pre",
+        "v_target", "u_pressure", "active_target_flag", "cluster_support",
+        "legacy_residue_excess", "active_block_id", "d3_fresh_input_flag",
+    ):
+        assert col in rows[0]
+    assert rows[0]["context_pnll"] is None  # nan → null
+    assert rows[0]["d3_fresh_input_flag"] is True
+    assert summary["targeting_mode"] == "typed_actionability"
+    assert summary["d3_evidence_source"] == "typed_fresh"
+    assert summary["num_env_head_calls"] == 3
+    assert summary["num_actionable_windows_pre_cap"] == 6
+    assert summary["G"] == pytest.approx(0.041)
+    # Stage C.1 pressure columns present in the summary (None when pressure off,
+    # as in this default state) so the calibration command + burden analysis can
+    # consume them (PLAN_RF_UNI_CTRL.md C1.4).
+    for col in (
+        "B_GR", "g_GR_effective", "pressure_burden_bin", "pressure_reliable",
+        "beta_base", "beta_eff", "lambda_base", "lambda_eff",
+    ):
+        assert col in summary
+    assert summary["B_GR"] is None
+    assert summary["g_GR_effective"] is None
+
+
+def test_write_actionability_artifacts_emits_residues_and_summary(tmp_path: Path):
+    state = _make_actionability_state(4)
+    rows, summary = _actionability_state_to_records(
+        state, protein_id="P1", design_idx=0, seed=42,
+        targeting_mode="typed_actionability", tau_ref_source="static_median",
+        d3_evidence_source="typed_fresh",
+    )
+    write_actionability_artifacts(run_dir=tmp_path, residue_rows=rows, summaries=[summary])
+    df = pd.read_parquet(tmp_path / "actionability_residues.parquet")
+    assert len(df) == 4
+    assert set(df["residue_index_0b"]) == {0, 1, 2, 3}
+    summ_lines = (tmp_path / "actionability_refresh_summary.jsonl").read_text().splitlines()
+    assert len(summ_lines) == 1
+    assert json.loads(summ_lines[0])["max_v_target"] == pytest.approx(3 * 0.25)
+
+
+def test_refresh_log_includes_actionability_pointers_when_typed(tmp_path: Path):
+    record = D1RefreshRecord(
+        protein_id="P1", design_idx=0, seed=42, refresh_step=0, step=5, t=0.6,
+        r_windows_dyn=(WindowRiskRecord(0, 5, 5, 1.0),),
+        r_windows_static=(WindowRiskRecord(0, 5, 5, 0.0),),
+        window_excess=(1.0,), active_blocks=(), new_hotspot_count=0,
+        completion_fraction_global=0.5, mean_struct_entropy_global=1.0,
+        head_risk_LME=1.0, head_risk_max=1.0,
+    )
+    write_d1_artifacts(
+        run_dir=tmp_path,
+        refresh_records_all=[record],
+        event_rows_all=[],
+        per_protein_summaries=[],
+        actionability_constant_pointer={
+            "actionability_residues_path": "actionability_residues.parquet",
+            "actionability_refresh_summary_path": "actionability_refresh_summary.jsonl",
+            "targeting_mode": "typed_actionability",
+        },
+        actionability_g_by_key={("P1", 0, 0): {"G": 0.041, "g_GR_diagnostic": 0.52}},
+    )
+    payload = json.loads((tmp_path / "refresh_log.jsonl").read_text().splitlines()[0])
+    assert payload["actionability_residues_path"] == "actionability_residues.parquet"
+    assert payload["actionability_refresh_summary_path"] == "actionability_refresh_summary.jsonl"
+    assert payload["targeting_mode"] == "typed_actionability"
+    assert payload["G"] == pytest.approx(0.041)
+
+
+def test_refresh_log_omits_actionability_pointers_when_static(tmp_path: Path):
+    # No actionability pointer → static-run refresh_log schema is unchanged.
+    record = D1RefreshRecord(
+        protein_id="P1", design_idx=0, seed=42, refresh_step=0, step=5, t=0.6,
+        r_windows_dyn=(WindowRiskRecord(0, 5, 5, 1.0),),
+        r_windows_static=(WindowRiskRecord(0, 5, 5, 0.0),),
+        window_excess=(1.0,), active_blocks=(), new_hotspot_count=0,
+        completion_fraction_global=0.5, mean_struct_entropy_global=1.0,
+        head_risk_LME=1.0, head_risk_max=1.0,
+    )
+    write_d1_artifacts(
+        run_dir=tmp_path, refresh_records_all=[record], event_rows_all=[],
+        per_protein_summaries=[],
+    )
+    payload = json.loads((tmp_path / "refresh_log.jsonl").read_text().splitlines()[0])
+    assert "actionability_residues_path" not in payload
+    assert "targeting_mode" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Stage B P2 fixes: static cache policy forwarding (PLAN_RF_UNI_CTRL.md §97)
+# ---------------------------------------------------------------------------
+
+
+def _write_read_only_head_yaml(tmp_path: Path) -> Path:
+    body = dedent(
+        """
+        controller:
+          enabled: true
+          mode: monitor_only
+          t_start: 0.5
+          refresh_interval: 5
+          completion:
+            method: argmax
+          head:
+            score_scale: raw_logit
+            static_cache_policy: read_only
+            local_risk_aggregation: LME
+          active_windows:
+            excess_threshold: 0.0
+            max_windows: 16
+            selection: threshold_then_top_n
+            merge_overlapping_scoring_windows: true
+          reliability:
+            time_k: 20.0
+            entropy_h0: 1.5
+            min_completion_fraction: 0.0
+            min_rho_to_emit_event: 0.0
+        """
+    )
+    path = tmp_path / "controller.yaml"
+    path.write_text(body)
+    return path
+
+
+def test_make_head_scorer_forwards_config_static_cache_policy(tmp_path: Path, monkeypatch):
+    import scripts.run_if_phase_c1 as driver
+
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_read_only_head_yaml(tmp_path)
+    setup = load_controller_setup(_make_args(tmp_path, ctrl_yaml))
+    assert setup is not None
+    assert setup.config.head.static_cache_policy == "read_only"
+
+    captured: dict = {}
+
+    def _fake_build(setup_arg, **kw):
+        captured.update(kw)
+        return object()
+
+    monkeypatch.setattr(driver, "build_head_scorer", _fake_build)
+    driver._make_head_scorer(
+        setup,
+        window_k_min=12,
+        window_k_max=25,
+        static_cache_path=None,
+        static_cache_meta_path=None,
+    )
+    # Driver must forward the config policy, not the hardcoded "lazy_write".
+    assert captured["static_cache_policy"] == "read_only"

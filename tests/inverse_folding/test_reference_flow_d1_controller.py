@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
+import numpy as np
 import pytest
 import torch
 
@@ -26,12 +27,19 @@ from inverse_folding.reference_flow.controller import (
     SamplerStepContext,
     WindowMismatchError,
 )
+from inverse_folding.reference_flow.actionability import (
+    global_pressure_mass,
+    protein_pressure_burden,
+    smoothstep_pressure,
+)
 from inverse_folding.reference_flow.controller_config import (
     ActiveWindowsConfig,
     CompletionConfig,
     ControllerConfig,
+    GlobalPressureConfig,
     HeadConfig,
     ReliabilityConfig,
+    TargetingConfig,
     TelemetryConfig,
 )
 from inverse_folding.reference_flow.head_scoring import (
@@ -561,3 +569,369 @@ def test_controller_buffers_refresh_records_for_later_flush():
     events = controller.controller_event_rows()
     assert len(events) == 3
     assert all(row["event_type"] == "monitor" for row in events)
+
+
+# ---------- Stage B typed actionability (PLAN_RF_UNI_CTRL.md Task B4) ----------
+
+
+_CANONICAL = tuple(range(1, _VOCAB_SIZE))  # AA token ids (mask id = 0)
+
+
+class TypedStubScorer:
+    """Scorer stub that returns one score per record and logs batch labels.
+
+    Unlike :class:`StubScorer` this returns ``len(records)`` scores so the
+    Stage B envelope path (one batched call with ``env_ensemble_size`` records)
+    works; ``calls`` records the label list of every batch so a test can assert
+    exactly ``env_ensemble_size`` envelope head sequences per refresh.
+    """
+
+    def __init__(self, *, static_windows, dyn_windows):
+        self._static_windows = static_windows
+        self._dyn_windows = dyn_windows
+        self.calls: list[list[str]] = []
+
+    def score_batch_same_protein(self, *, protein_id, records):
+        self.calls.append([label for label, _ in records])
+        return BatchHeadScores(
+            scores=tuple(
+                _make_head_score(protein_id, seq, self._dyn_windows)
+                for _, seq in records
+            )
+        )
+
+    def get_or_compute_static(self, protein_id, sequence):
+        return _make_head_score(protein_id, sequence, self._static_windows)
+
+
+def _tiled_windows(length: int, width: int, z_by_start: dict[int, float]):
+    """Tile ``[0, length)`` with width-``width`` windows; z from ``z_by_start``."""
+    out = []
+    for start in range(0, length - width + 1, width):
+        out.append(WindowRiskRecord(start, start + width, width, z_by_start.get(start, 0.0)))
+    return out
+
+
+def _typed_config():
+    base = _make_controller_config(t_start=0.5, refresh_interval=5, min_completion_fraction=0.0)
+    return replace(base, targeting=TargetingConfig(mode="typed_actionability"))
+
+
+def test_static_excess_mode_skips_typed_field_and_envelope():
+    # z_static == z_dyn so the legacy excess path selects nothing; this also
+    # proves static mode never computes the typed field or calls the envelope.
+    z = {15: 5.0}
+    static = _tiled_windows(30, 3, z)
+    dyn = _tiled_windows(30, 3, z)
+    scorer = StubScorer(static_windows=static, dyn_windows_per_refresh=[dyn])
+    cfg = _make_controller_config(t_start=0.5, refresh_interval=5, min_completion_fraction=0.0)
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
+    )
+    x_t = torch.full((30,), _MASK_ID, dtype=torch.long)
+    record = controller.step(
+        _make_context(x_t=x_t, logits=_sharp_logits(30), step=5, t=0.6)
+    ).refresh_record
+    assert record.active_blocks == ()
+    assert controller.actionability_states() == []
+    # only the argmax dyn scoring call — no envelope probing in static mode
+    assert scorer.dyn_call_count == 1
+
+
+def test_typed_actionability_selects_from_v_target_and_aggregates_pressure():
+    # One isolated focal window at residues [15, 18) with high risk; z_static
+    # equals z_dyn so the legacy path would select nothing. Typed targeting
+    # selects it from v_target.
+    z = {15: 5.0}
+    static = _tiled_windows(30, 3, z)
+    dyn = _tiled_windows(30, 3, z)
+    scorer = TypedStubScorer(static_windows=static, dyn_windows=dyn)
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer, config=_typed_config(), decode_tokens=_decode_tokens,
+        canonical_token_ids=_CANONICAL,
+    )
+    x_t = torch.full((30,), _MASK_ID, dtype=torch.long)
+    record = controller.step(
+        _make_context(x_t=x_t, logits=_sharp_logits(30), step=5, t=0.6)
+    ).refresh_record
+
+    # 1) typed selection produced a block covering the focal residue 16.
+    covered = {
+        i
+        for blk in record.active_blocks
+        for i in range(blk.residue_start_0b, blk.residue_end_0b)
+    }
+    assert 16 in covered
+
+    state = controller.actionability_states()[-1]
+    # 2) the focal residue is visible to targeting and was selected.
+    assert state.v_target[16] > 0.0
+    assert bool(state.active_target_flag[16]) is True
+    # 3) G(t) is the length-normalized mass of u_pressure.
+    assert np.isclose(state.G, global_pressure_mass(state.u_pressure))
+    # 4) cluster support reduces the isolated focal pressure below v_target,
+    #    yet selection (which uses v_target) still kept it — proving the split.
+    assert state.u_pressure[16] < state.v_target[16]
+    # 5) envelope probing costs exactly env_ensemble_size head sequences, not
+    #    num_seed_windows * env_ensemble_size.
+    env_calls = [labels for labels in scorer.calls if labels and labels[0].startswith("env_")]
+    assert len(env_calls) == 1
+    assert len(env_calls[0]) == controller.config.targeting.env_ensemble_size
+
+
+def test_typed_selection_records_pre_cap_actionable_window_count():
+    # Many positive-actionability windows but a small max_windows cap: the
+    # pre-cap count must reveal the saturation that num_active_windows (post-cap)
+    # hides (PLAN_RF_UNI_CTRL.md §"Background Reference").
+    z = {15: 5.0, 18: 5.0, 21: 5.0, 24: 5.0}
+    static = _tiled_windows(30, 3, z)
+    dyn = _tiled_windows(30, 3, z)
+    scorer = TypedStubScorer(static_windows=static, dyn_windows=dyn)
+    cfg = replace(
+        _make_controller_config(
+            t_start=0.5, refresh_interval=5, min_completion_fraction=0.0, max_windows=2
+        ),
+        targeting=TargetingConfig(mode="typed_actionability"),
+    )
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer, config=cfg, decode_tokens=_decode_tokens,
+        canonical_token_ids=_CANONICAL,
+    )
+    x_t = torch.full((30,), _MASK_ID, dtype=torch.long)
+    controller.step(_make_context(x_t=x_t, logits=_sharp_logits(30), step=5, t=0.6))
+    state = controller.actionability_states()[-1]
+    # >= 4 windows carry positive actionability, but only max_windows=2 survive.
+    assert state.num_active_windows == 2
+    assert state.num_actionable_windows_pre_cap >= 4
+    assert state.num_actionable_windows_pre_cap > state.num_active_windows
+
+
+def test_actionability_carries_legacy_residue_excess_distinct_from_b_cur():
+    # z_static == z_dyn → legacy window_excess = 0 everywhere (per-window
+    # subtraction), but b_cur (excess over the static MEDIAN) is positive at the
+    # high-z window. This divergence is why the D2 in-block confound metric must
+    # use legacy_residue_excess, not b_cur (PLAN_RF_UNI_CTRL.md §B4.4).
+    z = {15: 5.0}
+    static = _tiled_windows(30, 3, z)
+    dyn = _tiled_windows(30, 3, z)
+    scorer = TypedStubScorer(static_windows=static, dyn_windows=dyn)
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer, config=_typed_config(), decode_tokens=_decode_tokens,
+        canonical_token_ids=_CANONICAL,
+    )
+    x_t = torch.full((30,), _MASK_ID, dtype=torch.long)
+    controller.step(_make_context(x_t=x_t, logits=_sharp_logits(30), step=5, t=0.6))
+    state = controller.actionability_states()[-1]
+    # legacy per-window-subtraction excess is 0 everywhere here ...
+    np.testing.assert_allclose(state.legacy_residue_excess, 0.0)
+    # ... yet b_cur is positive at the focal window (z_dyn >> static median).
+    assert state.b_cur[16] > 0.0
+    # active_block_id marks the focal block and is -1 outside any block.
+    assert state.active_block_id[16] >= 0
+    assert state.active_block_id[0] == -1
+
+
+def test_envelope_short_circuits_to_one_head_call_when_no_masked_residue():
+    # When the seed-window union is fully committed there is nothing to
+    # resample; the K_env envelope completions would be identical, so the
+    # controller should issue a single head call (P3 efficiency).
+    z = {15: 5.0}
+    static = _tiled_windows(30, 3, z)
+    dyn = _tiled_windows(30, 3, z)
+    scorer = TypedStubScorer(static_windows=static, dyn_windows=dyn)
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer, config=_typed_config(), decode_tokens=_decode_tokens,
+        canonical_token_ids=_CANONICAL,
+    )
+    # Fully committed sequence (token 1 != mask id 0) → no masked residues.
+    x_t = torch.full((30,), 1, dtype=torch.long)
+    controller.step(_make_context(x_t=x_t, logits=_sharp_logits(30), step=5, t=0.6))
+    state = controller.actionability_states()[-1]
+    assert state.num_env_head_calls == 1
+    env_calls = [labels for labels in scorer.calls if labels and labels[0].startswith("env_")]
+    assert len(env_calls) == 1 and len(env_calls[0]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task C1.4: Stage C.1 trajectory-level global pressure state + telemetry
+# ---------------------------------------------------------------------------
+
+
+class _GVaryingTypedScorer:
+    """Typed scorer returning a different dyn-window set per refresh.
+
+    Advances to the next per-refresh dyn windows on each ``dyn_argmax`` batch so
+    the per-refresh ``G`` varies across refreshes; the envelope (``env_*``) and
+    static calls reuse the current refresh's dyn windows. Lets C1.4 exercise the
+    trajectory-median ``B_GR`` (median, not latest spike).
+    """
+
+    def __init__(self, *, static_windows, dyn_windows_per_refresh):
+        self._static_windows = static_windows
+        self._dyn_per_refresh = list(dyn_windows_per_refresh)
+        self._idx = -1
+        self._current = self._dyn_per_refresh[0]
+
+    def score_batch_same_protein(self, *, protein_id, records):
+        labels = [label for label, _ in records]
+        if labels and labels[0] == "dyn_argmax":
+            self._idx += 1
+            self._current = self._dyn_per_refresh[self._idx]
+        return BatchHeadScores(
+            scores=tuple(
+                _make_head_score(protein_id, seq, self._current) for _, seq in records
+            )
+        )
+
+    def get_or_compute_static(self, protein_id, sequence):
+        return _make_head_score(protein_id, sequence, self._static_windows)
+
+
+def _pressure_config(
+    *,
+    enabled=True,
+    B_low=0.0,
+    B_high=1.0,
+    g_min=0.0,
+    g_max=1.0,
+    min_reliable_refreshes=1,
+    unready_g=0.0,
+    scale_beta=True,
+    scale_lambda=True,
+):
+    base = _make_controller_config(
+        t_start=0.5, refresh_interval=5, min_completion_fraction=0.0
+    )
+    gp = GlobalPressureConfig(
+        enabled=enabled,
+        g_min=g_min,
+        g_max=g_max,
+        B_low=B_low,
+        B_high=B_high,
+        min_reliable_refreshes=min_reliable_refreshes,
+        unready_g=unready_g,
+        scale_beta=scale_beta,
+        scale_lambda=scale_lambda,
+    )
+    return replace(
+        base,
+        targeting=TargetingConfig(mode="typed_actionability"),
+        global_pressure=gp,
+    )
+
+
+def _drive_pressure_refreshes(controller, *, length=30, n_refreshes=3):
+    x_t = torch.full((length,), _MASK_ID, dtype=torch.long)
+    for k in range(1, n_refreshes + 1):
+        controller.step(
+            _make_context(
+                x_t=x_t, logits=_sharp_logits(length), step=5 * k, t=0.6
+            )
+        )
+    return controller.actionability_states()
+
+
+def test_pressure_disabled_leaves_actionability_telemetry_unset():
+    # global_pressure.enabled=false (Stage B) must not populate any Stage C.1
+    # pressure telemetry: byte-identical to pre-C1 behavior.
+    z = {15: 5.0}
+    static = _tiled_windows(30, 3, z)
+    dyn = _tiled_windows(30, 3, z)
+    scorer = TypedStubScorer(static_windows=static, dyn_windows=dyn)
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer, config=_typed_config(), decode_tokens=_decode_tokens,
+        canonical_token_ids=_CANONICAL,
+    )
+    x_t = torch.full((30,), _MASK_ID, dtype=torch.long)
+    controller.step(_make_context(x_t=x_t, logits=_sharp_logits(30), step=5, t=0.6))
+    state = controller.actionability_states()[-1]
+    assert state.B_GR is None
+    assert state.g_GR_effective is None
+    assert state.pressure_burden_bin is None
+    assert state.beta_eff is None
+    assert state.lambda_eff is None
+
+
+def test_pressure_b_gr_is_trajectory_median_not_latest_spike():
+    # Three refreshes with increasing focal risk → increasing per-refresh G;
+    # B_GR must be the median (middle), not the latest (max) spike.
+    static = _tiled_windows(30, 3, {15: 0.0})
+    dyn_runs = [
+        _tiled_windows(30, 3, {15: 1.0}),
+        _tiled_windows(30, 3, {15: 3.0}),
+        _tiled_windows(30, 3, {15: 9.0}),
+    ]
+    scorer = _GVaryingTypedScorer(
+        static_windows=static, dyn_windows_per_refresh=dyn_runs
+    )
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer,
+        config=_pressure_config(B_low=0.0, B_high=2.0),
+        decode_tokens=_decode_tokens, canonical_token_ids=_CANONICAL,
+    )
+    states = _drive_pressure_refreshes(controller, n_refreshes=3)
+    g_values = [float(s.G) for s in states]
+    # Increasing focal risk → strictly increasing per-refresh G (latest is max).
+    assert g_values[-1] == max(g_values)
+    assert len(set(g_values)) == 3
+    expected_B_GR = protein_pressure_burden(g_values)
+    expected_g = smoothstep_pressure(
+        expected_B_GR, B_low=0.0, B_high=2.0, g_min=0.0, g_max=1.0
+    )
+    assert np.isclose(states[-1].B_GR, expected_B_GR)
+    assert np.isclose(states[-1].B_GR, np.median(g_values))
+    assert states[-1].B_GR < g_values[-1]  # median < latest spike
+    assert np.isclose(states[-1].g_GR_effective, expected_g)
+
+
+def test_pressure_scales_beta_and_lambda_with_independent_gates():
+    static = _tiled_windows(30, 3, {15: 0.0})
+    dyn_runs = [_tiled_windows(30, 3, {15: 4.0})] * 2
+    scorer = _GVaryingTypedScorer(
+        static_windows=static, dyn_windows_per_refresh=dyn_runs
+    )
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer,
+        config=_pressure_config(B_low=0.0, B_high=1.0, scale_beta=True, scale_lambda=False),
+        decode_tokens=_decode_tokens, canonical_token_ids=_CANONICAL,
+    )
+    states = _drive_pressure_refreshes(controller, n_refreshes=2)
+    s = states[-1]
+    g = float(s.g_GR_effective)
+    assert s.beta_base == 1.0 and s.lambda_base == 1.0
+    assert np.isclose(s.beta_eff, 1.0 * g)        # scale_beta=True
+    assert np.isclose(s.lambda_eff, 1.0)          # scale_lambda=False → unscaled
+
+
+def test_pressure_unready_uses_unready_g_until_min_reliable_refreshes():
+    # min_reliable_refreshes=2: the first refresh is below the reliability count,
+    # so g_GR falls back to unready_g and B_GR stays None.
+    static = _tiled_windows(30, 3, {15: 0.0})
+    dyn_runs = [_tiled_windows(30, 3, {15: 4.0})] * 2
+    scorer = _GVaryingTypedScorer(
+        static_windows=static, dyn_windows_per_refresh=dyn_runs
+    )
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer,
+        config=_pressure_config(
+            B_low=0.0, B_high=1.0, min_reliable_refreshes=2, unready_g=0.0
+        ),
+        decode_tokens=_decode_tokens, canonical_token_ids=_CANONICAL,
+    )
+    states = _drive_pressure_refreshes(controller, n_refreshes=2)
+    first, second = states[0], states[1]
+    assert first.B_GR is None
+    assert first.g_GR_effective == 0.0       # unready_g
+    assert first.beta_eff == 0.0             # beta * unready_g
+    # Second refresh reaches the reliability count → real B_GR + g_GR.
+    assert second.B_GR is not None
+    assert second.pressure_burden_bin in {"low", "mid", "high"}
