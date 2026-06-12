@@ -3210,3 +3210,41 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_RF_UNI_CTRL.md` Stage C.1
   - `doc/RF_Controller_Architecture.md` §2.8-§2.9
   - `L0111` (Stage B typed targeting)
+
+### L0113
+- timestamp: 2026-06-12T00:00:00-04:00
+- type: FEATURE
+- module: RF
+- trigger: RAR 0006 revision of PLAN_RF_UNI_CTRL.md: implement Stage B.1 (within-block typed position selection) and rebase Stage C.1 onto the thresholded-G driver + typed_target/legacy-D3 base, superseding the L0112 trajectory_median_G/unified route. C.2 stays gated.
+- change_summary: (B.1) `select_editable_positions` gains `score_source` + `typed_field`: within-block editable positions rank by the typed `v_target` when `targeting.within_block_source='v_target'` (low-entropy tiebreak retained), else legacy `residue_excess` (default ⇒ bit-for-bit). Threaded through `D2Handler.correct_logits`/`_process_block`; the controller passes the active block's per-residue `v_target` in typed mode (None in static ⇒ legacy fallback). `TargetingConfig.within_block_source` (enum `legacy_excess|v_target`; `e_fresh` reserved). (C.1) The per-refresh `G_step` driver is changed from `mean(u_pressure)` to the prominence-thresholded mass `(1/L)Σ ReLU(u_pressure − τ_prom)` (new pure `prominence_thresholded_mass`; G3 / RAR 0006 M11). `τ_prom` is a second prominence cut (NOT a re-subtraction of `tau_ref_B`), stamped from the calibration JSON; `τ_prom=None⇒0` makes Stage B's `G` byte-identical (u_pressure≥0 ⇒ ReLU(u−0)=u). `mean(u_pressure)` is retained as the `G_step_mean` diagnostic. `GlobalPressureConfig` gains `tau_prom`/`tau_prom_source`; `pressure_source` default → `trajectory_thresholded_G`; validation now requires (when enabled) `pressure_source=trajectory_thresholded_G` (rejects the legacy `trajectory_median_G`), `tau_prom`+band present, and `d3.evidence_source=legacy_window_excess` (G10 / RAR 0006 M9 — typed_fresh harmful, deferred). The run-setup loader reads/validates `pressure_source`+`tau_prom`+band from the JSON (rejects wrong source / missing `tau_prom` / YAML↔JSON source mismatch), stamps them before the config hash; manifest gains `global_pressure_tau_prom`. Rebased `d2_d3_full_stageC_pressure_aopen.yaml` onto `d2_d3_full_stageB_aopen.yaml` (legacy D3 + `within_block_source: v_target` + thresholded pressure); added `within_block_source: v_target` to `d2_d3_full_stageB_aopen.yaml` (the B.1 mechanism run).
+- rationale: RAR 0006 M7 found Stage B.0 routed only the *block* source to `v_target` while `select_editable_positions` still ranked within-block positions by legacy excess (`edited_in_high_v_top4_frac=0.448<0.5`); B.1 lets the typed signal reach the position layer. M8/M11 found `mean(u_pressure)` is floor-dominated (typed field positive at ~100% of residues) and does not discriminate burden, so the thresholded `G_step` with a calibrated `τ_prom` (Spearman(B_GR,d3 burden)=0.46 at `τ_prom=11.75`) is the actuator driver. M9 found `typed_fresh` (unified) inflates the D3 EMA (harmful), so C.1's base is the typed_target/legacy-D3 arm; `typed_fresh` is deferred until the field-floor fix. All new behavior is gated on `within_block_source`/`global_pressure.enabled`, so static/Stage-B runs are byte-for-byte unchanged.
+- artifacts:
+  - `inverse_folding/reference_flow/actionability.py`
+  - `inverse_folding/reference_flow/counterfactual.py`
+  - `inverse_folding/reference_flow/controller_config.py`
+  - `inverse_folding/reference_flow/controller.py`
+  - `inverse_folding/reference_flow/configs/d2_d3_full_stageC_pressure_aopen.yaml`
+  - `inverse_folding/reference_flow/configs/d2_d3_full_stageB_aopen.yaml`
+  - `scripts/run_if_phase_c1.py`
+  - `doc/SCRIPTS.md`
+  - `tests/inverse_folding/test_reference_flow_actionability.py`
+  - `tests/inverse_folding/test_reference_flow_counterfactual.py`
+  - `tests/inverse_folding/test_reference_flow_controller_config.py`
+  - `tests/inverse_folding/test_reference_flow_d1_controller.py`
+  - `tests/inverse_folding/test_reference_flow_d2_d3_controller.py`
+  - `tests/scripts/test_run_if_phase_c1_d2_d3.py`
+- evidence: |
+    TDD red→green per task (B.1; C.1 thresholded driver; loader/validation).
+    `pytest <Stage B/C acceptance set> -q` -> 257 passed.
+    `pytest tests/inverse_folding/ tests/scripts/ -q` (excluding 3 pre-existing Biopython-broken files) -> 794 passed, 42 skipped; `git diff --check` clean.
+    Byte-identity verified: within_block_source=legacy_excess reproduces D2 editable selection bit-for-bit; tau_prom=0 ⇒ G==mean(u_pressure) (Stage B diagnostic unchanged); g_GR=1.0 still matches the Stage B typed arm. New: within_block v_target picks high-v_target/low-legacy residues; tau_prom>0 thresholds G strictly below G_step_mean; enabled⇒thresholded/tau_prom/legacy-D3 fail-fast; calibration JSON wrong-source / missing-tau_prom / source-mismatch fail-fast.
+- impact:
+  - scope: Reference Flow within-block targeting (B.1) + Stage C.1 pressure driver/base rebase + calibration wiring + telemetry/manifest; supersedes L0112's trajectory_median_G/unified route. No model retraining, no NetMHC guidance, no C.2, no new SLURM script.
+  - risk: medium
+  - confidence: 0.85
+- status: done
+- next_action: Run the B.1 mechanism arm (`d2_d3_full_stageB_aopen.yaml`) and re-run RAR 0006 M7 (`edited_in_high_v_top4_frac` should rise above 0.448, Spearman(v_target,edited) above 0.31). Then the Stage C.1 outcome arm (`d2_d3_full_stageC_pressure_aopen.yaml` + the RAR 0006 `--global-pressure-calibration-json` at `tau_prom=11.75`) vs the matched static Aopen comparator; burden-stratified read-out (G7): low-bin median dhead improves ≥50% vs Aopen `+2.080`, high-bin retains ~`-2.5`, structure ≥ matched D3-only.
+- refs:
+  - `PLAN_RF_UNI_CTRL.md` Stage B.1 + Stage C.1 (RAR 0006 revision)
+  - `doc/RF_Controller_Architecture.md` §2.8
+  - `L0112` (superseded Stage C.1 route)

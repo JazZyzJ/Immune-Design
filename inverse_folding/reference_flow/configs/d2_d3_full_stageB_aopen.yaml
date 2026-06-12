@@ -107,6 +107,11 @@ controller:
     use_cluster_for_active_blocks: false
     active_window_source: v_target
     active_window_min_excess: 0.0
+    # Stage B.1 (PLAN_RF_UNI_CTRL.md 1438 / RAR 0006 M7): route within-block
+    # editable-position ranking to v_target so the typed signal reaches the D2
+    # position layer. This makes d2_d3_full_stageB_aopen.yaml the B.1 mechanism
+    # run; the matched static comparator keeps within_block_source=legacy_excess.
+    within_block_source: v_target
     write_actionability_telemetry: true
   global_pressure:
     enabled: false

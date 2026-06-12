@@ -1,14 +1,16 @@
 # Stage C.1 global-pressure arm at the A_open operating point.
 #
-# Copies d2_d3_full_stageB_unified_aopen.yaml (typed targeting +
-# d3.evidence_source=typed_fresh) and ONLY enables global_pressure. Stage C.1 is
+# Copies d2_d3_full_stageB_aopen.yaml (typed targeting +
+# d3.evidence_source=legacy_window_excess) and ONLY enables global_pressure.
+# Stage C.1 is
 # an actuator-only change over the Stage B typed controller: active-block
 # discovery, D2 candidate generation, D3 evidence source, reliability gates,
 # sticky TTL, and the Bernoulli schedule are unchanged (PLAN_RF_UNI_CTRL.md C1).
 #
 # global_pressure scales D2 beta and D3 lambda by the trajectory-level smoothstep
-# pressure g_GR = smoothstep(B_GR; B_low, B_high, g_min=0, g_max=1), where B_GR is
-# the median of reliable per-refresh G_step. B_low/B_high are NOT set here: they
+# pressure g_GR = smoothstep(B_GR; B_low, B_high, g_min=0, g_max=1), where
+# G_step = mean_i ReLU(u_pressure_i - tau_prom) and B_GR is the median of
+# reliable per-refresh G_step. tau_prom/B_low/B_high are NOT set here: they
 # are calibrated from the Stage B/Aopen typed pilot and stamped at run setup via
 # --global-pressure-calibration-json (never hardcoded; PLAN_RF_UNI_CTRL.md C1.3).
 #
@@ -75,7 +77,7 @@ controller:
     zscore_epsilon: 1.0e-6
     same_refresh_grace: true
     final_freeze_steps: 1
-    evidence_source: typed_fresh
+    evidence_source: legacy_window_excess
   attribution:
     write_paired_counterfactual: true
     write_independent_delta_R_i: true
@@ -107,10 +109,12 @@ controller:
     use_cluster_for_active_blocks: false
     active_window_source: v_target
     active_window_min_excess: 0.0
+    within_block_source: v_target
     write_actionability_telemetry: true
   global_pressure:
     enabled: true
-    pressure_source: trajectory_median_G
+    pressure_source: trajectory_thresholded_G
+    tau_prom_source: calibration_json
     mapping: smoothstep
     g_min: 0.0
     g_max: 1.0

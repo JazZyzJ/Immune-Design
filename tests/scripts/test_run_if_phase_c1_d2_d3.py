@@ -818,18 +818,21 @@ def test_stageB_manifest_contains_targeting_config_and_hash(tmp_path: Path):
 
 
 def _write_stage_c_yaml(tmp_path: Path) -> Path:
-    """Stage C.1 config: typed targeting + d3 typed_fresh + global_pressure
-    ENABLED but with the B_low/B_high band omitted (stamped from the calibration
-    JSON at load time, per PLAN C1.3). Reuses the full d2/d3 blocks."""
+    """Stage C.1 config (G10): typed targeting + legacy_window_excess D3 (the base
+    d2/d3 block defaults to legacy) + global_pressure ENABLED with the thresholded
+    driver, but with tau_prom/B_low/B_high omitted — they are stamped from the
+    calibration JSON at load time (PLAN C1.3)."""
     base = _write_d2_d3_yaml(tmp_path).read_text()
     # Explicit 2-space indent so targeting/global_pressure nest under controller:
     # (the d2/d3 sections in the base sit at 2 spaces, fields at 4).
     extra = (
         "  targeting:\n"
         "    mode: typed_actionability\n"
+        "    within_block_source: v_target\n"
         "  global_pressure:\n"
         "    enabled: true\n"
-        "    pressure_source: trajectory_median_G\n"
+        "    pressure_source: trajectory_thresholded_G\n"
+        "    tau_prom_source: calibration_json\n"
         "    mapping: smoothstep\n"
         "    g_min: 0.0\n"
         "    g_max: 1.0\n"
@@ -838,27 +841,28 @@ def _write_stage_c_yaml(tmp_path: Path) -> Path:
         "    scale_beta: true\n"
         "    scale_lambda: true\n"
     )
-    # The base d3 block defaults to legacy evidence; Stage C.1 uses typed_fresh.
-    base = base.replace(
-        "            final_freeze_steps: 1\n",
-        "            final_freeze_steps: 1\n            evidence_source: typed_fresh\n",
-    )
     path = tmp_path / "controller_stage_c.yaml"
     path.write_text(base + extra)
     return path
 
 
-def _write_calibration_json(tmp_path, *, B_low=0.02, B_high=0.10, name="calib.json", drop_high=False):
+def _write_calibration_json(
+    tmp_path, *, B_low=1.33, B_high=1.97, tau_prom=11.75, name="calib.json",
+    drop_high=False, drop_tau=False, pressure_source="trajectory_thresholded_G",
+):
     payload = {
-        "pressure_source": "trajectory_median_G",
+        "schema_version": "stageC1_global_pressure_calibration.v2",
+        "pressure_source": pressure_source,
         "low_quantile": 1.0 / 3.0,
         "high_quantile": 2.0 / 3.0,
         "B_low": B_low,
         "n_units": 50,
-        "source_artifact": "actionability_refresh_summary.jsonl",
+        "source_artifact": "actionability_residue_rows.parquet",
     }
     if not drop_high:
         payload["B_high"] = B_high
+    if not drop_tau:
+        payload["tau_prom"] = tau_prom
     p = tmp_path / name
     p.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return p
@@ -867,15 +871,17 @@ def _write_calibration_json(tmp_path, *, B_low=0.02, B_high=0.10, name="calib.js
 def test_stage_c_calibration_stamps_band_and_provenance(tmp_path: Path):
     _fake_head_dir(tmp_path)
     ctrl_yaml = _write_stage_c_yaml(tmp_path)
-    calib = _write_calibration_json(tmp_path, B_low=0.02, B_high=0.10)
+    calib = _write_calibration_json(tmp_path, B_low=1.33, B_high=1.97, tau_prom=11.75)
     setup = load_controller_setup(
         _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(calib))
     )
     assert setup is not None
-    # Band stamped into the config from the JSON.
+    # tau_prom + band stamped into the config from the JSON.
     assert setup.config.global_pressure.enabled is True
-    assert setup.config.global_pressure.B_low == 0.02
-    assert setup.config.global_pressure.B_high == 0.10
+    assert setup.config.global_pressure.pressure_source == "trajectory_thresholded_G"
+    assert setup.config.global_pressure.tau_prom == 11.75
+    assert setup.config.global_pressure.B_low == 1.33
+    assert setup.config.global_pressure.B_high == 1.97
     assert setup.global_pressure_calibration_path == calib.resolve()
     assert setup.global_pressure_calibration_hash
     # Manifest carries flat accessors + the calibration provenance.
@@ -887,12 +893,35 @@ def test_stage_c_calibration_stamps_band_and_provenance(tmp_path: Path):
         window_k_max=25,
     )
     assert manifest["global_pressure_config"]["enabled"] is True
-    assert manifest["global_pressure_config"]["B_low"] == 0.02
-    assert manifest["global_pressure_B_low"] == 0.02
-    assert manifest["global_pressure_B_high"] == 0.10
-    assert manifest["global_pressure_pressure_source"] == "trajectory_median_G"
+    assert manifest["global_pressure_config"]["tau_prom"] == 11.75
+    assert manifest["global_pressure_B_low"] == 1.33
+    assert manifest["global_pressure_B_high"] == 1.97
+    assert manifest["global_pressure_tau_prom"] == 11.75
+    assert manifest["global_pressure_pressure_source"] == "trajectory_thresholded_G"
     assert manifest["global_pressure_calibration_path"] == str(calib.resolve())
     assert manifest["global_pressure_calibration_hash"] == setup.global_pressure_calibration_hash
+
+
+def test_stage_c_calibration_missing_tau_prom_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_stage_c_yaml(tmp_path)
+    bad = _write_calibration_json(tmp_path, drop_tau=True, name="notau.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_stage_c_calibration_wrong_pressure_source_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_stage_c_yaml(tmp_path)
+    bad = _write_calibration_json(
+        tmp_path, pressure_source="trajectory_median_G", name="legacy.json"
+    )
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
 
 
 def test_stage_c_band_is_reflected_in_config_hash(tmp_path: Path):

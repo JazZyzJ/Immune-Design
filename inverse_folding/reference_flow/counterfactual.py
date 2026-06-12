@@ -43,11 +43,21 @@ def select_editable_positions(
     residue_excess: np.ndarray,
     per_pos_entropy: torch.Tensor,
     max_positions: int,
+    score_source: str = "legacy_excess",
+    typed_field: np.ndarray | None = None,
 ) -> tuple[int, ...]:
     """Pick at most ``max_positions`` masked residues inside ``[start, end)``.
 
-    Ranking: residue excess descending, then per-position structural entropy
-    ascending (lower entropy first as tiebreak).
+    Ranking primary key (descending), then per-position structural entropy
+    ascending (lower entropy first as tiebreak). The primary key is selected by
+    ``score_source`` (PLAN_RF_UNI_CTRL.md Stage B.1):
+
+    * ``"legacy_excess"`` (default) — ``residue_excess`` (bit-for-bit the legacy
+      behaviour; every existing/static config uses this).
+    * ``"v_target"`` — the typed actionability field ``typed_field`` (the typed
+      signal reaching the within-block position layer). Falls back to
+      ``residue_excess`` when ``typed_field is None`` (e.g. static mode), so a
+      misconfigured caller degrades to legacy rather than erroring.
     """
     masked: list[int] = []
     for i in range(int(start_0b), int(end_0b)):
@@ -55,9 +65,13 @@ def select_editable_positions(
             masked.append(i)
     if not masked:
         return ()
+    if score_source == "v_target" and typed_field is not None:
+        primary = np.asarray(typed_field, dtype=float)
+    else:
+        primary = np.asarray(residue_excess, dtype=float)
     ranked = sorted(
         masked,
-        key=lambda i: (-float(residue_excess[i]), float(per_pos_entropy[i].item())),
+        key=lambda i: (-float(primary[i]), float(per_pos_entropy[i].item())),
     )
     return tuple(ranked[: int(max_positions)])
 
@@ -552,6 +566,8 @@ class D2Handler:
         refresh_step: int,
         beta_override: float | None = None,
         g_GR_effective: float | None = None,
+        within_block_source: str = "legacy_excess",
+        typed_field: np.ndarray | None = None,
     ) -> D2RefreshOutcome:
         # Stage C.1 (PLAN_RF_UNI_CTRL.md C1.5): ``beta_override`` is the EFFECTIVE
         # beta (``beta * g_GR``) supplied by the controller's global-pressure
@@ -584,6 +600,8 @@ class D2Handler:
                 design_idx=design_idx,
                 refresh_step=refresh_step,
                 beta_eff=beta_eff,
+                within_block_source=within_block_source,
+                typed_field=typed_field,
             )
             # Stamp pressure provenance on every block outcome (including the
             # skipped early-return paths) so telemetry attribution is complete.
@@ -725,11 +743,15 @@ class D2Handler:
         design_idx: int,
         refresh_step: int,
         beta_eff: float | None = None,
+        within_block_source: str = "legacy_excess",
+        typed_field: np.ndarray | None = None,
     ) -> D2BlockOutcome:
         # ``beta_eff`` is the Stage C.1 effective beta (PLAN_RF_UNI_CTRL.md C1.5);
         # None falls back to the configured beta so legacy callers are unchanged.
         beta_used = float(self.config.beta) if beta_eff is None else float(beta_eff)
         omega = tuple(int(i) for i in block.window_indices)
+        # Stage B.1: rank within-block positions by ``typed_field`` (v_target) when
+        # within_block_source='v_target'; else legacy residue_excess.
         editable = select_editable_positions(
             start_0b=int(block.residue_start_0b),
             end_0b=int(block.residue_end_0b),
@@ -738,6 +760,8 @@ class D2Handler:
             residue_excess=residue_excess,
             per_pos_entropy=per_pos_entropy,
             max_positions=int(self.config.max_positions_per_block),
+            score_source=within_block_source,
+            typed_field=typed_field,
         )
         if not editable:
             # No editable masked positions inside this block → no candidate

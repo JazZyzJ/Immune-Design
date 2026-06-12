@@ -1725,6 +1725,9 @@ def _typed_pressure_config(
         enabled=enabled,
         g_min=0.0,
         g_max=1.0,
+        # tau_prom=0 → G_step == mean(u_pressure); g_GR is forced by the band so
+        # the actuation assertions are independent of tau_prom.
+        tau_prom=0.0,
         B_low=B_low,
         B_high=B_high,
         scale_beta=scale_beta,
@@ -1732,7 +1735,7 @@ def _typed_pressure_config(
     )
     return dataclasses.replace(
         base,
-        targeting=TargetingConfig(mode="typed_actionability"),
+        targeting=TargetingConfig(mode="typed_actionability", within_block_source="v_target"),
         global_pressure=gp,
     )
 
@@ -1820,6 +1823,65 @@ def test_c1_sticky_replays_baked_beta_eff_within_ttl():
     torch.testing.assert_close(res6.logits, res5.logits, atol=1e-6, rtol=0)
 
 
+def test_b1_controller_passes_v_target_into_within_block_selection(monkeypatch):
+    # B.1 wiring: in typed mode with within_block_source=v_target, the controller
+    # must thread the per-residue v_target into select_editable_positions.
+    import inverse_folding.reference_flow.counterfactual as cf
+
+    captured = {}
+    orig = cf.select_editable_positions
+
+    def _spy(*args, **kwargs):
+        captured["score_source"] = kwargs.get("score_source")
+        captured["typed_field"] = kwargs.get("typed_field")
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(cf, "select_editable_positions", _spy)
+
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    cfg = dataclasses.replace(
+        _make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False, beta=3.0),
+        targeting=TargetingConfig(mode="typed_actionability", within_block_source="v_target"),
+    )
+    ctrl = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(), config=cfg, decode_tokens=_decode, canonical_token_ids=_CANONICAL,
+    )
+    ctrl.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    assert captured.get("score_source") == "v_target"
+    assert captured.get("typed_field") is not None
+
+
+def test_b1_static_mode_keeps_legacy_within_block_source(monkeypatch):
+    import inverse_folding.reference_flow.counterfactual as cf
+
+    captured = {}
+    orig = cf.select_editable_positions
+
+    def _spy(*args, **kwargs):
+        captured["score_source"] = kwargs.get("score_source")
+        captured["typed_field"] = kwargs.get("typed_field")
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(cf, "select_editable_positions", _spy)
+
+    L = 10
+    logits = _struct_logits(L)
+    x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
+    ctrl = ReferenceFlowController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
+        scorer=_StubScorer(),
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode, canonical_token_ids=_CANONICAL,
+    )
+    ctrl.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+    # static_excess default → legacy source, no typed field.
+    assert captured.get("score_source") == "legacy_excess"
+    assert captured.get("typed_field") is None
+
+
 def _run_full_rank(cfg, *, L, logits, x_t):
     ctrl = ReferenceFlowController(
         protein_id="P1", design_idx=0, seed=42, static_sequence="A" * L,
@@ -1888,8 +1950,10 @@ def test_c1_d3_revisit_legacy_unaffected_when_pressure_off():
 
 
 def test_c1_event_rows_carry_pressure_attribution():
-    # The D2 controller_events rows must carry beta_base/beta_eff/g_GR_effective
-    # (not None-overwritten by the Stage-A defaults spread) — PLAN C1.5 telemetry.
+    # D2 and remask controller_events rows must carry the full beta/lambda/g_GR
+    # attribution surface (not None-overwritten by the Stage-A defaults spread).
+    # PLAN C1.5/C1.6 telemetry and downstream attribution consume these columns
+    # without event-type special casing.
     L = 10
     logits = _struct_logits(L)
     x_t = torch.tensor([_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long)
@@ -1914,4 +1978,15 @@ def test_c1_event_rows_carry_pressure_attribution():
     for r in d2_rows:
         assert r["beta_base"] == 3.0
         assert r["beta_eff"] == 3.0   # g_GR=1.0
+        assert r["lambda_base"] == 1.0
+        assert r["lambda_eff"] == 1.0
+        assert r["g_GR_effective"] == 1.0
+    ctrl.post_remask(remasked_positions=(4,), step=5, t=0.5)
+    remask_rows = [
+        r for r in ctrl.controller_event_rows() if r.get("event_type") == "remask"
+    ]
+    assert remask_rows, "expected Stage A remask ledger rows"
+    for r in remask_rows:
+        assert r["lambda_base"] == 1.0
+        assert r["lambda_eff"] == 1.0
         assert r["g_GR_effective"] == 1.0

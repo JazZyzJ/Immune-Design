@@ -674,6 +674,25 @@ def test_targeting_config_defaults_to_static_excess():
     assert config.targeting.use_cluster_for_active_blocks is False
     assert config.global_pressure.enabled is False
     assert config.d3.evidence_source == "legacy_window_excess"
+    # Stage B.1: within-block source defaults to legacy (bit-for-bit).
+    assert config.targeting.within_block_source == "legacy_excess"
+
+
+def test_within_block_source_v_target_allowed():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "within_block_source": "v_target",
+    }
+    config = materialize_controller_config(payload)
+    assert config.targeting.within_block_source == "v_target"
+
+
+def test_within_block_source_e_fresh_reserved_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"within_block_source": "e_fresh"}
+    with pytest.raises(ControllerConfigError, match="within_block_source"):
+        materialize_controller_config(payload)
 
 
 def test_typed_targeting_config_validates_modes():
@@ -693,7 +712,9 @@ def test_global_pressure_defaults_are_stage_c_fields():
     assert gp.enabled is False
     assert gp.g_min == 0.0  # PLAN C1.2: primary Stage C.1 floor (was 0.25 in Stage B).
     assert gp.g_max == 1.0
-    assert gp.pressure_source == "trajectory_median_G"
+    assert gp.pressure_source == "trajectory_thresholded_G"  # G3 / RAR 0006
+    assert gp.tau_prom_source is None
+    assert gp.tau_prom is None
     assert gp.mapping == "smoothstep"
     assert gp.B_low is None
     assert gp.B_high is None
@@ -713,31 +734,76 @@ def test_global_pressure_enabled_requires_typed_targeting():
 
 
 def test_global_pressure_enabled_typed_actionability_ok():
+    # G10: the C.1 base is typed_target + legacy_window_excess D3 (not typed_fresh).
     payload = _base_enabled_payload()
     payload["controller"]["targeting"] = {"mode": "typed_actionability"}
-    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "typed_fresh"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "legacy_window_excess"}
     payload["controller"]["global_pressure"] = {
         "enabled": True,
+        "pressure_source": "trajectory_thresholded_G",
+        "tau_prom_source": "calibration_json",
         "g_min": 0.0,
         "g_max": 1.0,
-        "B_low": 0.02,
-        "B_high": 0.10,
+        "tau_prom": 11.75,
+        "B_low": 1.33,
+        "B_high": 1.97,
         "scale_beta": True,
         "scale_lambda": False,
     }
     config = materialize_controller_config(payload)
     assert config.global_pressure.enabled is True
-    assert config.global_pressure.B_low == 0.02
-    assert config.global_pressure.B_high == 0.10
+    assert config.global_pressure.pressure_source == "trajectory_thresholded_G"
+    assert config.global_pressure.tau_prom == 11.75
+    assert config.global_pressure.B_low == 1.33
+    assert config.global_pressure.B_high == 1.97
     assert config.global_pressure.scale_lambda is False
 
 
-def test_global_pressure_enabled_bad_band_rejected():
+def test_global_pressure_enabled_rejects_legacy_pressure_source():
+    # trajectory_median_G is the superseded mean-based driver; rejected when on.
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "legacy_window_excess"}
+    payload["controller"]["global_pressure"] = {
+        "enabled": True,
+        "pressure_source": "trajectory_median_G",
+        "tau_prom": 11.75,
+        "B_low": 1.33,
+        "B_high": 1.97,
+    }
+    with pytest.raises(ControllerConfigError, match="trajectory_thresholded_G"):
+        materialize_controller_config(payload)
+
+
+def test_global_pressure_enabled_rejects_typed_fresh_d3():
+    # G10 / RAR 0006 M9: typed_fresh inflates the D3 EMA; rejected under pressure.
     payload = _base_enabled_payload()
     payload["controller"]["targeting"] = {"mode": "typed_actionability"}
     payload["controller"]["d3"] = {"enabled": True, "evidence_source": "typed_fresh"}
     payload["controller"]["global_pressure"] = {
         "enabled": True,
+        "tau_prom": 11.75,
+        "B_low": 1.33,
+        "B_high": 1.97,
+    }
+    with pytest.raises(ControllerConfigError, match="legacy_window_excess"):
+        materialize_controller_config(payload)
+
+
+def test_global_pressure_tau_prom_source_validated():
+    payload = _base_enabled_payload()
+    payload["controller"]["global_pressure"] = {"tau_prom_source": "bogus"}
+    with pytest.raises(ControllerConfigError, match="tau_prom_source"):
+        materialize_controller_config(payload)
+
+
+def test_global_pressure_enabled_bad_band_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "legacy_window_excess"}
+    payload["controller"]["global_pressure"] = {
+        "enabled": True,
+        "tau_prom": 11.75,
         "B_low": 0.10,
         "B_high": 0.10,
     }
@@ -766,24 +832,36 @@ def test_global_pressure_min_reliable_refreshes_at_least_one():
         materialize_controller_config(payload)
 
 
-def test_validate_global_pressure_runtime_requires_stamped_band():
-    # The primary C.1 YAML sets enabled=true but omits B_low/B_high; they are
+def test_validate_global_pressure_runtime_requires_stamped_tau_prom():
+    # The primary C.1 YAML sets enabled=true but omits tau_prom + band; they are
     # stamped from the calibration JSON at run setup. materialize tolerates the
-    # gap, but the runtime check must fail fast if they were never stamped.
+    # gap, but the runtime check must fail fast if tau_prom was never stamped.
     payload = _base_enabled_payload()
     payload["controller"]["targeting"] = {"mode": "typed_actionability"}
-    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "typed_fresh"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "legacy_window_excess"}
     payload["controller"]["global_pressure"] = {"enabled": True}
-    config = materialize_controller_config(payload)  # no band yet -> OK at load
+    config = materialize_controller_config(payload)  # no tau_prom/band yet -> OK at load
+    assert config.global_pressure.tau_prom is None
+    with pytest.raises(ControllerConfigError, match="tau_prom"):
+        validate_global_pressure_runtime(config.global_pressure)
+
+
+def test_validate_global_pressure_runtime_requires_stamped_band():
+    # tau_prom present but band missing → the band guard must fire.
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "legacy_window_excess"}
+    payload["controller"]["global_pressure"] = {"enabled": True, "tau_prom": 11.75}
+    config = materialize_controller_config(payload)
     assert config.global_pressure.B_low is None
     with pytest.raises(ControllerConfigError, match="B_low"):
         validate_global_pressure_runtime(config.global_pressure)
 
 
-def test_validate_global_pressure_runtime_passes_when_band_present():
-    gp = GlobalPressureConfig(enabled=True, B_low=0.02, B_high=0.10)
+def test_validate_global_pressure_runtime_passes_when_calibrated():
+    gp = GlobalPressureConfig(enabled=True, tau_prom=11.75, B_low=1.33, B_high=1.97)
     validate_global_pressure_runtime(gp)  # no raise
-    # disabled config is always runtime-valid regardless of band.
+    # disabled config is always runtime-valid regardless of tau_prom/band.
     validate_global_pressure_runtime(GlobalPressureConfig(enabled=False))
 
 

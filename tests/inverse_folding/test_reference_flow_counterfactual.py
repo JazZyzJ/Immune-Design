@@ -87,6 +87,54 @@ def test_select_editable_positions_skips_committed_positions():
     assert set(chosen) == {1, 3}  # committed positions 0, 2 excluded
 
 
+def test_select_editable_positions_v_target_source_picks_high_v_low_excess():
+    # B.1 (PLAN_RF_UNI_CTRL.md Stage B.1): within-block ranking by v_target.
+    L = 6
+    x_t = torch.tensor([MASK_TOKEN_ID] * L, dtype=torch.long)
+    # legacy excess peaks at idx 1; v_target peaks at idx 4 (low legacy there).
+    residue_excess = np.array([0.0, 0.9, 0.1, 0.0, 0.05, 0.0])
+    v_target = np.array([0.0, 0.1, 0.2, 0.0, 0.95, 0.0])
+    per_pos_entropy = torch.zeros(L)
+    legacy = select_editable_positions(
+        start_0b=0, end_0b=6, x_t=x_t, mask_token_id=MASK_TOKEN_ID,
+        residue_excess=residue_excess, per_pos_entropy=per_pos_entropy, max_positions=1,
+    )
+    assert legacy == (1,)  # legacy ranks by residue_excess
+    typed = select_editable_positions(
+        start_0b=0, end_0b=6, x_t=x_t, mask_token_id=MASK_TOKEN_ID,
+        residue_excess=residue_excess, per_pos_entropy=per_pos_entropy, max_positions=1,
+        score_source="v_target", typed_field=v_target,
+    )
+    assert typed == (4,)  # v_target ranks by the typed field (low legacy excess there)
+
+
+def test_select_editable_positions_v_target_keeps_low_entropy_tiebreak():
+    L = 5
+    x_t = torch.tensor([MASK_TOKEN_ID] * L, dtype=torch.long)
+    residue_excess = np.zeros(L)
+    v_target = np.array([0.0, 0.5, 0.5, 0.0, 0.0])  # idx 1,2 tied
+    per_pos_entropy = torch.tensor([3.0, 2.0, 0.5, 1.0, 1.0])
+    chosen = select_editable_positions(
+        start_0b=0, end_0b=5, x_t=x_t, mask_token_id=MASK_TOKEN_ID,
+        residue_excess=residue_excess, per_pos_entropy=per_pos_entropy, max_positions=1,
+        score_source="v_target", typed_field=v_target,
+    )
+    assert chosen == (2,)  # tie on v_target → lower entropy wins (idx 2 = 0.5)
+
+
+def test_select_editable_positions_v_target_falls_back_to_legacy_when_field_absent():
+    L = 4
+    x_t = torch.tensor([MASK_TOKEN_ID] * L, dtype=torch.long)
+    residue_excess = np.array([0.1, 0.9, 0.2, 0.0])
+    per_pos_entropy = torch.zeros(L)
+    chosen = select_editable_positions(
+        start_0b=0, end_0b=4, x_t=x_t, mask_token_id=MASK_TOKEN_ID,
+        residue_excess=residue_excess, per_pos_entropy=per_pos_entropy, max_positions=1,
+        score_source="v_target", typed_field=None,  # absent → legacy fallback
+    )
+    assert chosen == (1,)
+
+
 # ---------------------------------------------------------------------------
 # build_candidate_support
 # ---------------------------------------------------------------------------

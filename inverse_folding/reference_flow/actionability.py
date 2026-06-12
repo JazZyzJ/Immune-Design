@@ -245,6 +245,30 @@ def global_pressure_mass(u_pressure: np.ndarray) -> float:
     return float(arr.mean())
 
 
+def prominence_thresholded_mass(u_pressure: np.ndarray, *, tau_prom: float) -> float:
+    """``G_step = (1/L) Σ_i ReLU(u_pressure_i − τ_prom)`` — prominence-thresholded mass.
+
+    The Stage C.1 pressure driver (PLAN_RF_UNI_CTRL.md G3 / RAR 0006 M11). The
+    dense-field mean (:func:`global_pressure_mass`) is floor-dominated and does
+    not discriminate burden (the typed field is positive at ~100% of residues),
+    so a second prominence cut ``τ_prom`` keeps only the prominent excess.
+
+    ``τ_prom`` is **NOT** a re-subtraction of ``tau_ref_B`` (which was applied
+    once at field formation, when ``b_cur``/``b_env`` were taken as excess over
+    ``tau_ref_B``). ``u_pressure`` is the downstream aggregated field (SoftOR →
+    memory EMA → cluster scaling), already nonnegative; ``τ_prom`` is a separate
+    prominence cut that selects which portions of that field count as actuator
+    burden. ``τ_prom`` is calibrated from the typed pilot. With ``τ_prom = 0``
+    this reduces exactly to :func:`global_pressure_mass` for the nonnegative
+    ``u_pressure``, so a Stage B run (no calibration ⇒ ``τ_prom=0``) keeps its
+    diagnostic ``G`` unchanged.
+    """
+    arr = np.asarray(u_pressure, dtype=float)
+    if arr.size == 0:
+        return 0.0
+    return float(np.maximum(0.0, arr - float(tau_prom)).mean())
+
+
 def global_pressure_scalar(
     G: float,
     *,

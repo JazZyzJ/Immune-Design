@@ -21,13 +21,22 @@ _MODES_REQUIRING_D3 = frozenset({"d3_revisit", "d2_d3_full"})
 
 # Stage B typed-targeting allowed values (PLAN_RF_UNI_CTRL.md Task B2).
 _ALLOWED_TARGETING_MODES = frozenset({"static_excess", "typed_actionability"})
+# Stage B.1 within-block editable-position ranking source (PLAN_RF_UNI_CTRL.md).
+# 'e_fresh' is reserved (deferred until the field-floor fix), so it is NOT allowed.
+_ALLOWED_WITHIN_BLOCK_SOURCES = frozenset({"legacy_excess", "v_target"})
 _ALLOWED_TAU_REF_SOURCES = frozenset({"static_median", "first_reliable_refresh_median"})
 _RESERVED_TAU_REF_SOURCES = frozenset({"first_reliable_refresh_median"})
 _ALLOWED_D3_EVIDENCE_SOURCES = frozenset({"legacy_window_excess", "typed_fresh"})
 
-# Stage C.1 global-pressure actuator allowed values (PLAN_RF_UNI_CTRL.md C1.2).
+# Stage C.1 global-pressure actuator allowed values (PLAN_RF_UNI_CTRL.md C1.2/G3).
+# ``trajectory_median_G`` (legacy mean-based driver) is recognized but rejected
+# when global_pressure is enabled — C.1 outcome runs must use the thresholded G.
 _ALLOWED_PRESSURE_MAPPINGS = frozenset({"smoothstep"})
-_ALLOWED_PRESSURE_SOURCES = frozenset({"trajectory_median_G"})
+_ALLOWED_PRESSURE_SOURCES = frozenset(
+    {"trajectory_thresholded_G", "trajectory_median_G"}
+)
+_REQUIRED_C1_PRESSURE_SOURCE = "trajectory_thresholded_G"
+_ALLOWED_TAU_PROM_SOURCES = frozenset({"calibration_json"})
 
 
 @dataclass(frozen=True)
@@ -134,6 +143,11 @@ class TargetingConfig:
     active_window_source: str = "v_target"
     active_window_min_excess: float = 0.0
     write_actionability_telemetry: bool = True
+    # Stage B.1 (PLAN_RF_UNI_CTRL.md): within-block editable-position ranking
+    # source. 'legacy_excess' (default) = legacy residue_excess, bit-for-bit;
+    # 'v_target' ranks within-block positions by the typed field so the typed
+    # signal reaches the D2 position layer. 'e_fresh' is reserved (not v1).
+    within_block_source: str = "legacy_excess"
 
 
 @dataclass(frozen=True)
@@ -159,8 +173,16 @@ class GlobalPressureConfig:
     enabled: bool = False
     g_min: float = 0.0
     g_max: float = 1.0
-    # Stage C.1 actuator (smoothstep of the trajectory-median burden ``B_GR``).
-    pressure_source: str = "trajectory_median_G"
+    # Stage C.1 actuator. ``G_step`` is the prominence-thresholded mass
+    # ``(1/L) Σ ReLU(u_pressure − τ_prom)`` (G3 / RAR 0006); ``pressure_source`` is
+    # its trajectory aggregation. ``trajectory_thresholded_G`` = median over
+    # refreshes of that thresholded mass; the legacy ``trajectory_median_G``
+    # (median of the un-thresholded mean) is recognized but rejected when enabled.
+    pressure_source: str = "trajectory_thresholded_G"
+    # τ_prom: the second prominence cut, stamped from the calibration JSON. None
+    # in Stage B ⇒ G_step reduces to mean(u_pressure) (byte-identical diagnostic).
+    tau_prom_source: str | None = None
+    tau_prom: float | None = None
     mapping: str = "smoothstep"
     B_low: float | None = None
     B_high: float | None = None
@@ -791,6 +813,15 @@ def _materialize_targeting(payload: Any) -> TargetingConfig:
             "controller.targeting.active_window_min_excess must be >= 0 "
             f"(got {active_window_min_excess})"
         )
+    within_block_source = str(
+        payload.get("within_block_source", defaults.within_block_source)
+    )
+    if within_block_source not in _ALLOWED_WITHIN_BLOCK_SOURCES:
+        raise ControllerConfigError(
+            "controller.targeting.within_block_source must be one of "
+            f"{sorted(_ALLOWED_WITHIN_BLOCK_SOURCES)} (got {within_block_source!r}); "
+            "'e_fresh' is reserved (deferred per RAR 0006)"
+        )
 
     return TargetingConfig(
         mode=mode,
@@ -823,6 +854,7 @@ def _materialize_targeting(payload: Any) -> TargetingConfig:
                 defaults.write_actionability_telemetry,
             )
         ),
+        within_block_source=within_block_source,
     )
 
 
@@ -858,6 +890,26 @@ def _materialize_global_pressure(payload: Any) -> GlobalPressureConfig:
             "controller.global_pressure.pressure_source must be one of "
             f"{sorted(_ALLOWED_PRESSURE_SOURCES)} (got {pressure_source!r})"
         )
+    # G3 / RAR 0006: the C.1 outcome run must use the thresholded driver; the
+    # legacy mean-based trajectory_median_G is rejected when actuation is on.
+    if enabled and pressure_source != _REQUIRED_C1_PRESSURE_SOURCE:
+        raise ControllerConfigError(
+            "controller.global_pressure.enabled=true requires pressure_source="
+            f"{_REQUIRED_C1_PRESSURE_SOURCE!r} (G3); the legacy "
+            f"{pressure_source!r} is not valid for a Stage C.1 outcome run"
+        )
+    raw_tau_prom_source = payload.get("tau_prom_source", defaults.tau_prom_source)
+    tau_prom_source = (
+        None if raw_tau_prom_source is None else str(raw_tau_prom_source)
+    )
+    if tau_prom_source is not None and tau_prom_source not in _ALLOWED_TAU_PROM_SOURCES:
+        raise ControllerConfigError(
+            "controller.global_pressure.tau_prom_source must be one of "
+            f"{sorted(_ALLOWED_TAU_PROM_SOURCES)} when present "
+            f"(got {tau_prom_source!r})"
+        )
+    raw_tau_prom = payload.get("tau_prom", defaults.tau_prom)
+    tau_prom = None if raw_tau_prom is None else float(raw_tau_prom)
     raw_B_low = payload.get("B_low", defaults.B_low)
     raw_B_high = payload.get("B_high", defaults.B_high)
     B_low = None if raw_B_low is None else float(raw_B_low)
@@ -890,6 +942,8 @@ def _materialize_global_pressure(payload: Any) -> GlobalPressureConfig:
         g_min=g_min,
         g_max=g_max,
         pressure_source=pressure_source,
+        tau_prom_source=tau_prom_source,
+        tau_prom=tau_prom,
         mapping=mapping,
         B_low=B_low,
         B_high=B_high,
@@ -914,6 +968,14 @@ def validate_global_pressure_runtime(global_pressure: GlobalPressureConfig) -> N
     """
     if not global_pressure.enabled:
         return
+    # τ_prom is also stamped from the calibration JSON and required for the
+    # thresholded G_step driver (G3); guard it alongside the band.
+    if global_pressure.tau_prom is None:
+        raise ControllerConfigError(
+            "controller.global_pressure.enabled=true requires tau_prom to be "
+            "stamped from the Stage C calibration JSON "
+            "(--global-pressure-calibration-json); it may not be hardcoded"
+        )
     if global_pressure.B_low is None or global_pressure.B_high is None:
         raise ControllerConfigError(
             "controller.global_pressure.enabled=true requires B_low and B_high to "
@@ -948,6 +1010,16 @@ def _cross_validate_stage_bc(
             "controller.global_pressure.enabled=true (Stage C.1 actuation) requires "
             "controller.targeting.mode='typed_actionability'; g_GR is built from the "
             "typed pressure field"
+        )
+    # G10 / RAR 0006 M9: the primary C.1 base is the typed_target / legacy-D3 arm;
+    # typed_fresh inflates the D3 EMA (harmful) and is deferred. Reject it when
+    # pressure actuation is enabled.
+    if global_pressure.enabled and d3.evidence_source != "legacy_window_excess":
+        raise ControllerConfigError(
+            "controller.global_pressure.enabled=true (Stage C.1) requires "
+            "controller.d3.evidence_source='legacy_window_excess' (G10); "
+            f"got {d3.evidence_source!r} (typed_fresh is harmful per RAR 0006 M9 "
+            "and deferred)"
         )
     if d3.evidence_source == "typed_fresh":
         if targeting.mode != "typed_actionability":

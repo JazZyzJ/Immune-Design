@@ -22,6 +22,7 @@ from inverse_folding.reference_flow.actionability import (
     global_pressure_scalar,
     max_covering_window_projection,
     positive_evidence_weight,
+    prominence_thresholded_mass,
     protein_pressure_burden,
     smoothstep_pressure,
     soft_or,
@@ -190,6 +191,27 @@ def test_smoothstep_pressure_rejects_non_positive_band():
 
 def test_protein_pressure_burden_uses_median_not_latest_spike():
     assert protein_pressure_burden([0.02, 0.03, 1.20]) == 0.03
+
+
+def test_prominence_thresholded_mass_counts_only_excess_above_tau():
+    # (1/L) Σ ReLU(u - tau): ReLU([-10,-5,2,10]) = [0,0,2,10]; mean = 3.0.
+    u = np.array([0.0, 5.0, 12.0, 20.0])
+    assert np.isclose(prominence_thresholded_mass(u, tau_prom=10.0), 3.0)
+
+
+def test_prominence_thresholded_mass_tau_zero_equals_mean_for_nonneg():
+    # The Stage B byte-identity hinge: tau_prom=0 with u>=0 reduces to the mean.
+    u = np.array([0.0, 1.0, 2.0, 1.0])
+    assert np.isclose(
+        prominence_thresholded_mass(u, tau_prom=0.0), float(u.mean())
+    )
+    assert np.isclose(
+        prominence_thresholded_mass(u, tau_prom=0.0), global_pressure_mass(u)
+    )
+
+
+def test_prominence_thresholded_mass_empty_is_zero():
+    assert prominence_thresholded_mass(np.array([]), tau_prom=5.0) == 0.0
 
 
 def test_protein_pressure_burden_drops_non_finite_and_empty_is_zero():

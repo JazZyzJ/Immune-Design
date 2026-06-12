@@ -154,24 +154,37 @@ def _compute_head_config_hash(config_dir: Path) -> str:
     return h.hexdigest()
 
 
-def _load_global_pressure_calibration(path: str) -> tuple[float, float, str]:
-    """Load (B_low, B_high) from a Stage C calibration JSON; fail fast.
+def _load_global_pressure_calibration(
+    path: str,
+) -> tuple[str, float, float, float, str]:
+    """Load (pressure_source, tau_prom, B_low, B_high, hash) from a Stage C JSON.
 
-    PLAN_RF_UNI_CTRL.md C1.3: the band is computed offline from a Stage B/Aopen
-    pilot and passed by CLI, never hardcoded. Requires both keys, numeric, with
-    ``B_high > B_low`` (no placeholder anchors — CLAUDE.md fail-fast rule).
-    Returns ``(B_low, B_high, sha256_hex)`` where the hash is over the file bytes.
+    PLAN_RF_UNI_CTRL.md C1.3 / G3: the thresholded-``G`` prominence cut
+    (``tau_prom``) and band (``B_low``/``B_high``) are computed offline from a
+    Stage B/Aopen pilot and passed by CLI, never hardcoded. Rejects unless
+    ``pressure_source == 'trajectory_thresholded_G'`` and requires ``tau_prom``,
+    ``B_low``, ``B_high`` (numeric, ``B_high > B_low``) — no placeholder anchors
+    (CLAUDE.md fail-fast rule). The hash is over the file bytes.
     """
     p, calib_hash = _calibration_file_provenance(path)
-    raw = p.read_bytes()
-    payload = json.loads(raw.decode("utf-8"))
-    if "B_low" not in payload or "B_high" not in payload:
+    payload = json.loads(p.read_bytes().decode("utf-8"))
+    pressure_source = str(payload.get("pressure_source", ""))
+    if pressure_source != "trajectory_thresholded_G":
         print(
-            "ERROR: global-pressure calibration JSON must contain B_low and B_high "
-            f"(got keys {sorted(payload)})",
+            "ERROR: global-pressure calibration JSON pressure_source must be "
+            f"'trajectory_thresholded_G' (G3); got {pressure_source!r}",
             file=sys.stderr,
         )
         raise SystemExit(2)
+    for key in ("tau_prom", "B_low", "B_high"):
+        if key not in payload:
+            print(
+                "ERROR: global-pressure calibration JSON must contain "
+                f"tau_prom, B_low, B_high (missing {key!r}; got keys {sorted(payload)})",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+    tau_prom = float(payload["tau_prom"])
     B_low = float(payload["B_low"])
     B_high = float(payload["B_high"])
     if not (B_high > B_low):
@@ -181,7 +194,7 @@ def _load_global_pressure_calibration(path: str) -> tuple[float, float, str]:
             file=sys.stderr,
         )
         raise SystemExit(2)
-    return B_low, B_high, calib_hash
+    return pressure_source, tau_prom, B_low, B_high, calib_hash
 
 
 def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
@@ -215,14 +228,30 @@ def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        B_low, B_high, calib_hash = _load_global_pressure_calibration(calib_path)
+        json_source, tau_prom, B_low, B_high, calib_hash = (
+            _load_global_pressure_calibration(calib_path)
+        )
+        # Reject a YAML <-> JSON pressure_source mismatch (PLAN C1.3); the YAML
+        # source is already validated == trajectory_thresholded_G when enabled.
+        if config.global_pressure.pressure_source != json_source:
+            print(
+                "ERROR: controller.global_pressure.pressure_source="
+                f"{config.global_pressure.pressure_source!r} does not match the "
+                f"calibration JSON pressure_source={json_source!r}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
         config = replace(
             config,
             global_pressure=replace(
-                config.global_pressure, B_low=B_low, B_high=B_high
+                config.global_pressure,
+                pressure_source=json_source,
+                tau_prom=tau_prom,
+                B_low=B_low,
+                B_high=B_high,
             ),
         )
-        # Fail fast if the stamped band is still incomplete/inverted.
+        # Fail fast if the stamped tau_prom/band is still incomplete/inverted.
         validate_global_pressure_runtime(config.global_pressure)
         calib_resolved = Path(calib_path).resolve()
     elif calib_path:
@@ -731,6 +760,9 @@ def _actionability_state_to_records(
         "tau_ref_source": tau_ref_source,
         "tau_ref_B": float(state.tau_ref_B),
         "G": float(state.G),
+        # mean(u_pressure): un-thresholded mass retained as a diagnostic now that
+        # G is the prominence-thresholded G_step (G3 / RAR 0006).
+        "G_step_mean": float(state.G_step_mean),
         "g_GR_diagnostic": float(state.g_GR_diagnostic),
         # Stage C.1 trajectory-level global pressure (PLAN_RF_UNI_CTRL.md C1.4);
         # all None when global_pressure.enabled=false. ``G`` above is the column
@@ -898,6 +930,7 @@ def d1_manifest_provenance(
         "global_pressure_calibration_hash": setup.global_pressure_calibration_hash,
         "global_pressure_B_low": setup.config.global_pressure.B_low,
         "global_pressure_B_high": setup.config.global_pressure.B_high,
+        "global_pressure_tau_prom": setup.config.global_pressure.tau_prom,
         "global_pressure_pressure_source": setup.config.global_pressure.pressure_source,
         "targeting_config_hash": hashlib.sha256(
             json.dumps(

@@ -423,17 +423,22 @@ where $u_i^{\mathrm{exec}}(t)$ is nonzero only for positions with a live sticky 
 
 #### GR aggregation: focal versus broad burden
 
-`G(t)` should be length-normalized thresholded mass, not a max score. In the implemented typed field, the thresholding already happens upstream: `u_pressure_i(t)` is cluster-supported positive excess above `tau_ref_B`. Therefore runtime Stage C uses:
+`G(t)` should be length-normalized thresholded prominence mass, not a max score and not the raw mean of a dense positive field. `u_pressure_i(t)` is already positive excess above `tau_ref_B`, but the Stage B pilot showed that this field has a broad floor. Runtime Stage C.1 therefore uses a second, calibrated prominence cut:
 
 $$
 G(t)
 =
 \frac{1}{L}
 \sum_i
+\mathrm{ReLU}
+\left(
 u_i^{\mathrm{pressure}}(t)
+-
+\tau_{\mathrm{prom}}
+\right)
 $$
 
-Do **not** subtract `tau_ref` a second time at the `G(t)` layer. `tau_ref` is a background calibration reference, not a biological safety threshold, and it is consumed when building `b_cur` / `b_env` / `e_fresh`. This formula gives the desired focal-vs-broad behavior:
+Do **not** subtract `tau_ref` a second time at the `G(t)` layer. `tau_ref` is a background calibration reference consumed when building `b_cur` / `b_env` / `e_fresh`. `tau_prom` is different: it is an empirical prominence cut over the already-positive `u_pressure` field, used only to prevent the dense field floor from driving global pressure. This formula gives the desired focal-vs-broad behavior:
 
 ```text
 sharp focal hotspot:
@@ -465,10 +470,10 @@ Residue-level GR can express coherent hotspot clusters rather than isolated wind
 
 **No calibrated safe threshold in v1.** The head was not trained with an absolute calibrated "safe" threshold, so any threshold inside GR is a **background reference / calibration point**, not a biological safety threshold. Avoid language like `z_w < tau_safe means safe`; use `tau_ref defines the background level used to measure relative landscape burden`. The exact `tau_ref` calibration is an open design item — it may be corpus-based, per-protein robust, WT-distribution based for reporting, or NMP-aligned after calibration.
 
-The pressure mapping remains a separate calibration layer. Stage B may log a per-refresh diagnostic scalar, but the Stage C.1 actuator must use a stable per-trajectory aggregate:
+The pressure mapping remains a separate calibration layer. Stage B may log per-refresh diagnostics, but the Stage C.1 actuator must use a stable per-trajectory aggregate:
 
 ```text
-G_step(t) = mean_i u_pressure_i(t)
+G_step(t) = mean_i ReLU(u_pressure_i(t) - tau_prom)
 B_GR(t)  = median({G_step(r): r <= t, r reliable})
 g_GR(t)  = smoothstep(B_GR(t); B_low, B_high, g_min=0, g_max=1)
 ```

@@ -44,6 +44,7 @@ from .actionability import (
     global_pressure_mass,
     global_pressure_scalar,
     max_covering_window_projection,
+    prominence_thresholded_mass,
     protein_pressure_burden,
     smoothstep_pressure,
     update_memory,
@@ -293,6 +294,9 @@ class UnifiedActionabilityState:
     # Reveals saturation that num_active_windows (post-cap) hides; filled after
     # selection (PLAN_RF_UNI_CTRL.md §"Background Reference").
     num_actionable_windows_pre_cap: int = 0
+    # mean(u_pressure): the Stage B un-thresholded mass, retained as a diagnostic
+    # now that ``G`` is the prominence-thresholded G_step (G3 / RAR 0006).
+    G_step_mean: float = 0.0
     # Stage C.1 trajectory-level global pressure (PLAN_RF_UNI_CTRL.md C1.4).
     # Filled by ``_update_pressure_state`` only when global_pressure.enabled;
     # all None in Stage B / static runs so their telemetry stays unchanged.
@@ -649,6 +653,13 @@ class ReferenceFlowController:
                 # passed for telemetry attribution (PLAN_RF_UNI_CTRL.md C1.5).
                 beta_override=self._effective_beta_override(),
                 g_GR_effective=self._current_g_GR_effective(),
+                # Stage B.1: within-block position ranking source. typed_field is
+                # the per-residue v_target in typed mode (None in static mode →
+                # legacy residue_excess fallback, bit-for-bit).
+                within_block_source=self.config.targeting.within_block_source,
+                typed_field=(
+                    actionability.v_target if actionability is not None else None
+                ),
             )
             # Rebuild active_blocks with D2-derived g_ESS so the refresh log /
             # rho_B reflects the candidate-ESS gate when a block was demoted.
@@ -669,6 +680,8 @@ class ReferenceFlowController:
                     structural_logits=context.logits,
                     corrected_logits=d2_outcome.corrected_logits,
                     canonical_token_ids=self._canonical_token_ids or (),
+                    lambda_base=float(self.config.d3.lambda_commit),
+                    lambda_eff=self._current_lambda_eff_for_telemetry(),
                     refresh_step=self._refresh_step_counter,
                     step=int(context.step),
                     t=float(context.t),
@@ -1257,6 +1270,8 @@ class ReferenceFlowController:
             structural_logits=context.logits,
             corrected_logits=corrected,
             canonical_token_ids=self._canonical_token_ids or (),
+            lambda_base=float(self.config.d3.lambda_commit),
+            lambda_eff=self._current_lambda_eff_for_telemetry(),
             step=int(context.step),
             t=float(context.t),
             protein_id=self.protein_id,
@@ -1302,6 +1317,9 @@ class ReferenceFlowController:
             if signal_matches_step
             else None
         )
+        lambda_base = float(self.config.d3.lambda_commit)
+        lambda_eff = self._current_lambda_eff_for_telemetry()
+        g_gr_effective = self._current_g_GR_effective()
         for pos in remasked_positions:
             pos_i = int(pos)
             rank_score = (
@@ -1354,6 +1372,9 @@ class ReferenceFlowController:
                     # ---- Stage A ----
                     **_stage_a_event_defaults(),
                     "rank_score": rank_score,
+                    "lambda_base": lambda_base,
+                    "lambda_eff": lambda_eff,
+                    "g_GR_effective": g_gr_effective,
                 }
             )
 
@@ -1595,6 +1616,15 @@ class ReferenceFlowController:
             return None
         return float(self.config.d3.lambda_commit) * float(self._pressure_g_GR)
 
+    def _current_lambda_eff_for_telemetry(self) -> float:
+        """Return the effective lambda value stamped into controller_events rows."""
+        lambda_eff = self._effective_lambda_commit()
+        return (
+            float(self.config.d3.lambda_commit)
+            if lambda_eff is None
+            else float(lambda_eff)
+        )
+
     def _current_g_GR_effective(self) -> float | None:
         """The trajectory ``g_GR`` actuator value for telemetry; None if disabled."""
         if not self.config.global_pressure.enabled:
@@ -1723,8 +1753,15 @@ class ReferenceFlowController:
         )
         floor = float(cfg.cluster_floor)
         u_pressure = v_target * (floor + (1.0 - floor) * support)
-        G = global_pressure_mass(u_pressure)
         gp = self.config.global_pressure
+        # G_step is the prominence-thresholded mass (G3 / RAR 0006): the mean is
+        # floor-dominated and does not discriminate burden. tau_prom is the
+        # calibrated prominence cut (None in Stage B ⇒ 0.0 ⇒ G == mean for the
+        # nonnegative u_pressure, so the Stage B diagnostic is byte-identical).
+        # mean(u_pressure) is retained only as the G_step_mean diagnostic.
+        tau_prom = 0.0 if gp.tau_prom is None else float(gp.tau_prom)
+        G = prominence_thresholded_mass(u_pressure, tau_prom=tau_prom)
+        G_step_mean = global_pressure_mass(u_pressure)
         # Stage B diagnostic only: G0/s_G are calibrated from the Stage B pilot
         # in Stage C; here we use the raw-sigmoid anchors (G0=0, s_G=1).
         g_GR = global_pressure_scalar(
@@ -1744,6 +1781,7 @@ class ReferenceFlowController:
             v_target=v_target,
             u_pressure=u_pressure,
             G=float(G),
+            G_step_mean=float(G_step_mean),
             g_GR_diagnostic=float(g_GR),
             context_pnll=ctx_pnll,
             g_time_pre=g_time_res,
@@ -2236,6 +2274,8 @@ def _build_pending_d2_events(
     structural_logits: torch.Tensor,
     corrected_logits: torch.Tensor,
     canonical_token_ids: Sequence[int],
+    lambda_base: float | None,
+    lambda_eff: float | None,
     refresh_step: int,
     step: int,
     t: float,
@@ -2331,6 +2371,8 @@ def _build_pending_d2_events(
                     # ---- Stage C.1 global-pressure attribution (C1.5) ----
                     "beta_base": block.beta_base,
                     "beta_eff": block.beta_eff,
+                    "lambda_base": lambda_base,
+                    "lambda_eff": lambda_eff,
                     "g_GR_effective": block.g_GR_effective,
                     # ---- pending fill markers (private) ----
                     "_push_token": int(push_token),
@@ -2389,6 +2431,8 @@ def _build_sticky_d2_events(
     structural_logits: torch.Tensor,
     corrected_logits: torch.Tensor,
     canonical_token_ids: Sequence[int],
+    lambda_base: float | None,
+    lambda_eff: float | None,
     step: int,
     t: float,
     protein_id: str,
@@ -2481,6 +2525,8 @@ def _build_sticky_d2_events(
             # outcome at refresh creation; beta is never recomputed here.
             "beta_base": getattr(block, "beta_base", None),
             "beta_eff": getattr(block, "beta_eff", None),
+            "lambda_base": lambda_base,
+            "lambda_eff": lambda_eff,
             "g_GR_effective": getattr(block, "g_GR_effective", None),
             # ---- private ----
             "_push_token": int(push_token),

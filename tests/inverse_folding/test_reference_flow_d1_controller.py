@@ -29,6 +29,7 @@ from inverse_folding.reference_flow.controller import (
 )
 from inverse_folding.reference_flow.actionability import (
     global_pressure_mass,
+    prominence_thresholded_mass,
     protein_pressure_burden,
     smoothstep_pressure,
 )
@@ -799,6 +800,7 @@ def _pressure_config(
     B_high=1.0,
     g_min=0.0,
     g_max=1.0,
+    tau_prom=0.0,
     min_reliable_refreshes=1,
     unready_g=0.0,
     scale_beta=True,
@@ -811,6 +813,10 @@ def _pressure_config(
         enabled=enabled,
         g_min=g_min,
         g_max=g_max,
+        # tau_prom=0 → G_step == mean(u_pressure), so the median/saturation tests
+        # keep using state.G directly (the thresholding effect is covered
+        # separately by the pure-function + thresholding controller tests).
+        tau_prom=tau_prom,
         B_low=B_low,
         B_high=B_high,
         min_reliable_refreshes=min_reliable_refreshes,
@@ -856,6 +862,29 @@ def test_pressure_disabled_leaves_actionability_telemetry_unset():
     assert state.pressure_burden_bin is None
     assert state.beta_eff is None
     assert state.lambda_eff is None
+
+
+def test_pressure_tau_prom_thresholds_g_below_unthresholded_mean():
+    # G3 / RAR 0006: with tau_prom > 0 the controller G is the thresholded mass,
+    # strictly below the un-thresholded mean (G_step_mean) when any residue has
+    # positive u_pressure. Proves the thresholded driver flows into the field.
+    static = _tiled_windows(30, 3, {15: 0.0})
+    dyn = _tiled_windows(30, 3, {15: 8.0})
+    scorer = TypedStubScorer(static_windows=static, dyn_windows=dyn)
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 30,
+        scorer=scorer,
+        config=_pressure_config(B_low=0.0, B_high=1.0, tau_prom=0.05),
+        decode_tokens=_decode_tokens, canonical_token_ids=_CANONICAL,
+    )
+    x_t = torch.full((30,), _MASK_ID, dtype=torch.long)
+    controller.step(_make_context(x_t=x_t, logits=_sharp_logits(30), step=5, t=0.6))
+    state = controller.actionability_states()[-1]
+    assert state.G_step_mean > 0.0
+    assert state.G < state.G_step_mean  # thresholding strictly reduces the mass
+    assert np.isclose(
+        state.G, prominence_thresholded_mass(state.u_pressure, tau_prom=0.05)
+    )
 
 
 def test_pressure_b_gr_is_trajectory_median_not_latest_spike():
