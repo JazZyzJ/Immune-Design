@@ -1,0 +1,134 @@
+# Stage C.1b beta-only global-pressure arm at the A_open operating point.
+#
+# Identical to d2_d3_full_stageC_pressure_aopen.yaml (the B.1 typed base + GR)
+# EXCEPT global_pressure.scale_lambda is false: g_GR gates ONLY D2 beta, never
+# D3 lambda.
+#
+# Rationale (RAR 0008 root cause): scale_lambda=true zeroes both beta and lambda
+# on low-g_GR trajectories, so a suppressed design reverts toward the BASE model
+# (it loses D3's immune commit too). Because the head-delta metric baselines
+# against D3-only, removing D3 pushes low-burden Delta_head UP, not toward zero --
+# the true-low tercile stayed at +2.83 vs D3 instead of being suppressed. D2
+# (logit injection) is the aggressive low-burden over-intervention; D3
+# (revisit / commit-rank) is benign. So gate beta only and keep lambda full:
+#   - low-burden suppressed designs fall back to D3-only (Delta_head -> ~0),
+#   - misclassified true-high designs (B_GR rho=0.41) keep D3's reduction, so
+#     the high-burden gain erodes far less than under scale_lambda=true.
+# Predicted aggregate mean Delta_head ~ -1.0..-1.1 (beats B.1's -0.546).
+#
+# Read out under TRUE-burden binning (global_risk_d3_t050 terciles) with B.1 as
+# the baseline arm, NOT B_GR bins -- the B_GR-binned G7 table is diluted by
+# rho(B_GR, true burden)=0.41 (RAR 0008).
+#
+# tau_prom/B_low/B_high are NOT set here: calibrated from the Stage B/Aopen typed
+# pilot and stamped at run setup via --global-pressure-calibration-json
+# (the same calibration JSON as the scale_lambda=true C.1 arm).
+#
+# D2 operating point is copied from A_open: beta=3, delta_struct=3, top_k=8,
+# max_pos=4, max_candidates=4096, min_ess_fraction=0, max_abs_logit_shift=10.
+controller:
+  enabled: true
+  mode: d2_d3_full
+  t_start: 0.50
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+    local_risk_aggregation: LME
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 16
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    min_completion_fraction: 0.0
+    min_rho_to_emit_event: 0.0
+  d2:
+    enabled: true
+    beta: 3.0
+    eta: 0.7
+    struct_temperature: 1.0
+    delta_struct: 3.0
+    context_pnll_h0: 2.0
+    context_jsd_h0: 0.5
+    epsilon: 1.0e-8
+    candidate_mode: structure_topk
+    top_k_tokens: 8
+    max_positions_per_block: 4
+    max_candidates_per_block: 4096
+    selection_score: residue_excess_then_low_entropy
+    min_delta_R_improvement: 0.0
+    min_ess_fraction: 0.0
+    max_abs_logit_shift: 10.0
+    paired_uncorrected_sample: true
+    completion_ensemble_enabled: true
+    completion_ensemble_size: 3
+    completion_ensemble_scope: local_windows
+    completion_ensemble_rescore_top_m: 8
+    completion_ensemble_use_variance_gate: false
+    sticky_ttl_steps: 5
+    sticky_clear_on_selected: true
+    sticky_clear_on_remask: true
+    sticky_overwrite_on_refresh: true
+  d3:
+    enabled: true
+    window_to_residue_projection: max_covering_window
+    gamma_min: 0.40
+    gamma_max: 0.90
+    lambda_commit: 1.0
+    alpha_struct: 0.3
+    d2_evidence_nu: 1.0
+    d2_evidence_ttl_steps: 5
+    d2_evidence_requires_benefit: true
+    zscore_epsilon: 1.0e-6
+    same_refresh_grace: true
+    final_freeze_steps: 1
+    evidence_source: legacy_window_excess
+  attribution:
+    write_paired_counterfactual: true
+    write_independent_delta_R_i: true
+    productive_delta_logp: 0.5
+  controls:
+    allow_wrong_allele_head: true
+    allow_shuffled_head: true
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true
+  targeting:
+    mode: typed_actionability
+    tau_ref_source: static_median
+    tau_ref_quantile: 0.50
+    projection: max_covering_window
+    env_seed_top_current: 16
+    env_seed_top_uncertain: 16
+    env_seed_max_windows: 32
+    env_ensemble_size: 3
+    env_consistency_floor: 0.3333333333
+    softor_tau: 0.5
+    r_ctx_floor: 0.25
+    mem_half_life_refreshes: 3
+    mem_cold_start: zero
+    cluster_radius: 4
+    cluster_min_mass: 3.0
+    cluster_floor: 0.25
+    use_cluster_for_active_blocks: false
+    active_window_source: v_target
+    active_window_min_excess: 0.0
+    within_block_source: v_target
+    write_actionability_telemetry: true
+  global_pressure:
+    enabled: true
+    pressure_source: trajectory_thresholded_G
+    tau_prom_source: calibration_json
+    mapping: smoothstep
+    g_min: 0.0
+    g_max: 1.0
+    min_reliable_refreshes: 1
+    unready_g: 0.0
+    scale_beta: true
+    scale_lambda: false
