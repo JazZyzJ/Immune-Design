@@ -1,0 +1,31 @@
+# Wave-2 sweep: the FAIR re-test of near_positive that the user asked for.
+# Wave-1 showed the harsh near_positive schedules (sigmoid c5/s1, ignore) DESTROY
+# the density landscape — but both also set apply_to_residue_labels=true, which
+# strips residue-loss contrast near boundaries. This config isolates a *soft,
+# span-negative-only* touch: a gentle linear_clamp that only mildly down-weights
+# the very closest span negatives, while leaving residue labels fully intact
+# (apply_to_residue_labels=false) so the residue ranking loss keeps its contrast.
+# If near_positive can help at all, this is where. residue stays at npoff defaults.
+train:
+  near_positive:
+    enabled: true
+    near_gap_max: 8
+    schedule: linear_clamp
+    schedule_params:
+      w_low: 0.6      # weight at endpoint-gap 0 (closest near-negative)
+      w_high: 1.0     # weight at gap = near_gap_max (full penalty)
+    metric: endpoint_gap
+    apply_to_span_negatives: true
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 1.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
