@@ -45,6 +45,16 @@ class DPLMDenoiserContext:
     sequence_length: int
 
 
+@dataclass(frozen=True)
+class BatchedDPLMDenoiserContext:
+    task: Any
+    encoder_out: dict[str, Any]
+    template_prev_tokens: torch.Tensor
+    residue_mask: torch.Tensor
+    tokens_template: torch.Tensor
+    sequence_lengths: tuple[int, ...]
+
+
 def safe_allele_tag(allele: str) -> str:
     return "".join(c if (c.isalnum() or c in ("-", ".")) else "_" for c in allele)
 
@@ -458,6 +468,49 @@ def build_dplm_denoiser_context(
     )
 
 
+def build_batched_dplm_denoiser_context(
+    *,
+    task: Any,
+    batch: dict[str, Any],
+    sequence_lengths: list[int] | tuple[int, ...] | None = None,
+) -> BatchedDPLMDenoiserContext:
+    """Build one frozen DPLM encoder context for a batch of RF lanes."""
+
+    batch = clone_batch(batch)
+    tokens = batch["tokens"]
+    coord_mask = batch["coord_mask"]
+    prev_tokens, prev_token_mask = task.inject_noise(tokens, coord_mask, noise="full_mask")
+    batch["prev_tokens"] = prev_tokens
+    batch["prev_token_mask"] = prev_token_mask
+    encoder_out = task.model.forward_encoder(
+        batch,
+        use_draft_seq=bool(task.hparams.generator.use_draft_seq),
+    )
+    special_sym_mask = (
+        tokens.eq(task.alphabet.padding_idx)
+        | tokens.eq(task.alphabet.cls_idx)
+        | tokens.eq(task.alphabet.eos_idx)
+    )
+    residue_mask = coord_mask & ~special_sym_mask
+    inferred_lengths = tuple(int(v) for v in residue_mask.sum(dim=1).detach().cpu().tolist())
+    if sequence_lengths is not None:
+        expected = tuple(int(v) for v in sequence_lengths)
+        if expected != inferred_lengths:
+            raise ValueError(
+                "sequence_lengths do not match batched residue masks: "
+                f"expected={expected} inferred={inferred_lengths}"
+            )
+        inferred_lengths = expected
+    return BatchedDPLMDenoiserContext(
+        task=task,
+        encoder_out=encoder_out,
+        template_prev_tokens=prev_tokens.clone(),
+        residue_mask=residue_mask.clone(),
+        tokens_template=tokens.clone(),
+        sequence_lengths=inferred_lengths,
+    )
+
+
 def make_dplm_denoiser(context: DPLMDenoiserContext):
     """Wrap the frozen DPLM decoder as ``denoiser(x_t, t, struct)``."""
 
@@ -477,17 +530,65 @@ def make_dplm_denoiser(context: DPLMDenoiserContext):
             need_head_weights=False,
         )
         logits = esm_out["logits"][0, residue_positions].detach()
-        logits[..., context.task.alphabet.mask_idx] = -torch.inf
-        logits[..., context.task.alphabet.unk_idx] = -torch.inf
-        logits[..., context.task.alphabet.padding_idx] = -torch.inf
-        logits[..., context.task.alphabet.cls_idx] = -torch.inf
-        logits[..., context.task.alphabet.eos_idx] = -torch.inf
-        x_id = getattr(context.task.model, "x_id", None)
-        if x_id is not None:
-            logits[..., int(x_id)] = -torch.inf
+        _mask_invalid_decoder_logits(logits, context.task)
         return logits.cpu()
 
     return _denoiser
+
+
+def make_batched_dplm_denoiser(context: BatchedDPLMDenoiserContext):
+    """Wrap the frozen DPLM decoder as one batched RF denoiser call per step."""
+
+    residue_positions = [
+        torch.nonzero(mask, as_tuple=False).flatten()
+        for mask in context.residue_mask
+    ]
+
+    def _denoiser(
+        x_ts: list[torch.Tensor],
+        t: float,
+        structs: list[Any] | None = None,
+    ) -> list[torch.Tensor]:
+        del t, structs
+        if len(x_ts) != len(context.sequence_lengths):
+            raise ValueError(
+                f"expected {len(context.sequence_lengths)} x_t tensors, got {len(x_ts)}"
+            )
+        prev_tokens = context.template_prev_tokens.clone()
+        for row_i, (x_t, expected_len, positions) in enumerate(
+            zip(x_ts, context.sequence_lengths, residue_positions)
+        ):
+            if x_t.shape != (expected_len,):
+                raise ValueError(
+                    f"lane {row_i}: expected x_t shape ({expected_len},), "
+                    f"got {tuple(x_t.shape)}"
+                )
+            prev_tokens[row_i, positions] = x_t.to(prev_tokens.device)
+        esm_out = context.task.model.decoder(
+            batch={"prev_tokens": prev_tokens},
+            encoder_out=context.encoder_out,
+            need_head_weights=False,
+        )
+        batched_logits = esm_out["logits"].detach()
+        outputs: list[torch.Tensor] = []
+        for row_i, positions in enumerate(residue_positions):
+            logits = batched_logits[row_i, positions]
+            _mask_invalid_decoder_logits(logits, context.task)
+            outputs.append(logits.cpu())
+        return outputs
+
+    return _denoiser
+
+
+def _mask_invalid_decoder_logits(logits: torch.Tensor, task: Any) -> None:
+    logits[..., task.alphabet.mask_idx] = -torch.inf
+    logits[..., task.alphabet.unk_idx] = -torch.inf
+    logits[..., task.alphabet.padding_idx] = -torch.inf
+    logits[..., task.alphabet.cls_idx] = -torch.inf
+    logits[..., task.alphabet.eos_idx] = -torch.inf
+    x_id = getattr(task.model, "x_id", None)
+    if x_id is not None:
+        logits[..., int(x_id)] = -torch.inf
 
 
 def decode_residue_tokens(task: Any, residue_tokens: torch.Tensor) -> str:

@@ -21,6 +21,31 @@ class SamplerOutput:
     trajectory_rows: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class SamplerBatchLane:
+    sequence_length: int
+    h_values: np.ndarray | list[float]
+    config: ReferenceFlowConfig
+    struct: Any = None
+    shuffle_seed: int | None = None
+    controller: Any | None = None
+    protein_id: str = ""
+    design_idx: int = 0
+
+
+@dataclass
+class _SamplerLaneState:
+    lane: SamplerBatchLane
+    g_values: np.ndarray
+    rng: np.random.Generator
+    x_t: torch.Tensor
+    unmask_step_by_pos: list[int]
+    scores: np.ndarray
+    trajectory_rows: list[dict[str, Any]]
+    last_logits: torch.Tensor | None
+    remask_enabled: bool
+
+
 class PositionDependentDFMSampler:
     """Sampling-only position-dependent discrete flow matcher."""
 
@@ -249,6 +274,275 @@ class PositionDependentDFMSampler:
             unmask_step_by_pos=unmask_step_by_pos,
             g_values=g_values.astype(np.float32, copy=False).tolist(),
             trajectory_rows=trajectory_rows,
+        )
+
+    def sample_batch(
+        self,
+        *,
+        lanes: list[SamplerBatchLane],
+        batched_denoiser: Callable[
+            [list[torch.Tensor], float, list[Any]], list[torch.Tensor]
+        ],
+        save_trajectories: bool = False,
+    ) -> list[SamplerOutput]:
+        """Sample independent RF lanes with one batched denoiser call per step.
+
+        Controller, RNG, sampling, remask, and telemetry state remain per-lane.
+        The only shared operation is the structural denoiser forward.
+        """
+
+        if not lanes:
+            return []
+        n_steps = int(lanes[0].config.sampler.n_steps)
+        if n_steps <= 0:
+            raise ValueError("sampler.n_steps must be positive")
+        for idx, lane in enumerate(lanes):
+            if int(lane.config.sampler.n_steps) != n_steps:
+                raise ValueError(
+                    "sample_batch requires all lanes to use the same n_steps; "
+                    f"lane 0 has {n_steps}, lane {idx} has "
+                    f"{int(lane.config.sampler.n_steps)}"
+                )
+
+        states = [self._init_batch_lane_state(lane) for lane in lanes]
+        dt = 1.0 / float(n_steps)
+
+        for step in range(n_steps):
+            t = step / float(n_steps)
+            structural_logits_by_lane = batched_denoiser(
+                [state.x_t.clone() for state in states],
+                t,
+                [state.lane.struct for state in states],
+            )
+            if len(structural_logits_by_lane) != len(states):
+                raise ValueError(
+                    f"batched_denoiser returned {len(structural_logits_by_lane)} "
+                    f"logit tensors for {len(states)} lanes"
+                )
+            for state, structural_logits in zip(states, structural_logits_by_lane):
+                self._sample_batch_lane_step(
+                    state=state,
+                    structural_logits=structural_logits,
+                    step=step,
+                    t=t,
+                    dt=dt,
+                    n_steps=n_steps,
+                    save_trajectories=save_trajectories,
+                )
+
+        return [self._finalize_batch_lane_state(state, n_steps=n_steps) for state in states]
+
+    def _init_batch_lane_state(self, lane: SamplerBatchLane) -> _SamplerLaneState:
+        sequence_length = int(lane.sequence_length)
+        if sequence_length <= 0:
+            raise ValueError("sequence_length must be positive")
+        h = np.asarray(lane.h_values, dtype=np.float32)
+        if h.shape != (sequence_length,):
+            raise ValueError(
+                f"h_values shape {h.shape} does not match sequence_length={sequence_length}"
+            )
+        if lane.config.h_shuffle.enabled:
+            effective_shuffle_seed = (
+                int(lane.config.h_shuffle.seed)
+                if lane.shuffle_seed is None
+                else int(lane.shuffle_seed)
+            )
+            h = shuffle_h_values(h, seed=effective_shuffle_seed)
+        g_values = amplification_factor(h, lane.config.amplification)
+        return _SamplerLaneState(
+            lane=lane,
+            g_values=g_values,
+            rng=np.random.default_rng(int(lane.config.sampler.seed)),
+            x_t=torch.full((sequence_length,), self.mask_token_id, dtype=torch.long),
+            unmask_step_by_pos=[-1] * sequence_length,
+            scores=np.full(sequence_length, -np.inf, dtype=np.float64),
+            trajectory_rows=[],
+            last_logits=None,
+            remask_enabled=bool(lane.config.sampler.remask.enabled),
+        )
+
+    def _sample_batch_lane_step(
+        self,
+        *,
+        state: _SamplerLaneState,
+        structural_logits: torch.Tensor,
+        step: int,
+        t: float,
+        dt: float,
+        n_steps: int,
+        save_trajectories: bool,
+    ) -> None:
+        sequence_length = int(state.lane.sequence_length)
+        if structural_logits.shape != (sequence_length, self.vocab_size):
+            raise ValueError(
+                "batched_denoiser must return per-lane logits with shape "
+                f"({sequence_length}, {self.vocab_size}); got "
+                f"{tuple(structural_logits.shape)}"
+            )
+        if torch.isnan(structural_logits).any():
+            raise FloatingPointError(f"NaN logits encountered at step={step} t={t:.6f}")
+
+        logits = structural_logits
+        controller = state.lane.controller
+        if controller is not None:
+            from .controller import SamplerStepContext
+
+            ctx = SamplerStepContext(
+                x_t=state.x_t.detach().clone(),
+                logits=logits,
+                scores=state.scores.copy(),
+                step=step,
+                t=t,
+                mask_token_id=self.mask_token_id,
+                protein_id=state.lane.protein_id,
+                design_idx=state.lane.design_idx,
+                sequence_length=sequence_length,
+            )
+            result = controller.step(ctx)
+            logits = result.logits
+        corrected_logits = logits
+
+        state.last_logits = logits.detach().cpu()
+        probs = positionwise_unmask_probabilities(
+            t=t,
+            dt=dt,
+            g_values=state.g_values,
+            base_form=state.lane.config.schedule.base_form,
+        )
+        masked_positions = (state.x_t == self.mask_token_id).cpu().numpy()
+        selected_positions = np.array([], dtype=np.int64)
+        sampled_tokens_actual = np.array([], dtype=np.int64)
+        sampled_tokens_uncorrected: np.ndarray | None = None
+        if masked_positions.any():
+            draws = state.rng.random(sequence_length) < probs
+            selected_positions = np.flatnonzero(masked_positions & draws)
+            if selected_positions.size:
+                saved_state = (
+                    state.rng.bit_generator.state if controller is not None else None
+                )
+                selected_logits = state.last_logits[selected_positions] / float(
+                    state.lane.config.sampler.temperature
+                )
+                sampled_tokens, sampled_logp = _sample_categorical(
+                    selected_logits, state.rng
+                )
+                state.x_t[selected_positions] = sampled_tokens
+                state.scores[selected_positions] = sampled_logp
+                for pos in selected_positions.tolist():
+                    if state.unmask_step_by_pos[pos] < 0:
+                        state.unmask_step_by_pos[pos] = step
+                sampled_tokens_actual = sampled_tokens.numpy().astype(np.int64, copy=False)
+                if (
+                    controller is not None
+                    and saved_state is not None
+                    and getattr(controller, "config", None) is not None
+                    and getattr(controller.config, "d2", None) is not None
+                    and bool(controller.config.d2.enabled)
+                    and bool(controller.config.d2.paired_uncorrected_sample)
+                    and corrected_logits is not structural_logits
+                ):
+                    paired_rng = np.random.default_rng()
+                    paired_rng.bit_generator.state = saved_state
+                    structural_selected_logits = (
+                        structural_logits.detach().cpu()[selected_positions]
+                        / float(state.lane.config.sampler.temperature)
+                    )
+                    sampled_uncorrected, _ = _sample_categorical(
+                        structural_selected_logits, paired_rng
+                    )
+                    sampled_tokens_uncorrected = sampled_uncorrected.numpy().astype(
+                        np.int64, copy=False
+                    )
+
+        remask_count = 0
+        post_rank_scores: np.ndarray | None = None
+        post_protected: tuple[int, ...] = ()
+        if controller is not None and state.remask_enabled and step < n_steps - 1:
+            from .controller import PostSamplingContext
+
+            post_ctx = PostSamplingContext(
+                x_t=state.x_t.detach().clone(),
+                scores=state.scores.copy(),
+                structural_logits=structural_logits,
+                corrected_logits=corrected_logits,
+                selected_positions=selected_positions,
+                sampled_tokens_actual=sampled_tokens_actual,
+                sampled_tokens_uncorrected=sampled_tokens_uncorrected,
+                step=step,
+                t=t,
+                n_steps=n_steps,
+                mask_token_id=self.mask_token_id,
+                protein_id=state.lane.protein_id,
+                design_idx=state.lane.design_idx,
+                sequence_length=sequence_length,
+            )
+            post_result = controller.post_step(post_ctx)
+            post_rank_scores = post_result.rank_scores
+            post_protected = post_result.protected_positions
+        if state.remask_enabled and step < n_steps - 1:
+            remask_result = _apply_reparam_remask(
+                x_t=state.x_t,
+                scores=state.scores,
+                unmask_step_by_pos=state.unmask_step_by_pos,
+                mask_token_id=self.mask_token_id,
+                step=step,
+                n_steps=n_steps,
+                rank_scores=post_rank_scores,
+                protected_positions=post_protected,
+            )
+            remask_count = remask_result.count
+            if controller is not None and remask_result.remasked_positions:
+                post_remask_fn = getattr(controller, "post_remask", None)
+                if callable(post_remask_fn):
+                    post_remask_fn(
+                        remasked_positions=remask_result.remasked_positions,
+                        step=step,
+                        t=t,
+                    )
+
+        if save_trajectories:
+            state.trajectory_rows.append(
+                {
+                    "step": step,
+                    "t": t,
+                    "unmasked_mask": (state.x_t != self.mask_token_id).tolist(),
+                    "token_argmax": state.last_logits.argmax(dim=-1).tolist(),
+                    "remasked_count": int(remask_count),
+                }
+            )
+
+    def _finalize_batch_lane_state(
+        self,
+        state: _SamplerLaneState,
+        *,
+        n_steps: int,
+    ) -> SamplerOutput:
+        residual = torch.nonzero(
+            state.x_t == self.mask_token_id, as_tuple=False
+        ).flatten()
+        if residual.numel():
+            if state.last_logits is None:
+                raise RuntimeError("sampler ended without any denoiser logits")
+            sampled_tokens, sampled_logp = _sample_categorical(
+                state.last_logits[residual]
+                / float(state.lane.config.sampler.temperature),
+                state.rng,
+            )
+            state.x_t[residual] = sampled_tokens
+            residual_idx = residual.tolist()
+            state.scores[residual_idx] = sampled_logp
+            for pos in residual_idx:
+                if state.unmask_step_by_pos[pos] < 0:
+                    state.unmask_step_by_pos[pos] = n_steps
+
+        if (state.x_t == self.mask_token_id).any():
+            raise RuntimeError("sampler finished with mask tokens still present")
+
+        return SamplerOutput(
+            tokens=state.x_t,
+            unmask_step_by_pos=state.unmask_step_by_pos,
+            g_values=state.g_values.astype(np.float32, copy=False).tolist(),
+            trajectory_rows=state.trajectory_rows,
         )
 
 
