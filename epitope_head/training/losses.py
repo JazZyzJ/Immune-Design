@@ -275,6 +275,57 @@ def residue_pairwise_margin_loss(
     return loss, meta
 
 
+def window_iou_rank_loss(
+    logits: torch.Tensor,
+    ious: torch.Tensor,
+    margin_m: float = 0.5,
+    min_iou_gap: float = 0.1,
+    weight_by_gap: bool = True,
+) -> tuple[torch.Tensor, dict]:
+    """Pairwise margin ranking over candidate windows by IoU-to-GT (Wave-3).
+
+    For every ordered pair ``(i, j)`` with ``ious[i] - ious[j] >= min_iou_gap``,
+    enforces ``logits[i] >= logits[j] + margin_m`` via
+    ``relu(margin_m - (logits[i] - logits[j]))``. This trains the span scorer to
+    rank candidate windows by region overlap — the exact quantity the M6 IoU
+    ladder measures — actively pulling high-IoU (overlapping) windows *above*
+    low-IoU / far windows, rather than merely down-weighting them. Pairs with an
+    IoU separation below ``min_iou_gap`` (ambiguous near-ties) are excluded.
+
+    Args:
+        logits: ``[W]`` candidate-window span-scorer logits.
+        ious: ``[W]`` per-window max IoU to any GT span, in ``[0, 1]``.
+        margin_m: hinge margin separating higher-IoU from lower-IoU windows.
+        min_iou_gap: minimum IoU difference for a pair to contribute.
+        weight_by_gap: weight each pair by its IoU gap (larger gaps dominate).
+
+    Returns:
+        ``(loss, meta)`` with ``meta["n_pairs"]``. Degenerate cases (``W < 2`` or
+        no qualifying pair) return a differentiable scalar ``0``.
+    """
+    device = logits.device
+    meta = {"n_pairs": 0}
+    if logits.shape[0] < 2:
+        return torch.zeros((), device=device, requires_grad=True), meta
+
+    diff_iou = ious.unsqueeze(1) - ious.unsqueeze(0)        # [W, W], i vs j
+    mask = diff_iou >= float(min_iou_gap)                   # i should out-rank j
+    n_pairs = int(mask.sum().item())
+    if n_pairs == 0:
+        return torch.zeros((), device=device, requires_grad=True), meta
+
+    gap_logit = logits.unsqueeze(1) - logits.unsqueeze(0)   # [W, W], want > 0
+    pair_loss = torch.relu(float(margin_m) - gap_logit)
+    pl = pair_loss[mask]
+    if weight_by_gap:
+        w = diff_iou[mask].to(pl.dtype)
+        loss = (pl * w).sum() / w.sum().clamp_min(torch.finfo(pl.dtype).tiny)
+    else:
+        loss = pl.mean()
+    meta["n_pairs"] = n_pairs
+    return loss, meta
+
+
 def compute_loss(
     pos_logits: torch.Tensor,
     neg_logits: torch.Tensor,
@@ -289,6 +340,11 @@ def compute_loss(
     hard_topk: int = 8,
     lambda_margin: float = 0.5,
     neg_weights: torch.Tensor | None = None,
+    window_logits: torch.Tensor | None = None,
+    window_ious: torch.Tensor | None = None,
+    lambda_iou_rank: float = 0.0,
+    iou_rank_margin: float = 0.5,
+    iou_rank_min_gap: float = 0.1,
 ) -> dict[str, torch.Tensor]:
     """Compute total loss with decomposed terms.
 
@@ -332,6 +388,15 @@ def compute_loss(
     else:
         loss_margin = torch.tensor(0.0, device=device)
 
+    # Window IoU-ranking auxiliary (Wave-3): rank candidate windows by IoU-to-GT.
+    if lambda_iou_rank > 0.0 and window_logits is not None and window_ious is not None:
+        loss_iou_rank, _ = window_iou_rank_loss(
+            window_logits, window_ious,
+            margin_m=iou_rank_margin, min_iou_gap=iou_rank_min_gap,
+        )
+    else:
+        loss_iou_rank = torch.tensor(0.0, device=device)
+
     # Multi-positive (skip computation when disabled)
     if lambda_mp > 0.0:
         loss_mp = multi_positive_loss(pos_logits, T_mp=T_mp)
@@ -356,10 +421,14 @@ def compute_loss(
     else:
         raise ValueError(f"Unknown objective_mode: {objective_mode}")
 
+    # Additive Wave-3 term (no-op when lambda_iou_rank == 0 -> legacy bit-for-bit).
+    loss_total = loss_total + lambda_iou_rank * loss_iou_rank
+
     return {
         "loss_total": loss_total,
         "loss_intra": loss_intra,
         "loss_mp": loss_mp,
         "loss_smooth": loss_smooth,
         "loss_margin": loss_margin,
+        "loss_iou_rank": loss_iou_rank,
     }
