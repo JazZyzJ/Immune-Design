@@ -243,6 +243,79 @@ def _rank_key(record: dict[str, Any]) -> tuple[float, float]:
     return (_f(record.get("recall_at_high")), _f(record.get("spearman")))
 
 
+_B_SC_MEDIAN_FIXED = {
+    "mean_excess": "B_sc_mean_excess_median",
+    "topm_lse": "B_sc_topm_lse_median",
+}
+_B_SC_SUPRA_RE = re.compile(r"^B_sc_supra_mass_tau_(.+)_median$")
+
+
+def _b_sc_median_column(probe_df: pd.DataFrame, aggregator: str) -> str:
+    """Map an actuation aggregator name -> its B_sc-median column in the frame."""
+    if aggregator in _B_SC_MEDIAN_FIXED:
+        return _B_SC_MEDIAN_FIXED[aggregator]
+    if aggregator == "supra_mass":
+        cols = [c for c in probe_df.columns if _B_SC_SUPRA_RE.match(str(c))]
+        if len(cols) != 1:
+            raise ValueError(
+                "supra_mass calibration needs exactly one B_sc_supra_mass_tau_* "
+                f"column (found {cols})"
+            )
+        return cols[0]
+    raise ValueError(f"unknown aggregator {aggregator!r}")
+
+
+def emit_calibration(
+    probe_df: pd.DataFrame,
+    *,
+    aggregator: str,
+    arm: str,
+    refresh_step: int,
+    low_quantile: float,
+    high_quantile: float,
+    schema_version: str = "scgr_betaonly_calibration.v1",
+) -> dict[str, Any]:
+    """Build the SC1 ``self_conditioned_probe`` calibration band (PLAN SC1.3).
+
+    Bands come from the per-protein ``B_sc`` distribution at the **freeze horizon**
+    — the ``(arm, refresh_step)`` SC1 actually actuates on, NOT necessarily the
+    summary's best-discrimination step. Per-protein burden = median over designs.
+    """
+    col = _b_sc_median_column(probe_df, aggregator)
+    sub = probe_df[
+        (probe_df["arm"] == arm) & (probe_df["refresh_step"] == int(refresh_step))
+    ]
+    if sub.empty:
+        raise ValueError(
+            f"no probe rows for arm={arm!r} refresh_step={refresh_step}"
+        )
+    per_protein = sub.groupby("protein_id")[col].median().to_numpy(dtype=float)
+    vals = per_protein[np.isfinite(per_protein)]
+    if vals.size < 2:
+        raise ValueError(
+            f"need >=2 finite per-protein B_sc values to calibrate (got {vals.size})"
+        )
+    B_low = float(np.quantile(vals, float(low_quantile)))
+    B_high = float(np.quantile(vals, float(high_quantile)))
+    if not (B_high > B_low):
+        raise ValueError(
+            "calibration band collapsed: requires B_high > B_low "
+            f"(got B_low={B_low}, B_high={B_high}); the B_sc distribution at this "
+            "horizon is too concentrated"
+        )
+    return {
+        "schema_version": schema_version,
+        "pressure_source": "self_conditioned_probe",
+        "aggregator": aggregator,
+        "arm": arm,
+        "refresh_step": int(refresh_step),
+        "low_quantile": float(low_quantile),
+        "high_quantile": float(high_quantile),
+        "B_low": B_low,
+        "B_high": B_high,
+    }
+
+
 def select_best_metric(table: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Best estimator by Recall@High, tie-broken by Spearman.
 
@@ -329,6 +402,18 @@ def main(argv: list[str] | None = None) -> int:
         "--oracle-aggregate", default="median", choices=["median", "mean"]
     )
     parser.add_argument("--output", required=True, type=Path)
+    # SC1.3 calibration emission (optional). Defaults match RAR 0010.
+    parser.add_argument("--emit-calibration", type=Path, default=None)
+    parser.add_argument(
+        "--calibration-aggregator", default="topm_lse",
+        choices=["mean_excess", "topm_lse", "supra_mass"],
+    )
+    parser.add_argument(
+        "--calibration-arm", default="fresh", choices=["fresh", "self_conditioned"]
+    )
+    parser.add_argument("--calibration-refresh-step", type=int, default=0)
+    parser.add_argument("--low-quantile", type=float, default=0.25)
+    parser.add_argument("--high-quantile", type=float, default=0.75)
     args = parser.parse_args(argv)
 
     result = analyze(
@@ -342,6 +427,28 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.output, "w") as f:
         json.dump(_jsonify(result), f, indent=2)
         f.write("\n")
+
+    if args.emit_calibration is not None:
+        probe_df = pd.read_parquet(Path(args.run_dir) / PROBE_REFRESH_FILENAME)
+        calib = emit_calibration(
+            probe_df,
+            aggregator=args.calibration_aggregator,
+            arm=args.calibration_arm,
+            refresh_step=args.calibration_refresh_step,
+            low_quantile=args.low_quantile,
+            high_quantile=args.high_quantile,
+        )
+        args.emit_calibration.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.emit_calibration, "w") as f:
+            json.dump(_jsonify(calib), f, indent=2)
+            f.write("\n")
+        print(
+            f"[sc-gr-monitor] wrote calibration {args.emit_calibration} "
+            f"(arm={calib['arm']} aggregator={calib['aggregator']} "
+            f"refresh_step={calib['refresh_step']} "
+            f"B_low={calib['B_low']:.4f} B_high={calib['B_high']:.4f})",
+            flush=True,
+        )
 
     best = result["best"]
     if best is not None:

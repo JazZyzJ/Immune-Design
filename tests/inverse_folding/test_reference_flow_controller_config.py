@@ -54,6 +54,13 @@ SCGR_MONITOR_PRESET_PATH = (
     / "configs"
     / "d2_d3_full_stageB_aopen_scgr_monitor.yaml"
 )
+SCGR_BETAONLY_PRESET_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding"
+    / "reference_flow"
+    / "configs"
+    / "d2_d3_full_stageC_scgr_betaonly_aopen.yaml"
+)
 
 
 def _write_yaml(tmp_path: Path, body: str) -> Path:
@@ -1109,10 +1116,10 @@ def test_self_conditioned_gr_supra_tau_negative_rejected():
         materialize_controller_config(payload)
 
 
-def test_self_conditioned_gr_mode_must_be_monitor_only():
-    # SC0.1: only monitor_only is allowed; beta_pressure is unlocked later (SC1.1).
+def test_self_conditioned_gr_invalid_mode_rejected():
+    # SC1.1 unlocked beta_pressure; an unknown mode is still rejected.
     payload = _base_enabled_payload()
-    payload["controller"]["self_conditioned_gr"] = _scgr_block(mode="beta_pressure")
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(mode="bogus")
     with pytest.raises(ControllerConfigError, match="mode"):
         materialize_controller_config(payload)
 
@@ -1145,6 +1152,238 @@ def test_config_hash_sensitive_to_scgr_enabled():
     payload["controller"]["self_conditioned_gr"] = _scgr_block()
     enabled = materialize_controller_config(payload)
     assert controller_config_hash(base) != controller_config_hash(enabled)
+
+
+# ---------------------------------------------------------------------------
+# SC1.1 beta-pressure actuation config (PLAN_RF_SC_GR.md Task SC1.1)
+# ---------------------------------------------------------------------------
+
+
+def _beta_pressure_payload(*, scgr_overrides: dict | None = None, gp_overrides: dict | None = None):
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    gp = {
+        "enabled": True,
+        "pressure_source": "self_conditioned_probe",
+        "g_min": 0.0,
+        "g_max": 1.0,
+        "scale_beta": True,
+        "scale_lambda": False,
+        "B_low": 1.0,
+        "B_high": 2.0,
+    }
+    if gp_overrides:
+        gp.update(gp_overrides)
+    payload["controller"]["global_pressure"] = gp
+    scgr = _scgr_block(
+        mode="beta_pressure",
+        actuation_aggregator="topm_lse",
+        actuation_arm="fresh",
+        freeze_after_reliable_refreshes=1,
+        actuation_reduce="median",
+    )
+    if scgr_overrides:
+        scgr.update(scgr_overrides)
+    payload["controller"]["self_conditioned_gr"] = scgr
+    return payload
+
+
+def test_self_conditioned_gr_actuation_defaults():
+    sc = SelfConditionedGRConfig()
+    assert sc.actuation_aggregator == "topm_lse"
+    assert sc.actuation_arm == "fresh"
+    assert sc.freeze_after_reliable_refreshes == 1
+    assert sc.actuation_reduce == "median"
+
+
+def test_beta_pressure_config_loads():
+    config = materialize_controller_config(_beta_pressure_payload())
+    assert config.self_conditioned_gr.mode == "beta_pressure"
+    assert config.self_conditioned_gr.actuation_aggregator == "topm_lse"
+    assert config.self_conditioned_gr.actuation_arm == "fresh"
+    assert config.self_conditioned_gr.freeze_after_reliable_refreshes == 1
+    assert config.global_pressure.enabled is True
+    assert config.global_pressure.pressure_source == "self_conditioned_probe"
+    assert config.global_pressure.scale_lambda is False
+
+
+def test_self_conditioned_probe_source_allowed_when_enabled():
+    # _materialize_global_pressure must accept self_conditioned_probe (not only
+    # trajectory_thresholded_G) when enabled.
+    config = materialize_controller_config(_beta_pressure_payload())
+    assert config.global_pressure.pressure_source == "self_conditioned_probe"
+
+
+def test_self_conditioned_probe_source_requires_scgr_beta_pressure():
+    # Reverse constraint (P1): pressure_source=self_conditioned_probe with NO
+    # self_conditioned_gr block (probe disabled) must fail fast — otherwise g_GR
+    # silently degrades to unready_g (the probe never produces B_sc).
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["global_pressure"] = {
+        "enabled": True,
+        "pressure_source": "self_conditioned_probe",
+        "g_min": 0.0,
+        "g_max": 1.0,
+        "scale_beta": True,
+        "scale_lambda": False,
+        "B_low": 1.0,
+        "B_high": 2.0,
+    }
+    with pytest.raises(ControllerConfigError, match="self_conditioned_gr"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_probe_source_rejects_monitor_only_scgr():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["global_pressure"] = {
+        "enabled": True,
+        "pressure_source": "self_conditioned_probe",
+        "g_min": 0.0,
+        "g_max": 1.0,
+        "scale_beta": True,
+        "scale_lambda": False,
+        "B_low": 1.0,
+        "B_high": 2.0,
+    }
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(mode="monitor_only")
+    with pytest.raises(ControllerConfigError, match="beta_pressure"):
+        materialize_controller_config(payload)
+
+
+def test_beta_pressure_requires_global_pressure_enabled():
+    with pytest.raises(ControllerConfigError, match="global_pressure"):
+        materialize_controller_config(
+            _beta_pressure_payload(gp_overrides={"enabled": False})
+        )
+
+
+def test_beta_pressure_requires_self_conditioned_probe_source():
+    # global_pressure enabled with the thresholded source while scgr=beta_pressure.
+    payload = _beta_pressure_payload(
+        gp_overrides={
+            "pressure_source": "trajectory_thresholded_G",
+            "tau_prom_source": "calibration_json",
+            "tau_prom": 11.75,
+        }
+    )
+    with pytest.raises(ControllerConfigError, match="self_conditioned_probe"):
+        materialize_controller_config(payload)
+
+
+def test_beta_pressure_rejects_scale_lambda_true():
+    with pytest.raises(ControllerConfigError, match="scale_lambda"):
+        materialize_controller_config(
+            _beta_pressure_payload(gp_overrides={"scale_lambda": True})
+        )
+
+
+def test_beta_pressure_rejects_g_max_not_one():
+    with pytest.raises(ControllerConfigError, match="g_max"):
+        materialize_controller_config(
+            _beta_pressure_payload(gp_overrides={"g_max": 1.5})
+        )
+
+
+def test_invalid_actuation_aggregator_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(
+        actuation_aggregator="bogus"
+    )
+    with pytest.raises(ControllerConfigError, match="actuation_aggregator"):
+        materialize_controller_config(payload)
+
+
+def test_invalid_actuation_reduce_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(actuation_reduce="bogus")
+    with pytest.raises(ControllerConfigError, match="actuation_reduce"):
+        materialize_controller_config(payload)
+
+
+def test_freeze_after_reliable_refreshes_min_one():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(
+        freeze_after_reliable_refreshes=0
+    )
+    with pytest.raises(ControllerConfigError, match="freeze_after_reliable_refreshes"):
+        materialize_controller_config(payload)
+
+
+def test_actuation_arm_must_be_in_arms():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(
+        arms=["fresh"], actuation_arm="self_conditioned"
+    )
+    with pytest.raises(ControllerConfigError, match="actuation_arm"):
+        materialize_controller_config(payload)
+
+
+def test_actuation_supra_mass_requires_single_tau():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(
+        actuation_aggregator="supra_mass", supra_tau_values=[11.75, 5.0]
+    )
+    with pytest.raises(ControllerConfigError, match="supra_tau_values"):
+        materialize_controller_config(payload)
+
+
+def test_validate_runtime_self_conditioned_probe_needs_no_tau_prom():
+    gp = GlobalPressureConfig(
+        enabled=True,
+        pressure_source="self_conditioned_probe",
+        B_low=1.0,
+        B_high=2.0,
+    )
+    validate_global_pressure_runtime(gp)  # no raise: tau_prom not required here
+
+
+def test_validate_runtime_self_conditioned_probe_requires_band():
+    gp = GlobalPressureConfig(
+        enabled=True,
+        pressure_source="self_conditioned_probe",
+        B_low=None,
+        B_high=None,
+    )
+    with pytest.raises(ControllerConfigError, match="B_low"):
+        validate_global_pressure_runtime(gp)
+
+
+def test_scgr_betaonly_preset_validates():
+    cfg = load_controller_config(SCGR_BETAONLY_PRESET_PATH)
+    assert cfg.enabled is True
+    # SC1 actuation: probe-fed beta gate, protect-low only, lambda unscaled.
+    assert cfg.global_pressure.enabled is True
+    assert cfg.global_pressure.pressure_source == "self_conditioned_probe"
+    assert cfg.global_pressure.scale_beta is True
+    assert cfg.global_pressure.scale_lambda is False
+    assert cfg.global_pressure.g_max == 1.0
+    assert cfg.global_pressure.unready_g == 1.0
+    # band omitted in the YAML -> stamped from the calibration JSON at run setup.
+    assert cfg.global_pressure.B_low is None and cfg.global_pressure.B_high is None
+    sc = cfg.self_conditioned_gr
+    assert sc.enabled is True
+    assert sc.mode == "beta_pressure"
+    assert sc.actuation_aggregator == "topm_lse"
+    assert sc.actuation_arm == "fresh"
+    assert sc.freeze_after_reliable_refreshes == 1
+    assert sc.actuation_reduce == "median"
+    # Stage B.1 operating point carried over.
+    assert cfg.targeting.within_block_source == "v_target"
+    assert cfg.d3.evidence_source == "legacy_window_excess"
+
+
+def test_scgr_betaonly_preset_only_differs_from_monitor_in_pressure_blocks():
+    import yaml
+
+    monitor = yaml.safe_load(SCGR_MONITOR_PRESET_PATH.read_text())["controller"]
+    beta = yaml.safe_load(SCGR_BETAONLY_PRESET_PATH.read_text())["controller"]
+    differing = {
+        k for k in set(monitor) | set(beta) if monitor.get(k) != beta.get(k)
+    }
+    # The only operating-point deltas are the two pressure-related blocks.
+    assert differing == {"global_pressure", "self_conditioned_gr"}
 
 
 def test_self_conditioned_gr_monitor_preset_validates():

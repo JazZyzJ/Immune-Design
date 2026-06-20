@@ -13,6 +13,7 @@ import pytest
 from scripts.analysis.sc_gr_monitor_probe import (
     aggregate_oracle,
     compute_monitor_table,
+    emit_calibration,
     main,
     select_best_metric,
     spearman,
@@ -259,3 +260,67 @@ def test_script_registered_in_scripts_md():
     scripts_md = Path(__file__).resolve().parents[2] / "doc" / "SCRIPTS.md"
     text = scripts_md.read_text()
     assert "scripts/analysis/sc_gr_monitor_probe.py" in text
+
+
+# ---------------------------------------------------------------------------
+# SC1.3 --emit-calibration (PLAN_RF_SC_GR.md Task SC1.3)
+# ---------------------------------------------------------------------------
+
+
+def test_emit_calibration_band_from_freeze_horizon():
+    proteins = {f"P{i}": float(i) for i in range(9)}
+    # B_sc lives in the topm_lse column for the fresh arm at refresh_step 0.
+    probe = _probe_df(proteins, arm="fresh", refresh_step=0, metric_col="B_sc_topm_lse_median")
+    payload = emit_calibration(
+        probe, aggregator="topm_lse", arm="fresh", refresh_step=0,
+        low_quantile=0.25, high_quantile=0.75,
+    )
+    assert payload["pressure_source"] == "self_conditioned_probe"
+    assert payload["aggregator"] == "topm_lse"
+    assert payload["arm"] == "fresh"
+    assert payload["B_high"] > payload["B_low"]
+    assert payload["B_low"] == pytest.approx(np.quantile(np.arange(9.0), 0.25))
+    assert payload["B_high"] == pytest.approx(np.quantile(np.arange(9.0), 0.75))
+
+
+def test_emit_calibration_main_writes_json(tmp_path: Path):
+    run_dir = tmp_path / "generation"
+    run_dir.mkdir()
+    proteins = {f"P{i}": float(i) for i in range(9)}
+    frames = [_probe_df(proteins, arm=a, refresh_step=0, metric_col="B_sc_topm_lse_median")
+              for a in ("fresh", "self_conditioned")]
+    pd.concat(frames, ignore_index=True).to_parquet(
+        run_dir / "sc_gr_probe_refresh.parquet", index=False
+    )
+    oracle_path = tmp_path / "imm_head.parquet"
+    pd.DataFrame({"protein_id": list(proteins), "global_risk": list(proteins.values())}).to_parquet(
+        oracle_path, index=False
+    )
+    out = tmp_path / "summary.json"
+    calib_out = tmp_path / "sc_calib.json"
+    rc = main([
+        "--run-dir", str(run_dir),
+        "--oracle-parquet", str(oracle_path),
+        "--oracle-risk-column", "global_risk",
+        "--output", str(out),
+        "--emit-calibration", str(calib_out),
+        "--calibration-aggregator", "topm_lse",
+        "--calibration-arm", "fresh",
+        "--calibration-refresh-step", "0",
+    ])
+    assert rc == 0
+    calib = json.loads(calib_out.read_text())
+    assert calib["pressure_source"] == "self_conditioned_probe"
+    assert calib["aggregator"] == "topm_lse"
+    assert calib["arm"] == "fresh"
+    assert calib["B_high"] > calib["B_low"]
+
+
+def test_emit_calibration_degenerate_band_fails():
+    proteins = {f"P{i}": 1.0 for i in range(9)}  # constant -> q_low == q_high
+    probe = _probe_df(proteins, arm="fresh", refresh_step=0, metric_col="B_sc_topm_lse_median")
+    with pytest.raises(ValueError, match="B_high"):
+        emit_calibration(
+            probe, aggregator="topm_lse", arm="fresh", refresh_step=0,
+            low_quantile=0.25, high_quantile=0.75,
+        )

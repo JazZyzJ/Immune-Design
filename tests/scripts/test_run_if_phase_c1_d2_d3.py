@@ -1013,6 +1013,152 @@ def test_disabled_global_pressure_ignores_calibration_flag(tmp_path: Path):
     assert manifest["global_pressure_calibration_hash"] == setup.global_pressure_calibration_hash
 
 
+# ---------------------------------------------------------------------------
+# SC1.3 self-conditioned-probe calibration wiring (PLAN_RF_SC_GR.md Task SC1.3)
+# ---------------------------------------------------------------------------
+
+
+def _write_scgr_betaonly_yaml(tmp_path: Path) -> Path:
+    """A beta_pressure config: typed targeting + global_pressure(self_conditioned_
+    probe, scale_lambda false, g_max 1.0, band OMITTED) + self_conditioned_gr
+    beta_pressure. The band is stamped from the SC calibration JSON at load."""
+    base = _write_d2_d3_yaml(tmp_path).read_text()
+    extra = (
+        "  targeting:\n"
+        "    mode: typed_actionability\n"
+        "    within_block_source: v_target\n"
+        "  global_pressure:\n"
+        "    enabled: true\n"
+        "    pressure_source: self_conditioned_probe\n"
+        "    mapping: smoothstep\n"
+        "    g_min: 0.0\n"
+        "    g_max: 1.0\n"
+        "    min_reliable_refreshes: 1\n"
+        "    unready_g: 1.0\n"
+        "    scale_beta: true\n"
+        "    scale_lambda: false\n"
+        "  self_conditioned_gr:\n"
+        "    enabled: true\n"
+        "    mode: beta_pressure\n"
+        "    arms: [fresh, self_conditioned]\n"
+        "    ensemble_size: 3\n"
+        "    confidence_threshold: 0.70\n"
+        "    top_m: 16\n"
+        "    lse_temperature: 1.0\n"
+        "    supra_tau_values: [11.75]\n"
+        "    actuation_aggregator: topm_lse\n"
+        "    actuation_arm: fresh\n"
+        "    freeze_after_reliable_refreshes: 1\n"
+        "    actuation_reduce: median\n"
+    )
+    path = tmp_path / "controller_scgr_betaonly.yaml"
+    path.write_text(base + extra)
+    return path
+
+
+def _write_sc_calibration_json(
+    tmp_path, *, B_low=1.0, B_high=2.0, aggregator="topm_lse", arm="fresh",
+    refresh_step=0, name="sc_calib.json", drop_aggregator=False, drop_arm=False,
+    drop_high=False, drop_refresh_step=False,
+):
+    payload = {
+        "schema_version": "scgr_betaonly_calibration.v1",
+        "pressure_source": "self_conditioned_probe",
+        "low_quantile": 0.25,
+        "high_quantile": 0.75,
+        "B_low": B_low,
+    }
+    if not drop_high:
+        payload["B_high"] = B_high
+    if not drop_aggregator:
+        payload["aggregator"] = aggregator
+    if not drop_arm:
+        payload["arm"] = arm
+    if not drop_refresh_step:
+        payload["refresh_step"] = refresh_step
+    p = tmp_path / name
+    p.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return p
+
+
+def test_sc_calibration_stamps_band_no_tau_prom(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)
+    calib = _write_sc_calibration_json(tmp_path, B_low=1.0, B_high=2.0)
+    setup = load_controller_setup(
+        _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(calib))
+    )
+    assert setup is not None
+    gp = setup.config.global_pressure
+    assert gp.enabled is True
+    assert gp.pressure_source == "self_conditioned_probe"
+    assert gp.B_low == 1.0 and gp.B_high == 2.0
+    assert gp.tau_prom is None  # not required for the SC probe source
+    assert setup.config.self_conditioned_gr.mode == "beta_pressure"
+
+
+def test_sc_calibration_missing_aggregator_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)
+    bad = _write_sc_calibration_json(tmp_path, drop_aggregator=True, name="noagg.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_sc_calibration_aggregator_mismatch_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)
+    bad = _write_sc_calibration_json(tmp_path, aggregator="mean_excess", name="mm.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_sc_calibration_arm_mismatch_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)
+    bad = _write_sc_calibration_json(tmp_path, arm="self_conditioned", name="armm.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_sc_calibration_inverted_band_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)
+    bad = _write_sc_calibration_json(tmp_path, B_low=2.0, B_high=1.0, name="inv.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_sc_calibration_missing_refresh_step_fails_fast(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)
+    bad = _write_sc_calibration_json(tmp_path, drop_refresh_step=True, name="nostep.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_sc_calibration_refresh_step_mismatch_fails_fast(tmp_path: Path):
+    # betaonly config has freeze_after_reliable_refreshes=1 -> freeze horizon is
+    # refresh_step 0; a band emitted at refresh_step=3 is the wrong distribution.
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)
+    bad = _write_sc_calibration_json(tmp_path, refresh_step=3, name="step3.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
 def test_actionability_state_records_explode_to_residue_rows_and_summary():
     L = 4
     state = _make_actionability_state(L)

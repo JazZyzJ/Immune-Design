@@ -34,18 +34,30 @@ _ALLOWED_D3_EVIDENCE_SOURCES = frozenset({"legacy_window_excess", "typed_fresh"}
 # when global_pressure is enabled — C.1 outcome runs must use the thresholded G.
 _ALLOWED_PRESSURE_MAPPINGS = frozenset({"smoothstep"})
 _ALLOWED_PRESSURE_SOURCES = frozenset(
-    {"trajectory_thresholded_G", "trajectory_median_G"}
+    {"trajectory_thresholded_G", "trajectory_median_G", "self_conditioned_probe"}
 )
 _REQUIRED_C1_PRESSURE_SOURCE = "trajectory_thresholded_G"
+# Pressure sources allowed when global_pressure is actuating (PLAN_RF_SC_GR.md
+# Task SC1.1): the Stage C.1 thresholded-G driver OR the SC-GR probe. The legacy
+# mean-based ``trajectory_median_G`` stays rejected when enabled.
+_ENABLED_PRESSURE_SOURCES = frozenset(
+    {"trajectory_thresholded_G", "self_conditioned_probe"}
+)
 _ALLOWED_TAU_PROM_SOURCES = frozenset({"calibration_json"})
 
-# Self-Conditioned GR monitor probe allowed values (PLAN_RF_SC_GR.md Task SC0.1).
-# SC0 is monitor-only; ``beta_pressure`` is unlocked later (Task SC1.1).
-_ALLOWED_SCGR_MODES = frozenset({"monitor_only"})
+# Self-Conditioned GR probe allowed values (PLAN_RF_SC_GR.md Task SC0.1 / SC1.1).
+# ``beta_pressure`` (SC1) gates D2 beta by ``g_GR=smoothstep(B_sc)``.
+_ALLOWED_SCGR_MODES = frozenset({"monitor_only", "beta_pressure"})
 _ALLOWED_SCGR_ARMS = frozenset({"fresh", "self_conditioned"})
 _ALLOWED_SCGR_CONFIDENCE_SOURCES = frozenset({"canonical_softmax_max"})
 _ALLOWED_SCGR_UPDATE_SOURCES = frozenset({"structural_argmax"})
 _ALLOWED_SCGR_REFRESH_POLICIES = frozenset({"all_typed_refreshes"})
+# SC1.1 actuation knobs. Aggregator names map to the SC0.2 telemetry stems
+# (G_mean_excess / G_topm_lse / G_supra_mass_tau_*).
+_ALLOWED_SCGR_ACTUATION_AGGREGATORS = frozenset(
+    {"mean_excess", "topm_lse", "supra_mass"}
+)
+_ALLOWED_SCGR_ACTUATION_REDUCE = frozenset({"median", "ema"})
 
 
 @dataclass(frozen=True)
@@ -238,6 +250,15 @@ class SelfConditionedGRConfig:
     lse_temperature: float = 1.0
     supra_tau_values: tuple[float, ...] = (11.75,)
     write_probe_telemetry: bool = True
+    # SC1.1 actuation knobs (only consumed when ``mode='beta_pressure'``). The
+    # aggregator/arm are the SC0.5 monitor decision; ``B_sc`` is the early-frozen
+    # per-design burden over the first ``freeze_after_reliable_refreshes`` reliable
+    # refreshes, reduced by ``actuation_reduce``. In ``monitor_only`` mode these
+    # are inert defaults.
+    actuation_aggregator: str = "topm_lse"
+    actuation_arm: str = "fresh"
+    freeze_after_reliable_refreshes: int = 1
+    actuation_reduce: str = "median"
 
 
 @dataclass(frozen=True)
@@ -941,13 +962,13 @@ def _materialize_global_pressure(payload: Any) -> GlobalPressureConfig:
             "controller.global_pressure.pressure_source must be one of "
             f"{sorted(_ALLOWED_PRESSURE_SOURCES)} (got {pressure_source!r})"
         )
-    # G3 / RAR 0006: the C.1 outcome run must use the thresholded driver; the
-    # legacy mean-based trajectory_median_G is rejected when actuation is on.
-    if enabled and pressure_source != _REQUIRED_C1_PRESSURE_SOURCE:
+    # G3 / RAR 0006 + SC1.1: an actuating run must use the thresholded-G driver
+    # OR the SC-GR probe; the legacy mean-based trajectory_median_G is rejected.
+    if enabled and pressure_source not in _ENABLED_PRESSURE_SOURCES:
         raise ControllerConfigError(
-            "controller.global_pressure.enabled=true requires pressure_source="
-            f"{_REQUIRED_C1_PRESSURE_SOURCE!r} (G3); the legacy "
-            f"{pressure_source!r} is not valid for a Stage C.1 outcome run"
+            "controller.global_pressure.enabled=true requires pressure_source in "
+            f"{sorted(_ENABLED_PRESSURE_SOURCES)} (got {pressure_source!r}); the "
+            "legacy trajectory_median_G is not valid for an actuating run"
         )
     raw_tau_prom_source = payload.get("tau_prom_source", defaults.tau_prom_source)
     tau_prom_source = (
@@ -1019,13 +1040,18 @@ def validate_global_pressure_runtime(global_pressure: GlobalPressureConfig) -> N
     """
     if not global_pressure.enabled:
         return
-    # τ_prom is also stamped from the calibration JSON and required for the
-    # thresholded G_step driver (G3); guard it alongside the band.
-    if global_pressure.tau_prom is None:
+    # τ_prom is stamped from the calibration JSON and required ONLY for the
+    # thresholded G_step driver (G3); the SC-GR probe source (SC1.1) bins B_sc
+    # directly and needs no τ_prom. The band is required for both sources.
+    if (
+        global_pressure.pressure_source == _REQUIRED_C1_PRESSURE_SOURCE
+        and global_pressure.tau_prom is None
+    ):
         raise ControllerConfigError(
-            "controller.global_pressure.enabled=true requires tau_prom to be "
-            "stamped from the Stage C calibration JSON "
-            "(--global-pressure-calibration-json); it may not be hardcoded"
+            "controller.global_pressure.enabled=true with pressure_source="
+            f"{_REQUIRED_C1_PRESSURE_SOURCE!r} requires tau_prom to be stamped from "
+            "the Stage C calibration JSON (--global-pressure-calibration-json); it "
+            "may not be hardcoded"
         )
     if global_pressure.B_low is None or global_pressure.B_high is None:
         raise ControllerConfigError(
@@ -1206,6 +1232,55 @@ def _materialize_self_conditioned_gr(payload: Any) -> SelfConditionedGRConfig:
                 f"and >= 0 (got {list(supra_tau_values)!r})"
             )
 
+    actuation_aggregator = str(
+        payload.get("actuation_aggregator", defaults.actuation_aggregator)
+    )
+    if actuation_aggregator not in _ALLOWED_SCGR_ACTUATION_AGGREGATORS:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.actuation_aggregator must be one of "
+            f"{sorted(_ALLOWED_SCGR_ACTUATION_AGGREGATORS)} "
+            f"(got {actuation_aggregator!r})"
+        )
+    # supra_mass actuation needs an unambiguous tau (PLAN_RF_SC_GR.md SC1.1).
+    if actuation_aggregator == "supra_mass" and len(supra_tau_values) != 1:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.actuation_aggregator='supra_mass' "
+            "requires exactly one supra_tau_values element so the tau is "
+            f"unambiguous (got {list(supra_tau_values)!r})"
+        )
+
+    actuation_arm = str(payload.get("actuation_arm", defaults.actuation_arm))
+    if actuation_arm not in _ALLOWED_SCGR_ARMS:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.actuation_arm must be one of "
+            f"{sorted(_ALLOWED_SCGR_ARMS)} (got {actuation_arm!r})"
+        )
+    # You cannot actuate on an arm that is not probed.
+    if actuation_arm not in arms:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.actuation_arm must be one of the probed "
+            f"arms {list(arms)!r} (got {actuation_arm!r})"
+        )
+
+    freeze_after_reliable_refreshes = int(
+        payload.get(
+            "freeze_after_reliable_refreshes",
+            defaults.freeze_after_reliable_refreshes,
+        )
+    )
+    if freeze_after_reliable_refreshes < 1:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.freeze_after_reliable_refreshes must "
+            f"be >= 1 (got {freeze_after_reliable_refreshes})"
+        )
+
+    actuation_reduce = str(payload.get("actuation_reduce", defaults.actuation_reduce))
+    if actuation_reduce not in _ALLOWED_SCGR_ACTUATION_REDUCE:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.actuation_reduce must be one of "
+            f"{sorted(_ALLOWED_SCGR_ACTUATION_REDUCE)} (got {actuation_reduce!r})"
+        )
+
     return SelfConditionedGRConfig(
         enabled=enabled,
         mode=mode,
@@ -1222,6 +1297,10 @@ def _materialize_self_conditioned_gr(payload: Any) -> SelfConditionedGRConfig:
         write_probe_telemetry=bool(
             payload.get("write_probe_telemetry", defaults.write_probe_telemetry)
         ),
+        actuation_aggregator=actuation_aggregator,
+        actuation_arm=actuation_arm,
+        freeze_after_reliable_refreshes=freeze_after_reliable_refreshes,
+        actuation_reduce=actuation_reduce,
     )
 
 
@@ -1230,21 +1309,65 @@ def _cross_validate_scgr(
     self_conditioned_gr: SelfConditionedGRConfig,
     global_pressure: GlobalPressureConfig,
 ) -> None:
-    """Enforce the SC-GR monitor contract (PLAN_RF_SC_GR.md Task SC0.1).
+    """Enforce the SC-GR mode/actuation contract (PLAN_RF_SC_GR.md SC0.1 / SC1.1).
 
-    Monitor-mode SC-GR is a pure sensing layer: it must not run while the
+    ``monitor_only`` is a pure sensing layer: it must not run while the
     ``global_pressure`` actuator is on, so the probe telemetry is never confounded
-    by an active gain. Task SC1.1 supersedes this with a ``mode=='beta_pressure'``
-    branch that instead *requires* ``global_pressure.enabled``.
+    by an active gain. ``beta_pressure`` (SC1) instead *requires* the actuator,
+    fed by the SC-GR probe, scaling beta only (``scale_lambda=false``, RAR 0008)
+    and never amplifying (``g_max==1.0``; amplify is SC2).
     """
-    if not self_conditioned_gr.enabled:
-        return
-    if self_conditioned_gr.mode == "monitor_only" and global_pressure.enabled:
+    scgr = self_conditioned_gr
+    # Reverse constraint (both directions must agree): whenever the actuator
+    # consumes the SC-GR probe, the probe MUST be the active producer of B_sc.
+    # Otherwise _scgr_actuation_B_sc stays None at runtime and g_GR silently
+    # degrades to unready_g (the "SC pressure" experiment becomes a no-op or
+    # mis-scales). Checked independent of scgr.enabled so a probe-disabled config
+    # with pressure_source=self_conditioned_probe fails fast.
+    if (
+        global_pressure.enabled
+        and global_pressure.pressure_source == "self_conditioned_probe"
+        and not (scgr.enabled and scgr.mode == "beta_pressure")
+    ):
         raise ControllerConfigError(
-            "controller.self_conditioned_gr.mode='monitor_only' requires "
-            "controller.global_pressure.enabled=false; the monitor probe must not "
-            "run alongside an active pressure gate (PLAN_RF_SC_GR.md Task SC0.1)"
+            "controller.global_pressure.pressure_source='self_conditioned_probe' "
+            "requires controller.self_conditioned_gr.enabled=true and "
+            "mode='beta_pressure' (the probe must produce B_sc; otherwise g_GR "
+            "silently degrades to unready_g)"
         )
+    if not scgr.enabled:
+        return
+    if scgr.mode == "monitor_only":
+        if global_pressure.enabled:
+            raise ControllerConfigError(
+                "controller.self_conditioned_gr.mode='monitor_only' requires "
+                "controller.global_pressure.enabled=false; the monitor probe must "
+                "not run alongside an active pressure gate (PLAN_RF_SC_GR.md SC0.1)"
+            )
+    elif scgr.mode == "beta_pressure":
+        if not global_pressure.enabled:
+            raise ControllerConfigError(
+                "controller.self_conditioned_gr.mode='beta_pressure' requires "
+                "controller.global_pressure.enabled=true (SC1 gates beta by g_GR)"
+            )
+        if global_pressure.pressure_source != "self_conditioned_probe":
+            raise ControllerConfigError(
+                "controller.self_conditioned_gr.mode='beta_pressure' requires "
+                "controller.global_pressure.pressure_source='self_conditioned_probe' "
+                f"(got {global_pressure.pressure_source!r})"
+            )
+        if global_pressure.scale_lambda:
+            raise ControllerConfigError(
+                "controller.self_conditioned_gr.mode='beta_pressure' requires "
+                "controller.global_pressure.scale_lambda=false (RAR 0008: scaling "
+                "lambda reverts suppressed designs and loses D3's commit)"
+            )
+        if global_pressure.g_max != 1.0:
+            raise ControllerConfigError(
+                "controller.self_conditioned_gr.mode='beta_pressure' requires "
+                "controller.global_pressure.g_max=1.0 (amplify g>1 is SC2, not SC1); "
+                f"got g_max={global_pressure.g_max}"
+            )
 
 
 def _cross_validate_mode(*, mode: str, d2: D2Config, d3: D3Config) -> None:

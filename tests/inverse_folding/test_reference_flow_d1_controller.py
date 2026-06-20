@@ -1147,3 +1147,117 @@ def test_sc_gr_self_conditioned_recycles_across_refreshes():
     # Second refresh: state carried; high-confidence masked positions are reused.
     assert sc_second["state_bootstrap_flag"] is False
     assert sc_second["reuse_fraction_mean"] == 1.0
+
+
+# ---------- SC1.2 beta-pressure actuator (PLAN_RF_SC_GR.md Task SC1.2) ----------
+
+
+def _scgr_beta_pressure_config(
+    *,
+    B_low=0.0,
+    B_high=10.0,
+    g_min=0.0,
+    g_max=1.0,
+    unready_g=1.0,
+    freeze=1,
+    actuation_arm="fresh",
+    actuation_aggregator="topm_lse",
+    actuation_reduce="median",
+):
+    base = _make_controller_config(
+        t_start=0.5, refresh_interval=5, min_completion_fraction=0.0
+    )
+    gp = GlobalPressureConfig(
+        enabled=True,
+        pressure_source="self_conditioned_probe",
+        g_min=g_min,
+        g_max=g_max,
+        B_low=B_low,
+        B_high=B_high,
+        min_reliable_refreshes=1,
+        unready_g=unready_g,
+        scale_beta=True,
+        scale_lambda=False,
+    )
+    scgr = SelfConditionedGRConfig(
+        enabled=True,
+        mode="beta_pressure",
+        arms=("fresh", "self_conditioned"),
+        ensemble_size=2,
+        confidence_threshold=0.7,
+        top_m=4,
+        lse_temperature=1.0,
+        supra_tau_values=(11.75,),
+        actuation_aggregator=actuation_aggregator,
+        actuation_arm=actuation_arm,
+        freeze_after_reliable_refreshes=freeze,
+        actuation_reduce=actuation_reduce,
+    )
+    return replace(
+        base,
+        targeting=TargetingConfig(mode="typed_actionability"),
+        global_pressure=gp,
+        self_conditioned_gr=scgr,
+    )
+
+
+def _make_beta_pressure_controller(config, *, length=30):
+    static = _tiled_windows(length, 3, {15: 0.0})
+    dyn_runs = [_tiled_windows(length, 3, {15: 8.0})] * 4
+    scorer = _GVaryingTypedScorer(static_windows=static, dyn_windows_per_refresh=dyn_runs)
+    controller = D1MonitorController(
+        protein_id="P1", design_idx=0, seed=42, static_sequence="A" * length,
+        scorer=scorer, config=config, decode_tokens=_decode_tokens,
+        canonical_token_ids=_CANONICAL,
+    )
+    return controller
+
+
+def test_scgr_beta_pressure_freezes_and_scales_beta():
+    cfg = _scgr_beta_pressure_config(B_low=0.0, B_high=10.0, freeze=1)
+    controller = _make_beta_pressure_controller(cfg)
+    states = _drive_pressure_refreshes(controller, n_refreshes=2)
+
+    frozen = controller._scgr_frozen_B_sc
+    assert frozen is not None and math.isfinite(frozen)
+    # frozen == the first reliable refresh's actuation B_sc (median of a 1-element window)
+    first = states[0]
+    g_first = smoothstep_pressure(frozen, B_low=0.0, B_high=10.0, g_min=0.0, g_max=1.0)
+    assert np.isclose(float(first.g_GR_effective), g_first)
+    assert first.B_GR is not None and np.isclose(float(first.B_GR), frozen)
+    # beta scaled by g_GR; lambda untouched (scale_lambda=false).
+    assert np.isclose(float(first.beta_eff), float(first.beta_base) * g_first)
+    assert np.isclose(float(first.lambda_eff), float(first.lambda_base))
+    assert controller._effective_lambda_commit() is None
+
+
+def test_scgr_beta_pressure_frozen_is_constant_across_refreshes():
+    cfg = _scgr_beta_pressure_config(freeze=1)
+    controller = _make_beta_pressure_controller(cfg)
+    _drive_pressure_refreshes(controller, n_refreshes=1)
+    frozen_after_first = controller._scgr_frozen_B_sc
+    _drive_pressure_refreshes(controller, n_refreshes=1)  # one more refresh
+    assert controller._scgr_frozen_B_sc == frozen_after_first
+
+
+def test_scgr_beta_pressure_unready_before_freeze():
+    # freeze_after_reliable_refreshes=2: refresh 0 has window len 1 < 2 -> unready_g.
+    cfg = _scgr_beta_pressure_config(freeze=2, unready_g=1.0)
+    controller = _make_beta_pressure_controller(cfg)
+    states = _drive_pressure_refreshes(controller, n_refreshes=2)
+    first, second = states[0], states[1]
+    assert controller._scgr_frozen_B_sc is not None  # frozen by the 2nd refresh
+    assert first.B_GR is None
+    assert float(first.g_GR_effective) == 1.0  # unready_g, base beta held
+    assert np.isclose(float(first.beta_eff), float(first.beta_base))  # 1.0 * unready_g
+    assert second.B_GR is not None
+
+
+def test_scgr_beta_pressure_actuation_b_sc_matches_probe_fresh_topm():
+    cfg = _scgr_beta_pressure_config(freeze=1, actuation_arm="fresh", actuation_aggregator="topm_lse")
+    controller = _make_beta_pressure_controller(cfg)
+    _drive_pressure_refreshes(controller, n_refreshes=1)
+    refresh_rows = controller.self_conditioned_gr_refresh_rows()
+    fresh0 = [r for r in refresh_rows if r["arm"] == "fresh" and r["refresh_step"] == 0][0]
+    # the frozen B_sc (window size 1, median) equals the fresh arm's topm_lse median
+    assert np.isclose(controller._scgr_frozen_B_sc, fresh0["B_sc_topm_lse_median"])

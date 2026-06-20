@@ -466,6 +466,17 @@ class ReferenceFlowController:
         self._scgr_state: SCGRState | None = None
         self._scgr_sample_rows: list[dict] = []
         self._scgr_refresh_rows: list[dict] = []
+        # SC1.2 beta-pressure actuator state (PLAN_RF_SC_GR.md Task SC1.2). The
+        # probe stores this refresh's (actuation_arm, actuation_aggregator) B_sc in
+        # ``_scgr_actuation_B_sc``; ``_update_pressure_state`` appends it (on
+        # reliable refreshes) to ``_scgr_B_sc_window`` and freezes
+        # ``_scgr_frozen_B_sc`` once the window reaches
+        # ``freeze_after_reliable_refreshes`` — held constant thereafter so the
+        # gain does not drift with the steered trajectory (doc/Self-Cond_GR.md §4).
+        # Inert unless self_conditioned_gr.mode='beta_pressure'.
+        self._scgr_actuation_B_sc: float | None = None
+        self._scgr_B_sc_window: list[float] = []
+        self._scgr_frozen_B_sc: float | None = None
 
     # ---------- public accessors for telemetry flush ----------
 
@@ -585,6 +596,20 @@ class ReferenceFlowController:
         per_pos_entropy = _per_position_entropy(context.logits)
         struct_log_probs = torch.log_softmax(context.logits, dim=-1).detach().cpu()
 
+        # SC-GR monitor probe (PLAN_RF_SC_GR.md Task SC0.3 / SC1.2). Runs pre-D2
+        # and is mode-agnostic. Placed BEFORE the typed-actionability block so
+        # ``_update_pressure_state`` (inside that block) can read this refresh's
+        # ``_scgr_actuation_B_sc`` for beta_pressure actuation (SC1.2). Monitor-
+        # only: it writes telemetry + updates its own carried/actuation state,
+        # never the logits / D2 / D3 / pressure state. No-op unless enabled.
+        if self.config.self_conditioned_gr.enabled:
+            self._run_sc_gr_probe(
+                context=context,
+                dyn_score=dyn_score,
+                static_score=static_score,
+                completed_tokens=completed_tokens,
+            )
+
         # Stage B typed actionability (PLAN_RF_UNI_CTRL.md Task B4). Computed
         # pre-D2 so ``v_target`` can drive active-window discovery. In
         # static_excess mode this is skipped entirely and the legacy
@@ -605,19 +630,6 @@ class ReferenceFlowController:
             # BEFORE the D2 call below, so beta_eff reflects the running median
             # (PLAN_RF_UNI_CTRL.md C1.4). No-op unless global_pressure.enabled.
             self._update_pressure_state(actionability)
-
-        # SC-GR monitor probe (PLAN_RF_SC_GR.md Task SC0.3 / doc/Self-Cond_GR.md).
-        # Runs pre-D2 (after scores are available, before active-window selection
-        # and any D2 correction) and is mode-agnostic. Monitor-only: it writes
-        # telemetry and updates its own carried state, never the logits / D2 / D3
-        # / pressure state. No-op unless self_conditioned_gr.enabled.
-        if self.config.self_conditioned_gr.enabled:
-            self._run_sc_gr_probe(
-                context=context,
-                dyn_score=dyn_score,
-                static_score=static_score,
-                completed_tokens=completed_tokens,
-            )
 
         # Active-window selection. Stage B.0 narrow boundary: only the selection
         # SOURCE changes in typed mode; the legacy ``window_excess`` is still
@@ -1617,20 +1629,25 @@ class ReferenceFlowController:
         if not gp.enabled:
             return
         reliable = _pressure_refresh_reliable(actionability)
-        if reliable:
-            self._pressure_G_values.append(float(actionability.G))
-        if len(self._pressure_G_values) < int(gp.min_reliable_refreshes):
-            B_GR: float | None = None
-            g_GR = float(gp.unready_g)
+        if gp.pressure_source == "self_conditioned_probe":
+            # SC1.2: drive g_GR from the early-frozen per-design SC-GR probe B_sc.
+            B_GR, g_GR = self._scgr_frozen_pressure(reliable)
         else:
-            B_GR = protein_pressure_burden(self._pressure_G_values)
-            g_GR = smoothstep_pressure(
-                B_GR,
-                B_low=float(gp.B_low),
-                B_high=float(gp.B_high),
-                g_min=float(gp.g_min),
-                g_max=float(gp.g_max),
-            )
+            # Legacy Stage C.1 thresholded-G driver (byte-identical pre-SC1).
+            if reliable:
+                self._pressure_G_values.append(float(actionability.G))
+            if len(self._pressure_G_values) < int(gp.min_reliable_refreshes):
+                B_GR = None
+                g_GR = float(gp.unready_g)
+            else:
+                B_GR = protein_pressure_burden(self._pressure_G_values)
+                g_GR = smoothstep_pressure(
+                    B_GR,
+                    B_low=float(gp.B_low),
+                    B_high=float(gp.B_high),
+                    g_min=float(gp.g_min),
+                    g_max=float(gp.g_max),
+                )
         g_GR = float(g_GR)
         self._pressure_B_GR = B_GR
         self._pressure_g_GR = g_GR
@@ -1675,6 +1692,40 @@ class ReferenceFlowController:
         if not gp.enabled or not gp.scale_lambda:
             return None
         return float(self.config.d3.lambda_commit) * float(self._pressure_g_GR)
+
+    def _scgr_frozen_pressure(self, reliable: bool) -> tuple[float | None, float]:
+        """SC1.2 actuator: append this refresh's B_sc (reliable only), freeze, gate.
+
+        Returns ``(B_GR, g_GR)``. ``B_GR`` is the early-frozen per-design ``B_sc``
+        — ``None`` until ``freeze_after_reliable_refreshes`` reliable refreshes have
+        accrued (then ``g_GR = unready_g``). Once frozen the value is held for the
+        rest of the design (never recomputed), so the gain cannot self-reinforce
+        with the steered trajectory (doc/Self-Cond_GR.md §4).
+        """
+        gp = self.config.global_pressure
+        scfg = self.config.self_conditioned_gr
+        if (
+            reliable
+            and self._scgr_frozen_B_sc is None
+            and self._scgr_actuation_B_sc is not None
+            and math.isfinite(float(self._scgr_actuation_B_sc))
+        ):
+            self._scgr_B_sc_window.append(float(self._scgr_actuation_B_sc))
+            if len(self._scgr_B_sc_window) >= int(scfg.freeze_after_reliable_refreshes):
+                self._scgr_frozen_B_sc = _reduce_scgr_window(
+                    self._scgr_B_sc_window, scfg.actuation_reduce
+                )
+        if self._scgr_frozen_B_sc is None:
+            return None, float(gp.unready_g)
+        B = float(self._scgr_frozen_B_sc)
+        g = smoothstep_pressure(
+            B,
+            B_low=float(gp.B_low),
+            B_high=float(gp.B_high),
+            g_min=float(gp.g_min),
+            g_max=float(gp.g_max),
+        )
+        return B, float(g)
 
     def _current_lambda_eff_for_telemetry(self) -> float:
         """Return the effective lambda value stamped into controller_events rows."""
@@ -1848,12 +1899,19 @@ class ReferenceFlowController:
                     )
                 self._scgr_sample_rows.append(row)
 
+        # Per-refresh per-arm reduction. Computed UNCONDITIONALLY because the
+        # beta_pressure actuator (SC1.2) reads the actuation arm's B_sc from it,
+        # independent of the telemetry flag.
+        refresh_metric_rows = summarize_probe_refresh(
+            per_sample=per_sample,
+            old_argmax_aggregates=old_argmax_agg,
+            supra_tau_values=scfg.supra_tau_values,
+        )
+        self._scgr_actuation_B_sc = self._scgr_extract_actuation_b_sc(
+            refresh_metric_rows, scfg
+        )
         if scfg.write_probe_telemetry:
-            for metric_row in summarize_probe_refresh(
-                per_sample=per_sample,
-                old_argmax_aggregates=old_argmax_agg,
-                supra_tau_values=scfg.supra_tau_values,
-            ):
+            for metric_row in refresh_metric_rows:
                 refresh_row = dict(ctx_fields)
                 refresh_row.update(metric_row)
                 self._scgr_refresh_rows.append(refresh_row)
@@ -1887,6 +1945,29 @@ class ReferenceFlowController:
             lse_temperature=float(scfg.lse_temperature),
             supra_tau_values=scfg.supra_tau_values,
         )
+
+    def _scgr_extract_actuation_b_sc(self, refresh_metric_rows, scfg) -> float | None:
+        """This refresh's B_sc for ``(actuation_arm, actuation_aggregator)`` (SC1.2).
+
+        Returns None if the actuation arm produced no row or the value is
+        non-finite; the actuator then holds ``unready_g`` until a usable B_sc.
+        """
+        col = {
+            "mean_excess": "B_sc_mean_excess_median",
+            "topm_lse": "B_sc_topm_lse_median",
+            "supra_mass": (
+                "B_sc_supra_mass_tau_"
+                f"{supra_tau_label(scfg.supra_tau_values[0])}_median"
+            ),
+        }[scfg.actuation_aggregator]
+        for row in refresh_metric_rows:
+            if row["arm"] == scfg.actuation_arm:
+                v = row.get(col)
+                if v is None:
+                    return None
+                v = float(v)
+                return v if math.isfinite(v) else None
+        return None
 
     def _compute_actionability_state(
         self,
@@ -2459,6 +2540,27 @@ def _residue_excess_from_windows(
         if e_end > s:
             out[s:e_end] = np.maximum(out[s:e_end], e_val)
     return out
+
+
+# SC1.2 freeze-window reducer. ``ema`` decay is fixed (recent-weighted) and is
+# moot for the shipped config (freeze_after_reliable_refreshes=1 ⇒ window size 1 ⇒
+# median == ema == the single value); ``median`` is the shipped path.
+_SCGR_EMA_ALPHA = 0.5
+
+
+def _reduce_scgr_window(values: list[float], reduce: str) -> float | None:
+    """Reduce the early-freeze ``B_sc`` window to a scalar (PLAN_RF_SC_GR.md SC1.2)."""
+    arr = [float(v) for v in values]
+    if not arr:
+        return None
+    if reduce == "median":
+        return float(np.median(arr))
+    if reduce == "ema":
+        acc = arr[0]
+        for v in arr[1:]:
+            acc = _SCGR_EMA_ALPHA * v + (1.0 - _SCGR_EMA_ALPHA) * acc
+        return float(acc)
+    raise ValueError(f"unknown actuation_reduce {reduce!r}")
 
 
 def _pressure_refresh_reliable(actionability: "UnifiedActionabilityState") -> bool:

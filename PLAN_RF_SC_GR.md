@@ -558,8 +558,8 @@ Goal: gate D2 `beta` **only** by `g_GR = smoothstep(B_sc)`, where `B_sc` is the 
 mode: str = "monitor_only"              # monitor_only | beta_pressure
 actuation_aggregator: str = "topm_lse"  # mean_excess | topm_lse | supra_mass (= SC0.5 best_metric)
 actuation_arm: str = "fresh"            # fresh | self_conditioned (= SC0.5 recycling decision)
-freeze_after_reliable_refreshes: int = 2
-actuation_reduce: str = "median"        # median | ema  (over the frozen window)
+freeze_after_reliable_refreshes: int = 1   # RAR 0010: B.1 cadence gives only 2 post-t_start refreshes; freeze at the first (unguided, refresh_step=0)
+actuation_reduce: str = "median"        # median | ema  (over the frozen window; moot at window size 1)
 ```
 
 - [ ] Extend the SC0.1 validator:
@@ -634,7 +634,7 @@ a pressure_source=trajectory_thresholded_G run is byte-identical to pre-SC1 beha
 
 - [ ] Extend the loader: when `payload["pressure_source"] == "self_conditioned_probe"`, require keys `aggregator`, `arm`, `B_low`, `B_high` (`B_high > B_low`); `tau_prom` is not required for this source. Stamp `B_low`/`B_high` via the existing `dataclasses.replace` path (`run_if_phase_c1.py:244-253`).
 - [ ] **Option A (YAML authoritative).** `aggregator` / `arm` live in `SelfConditionedGRConfig.actuation_aggregator` / `actuation_arm` (Task SC1.1), **not** in `GlobalPressureConfig`. The YAML must already set them; the loader only **validates consistency** — reject if JSON `aggregator`/`arm` != `self_conditioned_gr.actuation_aggregator`/`actuation_arm`, and reject `pressure_source` mismatch (mirror `run_if_phase_c1.py:236-243`). The loader stamps **only** `B_low`/`B_high` into `global_pressure`; it never mutates `self_conditioned_gr` (one config block touched, not two).
-- [ ] `sc_gr_monitor_probe.py --emit-calibration PATH` writes `{schema_version, pressure_source:"self_conditioned_probe", aggregator:<best_metric>, arm:<actuation_arm>, B_low:q_low(B_sc), B_high:q_high(B_sc)}` from the monitor `B_sc` distribution at the selected refresh horizon (`--low-quantile`/`--high-quantile`, default 0.25/0.75).
+- [ ] `sc_gr_monitor_probe.py --emit-calibration PATH` writes `{schema_version, pressure_source:"self_conditioned_probe", aggregator:<best_metric>, arm:<actuation_arm>, B_low:q_low(B_sc), B_high:q_high(B_sc)}` from the monitor `B_sc` distribution at the **freeze horizon** — i.e. the refresh_step that SC1 actually actuates on, not necessarily the summary's best-discrimination step. For the RAR-0010 config that is `refresh_step=0`, `arm=fresh`, `metric=topm_lse` (`freeze_after_reliable_refreshes=1`), so the bands match the distribution that gets frozen and applied (`--low-quantile`/`--high-quantile`, default 0.25/0.75).
 
 - [ ] Required tests:
 
@@ -675,10 +675,10 @@ controller:
   self_conditioned_gr:
     enabled: true
     mode: beta_pressure
-    actuation_aggregator: <sc_gr_monitor_summary.json best_metric>
-    actuation_arm: <sc_gr_monitor_summary.json recycling decision>
-    freeze_after_reliable_refreshes: 2
-    actuation_reduce: median
+    actuation_aggregator: topm_lse       # RAR 0010 best_metric (decisive: 0.742 vs supra_mass 0.630 vs mean_excess 0.344)
+    actuation_arm: fresh                 # RAR 0010: SC edge +0.009 << 0.078 reseed noise floor; override summary's raw best.arm=self_conditioned
+    freeze_after_reliable_refreshes: 1   # freeze at refresh_step=0 (unguided trajectory); gates both post-t_start refreshes
+    actuation_reduce: median             # window size 1 -> moot
 ```
 
 - [ ] Print resolved `self_conditioned_gr` + `global_pressure` at startup, one key per line.

@@ -155,37 +155,44 @@ def _compute_head_config_hash(config_dir: Path) -> str:
     return h.hexdigest()
 
 
-def _load_global_pressure_calibration(
-    path: str,
-) -> tuple[str, float, float, float, str]:
-    """Load (pressure_source, tau_prom, B_low, B_high, hash) from a Stage C JSON.
+def _load_global_pressure_calibration(path: str) -> dict:
+    """Load a global-pressure calibration JSON (PLAN_RF_UNI_CTRL.md C1.3 / SC1.3).
 
-    PLAN_RF_UNI_CTRL.md C1.3 / G3: the thresholded-``G`` prominence cut
-    (``tau_prom``) and band (``B_low``/``B_high``) are computed offline from a
-    Stage B/Aopen pilot and passed by CLI, never hardcoded. Rejects unless
-    ``pressure_source == 'trajectory_thresholded_G'`` and requires ``tau_prom``,
-    ``B_low``, ``B_high`` (numeric, ``B_high > B_low``) — no placeholder anchors
-    (CLAUDE.md fail-fast rule). The hash is over the file bytes.
+    Two sources, branched on ``pressure_source``:
+
+    * ``trajectory_thresholded_G`` (Stage C.1): requires ``tau_prom`` + band.
+    * ``self_conditioned_probe`` (SC1): requires ``aggregator`` + ``arm`` + band;
+      ``tau_prom`` is not used (the SC-GR probe bins ``B_sc`` directly).
+
+    Both require a numeric band with ``B_high > B_low`` — no placeholder anchors
+    (CLAUDE.md fail-fast rule). Returns a dict with keys ``pressure_source``,
+    ``tau_prom`` (None for the probe source), ``B_low``, ``B_high``, ``hash``,
+    ``aggregator``/``arm`` (None for the thresholded source).
     """
     p, calib_hash = _calibration_file_provenance(path)
     payload = json.loads(p.read_bytes().decode("utf-8"))
     pressure_source = str(payload.get("pressure_source", ""))
-    if pressure_source != "trajectory_thresholded_G":
+    if pressure_source == "trajectory_thresholded_G":
+        required = ("tau_prom", "B_low", "B_high")
+    elif pressure_source == "self_conditioned_probe":
+        required = ("aggregator", "arm", "refresh_step", "B_low", "B_high")
+    else:
         print(
             "ERROR: global-pressure calibration JSON pressure_source must be "
-            f"'trajectory_thresholded_G' (G3); got {pressure_source!r}",
+            "'trajectory_thresholded_G' or 'self_conditioned_probe'; got "
+            f"{pressure_source!r}",
             file=sys.stderr,
         )
         raise SystemExit(2)
-    for key in ("tau_prom", "B_low", "B_high"):
+    for key in required:
         if key not in payload:
             print(
-                "ERROR: global-pressure calibration JSON must contain "
-                f"tau_prom, B_low, B_high (missing {key!r}; got keys {sorted(payload)})",
+                "ERROR: global-pressure calibration JSON for pressure_source="
+                f"{pressure_source!r} must contain {list(required)} (missing "
+                f"{key!r}; got keys {sorted(payload)})",
                 file=sys.stderr,
             )
             raise SystemExit(2)
-    tau_prom = float(payload["tau_prom"])
     B_low = float(payload["B_low"])
     B_high = float(payload["B_high"])
     if not (B_high > B_low):
@@ -195,7 +202,32 @@ def _load_global_pressure_calibration(
             file=sys.stderr,
         )
         raise SystemExit(2)
-    return pressure_source, tau_prom, B_low, B_high, calib_hash
+    return {
+        "pressure_source": pressure_source,
+        "tau_prom": (
+            float(payload["tau_prom"])
+            if pressure_source == "trajectory_thresholded_G"
+            else None
+        ),
+        "B_low": B_low,
+        "B_high": B_high,
+        "hash": calib_hash,
+        "aggregator": (
+            str(payload["aggregator"])
+            if pressure_source == "self_conditioned_probe"
+            else None
+        ),
+        "arm": (
+            str(payload["arm"])
+            if pressure_source == "self_conditioned_probe"
+            else None
+        ),
+        "refresh_step": (
+            int(payload["refresh_step"])
+            if pressure_source == "self_conditioned_probe"
+            else None
+        ),
+    }
 
 
 def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
@@ -229,11 +261,10 @@ def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        json_source, tau_prom, B_low, B_high, calib_hash = (
-            _load_global_pressure_calibration(calib_path)
-        )
-        # Reject a YAML <-> JSON pressure_source mismatch (PLAN C1.3); the YAML
-        # source is already validated == trajectory_thresholded_G when enabled.
+        calib = _load_global_pressure_calibration(calib_path)
+        json_source = calib["pressure_source"]
+        calib_hash = calib["hash"]
+        # Reject a YAML <-> JSON pressure_source mismatch (PLAN C1.3 / SC1.3).
         if config.global_pressure.pressure_source != json_source:
             print(
                 "ERROR: controller.global_pressure.pressure_source="
@@ -242,14 +273,50 @@ def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
                 file=sys.stderr,
             )
             raise SystemExit(2)
+        # SC1.3 Option A (YAML authoritative): the calibration JSON's aggregator /
+        # arm must match self_conditioned_gr.actuation_*; the loader stamps ONLY
+        # the band (never mutates self_conditioned_gr).
+        if json_source == "self_conditioned_probe":
+            scgr = config.self_conditioned_gr
+            if calib["aggregator"] != scgr.actuation_aggregator:
+                print(
+                    "ERROR: SC calibration aggregator="
+                    f"{calib['aggregator']!r} does not match "
+                    f"self_conditioned_gr.actuation_aggregator="
+                    f"{scgr.actuation_aggregator!r}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            if calib["arm"] != scgr.actuation_arm:
+                print(
+                    "ERROR: SC calibration arm="
+                    f"{calib['arm']!r} does not match "
+                    f"self_conditioned_gr.actuation_arm={scgr.actuation_arm!r}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            # The band must be computed at the SC1 freeze horizon, else
+            # smoothstep(B_sc) consumes a distribution from a different refresh
+            # than the one actually frozen/actuated (PLAN_RF_SC_GR.md SC1.3).
+            # Shipped (no reliability-skip) horizon = freeze_after_reliable_refreshes - 1.
+            expected_step = int(scgr.freeze_after_reliable_refreshes) - 1
+            if int(calib["refresh_step"]) != expected_step:
+                print(
+                    "ERROR: SC calibration refresh_step="
+                    f"{calib['refresh_step']} does not match the freeze horizon "
+                    f"(freeze_after_reliable_refreshes - 1 = {expected_step}); the "
+                    "band must come from the refresh that SC1 actually freezes on",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
         config = replace(
             config,
             global_pressure=replace(
                 config.global_pressure,
                 pressure_source=json_source,
-                tau_prom=tau_prom,
-                B_low=B_low,
-                B_high=B_high,
+                tau_prom=calib["tau_prom"],
+                B_low=calib["B_low"],
+                B_high=calib["B_high"],
             ),
         )
         # Fail fast if the stamped tau_prom/band is still incomplete/inverted.
