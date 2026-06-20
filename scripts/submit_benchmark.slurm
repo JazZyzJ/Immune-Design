@@ -197,12 +197,16 @@ elif [ "${MODE}" = "iedb" ]; then
     fi
     echo "  NMP timeout        : ${NMP_TIMEOUT}s"
 
-    RESULT_JSON="${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}.json"
+    RESULT_JSON_DEFAULT="${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}.json"
     EXTRA_ARGS=()
     if [ "${NEAR_MISS_ANALYSIS}" = "1" ]; then
-        RESULT_JSON="${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}_near_miss.json"
+        RESULT_JSON_DEFAULT="${OUTPUT_DIR}/benchmark_iedb_${PROFILE}_${ALLELE_TAG}_${NMP_MODE_ARG}_near_miss.json"
         EXTRA_ARGS+=(--near-miss-analysis)
     fi
+    # Allow callers (e.g. HIMP config sweeps) to pin a unique output path so
+    # parallel (ckpt x split) runs do not overwrite each other's JSON. The
+    # default name is unchanged when RESULT_JSON is not set in the environment.
+    RESULT_JSON="${RESULT_JSON:-${RESULT_JSON_DEFAULT}}"
     if [ -n "${WINDOWS_CACHE}" ]; then
         EXTRA_ARGS+=(--windows-cache "${WINDOWS_CACHE}")
     fi
@@ -249,10 +253,10 @@ elif [ "${MODE}" = "phase_c" ]; then
     IMM_FULL="${IMM_FULL:-0}"
     NMP_OFF="${NMP_OFF:-0}"   # 1 = imm head-only (skip NetMHCIIpan); affects imm/all modes
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
-        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
         PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0701}"
     elif [ "${ALLELE}" = "HLA-DRB1*04:01" ]; then
-        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet}"
+        TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_04_01.parquet}"
         PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0401}"
     else
         echo "ERROR: TEST_SET_PARQUET/PDB_ROOT defaults only defined for 0701/0401; set them explicitly" >&2

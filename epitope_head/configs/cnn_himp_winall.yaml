@@ -1,0 +1,27 @@
+# Wave-2 sweep (base = cnn_himp_v1_npoff). Single-axis: residue.window_mode
+# sampled -> all. The residue loss then sees ALL valid windows in each chunk's
+# central region (not just span-loss positives + sampled negatives), giving the
+# residue/region landscape much denser supervision. Higher forward cost; the
+# union-window forward is capped by max_windows_per_chunk (raised here). SMOKE
+# this config before a full run (it is the only structurally-different Wave-2 arm).
+train:
+  near_positive:
+    enabled: false
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: false
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 1.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: all
+    max_windows_per_chunk: 4096
+    min_far_bg_residues: 4

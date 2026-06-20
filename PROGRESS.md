@@ -3,12 +3,25 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-06-04T01:00:24-04:00
+> **Last synced**: 2026-06-18T21:58:12-04:00
 > **Branch**: dev_head
 
 ---
 
 ## Epitope Head (Modules A-J)
+
+> **HIMP parameter sweep (2026-06-20) — STANDALONE head-hyperparameter branch, NOT yet in downstream use.**
+> This is a separate sweep of the residue-supervision head against the **new EL goal metric**
+> (`doc/EL_new_evaluation.md`: residue/region immunogenicity landscape, NOT NMP-beating). Results are
+> **not yet wired into IF h-maps / Phase C** — the frozen `cnn_himp_v1_npoff_*` checkpoints still drive
+> downstream. Full writeup: `report/epi_himp_convergence.md`.
+> - Goal priority: **IoU≥0.5/0.7 region AP**, then **residue density Pearson/Spearman**; exact-AP/far-FP guardrails; NMP=reference.
+> - Seed-robust (42/43/44), evaluated on **both val and test**, two alleles. Best on goal metric is **allele-specific**:
+>   - **0701 → `cnn_himp_beta4`** (residue-only, log_mean_exp β=4): IoU50 0701-test **0.581 vs npoff 0.560** at equal density (0.370). New 0701 best.
+>   - **0401 → `cnn_himp_v1_npoff`** (β=1) / `cnn_himp_lcsoft` (marginal).
+> - **Paradigm win**: head density Pearson **0.34–0.43 ≫ NMP 0.14–0.17** everywhere; region IoU AP within ~0.04–0.07 of NMP (tied 0401-test).
+> - λ_residue converged at 0.1; near_positive not a robust lever; remaining IoU gap is **span-loss-bound**.
+> - **Wave-3 in progress** (new worktree/branch `epi-head-wave3`): IoU-aligned span objective + **5-fold CV** (report = CV test number + all-data final model).
 
 - **Code**: complete
 - **Cluster**: trained, checkpoint frozen
@@ -82,16 +95,18 @@
 
 ## Module L → Data Selection (PLAN_DATA_SEL.md)
 
+- **`if_ready/` is organized by target** (each in its own folder): `main/` (canonical test set + sidecars + `load_coords_gate_<tag>.json`), `pilot/`, `fast/`, `highrisk/`, `h_maps_v2/` (shared head-risk maps), `_ARCHIVED/` (`fast_v1`, `h_maps_v1`, `highrisk_demo_v1_pmpnn_only`).
 - **Main test set = v2 (Tier 1 + Tier 2 only; Tier 3 removed).** Tier 2 selection: NMP-only, structure-blind, unimodal-Gaussian over `coverage_fraction` (μ=median, peak:tail=3, min-per-bin=40). Canonical files (npoff h_maps):
-  | allele | `test_proteins_<tag>.parquet` | `if_ready/test_proteins_if_ready_<tag>.parquet` | `if_ready/h_maps_v2/h_maps_<htag>.parquet` |
+  | allele | `test_proteins_<tag>.parquet` | `if_ready/main/test_proteins_if_ready_<tag>.parquet` | `if_ready/h_maps_v2/h_maps_<htag>.parquet` |
   |--------|-------------------------------|--------------------------------------------------|--------------------------------------------|
   | DRB1\*07:01 | 3014 (T1 15 / T2 2999) | 3014 | 3014 (covers 100%) |
   | DRB1\*04:01 | 3015 (T1 15 / T2 3000) | 3015 | 3015 (covers 100%) |
-  - Phase C: `TEST_SET_PARQUET=if_ready/test_proteins_if_ready_<tag>.parquet`, `H_MAPS_PARQUET=if_ready/h_maps_v2/h_maps_<htag>.parquet`, `PDB_ROOT=pdbs_if_ready/<short>`. SLURM `submit_if_phase_c.slurm` H_MAPS default = `h_maps_v2`.
+  - Phase C: `TEST_SET_PARQUET=if_ready/main/test_proteins_if_ready_<tag>.parquet`, `H_MAPS_PARQUET=if_ready/h_maps_v2/h_maps_<htag>.parquet`, `PDB_ROOT=pdbs_if_ready/<short>`. SLURM `submit_if_phase_c.slurm` H_MAPS default = `h_maps_v2`.
   - CLIs: `select_tier2_v2.py` (merge shards + stratified sample); `prescreen_tier2.py --selection-mode nmp_only` (`--nmp-screen-lengths/--n-shards/--sample`); lib `inverse_folding/evaluation/{sampling.py,immunogenicity.compute_coverage_fraction}`.
-- **Diagnostic subsets (allele-specific, subsets of canonical if_ready):**
-  - **pilot** `if_ready/pilot_v2_<tag>.parquet` — 50 = 15 Tier 1 + 35 Tier 2 in mid-load Pareto band [p40,p75] of coverage (0701 [0.33,0.56], 0401 [0.39,0.64]), 4 sub-bins. High-freq RF iteration; metric = Pareto improvement (Δimmune at matched scTM).
-  - **fast** `if_ready/fast_v2_<tag>.parquet` — 300 = 15 Tier 1 + 285 Tier 2 uniform across coverage. Global sanity.
+- **Diagnostic / demonstration subsets (allele-specific, subsets of canonical if_ready):**
+  - **pilot** `if_ready/pilot/pilot_v2_<tag>.parquet` — 50 = 5 Tier 1 band-aligned anchors + 45 Tier 2, mid-load band [p40,p75] of coverage (0701 [0.33,0.56], 0401 [0.39,0.64]). High-freq RF iteration. (Tier-1 anchors are NMP-`coverage_fraction`-in-band, capped at 5; `build_pilot_v2.py`.)
+  - **fast** `if_ready/fast/fast_v2_<tag>.parquet` — 300 = 15 Tier 1 + 285 Tier 2 uniform across coverage. Global sanity. Carries a `coverage_fraction` column.
+  - **highrisk (0701 only so far)** `if_ready/highrisk/` — top-100 by `min(nmp_pct, head_pct)` (NMP strong-window burden AND epitope-head global_risk both high; `build_highrisk_demo.py`). Two SEPARATE sets because the ProteinMPNN and DPLM-native high-burden tails barely overlap (top-decile Spearman ~0.11, A∩B=15/100): `highrisk_pmpnn_demo_v1_<tag>` (primary=ProteinMPNN → demonstration / beat the reported baseline) and `highrisk_dplm_iter_v1_<tag>` (primary=DPLM-native → RF validation/iteration). Each row carries all three baselines' (+WT) `nmp`/`head` diagnostics; sorted FASTAs alongside. 0401 pending its DPLM-native baseline.
 - **Uricase case study (standalone, not in main test set).** Files under `uricases/`:
   - `uricase_caseset_if_ready_unified.parquet` — **6740** (5222 AFDB + 1518 ESMFold2), all 25 `characterized` flagged.
   - `pdbs_if_ready/` — 6740 cleaned structures (5222 `.cif` + 1518 `.pdb`); `h_maps/h_maps_uricase_DRB1_{07_01,04_01}.parquet` — 6740 each, covers 100%, npoff.
@@ -246,8 +261,10 @@
 
 | allele | run_id | n_proteins | n_designs | scTM mean | scTM median | % scTM > 0.5 | % scTM > 0.8 | recovery mean | pLDDT mean | head Δrisk vs WT | NMP Δn_strong vs WT | mean mutation_count |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| HLA-DRB1*07:01 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| HLA-DRB1*07:01 | c0_HLA-DRB1_07_01_dplm_native_full_v2_n8_t1p0_seed42_merged_shards6_20260619T015646Z | 3014 | 8 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | HLA-DRB1*04:01 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+
+Operational native generation note (2026-06-18): HLA-DRB1*07:01 full-v2 DPLM native baseline generation is merged and validated. Final output: `/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/baselines/dplm_native_full_v2_merged/HLA-DRB1_07_01/c0_HLA-DRB1_07_01_dplm_native_full_v2_n8_t1p0_seed42_merged_shards6_20260619T015646Z/generated.parquet` with 24,112 rows = 3,014 proteins × 8 designs, no duplicate `(protein_id, design_idx)` rows, and FASTA header count 24,112. The old failed/cancelled run dirs, six-shard intermediate output, split input shards, and failed/cancelled shard logs were cleaned after validation. Metrics remain TBD until evaluation.
 
 **C1 sampling-only** (position-dependent DFM; one row per `run_id`; record the full resolved config fields so future-you can trace what was run)
 
