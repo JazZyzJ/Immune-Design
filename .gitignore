@@ -38,7 +38,10 @@ netMHCIIpan-4.3/
 scripts/legacy_v1/
 scripts/iedb/
 scripts/atlas/
-scripts/analysis/
+scripts/analysis/*
+!scripts/analysis/
+!scripts/analysis/sc_gr_monitor_probe.py
+!scripts/analysis/tier1_structural_analysis.py
 scripts/add_positions.py
 scripts/collect_accessions.py
 scripts/identify_sources.py
@@ -64,7 +67,8 @@ demo.json
 overview.txt
 report/
 
-!scripts/analysis/tier1_structural_analysis.py
+
+
 reader.md
 # Others
 DRAKES/

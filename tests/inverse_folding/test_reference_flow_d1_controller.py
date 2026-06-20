@@ -40,6 +40,7 @@ from inverse_folding.reference_flow.controller_config import (
     GlobalPressureConfig,
     HeadConfig,
     ReliabilityConfig,
+    SelfConditionedGRConfig,
     TargetingConfig,
     TelemetryConfig,
 )
@@ -964,3 +965,185 @@ def test_pressure_unready_uses_unready_g_until_min_reliable_refreshes():
     # Second refresh reaches the reliability count → real B_GR + g_GR.
     assert second.B_GR is not None
     assert second.pressure_burden_bin in {"low", "mid", "high"}
+
+
+# ---------- SC-GR monitor probe (PLAN_RF_SC_GR.md Task SC0.3) ----------
+
+
+class _SCGRStubScorer:
+    """Batch-aware scorer stub: one HeadScore per record, fixed window set."""
+
+    def __init__(self, *, windows: list[WindowRiskRecord]):
+        self._windows = windows
+        self.batch_call_labels: list[list[str]] = []
+
+    def score_batch_same_protein(self, *, protein_id, records):
+        self.batch_call_labels.append([lbl for lbl, _ in records])
+        return BatchHeadScores(
+            scores=tuple(
+                _make_head_score(protein_id, seq, self._windows) for _, seq in records
+            )
+        )
+
+    def get_or_compute_static(self, protein_id, sequence):
+        return _make_head_score(protein_id, sequence, self._windows)
+
+
+_SCGR_WINDOWS = [
+    WindowRiskRecord(start_0b=0, end_0b=12, k=9, z=2.0),
+    WindowRiskRecord(start_0b=3, end_0b=6, k=3, z=10.0),
+]
+_SCGR_CANONICAL = list(range(1, _VOCAB_SIZE))  # tokens 1..20 = AAs (0 is mask)
+
+
+def _scgr_config(*, enabled: bool = True, ensemble_size: int = 2, arms=("fresh", "self_conditioned")):
+    cfg = _make_controller_config(t_start=0.5, refresh_interval=5, min_completion_fraction=0.0)
+    return replace(
+        cfg,
+        self_conditioned_gr=SelfConditionedGRConfig(
+            enabled=enabled,
+            mode="monitor_only",
+            arms=tuple(arms),
+            ensemble_size=ensemble_size,
+            struct_temperature=1.0,
+            confidence_threshold=0.7,
+            top_m=4,
+            lse_temperature=1.0,
+            supra_tau_values=(11.75,),
+            write_probe_telemetry=True,
+        ),
+    )
+
+
+def _make_scgr_controller(cfg, scorer, *, L: int = 12):
+    return D1MonitorController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence="A" * L,
+        scorer=scorer,
+        config=cfg,
+        decode_tokens=_decode_tokens,
+        canonical_token_ids=_SCGR_CANONICAL,
+    )
+
+
+def test_sc_gr_probe_collects_fresh_and_self_conditioned_rows():
+    cfg = _scgr_config(ensemble_size=2)
+    scorer = _SCGRStubScorer(windows=_SCGR_WINDOWS)
+    controller = _make_scgr_controller(cfg, scorer)
+    ctx = _make_context(
+        x_t=torch.full((12,), _MASK_ID, dtype=torch.long),
+        logits=_sharp_logits(12, peak_token=1),
+        step=10, t=0.5,
+    )
+    controller.step(ctx)
+
+    sample_rows = controller.self_conditioned_gr_sample_rows()
+    refresh_rows = controller.self_conditioned_gr_refresh_rows()
+    # 2 arms x ensemble 2 = 4 samples; 2 arm-rows.
+    assert len(sample_rows) == 4
+    assert {r["arm"] for r in sample_rows} == {"fresh", "self_conditioned"}
+    assert {r["arm"] for r in refresh_rows} == {"fresh", "self_conditioned"}
+    # sample-row schema (PLAN §2)
+    s0 = sample_rows[0]
+    for col in (
+        "protein_id", "design_idx", "seed", "refresh_step", "step", "t",
+        "arm", "sample_idx", "sequence_md5", "num_masked", "num_reused_from_prev",
+        "reuse_fraction", "mean_prev_confidence_reused", "mean_sample_entropy",
+        "state_bootstrap_flag", "G_mean_excess", "G_topm_lse",
+        "G_supra_mass_tau_11p75", "head_risk_LME", "head_risk_max",
+    ):
+        assert col in s0, f"missing sample column {col}"
+    # refresh-row schema (PLAN §2)
+    r0 = refresh_rows[0]
+    for col in (
+        "arm", "ensemble_size_effective", "B_sc_mean_excess_median",
+        "B_sc_topm_lse_median", "B_sc_supra_mass_tau_11p75_median",
+        "G_mean_excess_max", "G_mean_excess_std", "G_topm_lse_max", "G_topm_lse_std",
+        "G_supra_mass_tau_11p75_max", "G_supra_mass_tau_11p75_std",
+        "num_masked", "reuse_fraction_mean", "state_bootstrap_flag",
+        "old_argmax_G_mean_excess", "old_argmax_G_topm_lse",
+        "old_argmax_G_supra_mass_tau_11p75",
+    ):
+        assert col in r0, f"missing refresh column {col}"
+    # The probe call is one batched head call with all 4 completions.
+    assert [4] == [len(c) for c in scorer.batch_call_labels if len(c) > 1]
+
+
+def test_sc_gr_probe_does_not_mutate_logits_or_x_t():
+    x_t = torch.full((12,), _MASK_ID, dtype=torch.long)
+    logits = _sharp_logits(12, peak_token=1)
+    x_t_clone = x_t.clone()
+    logits_clone = logits.clone()
+
+    enabled = _make_scgr_controller(_scgr_config(), _SCGRStubScorer(windows=_SCGR_WINDOWS))
+    res_on = enabled.step(_make_context(x_t=x_t, logits=logits, step=10, t=0.5))
+    # No in-place mutation of the caller's tensors.
+    assert torch.equal(x_t, x_t_clone)
+    assert torch.equal(logits, logits_clone)
+
+    disabled = _make_scgr_controller(
+        _scgr_config(enabled=False), _SCGRStubScorer(windows=_SCGR_WINDOWS)
+    )
+    res_off = disabled.step(_make_context(x_t=x_t.clone(), logits=logits.clone(), step=10, t=0.5))
+    # monitor_only → identity logits, identical whether SC-GR runs or not.
+    assert torch.equal(res_on.logits, res_off.logits)
+
+
+def test_sc_gr_enabled_without_canonical_tokens_fails_fast():
+    cfg = _scgr_config()
+    with pytest.raises(ValueError, match="canonical_token_ids"):
+        D1MonitorController(
+            protein_id="P1", design_idx=0, seed=42, static_sequence="A" * 12,
+            scorer=_SCGRStubScorer(windows=_SCGR_WINDOWS), config=cfg,
+            decode_tokens=_decode_tokens,
+            canonical_token_ids=None,
+        )
+
+
+def test_sc_gr_disabled_writes_no_rows():
+    controller = _make_scgr_controller(
+        _scgr_config(enabled=False), _SCGRStubScorer(windows=_SCGR_WINDOWS)
+    )
+    controller.step(
+        _make_context(
+            x_t=torch.full((12,), _MASK_ID, dtype=torch.long),
+            logits=_sharp_logits(12, peak_token=1),
+            step=10, t=0.5,
+        )
+    )
+    assert controller.self_conditioned_gr_sample_rows() == []
+    assert controller.self_conditioned_gr_refresh_rows() == []
+
+
+def test_sc_gr_pressure_state_remains_none_when_global_pressure_off():
+    controller = _make_scgr_controller(_scgr_config(), _SCGRStubScorer(windows=_SCGR_WINDOWS))
+    controller.step(
+        _make_context(
+            x_t=torch.full((12,), _MASK_ID, dtype=torch.long),
+            logits=_sharp_logits(12, peak_token=1),
+            step=10, t=0.5,
+        )
+    )
+    assert controller._pressure_B_GR is None
+
+
+def test_sc_gr_self_conditioned_recycles_across_refreshes():
+    cfg = _scgr_config(ensemble_size=2)
+    scorer = _SCGRStubScorer(windows=_SCGR_WINDOWS)
+    controller = _make_scgr_controller(cfg, scorer)
+    x_t = torch.full((12,), _MASK_ID, dtype=torch.long)
+    logits = _sharp_logits(12, peak_token=1)  # canonical confidence ~1.0 >= 0.7
+    controller.step(_make_context(x_t=x_t, logits=logits, step=10, t=0.5))
+    controller.step(_make_context(x_t=x_t, logits=logits, step=15, t=0.75))
+
+    refresh_rows = controller.self_conditioned_gr_refresh_rows()
+    sc_first = [r for r in refresh_rows if r["arm"] == "self_conditioned" and r["refresh_step"] == 0][0]
+    sc_second = [r for r in refresh_rows if r["arm"] == "self_conditioned" and r["refresh_step"] == 1][0]
+    # First refresh: no carried state -> bootstrap (acts as fresh, no reuse).
+    assert sc_first["state_bootstrap_flag"] is True
+    assert sc_first["reuse_fraction_mean"] == 0.0
+    # Second refresh: state carried; high-confidence masked positions are reused.
+    assert sc_second["state_bootstrap_flag"] is False
+    assert sc_second["reuse_fraction_mean"] == 1.0

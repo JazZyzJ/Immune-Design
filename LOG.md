@@ -3248,3 +3248,39 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_RF_UNI_CTRL.md` Stage B.1 + Stage C.1 (RAR 0006 revision)
   - `doc/RF_Controller_Architecture.md` §2.8
   - `L0112` (superseded Stage C.1 route)
+
+### L0116
+- timestamp: 2026-06-19T00:00:00-04:00
+- type: FEATURE
+- module: RF
+- trigger: Implement the monitor-only Self-Conditioned Proposal-Envelope GR probe (SC-GR) from `doc/Self-Cond_GR.md` per `PLAN_RF_SC_GR.md` Tasks SC0.1–SC0.5. SC-GR replaces ONLY the burden estimator behind `g_GR` with a recycled, ensembled, pre-D2 terminal-risk probe and is monitor-gated: it writes burden-estimator telemetry and changes no actuation. Post-monitor behavior stages (SC1 beta-only pressure / SC2 amplify / SC3 instability) are deferred and NOT implemented.
+- change_summary: (SC0.1) New frozen `SelfConditionedGRConfig` (`enabled/mode/arms/ensemble_size/struct_temperature/confidence_source/confidence_threshold/update_state_from/probe_refresh_policy/top_m/lse_temperature/supra_tau_values/write_probe_telemetry`) added to `ControllerConfig` + `controller_config_to_dict` (asdict). `_materialize_self_conditioned_gr` validates the SC0.1 enums/ranges; `_cross_validate_scgr` enforces `monitor_only ⇒ global_pressure.enabled=false`. New preset `d2_d3_full_stageB_aopen_scgr_monitor.yaml` copies the Stage B.1 Aopen operating point verbatim and only adds the `self_conditioned_gr` block (pressure actuator off). (SC0.2) New pure module `self_conditioned_gr.py`: `SCGRState/SCGRProbeSample/SCGRRiskAggregates` + `build_probe_samples` (deterministic per-`(protein,design,seed,refresh,arm,sample)` RNG isolated from the sampler, canonical-AA sampling, committed positions fixed, `self_conditioned` reuses the prev structural-argmax token only where prev canonical-softmax confidence ≥ threshold else samples, no prev state ⇒ bootstrap=fresh), `update_state_from_structural_argmax` (canonical-softmax max-prob confidence, NO head input — firewall by signature), `compute_risk_aggregates` (full-sequence `b_cur` projection → `G_mean_excess` / top-m LSE / supra-mass; length-normalized; empty→0), `summarize_probe_refresh` (robust `median` `B_sc` + over-K `max`/`std` instability + `old_argmax_*` baseline). (SC0.3) Controller pre-D2 probe seam `_run_sc_gr_probe` (runs after scores/`_update_pressure_state`, before active-window selection + D2; mode-agnostic); reads only `x_t`/structural logits/the static window cache (`tau_ref_B` = static-z quantile, identical to `b_cur`)/the frozen head; `old_argmax` reuses `dyn_score` (no extra head call); one batched head call for all completions; updates `_scgr_state` after the probe; accessors `self_conditioned_gr_sample_rows/refresh_rows`; `__init__` canonical fail-fast. (SC0.4) Driver `SC_GR_PROBE_{SAMPLES,REFRESH}_FILE` + base-column schemas, `write_sc_gr_probe_artifacts` (empty rows ⇒ schema-readable parquet), per-design row collection (gated on `enabled`), manifest `self_conditioned_gr_config` (via `d1_manifest_provenance`) + sidecar paths (only when `enabled` + `write_probe_telemetry`), resolved-config printing. (SC0.5) New analysis CLI `scripts/analysis/sc_gr_monitor_probe.py`: per-protein `Spearman(B_sc, oracle)` / tercile crosswalk diagonal / `P(probe low|oracle high)` / `Recall@High` per arm×refresh_step×aggregator, best estimator by `Recall@High` then `Spearman` (pandas+numpy only); registered in `doc/SCRIPTS.md`. Degenerate-binning guard: non-finite `(probe, oracle)` pairs are dropped, a collapsed tercile cut (`q1==q2`, e.g. a constant/near-constant burden) or <3 finite points reports NaN bin stats instead of a spurious `Recall@High=1.0`, and `select_best_metric` requires BOTH a finite `Recall@High` and a finite `Spearman` so a non-informative constant estimator can never be selected as best.
+- rationale: RAR 0008 (NoD-baseline) reframed GR — the single-argmax `B_GR` correlates only ρ≈0.41 with the NoD per-protein burden (the argmax is the *mode*, not the expectation, of a sharply multimodal terminal-risk functional), and the amplify-high direction (the −1.0 nat high-burden lever) is the real objective with do-no-harm of low-burden as the secondary, within-noise constraint. SC-GR is the redesigned estimator; this stage MEASURES it (gate: best Spearman ≥ 0.60, Recall@High beats C.1) before any actuation, so the gain can be calibrated without touching D2/D3. Monitor-only by construction: the probe is firewalled (pre-D2, reads no D2/D3/pressure state, mutates nothing but its own telemetry + carried state), so generation is byte-for-byte unchanged whether SC-GR is enabled or not.
+- artifacts:
+  - `inverse_folding/reference_flow/self_conditioned_gr.py`
+  - `inverse_folding/reference_flow/controller_config.py`
+  - `inverse_folding/reference_flow/controller.py`
+  - `inverse_folding/reference_flow/configs/d2_d3_full_stageB_aopen_scgr_monitor.yaml`
+  - `scripts/run_if_phase_c1.py`
+  - `scripts/analysis/sc_gr_monitor_probe.py`
+  - `doc/SCRIPTS.md`
+  - `tests/inverse_folding/test_reference_flow_self_conditioned_gr.py`
+  - `tests/inverse_folding/test_reference_flow_controller_config.py`
+  - `tests/inverse_folding/test_reference_flow_d1_controller.py`
+  - `tests/scripts/test_run_if_phase_c1_d2_d3.py`
+  - `tests/scripts/test_sc_gr_monitor_probe.py`
+- evidence: |
+    TDD red→green per task (SC0.1–SC0.5).
+    Unit Gate (`test_reference_flow_self_conditioned_gr` + `_controller_config` + `_d1_controller` + `test_run_if_phase_c1_d2_d3` + `test_sc_gr_monitor_probe`) -> 182 passed.
+    `pytest tests/inverse_folding/ tests/scripts/ -q` (excluding 3 pre-existing Biopython-broken files) -> 848 passed, 42 skipped; `git diff --check` clean.
+    Firewall verified: SC-GR enabled vs disabled returns identical logits; no in-place mutation of `context.logits`/`context.x_t`; `B_GR`/`g_GR_effective` stay None when `global_pressure.enabled=false`; `self_conditioned` recycles across refreshes (bootstrap on refresh 0, full reuse on refresh 1 under sharp logits); enabled without `canonical_token_ids` fails fast at construction. Aggregator math: top-m LSE > mean on a focal spike; supra-mass + length-normalization exact; empty windows → 0. Analysis: monotone probe → Spearman≈1; true-high-as-low denominator conditioned on oracle-high; best-metric prefers Recall@High over Spearman; a constant probe (collapsed tercile cut) now yields NaN bin stats (not Recall@High=1.0) and is excluded from best-metric selection; non-finite pairs filtered. Monitor preset differs from `d2_d3_full_stageB_aopen.yaml` only by the `self_conditioned_gr` block.
+- impact:
+  - scope: RF controller monitor/sensing layer — new pre-D2 burden-estimator probe + two telemetry sidecars (`sc_gr_probe_samples/refresh.parquet`) + monitor analysis CLI + one new config preset. No generation-behavior change (monitor-only, firewalled), no actuation, no model retraining, no NetMHC guidance, no new SLURM script. Post-monitor SC1/SC2/SC3 deferred.
+  - risk: low
+  - confidence: 0.85
+- status: done
+- next_action: Run the monitor on the 50-protein pilot with `d2_d3_full_stageB_aopen_scgr_monitor.yaml` via the existing `submit_if_phase_c.slurm` (`N_STEPS=20` so the `self_conditioned` arm is exercised across ≥2 refreshes; `GLOBAL_PRESSURE_CALIBRATION_JSON=""`). Then `scripts/analysis/sc_gr_monitor_probe.py` against the NoD oracle (`imm_head.parquet`). Gate (`doc/Self-Cond_GR.md` §6 / `PLAN_RF_SC_GR.md` §5): best `Spearman(B_sc, NoD burden) ≥ 0.60`, `Recall@High` beats old C.1 `B_GR`, `P(probe low|oracle high)` drops, `self_conditioned ≥ fresh` at a multi-refresh step. If the gate passes, SC1 (beta-only SC pressure, `mode=beta_pressure`) is the next coder handoff.
+- refs:
+  - `PLAN_RF_SC_GR.md` Tasks SC0.1–SC0.5
+  - `doc/Self-Cond_GR.md` §1–§7
+  - `L0113` (Stage B.1 / Stage C.1 base operating point)

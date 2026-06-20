@@ -10,7 +10,9 @@ import pytest
 from inverse_folding.reference_flow.controller_config import (
     ControllerConfigError,
     GlobalPressureConfig,
+    SelfConditionedGRConfig,
     controller_config_hash,
+    controller_config_to_dict,
     load_controller_config,
     materialize_controller_config,
     validate_global_pressure_runtime,
@@ -44,6 +46,13 @@ D_MONITOR_FULL_PRESET_PATH = (
     / "reference_flow"
     / "configs"
     / "d_monitor_full.yaml"
+)
+SCGR_MONITOR_PRESET_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding"
+    / "reference_flow"
+    / "configs"
+    / "d2_d3_full_stageB_aopen_scgr_monitor.yaml"
 )
 
 
@@ -958,3 +967,200 @@ def test_targeting_config_hash_sensitive_to_mode():
     payload["controller"]["targeting"] = {"mode": "typed_actionability"}
     typed = materialize_controller_config(payload)
     assert controller_config_hash(base) != controller_config_hash(typed)
+
+
+# ---------------------------------------------------------------------------
+# Self-Conditioned GR monitor config (PLAN_RF_SC_GR.md Task SC0.1)
+# ---------------------------------------------------------------------------
+
+
+def _scgr_block(**overrides: object) -> dict:
+    fields: dict[str, object] = {
+        "enabled": True,
+        "mode": "monitor_only",
+        "arms": ["fresh", "self_conditioned"],
+        "ensemble_size": 3,
+        "struct_temperature": 1.0,
+        "confidence_source": "canonical_softmax_max",
+        "confidence_threshold": 0.70,
+        "update_state_from": "structural_argmax",
+        "probe_refresh_policy": "all_typed_refreshes",
+        "top_m": 16,
+        "lse_temperature": 1.0,
+        "supra_tau_values": [11.75],
+        "write_probe_telemetry": True,
+    }
+    fields.update(overrides)
+    return fields
+
+
+def _valid_global_pressure_block() -> dict:
+    """An otherwise-valid enabled Stage C.1 global_pressure block (typed + band)."""
+    return {
+        "enabled": True,
+        "pressure_source": "trajectory_thresholded_G",
+        "tau_prom_source": "calibration_json",
+        "g_min": 0.0,
+        "g_max": 1.0,
+        "tau_prom": 11.75,
+        "B_low": 1.33,
+        "B_high": 1.97,
+        "scale_beta": True,
+        "scale_lambda": False,
+    }
+
+
+def test_self_conditioned_gr_defaults_disabled_dataclass():
+    sc = SelfConditionedGRConfig()
+    assert sc.enabled is False
+    assert sc.mode == "monitor_only"
+    assert sc.arms == ("fresh", "self_conditioned")
+    assert sc.ensemble_size == 3
+    assert sc.struct_temperature == 1.0
+    assert sc.confidence_source == "canonical_softmax_max"
+    assert sc.confidence_threshold == 0.70
+    assert sc.update_state_from == "structural_argmax"
+    assert sc.probe_refresh_policy == "all_typed_refreshes"
+    assert sc.top_m == 16
+    assert sc.lse_temperature == 1.0
+    assert sc.supra_tau_values == (11.75,)
+    assert sc.write_probe_telemetry is True
+
+
+def test_self_conditioned_gr_absent_section_defaults_disabled():
+    config = materialize_controller_config(_base_enabled_payload())
+    assert config.self_conditioned_gr.enabled is False
+    assert config.self_conditioned_gr.mode == "monitor_only"
+    assert config.self_conditioned_gr.arms == ("fresh", "self_conditioned")
+
+
+def test_self_conditioned_gr_enabled_loads_with_pressure_disabled():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block()
+    config = materialize_controller_config(payload)
+    assert config.self_conditioned_gr.enabled is True
+    assert config.self_conditioned_gr.arms == ("fresh", "self_conditioned")
+    assert config.self_conditioned_gr.ensemble_size == 3
+    assert config.self_conditioned_gr.supra_tau_values == (11.75,)
+    # Monitor mode must not actuate.
+    assert config.global_pressure.enabled is False
+
+
+def test_self_conditioned_gr_invalid_arm_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(arms=["fresh", "bogus"])
+    with pytest.raises(ControllerConfigError, match="arms"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_empty_arms_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(arms=[])
+    with pytest.raises(ControllerConfigError, match="arms"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_invalid_ensemble_size_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(ensemble_size=0)
+    with pytest.raises(ControllerConfigError, match="ensemble_size"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_invalid_struct_temperature_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(struct_temperature=0.0)
+    with pytest.raises(ControllerConfigError, match="struct_temperature"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_confidence_threshold_out_of_range_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(confidence_threshold=1.5)
+    with pytest.raises(ControllerConfigError, match="confidence_threshold"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_invalid_confidence_source_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(confidence_source="full_softmax")
+    with pytest.raises(ControllerConfigError, match="confidence_source"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_top_m_must_be_positive():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(top_m=0)
+    with pytest.raises(ControllerConfigError, match="top_m"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_lse_temperature_must_be_positive():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(lse_temperature=0.0)
+    with pytest.raises(ControllerConfigError, match="lse_temperature"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_supra_tau_negative_rejected():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(supra_tau_values=[-1.0])
+    with pytest.raises(ControllerConfigError, match="supra_tau_values"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_mode_must_be_monitor_only():
+    # SC0.1: only monitor_only is allowed; beta_pressure is unlocked later (SC1.1).
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block(mode="beta_pressure")
+    with pytest.raises(ControllerConfigError, match="mode"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_monitor_with_global_pressure_rejected():
+    # SC0.1: monitor-only SC-GR must not run alongside an actuating pressure gate.
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"mode": "typed_actionability"}
+    payload["controller"]["d3"] = {"enabled": True, "evidence_source": "legacy_window_excess"}
+    payload["controller"]["global_pressure"] = _valid_global_pressure_block()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block()
+    with pytest.raises(ControllerConfigError, match="global_pressure"):
+        materialize_controller_config(payload)
+
+
+def test_self_conditioned_gr_in_to_dict():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block()
+    config = materialize_controller_config(payload)
+    d = controller_config_to_dict(config)
+    assert "self_conditioned_gr" in d
+    assert d["self_conditioned_gr"]["enabled"] is True
+    assert d["self_conditioned_gr"]["arms"] == ("fresh", "self_conditioned")
+    assert d["self_conditioned_gr"]["supra_tau_values"] == (11.75,)
+
+
+def test_config_hash_sensitive_to_scgr_enabled():
+    base = materialize_controller_config(_base_enabled_payload())
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = _scgr_block()
+    enabled = materialize_controller_config(payload)
+    assert controller_config_hash(base) != controller_config_hash(enabled)
+
+
+def test_self_conditioned_gr_monitor_preset_validates():
+    cfg = load_controller_config(SCGR_MONITOR_PRESET_PATH)
+    assert cfg.enabled is True
+    assert cfg.mode == "d2_d3_full"
+    # Stage B.1 Aopen operating point is carried over.
+    assert cfg.targeting.mode == "typed_actionability"
+    assert cfg.targeting.within_block_source == "v_target"
+    assert cfg.d3.evidence_source == "legacy_window_excess"
+    # Monitor: SC-GR enabled, pressure actuator off.
+    assert cfg.global_pressure.enabled is False
+    assert cfg.self_conditioned_gr.enabled is True
+    assert cfg.self_conditioned_gr.mode == "monitor_only"
+    assert cfg.self_conditioned_gr.arms == ("fresh", "self_conditioned")
+    assert cfg.self_conditioned_gr.ensemble_size == 3
+    assert cfg.self_conditioned_gr.top_m == 16
+    assert cfg.self_conditioned_gr.supra_tau_values == (11.75,)
+    assert cfg.self_conditioned_gr.write_probe_telemetry is True

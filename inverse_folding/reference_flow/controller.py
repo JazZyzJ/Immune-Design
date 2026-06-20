@@ -63,6 +63,16 @@ from .counterfactual import (
     compute_context_pnll,
 )
 from .head_scoring import HeadScore, OnlineHeadScorer, WindowRiskRecord
+from .self_conditioned_gr import (
+    SCGRProbeSample,
+    SCGRRiskAggregates,
+    SCGRState,
+    build_probe_samples,
+    compute_risk_aggregates,
+    summarize_probe_refresh,
+    supra_tau_label,
+    update_state_from_structural_argmax,
+)
 
 
 class WindowMismatchError(RuntimeError):
@@ -374,6 +384,12 @@ class ReferenceFlowController:
                 "controller.targeting.mode='typed_actionability' (the proposal "
                 "envelope resamples masked residues over canonical tokens)"
             )
+        if config.self_conditioned_gr.enabled and self._canonical_token_ids is None:
+            raise ValueError(
+                "ReferenceFlowController requires canonical_token_ids when "
+                "controller.self_conditioned_gr.enabled=true (the SC-GR probe "
+                "samples masked residues over canonical tokens)"
+            )
         self._d2_handler: D2Handler | None = (
             D2Handler(config.d2) if config.d2.enabled else None
         )
@@ -440,6 +456,16 @@ class ReferenceFlowController:
         self._pressure_B_GR: float | None = None
         self._pressure_g_GR: float = 1.0
         self._pressure_reliable: bool = False
+        # SC-GR monitor probe state (PLAN_RF_SC_GR.md Task SC0.3). Per-design
+        # (the controller is re-instantiated per trajectory, so this resets with
+        # no cross-trajectory leakage). ``_scgr_state`` (prev_x1_hat /
+        # prev_confidence) is read ONLY by the self_conditioned arm; the fresh
+        # arm never reads or writes it, and the state is the deterministic
+        # structural-argmax observation, never an arm's stochastic sample. All
+        # three stay inert (no probe runs) unless self_conditioned_gr.enabled.
+        self._scgr_state: SCGRState | None = None
+        self._scgr_sample_rows: list[dict] = []
+        self._scgr_refresh_rows: list[dict] = []
 
     # ---------- public accessors for telemetry flush ----------
 
@@ -475,6 +501,24 @@ class ReferenceFlowController:
         """
 
         return list(self._actionability_states)
+
+    def self_conditioned_gr_sample_rows(self) -> list[dict]:
+        """SC-GR per-completion probe rows (PLAN_RF_SC_GR.md §2 schema).
+
+        Empty unless ``self_conditioned_gr.enabled`` (and write_probe_telemetry);
+        the script-level writer emits ``sc_gr_probe_samples.parquet``.
+        """
+
+        return list(self._scgr_sample_rows)
+
+    def self_conditioned_gr_refresh_rows(self) -> list[dict]:
+        """SC-GR per-refresh-per-arm probe rows (PLAN_RF_SC_GR.md §2 schema).
+
+        Empty unless ``self_conditioned_gr.enabled`` (and write_probe_telemetry);
+        the script-level writer emits ``sc_gr_probe_refresh.parquet``.
+        """
+
+        return list(self._scgr_refresh_rows)
 
     # ---------- hook ----------
 
@@ -559,6 +603,19 @@ class ReferenceFlowController:
             # BEFORE the D2 call below, so beta_eff reflects the running median
             # (PLAN_RF_UNI_CTRL.md C1.4). No-op unless global_pressure.enabled.
             self._update_pressure_state(actionability)
+
+        # SC-GR monitor probe (PLAN_RF_SC_GR.md Task SC0.3 / doc/Self-Cond_GR.md).
+        # Runs pre-D2 (after scores are available, before active-window selection
+        # and any D2 correction) and is mode-agnostic. Monitor-only: it writes
+        # telemetry and updates its own carried state, never the logits / D2 / D3
+        # / pressure state. No-op unless self_conditioned_gr.enabled.
+        if self.config.self_conditioned_gr.enabled:
+            self._run_sc_gr_probe(
+                context=context,
+                dyn_score=dyn_score,
+                static_score=static_score,
+                completed_tokens=completed_tokens,
+            )
 
         # Active-window selection. Stage B.0 narrow boundary: only the selection
         # SOURCE changes in typed mode; the legacy ``window_excess`` is still
@@ -1662,6 +1719,171 @@ class ReferenceFlowController:
         if len(scored) > max_windows:
             scored = scored[:max_windows]
         return [i for i, _ in scored], num_pre_cap
+
+    def _run_sc_gr_probe(
+        self,
+        *,
+        context: SamplerStepContext,
+        dyn_score: HeadScore,
+        static_score: HeadScore,
+        completed_tokens: torch.Tensor,
+    ) -> None:
+        """SC-GR monitor probe for one refresh (PLAN_RF_SC_GR.md Task SC0.3).
+
+        Builds the ``fresh`` + ``self_conditioned`` pseudo-terminal completions
+        pre-D2, scores them in ONE batched head call, projects each over the full
+        sequence (the ``b_cur`` scope, not the seed-union ``b_env`` scope), and
+        appends per-sample + per-refresh burden telemetry. Firewalled by
+        construction: reads only ``x_t`` / structural logits / the static window
+        cache (for ``tau_ref_B``) / the frozen head, and mutates nothing but its
+        own ``_scgr_*`` telemetry and ``_scgr_state``. Generation is untouched —
+        no logits, ``x_t``, sampler RNG, D2/D3, or pressure state is modified.
+        """
+        scfg = self.config.self_conditioned_gr
+        L = int(context.sequence_length)
+        canonical = self._canonical_token_ids or ()
+        if not canonical:
+            raise ValueError(
+                "self_conditioned_gr.enabled=true requires canonical_token_ids "
+                "(the probe samples masked residues over canonical tokens)"
+            )
+
+        # tau_ref_B: the same scalar-background convention as ``b_cur`` — the
+        # static window z-quantile under targeting.tau_ref_quantile. Computed
+        # self-contained so the probe does not depend on typed-mode internals.
+        static_z = np.asarray([float(w.z) for w in static_score.windows], dtype=float)
+        if static_z.size == 0:
+            raise WindowMismatchError(
+                "SC-GR probe requires a non-empty static window cache to compute "
+                f"tau_ref_B for protein_id={self.protein_id!r}"
+            )
+        tau_ref_B = float(
+            np.quantile(static_z, float(self.config.targeting.tau_ref_quantile))
+        )
+
+        x_t_np = context.x_t.detach().cpu().numpy().astype(np.int64)
+        logits_np = context.logits.detach().cpu().numpy().astype(float)
+        rng_key = (
+            self.protein_id,
+            self.design_idx,
+            self.seed,
+            int(self._refresh_step_counter),
+        )
+
+        completions: list[SCGRProbeSample] = []
+        for arm in scfg.arms:
+            completions.extend(
+                build_probe_samples(
+                    x_t=x_t_np,
+                    structural_logits=logits_np,
+                    mask_token_id=int(context.mask_token_id),
+                    canonical_token_ids=canonical,
+                    arm=arm,
+                    ensemble_size=int(scfg.ensemble_size),
+                    struct_temperature=float(scfg.struct_temperature),
+                    confidence_threshold=float(scfg.confidence_threshold),
+                    prev_state=(
+                        self._scgr_state if arm == "self_conditioned" else None
+                    ),
+                    rng_key=rng_key,
+                )
+            )
+
+        # Score every completion in a single batched head call.
+        records = [
+            (
+                f"scgr_{c.arm}_{c.sample_idx}",
+                self._decode_tokens(torch.as_tensor(c.tokens, dtype=torch.long)),
+            )
+            for c in completions
+        ]
+        batch = self.scorer.score_batch_same_protein(
+            protein_id=self.protein_id, records=records
+        )
+
+        # old-argmax baseline = the single argmax hard completion that the legacy
+        # B_GR was built on; reuse ``dyn_score`` (no extra head call needed).
+        old_argmax_agg = self._scgr_aggregate(dyn_score.windows, L, tau_ref_B, scfg)
+
+        ctx_fields = {
+            "protein_id": self.protein_id,
+            "design_idx": int(self.design_idx),
+            "seed": int(self.seed),
+            "refresh_step": int(self._refresh_step_counter),
+            "step": int(context.step),
+            "t": float(context.t),
+        }
+
+        per_sample: list[tuple[SCGRProbeSample, SCGRRiskAggregates]] = []
+        for c, hscore in zip(completions, batch.scores):
+            agg = self._scgr_aggregate(hscore.windows, L, tau_ref_B, scfg)
+            per_sample.append((c, agg))
+            if scfg.write_probe_telemetry:
+                row = dict(ctx_fields)
+                row.update(
+                    {
+                        "arm": c.arm,
+                        "sample_idx": int(c.sample_idx),
+                        "sequence_md5": hscore.sequence_md5,
+                        "num_masked": int(c.num_masked),
+                        "num_reused_from_prev": int(c.num_reused_from_prev),
+                        "reuse_fraction": float(c.reuse_fraction),
+                        "mean_prev_confidence_reused": float(
+                            c.mean_prev_confidence_reused
+                        ),
+                        "mean_sample_entropy": float(c.mean_sample_entropy),
+                        "state_bootstrap_flag": bool(c.state_bootstrap_flag),
+                        "G_mean_excess": float(agg.G_mean_excess),
+                        "G_topm_lse": float(agg.G_topm_lse),
+                        "head_risk_LME": float(agg.head_risk_LME),
+                        "head_risk_max": float(agg.head_risk_max),
+                    }
+                )
+                for tau in scfg.supra_tau_values:
+                    row[f"G_supra_mass_tau_{supra_tau_label(tau)}"] = float(
+                        agg.supra_masses[float(tau)]
+                    )
+                self._scgr_sample_rows.append(row)
+
+        if scfg.write_probe_telemetry:
+            for metric_row in summarize_probe_refresh(
+                per_sample=per_sample,
+                old_argmax_aggregates=old_argmax_agg,
+                supra_tau_values=scfg.supra_tau_values,
+            ):
+                refresh_row = dict(ctx_fields)
+                refresh_row.update(metric_row)
+                self._scgr_refresh_rows.append(refresh_row)
+
+        # Update the carried state AFTER the probe: the deterministic structural
+        # argmax (``completed_tokens``) + canonical-softmax confidence, never a
+        # head score or an arm's stochastic sample (firewall).
+        self._scgr_state = update_state_from_structural_argmax(
+            structural_argmax_tokens=completed_tokens.detach().cpu().numpy(),
+            structural_logits=logits_np,
+            canonical_token_ids=canonical,
+        )
+
+    def _scgr_aggregate(
+        self,
+        windows: Sequence[WindowRiskRecord],
+        length: int,
+        tau_ref_B: float,
+        scfg,
+    ) -> SCGRRiskAggregates:
+        """Project one completion's head windows to the SC-GR burden aggregates."""
+        win = [
+            {"start": int(w.start_0b), "end": int(w.end_0b), "score": float(w.z)}
+            for w in windows
+        ]
+        return compute_risk_aggregates(
+            windows=win,
+            length=int(length),
+            tau_ref_B=float(tau_ref_B),
+            top_m=int(scfg.top_m),
+            lse_temperature=float(scfg.lse_temperature),
+            supra_tau_values=scfg.supra_tau_values,
+        )
 
     def _compute_actionability_state(
         self,

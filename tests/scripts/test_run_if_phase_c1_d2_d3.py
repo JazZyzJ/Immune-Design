@@ -28,13 +28,25 @@ from inverse_folding.reference_flow.controller import (
 from inverse_folding.reference_flow.head_scoring import WindowRiskRecord
 from scripts.run_if_phase_c1 import (
     CONTROLLER_SURFACE_VERSION,
+    SC_GR_PROBE_REFRESH_FILE,
+    SC_GR_PROBE_SAMPLES_FILE,
     compute_per_protein_summary,
     d1_manifest_provenance,
     load_controller_setup,
     write_actionability_artifacts,
     write_d1_artifacts,
+    write_sc_gr_probe_artifacts,
     _actionability_state_to_records,
     _refresh_record_to_jsonable,
+)
+
+
+_SCGR_MONITOR_PRESET = (
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding"
+    / "reference_flow"
+    / "configs"
+    / "d2_d3_full_stageB_aopen_scgr_monitor.yaml"
 )
 
 
@@ -1053,6 +1065,113 @@ def test_write_actionability_artifacts_emits_residues_and_summary(tmp_path: Path
     summ_lines = (tmp_path / "actionability_refresh_summary.jsonl").read_text().splitlines()
     assert len(summ_lines) == 1
     assert json.loads(summ_lines[0])["max_v_target"] == pytest.approx(3 * 0.25)
+
+
+# ---------------------------------------------------------------------------
+# SC-GR monitor telemetry + manifest (PLAN_RF_SC_GR.md Task SC0.4)
+# ---------------------------------------------------------------------------
+
+
+def _sc_gr_sample_row(arm: str, idx: int) -> dict:
+    return {
+        "protein_id": "P1", "design_idx": 0, "seed": 42, "refresh_step": 0,
+        "step": 10, "t": 0.5, "arm": arm, "sample_idx": idx,
+        "sequence_md5": "abc", "num_masked": 4, "num_reused_from_prev": 0,
+        "reuse_fraction": 0.0, "mean_prev_confidence_reused": 0.0,
+        "mean_sample_entropy": 1.0, "state_bootstrap_flag": arm == "self_conditioned",
+        "G_mean_excess": 1.0, "G_topm_lse": 3.0, "G_supra_mass_tau_11p75": 0.0,
+        "head_risk_LME": 2.0, "head_risk_max": 5.0,
+    }
+
+
+def _sc_gr_refresh_row(arm: str) -> dict:
+    return {
+        "protein_id": "P1", "design_idx": 0, "seed": 42, "refresh_step": 0,
+        "step": 10, "t": 0.5, "arm": arm, "ensemble_size_effective": 2,
+        "B_sc_mean_excess_median": 1.0, "B_sc_topm_lse_median": 3.0,
+        "B_sc_supra_mass_tau_11p75_median": 0.0,
+        "G_mean_excess_max": 1.0, "G_mean_excess_std": 0.0,
+        "G_topm_lse_max": 3.0, "G_topm_lse_std": 0.0,
+        "G_supra_mass_tau_11p75_max": 0.0, "G_supra_mass_tau_11p75_std": 0.0,
+        "num_masked": 4, "reuse_fraction_mean": 0.0,
+        "state_bootstrap_flag": arm == "self_conditioned",
+        "old_argmax_G_mean_excess": 0.5, "old_argmax_G_topm_lse": 1.5,
+        "old_argmax_G_supra_mass_tau_11p75": 0.0,
+    }
+
+
+def test_write_sc_gr_probe_artifacts_emits_both_sidecars(tmp_path: Path):
+    sample_rows = [
+        _sc_gr_sample_row("fresh", 0), _sc_gr_sample_row("fresh", 1),
+        _sc_gr_sample_row("self_conditioned", 0), _sc_gr_sample_row("self_conditioned", 1),
+    ]
+    refresh_rows = [_sc_gr_refresh_row("fresh"), _sc_gr_refresh_row("self_conditioned")]
+    write_sc_gr_probe_artifacts(
+        run_dir=tmp_path, sample_rows=sample_rows, refresh_rows=refresh_rows
+    )
+    samples = pd.read_parquet(tmp_path / SC_GR_PROBE_SAMPLES_FILE)
+    refresh = pd.read_parquet(tmp_path / SC_GR_PROBE_REFRESH_FILE)
+    assert len(samples) == 4
+    assert set(samples["arm"]) == {"fresh", "self_conditioned"}
+    assert "G_supra_mass_tau_11p75" in samples.columns
+    assert len(refresh) == 2
+    assert "B_sc_supra_mass_tau_11p75_median" in refresh.columns
+    assert "old_argmax_G_topm_lse" in refresh.columns
+
+
+def test_write_sc_gr_probe_artifacts_empty_rows_schema_compatible(tmp_path: Path):
+    write_sc_gr_probe_artifacts(run_dir=tmp_path, sample_rows=[], refresh_rows=[])
+    samples = pd.read_parquet(tmp_path / SC_GR_PROBE_SAMPLES_FILE)
+    refresh = pd.read_parquet(tmp_path / SC_GR_PROBE_REFRESH_FILE)
+    assert len(samples) == 0
+    assert len(refresh) == 0
+    # base schema columns present so a downstream reader gets a typed frame
+    assert "G_mean_excess" in samples.columns
+    assert "arm" in samples.columns
+    assert "B_sc_mean_excess_median" in refresh.columns
+    assert "old_argmax_G_mean_excess" in refresh.columns
+
+
+def test_manifest_contains_self_conditioned_gr_config(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    args = _make_args(tmp_path, _SCGR_MONITOR_PRESET)
+    setup = load_controller_setup(args)
+    assert setup is not None
+    manifest = d1_manifest_provenance(
+        setup,
+        static_cache_path=tmp_path / "cache.parquet",
+        static_cache_meta_path=tmp_path / "cache.meta.json",
+        window_k_min=12,
+        window_k_max=25,
+    )
+    sc = manifest["self_conditioned_gr_config"]
+    assert sc["enabled"] is True
+    assert sc["mode"] == "monitor_only"
+    assert sc["arms"] == ("fresh", "self_conditioned")
+    # Monitor preset keeps the pressure actuator off.
+    assert manifest["global_pressure_config"]["enabled"] is False
+
+
+def test_startup_print_includes_self_conditioned_gr(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    args = _make_args(tmp_path, _SCGR_MONITOR_PRESET)
+    setup = load_controller_setup(args)
+    assert setup is not None
+
+    from inverse_folding.reference_flow.controller_config import (
+        controller_config_to_dict,
+    )
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        resolved = controller_config_to_dict(setup.config)
+        print("[controller] resolved self_conditioned_gr config:", flush=True)
+        for key, val in resolved["self_conditioned_gr"].items():
+            print(f"[controller]   self_conditioned_gr.{key}: {val}", flush=True)
+    out = buf.getvalue()
+    assert "resolved self_conditioned_gr config:" in out
+    for key in ("enabled", "mode", "arms", "ensemble_size", "supra_tau_values"):
+        assert f"self_conditioned_gr.{key}:" in out
 
 
 def test_refresh_log_includes_actionability_pointers_when_typed(tmp_path: Path):

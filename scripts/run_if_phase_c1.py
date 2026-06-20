@@ -682,6 +682,34 @@ def _refresh_record_to_jsonable(
 ACTIONABILITY_RESIDUES_FILE = "actionability_residues.parquet"
 ACTIONABILITY_SUMMARY_FILE = "actionability_refresh_summary.jsonl"
 
+# SC-GR monitor probe sidecars (PLAN_RF_SC_GR.md Task SC0.4). Kept SEPARATE from
+# controller_events.parquet (PLAN §2). Base column lists are used only for the
+# empty-rows case so the parquet stays schema-readable; non-default
+# supra_tau_values produce extra columns from the data when rows exist.
+SC_GR_PROBE_SAMPLES_FILE = "sc_gr_probe_samples.parquet"
+SC_GR_PROBE_REFRESH_FILE = "sc_gr_probe_refresh.parquet"
+
+_SC_GR_SAMPLE_COLUMNS = [
+    "protein_id", "design_idx", "seed", "refresh_step", "step", "t",
+    "arm", "sample_idx", "sequence_md5",
+    "num_masked", "num_reused_from_prev", "reuse_fraction",
+    "mean_prev_confidence_reused", "mean_sample_entropy", "state_bootstrap_flag",
+    "G_mean_excess", "G_topm_lse", "G_supra_mass_tau_11p75",
+    "head_risk_LME", "head_risk_max",
+]
+_SC_GR_REFRESH_COLUMNS = [
+    "protein_id", "design_idx", "seed", "refresh_step", "step", "t",
+    "arm", "ensemble_size_effective",
+    "B_sc_mean_excess_median", "B_sc_topm_lse_median",
+    "B_sc_supra_mass_tau_11p75_median",
+    "G_mean_excess_max", "G_mean_excess_std",
+    "G_topm_lse_max", "G_topm_lse_std",
+    "G_supra_mass_tau_11p75_max", "G_supra_mass_tau_11p75_std",
+    "num_masked", "reuse_fraction_mean", "state_bootstrap_flag",
+    "old_argmax_G_mean_excess", "old_argmax_G_topm_lse",
+    "old_argmax_G_supra_mass_tau_11p75",
+]
+
 _ACTIONABILITY_RESIDUE_COLUMNS = [
     "protein_id", "design_idx", "seed", "refresh_step", "t", "residue_index_0b",
     "tau_ref_B", "h_cur", "b_cur", "b_env", "env_peak", "env_consistency",
@@ -813,6 +841,30 @@ def write_actionability_artifacts(
             f.write("\n")
 
 
+def write_sc_gr_probe_artifacts(
+    *,
+    run_dir: Path,
+    sample_rows: list[dict],
+    refresh_rows: list[dict],
+) -> None:
+    """Write sc_gr_probe_samples.parquet + sc_gr_probe_refresh.parquet (SC0.4).
+
+    Empty row lists still produce schema-compatible (column-only) parquet so a
+    downstream reader never hits a missing-file / no-schema error.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    samples_path = run_dir / SC_GR_PROBE_SAMPLES_FILE
+    if sample_rows:
+        pd.DataFrame(sample_rows).to_parquet(samples_path, index=False)
+    else:
+        pd.DataFrame(columns=_SC_GR_SAMPLE_COLUMNS).to_parquet(samples_path, index=False)
+    refresh_path = run_dir / SC_GR_PROBE_REFRESH_FILE
+    if refresh_rows:
+        pd.DataFrame(refresh_rows).to_parquet(refresh_path, index=False)
+    else:
+        pd.DataFrame(columns=_SC_GR_REFRESH_COLUMNS).to_parquet(refresh_path, index=False)
+
+
 def write_d1_artifacts(
     *,
     run_dir: Path,
@@ -918,6 +970,12 @@ def d1_manifest_provenance(
         "targeting_config": controller_config_to_dict(setup.config)["targeting"],
         "global_pressure_config": controller_config_to_dict(setup.config)[
             "global_pressure"
+        ],
+        # SC-GR monitor probe provenance (PLAN_RF_SC_GR.md Task SC0.4). The
+        # sidecar paths are stamped at write time in generate() (only when the
+        # probe is enabled + telemetry on + rows exist).
+        "self_conditioned_gr_config": controller_config_to_dict(setup.config)[
+            "self_conditioned_gr"
         ],
         # Stage C.1 calibration provenance (PLAN_RF_UNI_CTRL.md C1.3). The band is
         # stamped into ``global_pressure_config`` above; these flat accessors plus
@@ -1496,6 +1554,10 @@ def main(argv: list[str] | None = None) -> int:
     actionability_rows_all: list[dict] = []
     actionability_summary_all: list[dict] = []
     actionability_g_by_key: dict[tuple[str, int, int], dict] = {}
+    # SC-GR monitor probe accumulators (PLAN_RF_SC_GR.md Task SC0.4). Empty unless
+    # self_conditioned_gr.enabled (and write_probe_telemetry).
+    sc_gr_sample_rows_all: list[dict] = []
+    sc_gr_refresh_rows_all: list[dict] = []
     window_k_min_resolved = 0
     window_k_max_resolved = 0
     if controller_setup is not None:
@@ -1514,6 +1576,11 @@ def main(argv: list[str] | None = None) -> int:
         print("[controller] resolved global_pressure config:", flush=True)
         for key, val in resolved_controller_cfg["global_pressure"].items():
             print(f"[controller]   global_pressure.{key}: {val}", flush=True)
+        # SC-GR: print the resolved self_conditioned_gr config one key per line
+        # (PLAN_RF_SC_GR.md Task SC0.4; CLAUDE.md feedback "print hyperparams").
+        print("[controller] resolved self_conditioned_gr config:", flush=True)
+        for key, val in resolved_controller_cfg["self_conditioned_gr"].items():
+            print(f"[controller]   self_conditioned_gr.{key}: {val}", flush=True)
         if controller_setup.config.global_pressure.enabled:
             # Stage C.1: echo the calibration source so the run log records which
             # pilot produced the stamped B_low/B_high band (CLAUDE.md "print
@@ -1829,6 +1896,19 @@ def main(argv: list[str] | None = None) -> int:
                             "G": float(state.G),
                             "g_GR_diagnostic": float(state.g_GR_diagnostic),
                         }
+                # SC-GR: collect per-design probe rows (PLAN_RF_SC_GR.md SC0.4).
+                # The controller only appends rows when write_probe_telemetry, so
+                # gating on enabled here is sufficient.
+                scgr_cfg = controller_setup.config.self_conditioned_gr
+                if scgr_cfg.enabled and hasattr(
+                    d1_controller, "self_conditioned_gr_sample_rows"
+                ):
+                    sc_gr_sample_rows_all.extend(
+                        d1_controller.self_conditioned_gr_sample_rows()
+                    )
+                    sc_gr_refresh_rows_all.extend(
+                        d1_controller.self_conditioned_gr_refresh_rows()
+                    )
 
         if args.save_trajectories:
             _write_trajectories(run_dir=run_dir, protein_id=protein_id, rows=trajectory_rows)
@@ -2007,6 +2087,19 @@ def main(argv: list[str] | None = None) -> int:
             }
             manifest["actionability_residues_path"] = ACTIONABILITY_RESIDUES_FILE
             manifest["actionability_refresh_summary_path"] = ACTIONABILITY_SUMMARY_FILE
+        # SC-GR: write the probe sidecars + stamp manifest paths (PLAN_RF_SC_GR.md
+        # Task SC0.4). Only when the probe is enabled with telemetry on; disabled
+        # runs produce no SC-GR artifacts. The config view is already in the
+        # manifest via d1_manifest_provenance.
+        scgr_run_cfg = controller_setup.config.self_conditioned_gr
+        if scgr_run_cfg.enabled and scgr_run_cfg.write_probe_telemetry:
+            write_sc_gr_probe_artifacts(
+                run_dir=run_dir,
+                sample_rows=sc_gr_sample_rows_all,
+                refresh_rows=sc_gr_refresh_rows_all,
+            )
+            manifest["sc_gr_probe_samples_path"] = SC_GR_PROBE_SAMPLES_FILE
+            manifest["sc_gr_probe_refresh_path"] = SC_GR_PROBE_REFRESH_FILE
         write_d1_artifacts(
             run_dir=run_dir,
             refresh_records_all=refresh_records_all,

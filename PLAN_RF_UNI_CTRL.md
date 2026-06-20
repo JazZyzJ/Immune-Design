@@ -8,6 +8,8 @@
 
 **Decision update (post-A_open feasibility, RAR 0005 / 0001):** Stage B is **demoted to a mechanism check**, not an outcome run, and Stage B and Stage C are **run together**. Evidence: opening the candidate space (A_open: δ=3, β=3, 5× more persisted beneficial edits, ~0 structural cost) did **not** improve the aggregate immune outcome; the aggregate is masked by a **low-burden over-intervention that is controller-wide** (present in D3-only too, RAR 0001) and is the **dominant, first-order** aggregate effect — not the second-order optimization the original §2.9 assumed. Typed targeting alone (B without C) cannot fix it, because targeting still fires on each protein's top positions regardless of absolute burden; only `g_GR` trajectory-level pressure (Stage C) suppresses it. The GR-idealized counterfactual (zero low-burden steering) recovers a ~5× larger aggregate improvement (RAR 0005 Measurement 6). Therefore B confirms the typed mechanism runs; C is the outcome lever; both run on a non-empty (>A0) operating point.
 
+**Branch update (post-RAR 0008):** the thresholded `trajectory_thresholded_G` Stage C.1 path in this file is retained as the implemented historical baseline and as reusable actuator plumbing. New GR burden-estimator work is moved to `PLAN_RF_SC_GR.md`, starting with the monitor-only Self-Conditioned Proposal-Envelope GR probe from `doc/Self-Cond_GR.md`.
+
 **Tech Stack:** Python 3.12, NumPy, PyTorch, pandas/pyarrow telemetry, existing `inverse_folding/reference_flow/*` controller stack, existing `scripts/run_if_phase_c1.py` and `scripts/submit_if_phase_c.slurm`.
 
 ---
@@ -37,7 +39,8 @@ If Stage A fails these local gates, do not implement this plan. Diagnose Stage A
 | File | Owns |
 |---|---|
 | `PLAN_RF.md` | Phase C/D status, C0/C1/D1, and Stage A actuation contract |
-| `PLAN_RF_UNI_CTRL.md` | Stage B typed targeting and Stage C GR x Phase C schedule controller |
+| `PLAN_RF_UNI_CTRL.md` | Stage B typed targeting, historical thresholded-pressure C.1 baseline, and deferred Phase C schedule controller |
+| `PLAN_RF_SC_GR.md` | SC-GR monitor-only burden-estimator branch and any later SC-GR pressure handoff |
 
 **Out of scope**
 
@@ -1458,6 +1461,8 @@ Mode-default-OFF: existing/static configs default `legacy_excess` (bit-equivalen
 ---
 
 ## Stage C Plan
+
+**Current GR-estimator branch note:** this section documents the thresholded `trajectory_thresholded_G` C.1 route that has already been implemented and evaluated as a baseline. Post-RAR 0008 SC-GR estimator work should be planned from `PLAN_RF_SC_GR.md`; do not extend this section with the self-conditioned monitor or behavior handoff.
 
 **Priority update (RAR 0005 / 0001):** Stage C is **not** deferred second-order tuning. `g_GR` trajectory-level pressure is the first-order lever for the aggregate immune outcome, because controller-wide low-burden over-intervention masks the real high-burden D2 gain. A_open showed that opening the D2 candidate space gives many more persisted beneficial edits at near-zero structural cost, but fixed-β steering still regresses the low-burden tercile (`Aopen_dhead_median = +2.080`) while preserving a strong high-burden gain (`Aopen_dhead_median = -2.567`). The GR-idealized counterfactual zeroing low-burden steering moves aggregate mean head delta from `-0.244` to `-1.211`. C.1 therefore must make low-burden pressure approach **zero**, not merely shrink to `g_min=0.25`.
 

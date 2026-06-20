@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,14 @@ _ALLOWED_PRESSURE_SOURCES = frozenset(
 )
 _REQUIRED_C1_PRESSURE_SOURCE = "trajectory_thresholded_G"
 _ALLOWED_TAU_PROM_SOURCES = frozenset({"calibration_json"})
+
+# Self-Conditioned GR monitor probe allowed values (PLAN_RF_SC_GR.md Task SC0.1).
+# SC0 is monitor-only; ``beta_pressure`` is unlocked later (Task SC1.1).
+_ALLOWED_SCGR_MODES = frozenset({"monitor_only"})
+_ALLOWED_SCGR_ARMS = frozenset({"fresh", "self_conditioned"})
+_ALLOWED_SCGR_CONFIDENCE_SOURCES = frozenset({"canonical_softmax_max"})
+_ALLOWED_SCGR_UPDATE_SOURCES = frozenset({"structural_argmax"})
+_ALLOWED_SCGR_REFRESH_POLICIES = frozenset({"all_typed_refreshes"})
 
 
 @dataclass(frozen=True)
@@ -198,6 +207,40 @@ class GlobalPressureConfig:
 
 
 @dataclass(frozen=True)
+class SelfConditionedGRConfig:
+    """Self-Conditioned GR monitor probe config (PLAN_RF_SC_GR.md Task SC0.1).
+
+    SC-GR is a monitor-only sensing layer: at each refresh it builds fresh and
+    self-conditioned pseudo-terminal completions pre-D2, scores them with the
+    frozen head, and writes burden-estimator telemetry. It never changes logits,
+    D2/D3 state, ``global_pressure``, or the Phase C schedule. ``enabled=False``
+    (default) makes the controller skip the probe entirely.
+
+    Arms: ``fresh`` samples every masked position from the structural softmax;
+    ``self_conditioned`` reuses the previous refresh's structural-argmax token at
+    positions whose previous canonical-softmax confidence cleared
+    ``confidence_threshold`` and samples the rest. The window→trajectory
+    aggregators (``mean_excess`` / ``top_m`` LSE / supra-threshold mass over
+    ``supra_tau_values``) are all logged; SC0 picks none — the analysis CLI
+    selects the actuation aggregator later (Task SC0.5).
+    """
+
+    enabled: bool = False
+    mode: str = "monitor_only"
+    arms: tuple[str, ...] = ("fresh", "self_conditioned")
+    ensemble_size: int = 3
+    struct_temperature: float = 1.0
+    confidence_source: str = "canonical_softmax_max"
+    confidence_threshold: float = 0.70
+    update_state_from: str = "structural_argmax"
+    probe_refresh_policy: str = "all_typed_refreshes"
+    top_m: int = 16
+    lse_temperature: float = 1.0
+    supra_tau_values: tuple[float, ...] = (11.75,)
+    write_probe_telemetry: bool = True
+
+
+@dataclass(frozen=True)
 class ActiveWindowsConfig:
     excess_threshold: float = 0.0
     max_windows: int = 16
@@ -244,6 +287,7 @@ class ControllerConfig:
     telemetry: TelemetryConfig = TelemetryConfig()
     targeting: TargetingConfig = TargetingConfig()
     global_pressure: GlobalPressureConfig = GlobalPressureConfig()
+    self_conditioned_gr: SelfConditionedGRConfig = SelfConditionedGRConfig()
 
 
 def load_controller_config(path: str | Path) -> ControllerConfig:
@@ -375,8 +419,14 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
     global_pressure = _materialize_global_pressure(
         controller_payload.get("global_pressure")
     )
+    self_conditioned_gr = _materialize_self_conditioned_gr(
+        controller_payload.get("self_conditioned_gr")
+    )
     _cross_validate_stage_bc(
         targeting=targeting, global_pressure=global_pressure, d3=d3
+    )
+    _cross_validate_scgr(
+        self_conditioned_gr=self_conditioned_gr, global_pressure=global_pressure
     )
 
     tel_payload = controller_payload.get("telemetry", {})
@@ -404,6 +454,7 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
         telemetry=telemetry,
         targeting=targeting,
         global_pressure=global_pressure,
+        self_conditioned_gr=self_conditioned_gr,
     )
 
 
@@ -1033,6 +1084,167 @@ def _cross_validate_stage_bc(
                 "controller.d3.evidence_source='typed_fresh' requires "
                 "controller.d3.enabled=true (D3 must be active to consume it)"
             )
+
+
+def _materialize_self_conditioned_gr(payload: Any) -> SelfConditionedGRConfig:
+    if payload is None:
+        return SelfConditionedGRConfig()
+    if not isinstance(payload, dict):
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr must be a mapping when present"
+        )
+    defaults = SelfConditionedGRConfig()
+
+    enabled = bool(payload.get("enabled", defaults.enabled))
+
+    mode = str(payload.get("mode", defaults.mode))
+    if mode not in _ALLOWED_SCGR_MODES:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.mode must be one of "
+            f"{sorted(_ALLOWED_SCGR_MODES)} (got {mode!r}); 'beta_pressure' is "
+            "unlocked later (PLAN_RF_SC_GR.md Task SC1.1)"
+        )
+
+    raw_arms = payload.get("arms", list(defaults.arms))
+    if not isinstance(raw_arms, (list, tuple)):
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.arms must be a list "
+            f"(got {raw_arms!r})"
+        )
+    arms = tuple(str(a) for a in raw_arms)
+    if not arms:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.arms must be non-empty"
+        )
+    bad_arms = [a for a in arms if a not in _ALLOWED_SCGR_ARMS]
+    if bad_arms:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.arms must be a subset of "
+            f"{sorted(_ALLOWED_SCGR_ARMS)} (got {list(arms)!r})"
+        )
+
+    ensemble_size = int(payload.get("ensemble_size", defaults.ensemble_size))
+    if ensemble_size < 1:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.ensemble_size must be >= 1 "
+            f"(got {ensemble_size})"
+        )
+
+    struct_temperature = float(
+        payload.get("struct_temperature", defaults.struct_temperature)
+    )
+    if struct_temperature <= 0.0:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.struct_temperature must be positive "
+            f"(got {struct_temperature})"
+        )
+
+    confidence_source = str(
+        payload.get("confidence_source", defaults.confidence_source)
+    )
+    if confidence_source not in _ALLOWED_SCGR_CONFIDENCE_SOURCES:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.confidence_source must be one of "
+            f"{sorted(_ALLOWED_SCGR_CONFIDENCE_SOURCES)} (got {confidence_source!r})"
+        )
+
+    confidence_threshold = float(
+        payload.get("confidence_threshold", defaults.confidence_threshold)
+    )
+    if not (0.0 <= confidence_threshold <= 1.0):
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.confidence_threshold must lie in "
+            f"[0, 1] (got {confidence_threshold})"
+        )
+
+    update_state_from = str(
+        payload.get("update_state_from", defaults.update_state_from)
+    )
+    if update_state_from not in _ALLOWED_SCGR_UPDATE_SOURCES:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.update_state_from must be one of "
+            f"{sorted(_ALLOWED_SCGR_UPDATE_SOURCES)} (got {update_state_from!r})"
+        )
+
+    probe_refresh_policy = str(
+        payload.get("probe_refresh_policy", defaults.probe_refresh_policy)
+    )
+    if probe_refresh_policy not in _ALLOWED_SCGR_REFRESH_POLICIES:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.probe_refresh_policy must be one of "
+            f"{sorted(_ALLOWED_SCGR_REFRESH_POLICIES)} (got {probe_refresh_policy!r})"
+        )
+
+    top_m = int(payload.get("top_m", defaults.top_m))
+    if top_m < 1:
+        raise ControllerConfigError(
+            f"controller.self_conditioned_gr.top_m must be >= 1 (got {top_m})"
+        )
+
+    lse_temperature = float(payload.get("lse_temperature", defaults.lse_temperature))
+    if lse_temperature <= 0.0:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.lse_temperature must be positive "
+            f"(got {lse_temperature})"
+        )
+
+    raw_supra = payload.get("supra_tau_values", list(defaults.supra_tau_values))
+    if not isinstance(raw_supra, (list, tuple)):
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.supra_tau_values must be a list "
+            f"(got {raw_supra!r})"
+        )
+    supra_tau_values = tuple(float(v) for v in raw_supra)
+    if not supra_tau_values:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.supra_tau_values must be non-empty"
+        )
+    for v in supra_tau_values:
+        if not math.isfinite(v) or v < 0.0:
+            raise ControllerConfigError(
+                "controller.self_conditioned_gr.supra_tau_values must be finite "
+                f"and >= 0 (got {list(supra_tau_values)!r})"
+            )
+
+    return SelfConditionedGRConfig(
+        enabled=enabled,
+        mode=mode,
+        arms=arms,
+        ensemble_size=ensemble_size,
+        struct_temperature=struct_temperature,
+        confidence_source=confidence_source,
+        confidence_threshold=confidence_threshold,
+        update_state_from=update_state_from,
+        probe_refresh_policy=probe_refresh_policy,
+        top_m=top_m,
+        lse_temperature=lse_temperature,
+        supra_tau_values=supra_tau_values,
+        write_probe_telemetry=bool(
+            payload.get("write_probe_telemetry", defaults.write_probe_telemetry)
+        ),
+    )
+
+
+def _cross_validate_scgr(
+    *,
+    self_conditioned_gr: SelfConditionedGRConfig,
+    global_pressure: GlobalPressureConfig,
+) -> None:
+    """Enforce the SC-GR monitor contract (PLAN_RF_SC_GR.md Task SC0.1).
+
+    Monitor-mode SC-GR is a pure sensing layer: it must not run while the
+    ``global_pressure`` actuator is on, so the probe telemetry is never confounded
+    by an active gain. Task SC1.1 supersedes this with a ``mode=='beta_pressure'``
+    branch that instead *requires* ``global_pressure.enabled``.
+    """
+    if not self_conditioned_gr.enabled:
+        return
+    if self_conditioned_gr.mode == "monitor_only" and global_pressure.enabled:
+        raise ControllerConfigError(
+            "controller.self_conditioned_gr.mode='monitor_only' requires "
+            "controller.global_pressure.enabled=false; the monitor probe must not "
+            "run alongside an active pressure gate (PLAN_RF_SC_GR.md Task SC0.1)"
+        )
 
 
 def _cross_validate_mode(*, mode: str, d2: D2Config, d3: D3Config) -> None:

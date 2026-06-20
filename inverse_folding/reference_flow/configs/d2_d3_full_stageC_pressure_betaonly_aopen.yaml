@@ -1,3 +1,7 @@
+# [LEGACY BASELINE -- do NOT cp as a new estimator] Superseded as the GR burden estimator by SC-GR
+# (RAR 0008 root-cause arm; still the single-argmax B_GR estimator, rho~0.41 vs NoD burden). Retained
+# only as a baseline + reusable actuator plumbing. Redesign: doc/Self-Cond_GR.md, PLAN_RF_SC_GR.md.
+#
 # Stage C.1b beta-only global-pressure arm at the A_open operating point.
 #
 # Identical to d2_d3_full_stageC_pressure_aopen.yaml (the B.1 typed base + GR)

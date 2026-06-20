@@ -1,26 +1,19 @@
-# [LEGACY BASELINE -- do NOT cp as a new estimator] Superseded as the GR burden estimator by SC-GR
-# (RAR 0008: single-argmax B_GR rho~0.41 vs NoD burden, G7 fail; scale_lambda=true harmful). Retained
-# only as the C.1 baseline SC-GR must beat + reusable actuator plumbing. Redesign: doc/Self-Cond_GR.md,
-# PLAN_RF_SC_GR.md (monitor-only first; behavior handoff in the same PLAN).
+# SC-GR monitor preset (PLAN_RF_SC_GR.md Task SC0.1 / doc/Self-Cond_GR.md).
 #
-# Stage C.1 global-pressure arm at the A_open operating point.
+# Copies the Stage B.1 Aopen operating point (d2_d3_full_stageB_aopen.yaml)
+# VERBATIM and only adds the self_conditioned_gr monitor block. SC-GR is a
+# monitor-only sensing layer: it runs pre-D2 at each refresh, builds fresh +
+# self-conditioned pseudo-terminal completions from structural logits, scores
+# them with the frozen head, and writes burden-estimator telemetry. It does NOT
+# change logits, D2/D3 state, remask ranking, global_pressure, or the Phase C
+# schedule -- generation is identical to d2_d3_full_stageB_aopen.yaml up to
+# deterministic head-call side effects.
 #
-# Copies d2_d3_full_stageB_aopen.yaml (typed targeting +
-# d3.evidence_source=legacy_window_excess) and ONLY enables global_pressure.
-# Stage C.1 is
-# an actuator-only change over the Stage B typed controller: active-block
-# discovery, D2 candidate generation, D3 evidence source, reliability gates,
-# sticky TTL, and the Bernoulli schedule are unchanged (PLAN_RF_UNI_CTRL.md C1).
-#
-# global_pressure scales D2 beta and D3 lambda by the trajectory-level smoothstep
-# pressure g_GR = smoothstep(B_GR; B_low, B_high, g_min=0, g_max=1), where
-# G_step = mean_i ReLU(u_pressure_i - tau_prom) and B_GR is the median of
-# reliable per-refresh G_step. tau_prom/B_low/B_high are NOT set here: they
-# are calibrated from the Stage B/Aopen typed pilot and stamped at run setup via
-# --global-pressure-calibration-json (never hardcoded; PLAN_RF_UNI_CTRL.md C1.3).
-#
-# D2 operating point is copied from A_open: beta=3, delta_struct=3, top_k=8,
-# max_pos=4, max_candidates=4096, min_ess_fraction=0, max_abs_logit_shift=10.
+# global_pressure stays disabled (no actuation); the SC-GR probe never feeds the
+# gain in monitor mode. within_block_source=v_target and
+# d3.evidence_source=legacy_window_excess are carried over unchanged. Run with
+# N_STEPS=20 so the multi-refresh self_conditioned arm is actually exercised
+# (10-step Aopen exposes only one post-start refresh; PLAN_RF_SC_GR.md §1).
 controller:
   enabled: true
   mode: d2_d3_full
@@ -117,13 +110,22 @@ controller:
     within_block_source: v_target
     write_actionability_telemetry: true
   global_pressure:
-    enabled: true
-    pressure_source: trajectory_thresholded_G
-    tau_prom_source: calibration_json
-    mapping: smoothstep
-    g_min: 0.0
+    enabled: false
+    g_min: 0.25
     g_max: 1.0
-    min_reliable_refreshes: 1
-    unready_g: 0.0
-    scale_beta: true
-    scale_lambda: true
+    G0_source: stageB_pilot_median
+    s_G_source: stageB_pilot_iqr_half
+  self_conditioned_gr:
+    enabled: true
+    mode: monitor_only
+    arms: [fresh, self_conditioned]
+    ensemble_size: 3
+    struct_temperature: 1.0
+    confidence_source: canonical_softmax_max
+    confidence_threshold: 0.70
+    update_state_from: structural_argmax
+    probe_refresh_policy: all_typed_refreshes
+    top_m: 16
+    lse_temperature: 1.0
+    supra_tau_values: [11.75]
+    write_probe_telemetry: true

@@ -181,7 +181,7 @@ immune pressure / structural pressure  ~=  beta relative to T_struct
 - $\alpha$ and $\nu$ are the post-sampling Pareto retention terms: they decide whether an immune-steered token gets enough rank credit to survive reparam while still retaining structural sanity.
 - $\lambda$ is the D3 immune-risk pressure on already committed residues.
 
-For v1, these remain separate fields because each one diagnoses a different failure mode in the three-filter bottleneck. The longer-term goal is to collapse part of this surface into a smaller controller-level temperature after Stage A proves that D2 can land and persist. That controller-level temperature is the global-risk scalar `g_GR` defined in §2.8, which scales both D2's $\beta$ and D3's $\lambda$ so low-risk proteins are not over-steered while high-risk proteins still receive strong intervention. In Stage C.1, the actuator uses a stable per-trajectory burden aggregate `B_GR`, not the raw per-refresh `G(t)`.
+For v1, these remain separate fields because each one diagnoses a different failure mode in the three-filter bottleneck. The longer-term goal is to collapse part of this surface into a smaller controller-level temperature after Stage A proves that D2 can land and persist. That controller-level temperature is the global-risk scalar `g_GR` defined in §2.8, which scales both D2's $\beta$ and D3's $\lambda$ so low-risk proteins are not over-steered while high-risk proteins still receive strong intervention. In Stage C.1, the actuator uses a stable per-trajectory burden aggregate `B_GR`, not the raw per-refresh `G(t)`. **[FROZEN — 2026-06-18]** this `g_GR` (scaling both $\beta$ and $\lambda$ to suppress low-risk proteins) is superseded — see §2.9 *Empirical update v2* and `doc/Self-Cond_GR.md`; `scale_lambda` proved harmful (C1b) and the "over-steer low-risk" rationale was a binning artifact.
 
 ### 2.6 Context reliability for $\rho_B$
 
@@ -423,6 +423,8 @@ where $u_i^{\mathrm{exec}}(t)$ is nonzero only for positions with a live sticky 
 
 #### GR aggregation: focal versus broad burden
 
+**[FROZEN — 2026-06-18]** This `g_GR` burden *estimator* (`G(t)` / `B_GR` from a single hard completion) is superseded by the SC-GR probe — see §2.9 *Empirical update v2* and `doc/Self-Cond_GR.md`. Retained for history; do not build on it.
+
 `G(t)` should be length-normalized thresholded prominence mass, not a max score and not the raw mean of a dense positive field. `u_pressure_i(t)` is already positive excess above `tau_ref_B`, but the Stage B pilot showed that this field has a broad floor. Runtime Stage C.1 therefore uses a second, calibrated prominence cut:
 
 $$
@@ -575,6 +577,8 @@ Gate conditions:
 - **B mechanism check**: typed `A_i(t)` populates, obeys the `b_mem`/D3 firewall, and measurably redistributes active blocks or editable positions against the matched static A_open comparator. Aggregate immune/Pareto is not a B gate.
 - **C outcome check**: after `g_GR` is active, low-burden over-intervention must decrease without erasing high-burden D2 gains. The D2-vs-D3-only Pareto verdict and revisit-only fallback are evaluated here, not in B.
 
+**[FROZEN — 2026-06-18]** The premise in this Empirical update is superseded by *Empirical update v2* (below) — retained for history. Do not build on the "low-burden over-intervention is first-order / `g_GR` co-primary first-order" claim.
+
 **Empirical update (A_open feasibility, 2026-06-11; RAR 0005 / 0001 / 0003).** Stage A passed its local gates (0003). A candidate-space-opening run (A_open: δ_struct=3, β=3, top_k=8, max_pos=4, min_ess=0) then revised the B/C boundary above on three counts:
 
 1. Opening the action space gave 5× more persisted beneficial edits at ~0 structural cost, but did **not** improve the aggregate immune outcome. Candidate-space size is therefore not the binding constraint on outcome — it is the *test substrate* that makes the static-vs-typed targeting contrast measurable (A0's ~64 disagreements are too few; A_open's ~405 are enough).
@@ -582,6 +586,8 @@ Gate conditions:
 3. Typed targeting alone cannot fix the masking (it still fires on each protein's top positions regardless of absolute burden); only `g_GR` pressure driven by a stable per-trajectory burden aggregate does.
 
 Consequences: **Stage B is demoted to a mechanism check** (does the typed field run and redistribute D2's fire on a non-empty operating point), and **Stage B and Stage C are developed and run together**, not B-gated-then-C. `g_GR` (Stage C) is promoted from deferred second-order optimization to the **co-primary, first-order outcome lever**. The B→C "D2 adds ≥5 pp Pareto over D3-only" verdict and the §5.3 / §6.D revisit-only fallback are **deferred to after `g_GR` is active** — a flat aggregate Pareto under fixed β with no GR is expected, not a falsification of D2. The attribution floor is preserved by **telemetry** (burden-stratified, typed-vs-static; implemented in Stage C), not by serial staging. NetMHCIIpan confirmation stays low-priority: the success criterion is steering visible on the internal head first. The implementation contract for this update lives in `PLAN_RF_UNI_CTRL.md`.
+
+**Empirical update v2 (2026-06-18; RAR 0008 / NoD baseline — supersedes the premise above).** The v1 premise is **frozen**. The "low-burden over-intervention is first-order, `g_GR` co-primary first-order lever" claim rested on a **regression-to-mean binning artifact**: binning designs by a *steered* baseline's risk and subtracting that same baseline (`gr_arm ~ gr_d3` slope ≈ 0.27) inflates the low-burden bin, and the "~5× idealized" recovery was computed on that contaminated metric. Re-measured against the **correct unconditional (NoD) baseline** with a regression-free split-half: steering's low-burden harm is small (~+0.25 nat, within noise) while its high-burden reduction is real (~−1.0 nat); aggregate B1−NoD = −0.58. Corrected reading: (i) low-burden over-intervention is **not** the first-order lever — the first-order lever is **amplifying steering on genuinely high-burden proteins**; (ii) `scale_lambda=true` is harmful (C1b reverts suppressed designs toward base); (iii) the single-hard-completion `B_GR` estimator (ρ ≈ 0.41 vs NoD burden) is too noisy and is **superseded** by the SC-GR probe. The GR redesign continues in `doc/Self-Cond_GR.md`; the `g_GR`-suppress-low content in §2.5 / §2.8 (GR aggregation) / §3 (Stage C) / §8 is frozen accordingly. NoD / ProteinMPNN are evaluation oracles only, never a runtime prior.
 
 ---
 
@@ -602,6 +608,8 @@ Stage A proves a steered token can survive without structural cost. It is a sing
 Replace static active-block selection with the typed `A_i(t)` field (§2.8). Channels (`b_cur + b_env + b_mem + r_ctx`) land together. In the B-only mechanism arm, `G(t)` / `g_GR(t)` are computed and logged but do not scale β/λ. The B readout is mechanism and redistribution, not aggregate Pareto.
 
 ### Stage C — global pressure + schedule
+
+**[FROZEN — 2026-06-18]** The "`g_GR` suppresses controller-wide low-burden over-intervention" framing here is superseded — that premise was a binning artifact (§2.9 *Empirical update v2*); the estimator redesign is in `doc/Self-Cond_GR.md`.
 
 `g_GR` scaling β/λ + Phase C editability (§2.8 Phase C coupling). This is the co-primary outcome lever after RAR 0005: it addresses controller-wide low-burden over-intervention and owns the aggregate Pareto / D2-vs-D3-only verdict once active.
 
@@ -743,6 +751,10 @@ Head variance over alternative completions is recorded by the local-window ensem
 
 Because these sources are not identifiable from variance alone, head-variance gating is deferred. It can later be tested as an analysis or ablation axis against the simpler structural-logit confidence proxies and the ensemble sign-consistency metric.
 
+### 6.G Self-conditioned proposal-envelope GR probe (SC-GR) — MOVED
+
+**Moved 2026-06-18 to `doc/Self-Cond_GR.md`** (live scientific branch document; we continue to revise it there). It globalizes the §2.8 `b_env` channel into a recycled, ensembled, pre-D2 terminal-risk probe that supersedes the single-hard-completion `B_GR` estimator behind `g_GR` (frozen; see §2.9 *Empirical update v2*), contingent on a Stage-1 correlation monitor. The typed targeting field (§2.8) is unaffected.
+
 ---
 
 ## 7. Out of scope
@@ -775,7 +787,7 @@ Owned by `PLAN_RF_UNI_CTRL.md`:
 | Piece | Reason |
 |---|---|
 | Typed actionability field (`A_i(t)`) | Stage B mechanism check on the A_open operating point |
-| Controller-level global-risk temperature | Stage C outcome lever; evaluates low-burden suppression and high-burden D2 marginal |
+| Controller-level global-risk temperature | **[FROZEN — 2026-06-18]** `g_GR`-suppress-low premise superseded (§2.9 *Empirical update v2*); estimator redesign in `doc/Self-Cond_GR.md` |
 | Time-varying $\beta(t), \eta(t), \alpha(t)$ | deferred v2 shape after scalar `g_GR` is understood |
 | Head-variance gate | variance is logged by ensemble, but not identifiable enough to gate in v1 |
 
