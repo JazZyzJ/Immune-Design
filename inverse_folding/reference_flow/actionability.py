@@ -201,14 +201,14 @@ def cluster_support_multiplier(
     v = np.asarray(v_target, dtype=float)
     a = v / (v + float(tau))
     L = v.shape[0]
-    support = np.empty(L, dtype=float)
     r = int(radius)
     mm = float(min_mass)
-    for i in range(L):
-        lo = max(0, i - r)
-        hi = min(L, i + r + 1)
-        support[i] = min(1.0, float(a[lo:hi].sum()) / mm)
-    return support
+    idx = np.arange(L)
+    lo = np.maximum(0, idx - r)
+    hi = np.minimum(L, idx + r + 1)
+    prefix = np.concatenate(([0.0], np.cumsum(a, dtype=float)))
+    mass = prefix[hi] - prefix[lo]
+    return np.minimum(1.0, mass / mm).astype(float, copy=False)
 
 
 def cluster_supported_pressure(

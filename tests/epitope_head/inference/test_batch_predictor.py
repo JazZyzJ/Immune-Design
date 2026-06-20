@@ -89,6 +89,68 @@ def test_predict_proteins_preserves_input_order(tmp_path: Path):
     assert results[2]["prediction"]["meta"]["protein_len"] == len(records[2][1])
 
 
+def test_predict_proteins_batched_encode_matches_serial_predictions(tmp_path: Path):
+    predictor = _build_predictor(tmp_path)
+    records = [
+        ("protein_A", "ACDEFGHIKLMNPQRSTVWY" * 2),
+        ("protein_B", "MNPQRSTVWYACDEFGHIKL" * 2),
+    ]
+
+    serial = [
+        predictor.predict_protein(seq, window_batch_size=7)
+        for _, seq in records
+    ]
+    batched = predictor.predict_proteins(records, window_batch_size=7)
+
+    assert [r["protein_id"] for r in batched] == ["protein_A", "protein_B"]
+    for serial_pred, batched_row in zip(serial, batched):
+        batched_pred = batched_row["prediction"]
+        assert len(serial_pred["window_logits"]) == len(batched_pred["window_logits"])
+        for s, b in zip(serial_pred["window_logits"], batched_pred["window_logits"]):
+            assert (s["start_0b"], s["end_0b"], s["k"]) == (
+                b["start_0b"],
+                b["end_0b"],
+                b["k"],
+            )
+            assert b["z"] == pytest.approx(s["z"], abs=1e-5)
+        torch.testing.assert_close(
+            batched_pred["residue_hotspot"],
+            serial_pred["residue_hotspot"],
+            atol=1e-5,
+            rtol=1e-5,
+        )
+        assert batched_pred["global_risk"] == pytest.approx(
+            serial_pred["global_risk"], abs=1e-5
+        )
+
+
+def test_predict_proteins_uses_one_batched_encoder_call_for_short_records():
+    class EncodeCountingPredictor(InferencePredictor):
+        encode_chunk_calls = 0
+
+        def _encode_chunk(self, seq: str):
+            EncodeCountingPredictor.encode_chunk_calls += 1
+            return super()._encode_chunk(seq)
+
+    model = build_epitope_scorer_from_config(_valid_model_cfg(), DeterministicFrozenEncoder())
+    predictor = EncodeCountingPredictor(
+        model=model,
+        inference_cfg=_valid_inference_yaml()["inference"],
+        tokenize_fn=simple_tokenize,
+    )
+    EncodeCountingPredictor.encode_chunk_calls = 0
+
+    predictor.predict_proteins(
+        [
+            ("p1", "ACDEFGHIKL" * 2),
+            ("p2", "MNPQRSTVWY" * 2),
+            ("p3", "ACDEFG" * 4),
+        ]
+    )
+
+    assert EncodeCountingPredictor.encode_chunk_calls == 0
+
+
 def test_predict_proteins_reuses_single_model_instance(tmp_path: Path):
     """Facade must not re-instantiate the underlying model per record."""
 

@@ -60,7 +60,7 @@ from .counterfactual import (
     D2Handler,
     D2RefreshOutcome,
     _seed_from_tuple,
-    compute_context_pnll,
+    compute_context_pnll_from_log_probs,
 )
 from .head_scoring import HeadScore, OnlineHeadScorer, WindowRiskRecord
 
@@ -539,6 +539,7 @@ class ReferenceFlowController:
         )
 
         per_pos_entropy = _per_position_entropy(context.logits)
+        struct_log_probs = torch.log_softmax(context.logits, dim=-1).detach().cpu()
 
         # Stage B typed actionability (PLAN_RF_UNI_CTRL.md Task B4). Computed
         # pre-D2 so ``v_target`` can drive active-window discovery. In
@@ -553,6 +554,7 @@ class ReferenceFlowController:
                 window_excess=window_excess,
                 completed_tokens=completed_tokens,
                 per_pos_entropy=per_pos_entropy,
+                struct_log_probs=struct_log_probs,
             )
             self._b_mem_prev = actionability.b_mem
             # Stage C.1: fold this refresh's G into the trajectory pressure state
@@ -636,6 +638,7 @@ class ReferenceFlowController:
                 completed_tokens=completed_tokens,
                 decode_tokens=self._decode_tokens,
                 per_pos_entropy=per_pos_entropy,
+                struct_log_probs=struct_log_probs,
                 residue_excess=_residue_excess_from_windows(
                     windows=dyn_score.windows,
                     window_excess=window_excess,
@@ -1672,6 +1675,7 @@ class ReferenceFlowController:
         window_excess: Sequence[float],
         completed_tokens: torch.Tensor,
         per_pos_entropy: torch.Tensor,
+        struct_log_probs: torch.Tensor,
     ) -> UnifiedActionabilityState:
         """Build the typed ``A_i(t)`` field for one refresh (pre-D2)."""
         cfg = self.config.targeting
@@ -1712,7 +1716,12 @@ class ReferenceFlowController:
             g_ent_res,
             g_pnll_res,
             g_stab_res,
-        ) = self._compute_residue_reliability(context, dyn_windows, per_pos_entropy)
+        ) = self._compute_residue_reliability(
+            context,
+            dyn_windows,
+            per_pos_entropy,
+            struct_log_probs,
+        )
 
         # b_env: K_env global envelope completions over the seed-window union.
         (
@@ -1809,6 +1818,7 @@ class ReferenceFlowController:
         context: SamplerStepContext,
         dyn_windows: Sequence[WindowRiskRecord],
         per_pos_entropy: torch.Tensor,
+        struct_log_probs: torch.Tensor,
     ) -> tuple[np.ndarray, ...]:
         """Pre-D2 per-window ``r_ctx_B`` broadcast to residues via max-z source.
 
@@ -1838,8 +1848,8 @@ class ReferenceFlowController:
             g_ent = _g_ent(
                 _mean_block_entropy(per_pos_entropy, s, e), rel.entropy_h0
             )
-            pnll = compute_context_pnll(
-                struct_logits=context.logits,
+            pnll = compute_context_pnll_from_log_probs(
+                log_probs=struct_log_probs,
                 x_t=context.x_t,
                 mask_token_id=int(context.mask_token_id),
                 start_0b=s,
@@ -2224,9 +2234,8 @@ def _residue_excess_from_windows(
             continue
         s = max(0, int(w.start_0b))
         e_end = min(L, int(w.end_0b))
-        for i in range(s, e_end):
-            if e_val > out[i]:
-                out[i] = e_val
+        if e_end > s:
+            out[s:e_end] = np.maximum(out[s:e_end], e_val)
     return out
 
 

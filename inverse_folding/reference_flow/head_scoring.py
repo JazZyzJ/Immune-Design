@@ -23,6 +23,7 @@ import datetime as _dt
 import hashlib
 import json
 import subprocess
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -139,6 +140,7 @@ class OnlineHeadScorer:
         static_cache_meta_path: Path | str | None = None,
         static_cache_policy: str = "lazy_write",
         window_batch_size: int | None = None,
+        dynamic_cache_size: int = 4096,
     ) -> None:
         if score_scale != "raw_logit":
             raise ValueError(
@@ -162,9 +164,13 @@ class OnlineHeadScorer:
         )
         self.static_cache_policy = static_cache_policy
         self.window_batch_size = window_batch_size
+        self.dynamic_cache_size = int(dynamic_cache_size)
+        if self.dynamic_cache_size < 0:
+            raise ValueError("dynamic_cache_size must be >= 0")
 
         # In-memory static cache keyed by (protein_id, sequence_md5).
         self._static_cache: dict[tuple[str, str], HeadScore] = {}
+        self._dynamic_cache: OrderedDict[tuple[str, str], HeadScore] = OrderedDict()
         if self.static_cache_path is not None and self.static_cache_path.exists():
             if self.static_cache_meta_path is None or not self.static_cache_meta_path.exists():
                 raise HeadScoringCacheError(
@@ -191,19 +197,53 @@ class OnlineHeadScorer:
             return BatchHeadScores(scores=())
 
         flat_records = [(label, seq) for label, seq in records]
-        sequences_only = [(label, seq) for label, seq in flat_records]
-        predictor_records = [(label, seq) for label, seq in sequences_only]
-        predictions = self.predictor.predict_proteins(
-            predictor_records,
-            allele_idx=self.allele_idx,
-            window_batch_size=self.window_batch_size,
-        )
+        scores: list[HeadScore | None] = [None] * len(flat_records)
+        pending: dict[tuple[str, str], tuple[str, list[int]]] = {}
+        predictor_records: list[tuple[str, str]] = []
 
-        scores: list[HeadScore] = []
-        for (label, seq), pred_row in zip(flat_records, predictions):
-            prediction = pred_row["prediction"]
-            scores.append(self._wrap_prediction(protein_id, seq, prediction))
-        return BatchHeadScores(scores=tuple(scores))
+        for idx, (label, seq) in enumerate(flat_records):
+            key = (str(protein_id), _md5(seq))
+            cached = self._dynamic_cache.get(key)
+            if cached is not None:
+                self._dynamic_cache.move_to_end(key)
+                scores[idx] = cached
+                continue
+            existing = pending.get(key)
+            if existing is not None:
+                existing[1].append(idx)
+                continue
+            pending[key] = (seq, [idx])
+            predictor_records.append((label, seq))
+
+        if predictor_records:
+            predictions = self.predictor.predict_proteins(
+                predictor_records,
+                allele_idx=self.allele_idx,
+                window_batch_size=self.window_batch_size,
+            )
+            for (label, seq), pred_row in zip(predictor_records, predictions):
+                del label
+                key = (str(protein_id), _md5(seq))
+                prediction = pred_row["prediction"]
+                head_score = self._wrap_prediction(protein_id, seq, prediction)
+                self._remember_dynamic(key, head_score)
+                for idx in pending[key][1]:
+                    scores[idx] = head_score
+
+        final_scores: list[HeadScore] = []
+        for score in scores:
+            if score is None:
+                raise RuntimeError("head predictor returned fewer rows than requested")
+            final_scores.append(score)
+        return BatchHeadScores(scores=tuple(final_scores))
+
+    def _remember_dynamic(self, key: tuple[str, str], head_score: HeadScore) -> None:
+        if self.dynamic_cache_size == 0:
+            return
+        self._dynamic_cache[key] = head_score
+        self._dynamic_cache.move_to_end(key)
+        while len(self._dynamic_cache) > self.dynamic_cache_size:
+            self._dynamic_cache.popitem(last=False)
 
     # ---------- static cache ----------
 
