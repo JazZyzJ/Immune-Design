@@ -80,6 +80,49 @@ def test_score_batch_same_protein_returns_ordered_window_records():
         assert keys == sorted(keys)
 
 
+def test_score_batch_same_protein_deduplicates_dynamic_sequence_md5():
+    predictor = _build_predictor()
+
+    class CountingPredictor(InferencePredictor):
+        scored_records = 0
+
+        def predict_proteins(self, records, *args, **kwargs):
+            CountingPredictor.scored_records += len(records)
+            return super().predict_proteins(records, *args, **kwargs)
+
+    counting = CountingPredictor(
+        model=predictor.model,
+        inference_cfg=_valid_inference_yaml()["inference"],
+        tokenize_fn=simple_tokenize,
+    )
+    scorer = OnlineHeadScorer(
+        predictor=counting,
+        allele="DRB1_0101",
+        allele_idx=0,
+        head_checkpoint_digest="ckpt-abc",
+        head_config_hash="cfg-xyz",
+        score_scale="raw_logit",
+        window_k_min=12,
+        window_k_max=25,
+    )
+    seq_a = "ACDEFGHIKLMNPQRSTVWY" * 2
+    seq_b = "MNPQRSTVWYACDEFGHIKL" * 2
+    CountingPredictor.scored_records = 0
+
+    first = scorer.score_batch_same_protein(
+        protein_id="protein_1",
+        records=[("a0", seq_a), ("b0", seq_b), ("a1", seq_a)],
+    )
+    second = scorer.score_batch_same_protein(
+        protein_id="protein_1",
+        records=[("a2", seq_a), ("b1", seq_b)],
+    )
+
+    assert CountingPredictor.scored_records == 2
+    assert [s.sequence_md5 for s in first.scores] == [_md5(seq_a), _md5(seq_b), _md5(seq_a)]
+    assert [s.sequence_md5 for s in second.scores] == [_md5(seq_a), _md5(seq_b)]
+
+
 # ---------- static cache ----------
 
 

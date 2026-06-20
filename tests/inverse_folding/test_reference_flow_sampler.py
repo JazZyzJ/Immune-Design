@@ -13,7 +13,10 @@ from inverse_folding.reference_flow.config import (
     SamplerConfig,
     ScheduleConfig,
 )
-from inverse_folding.reference_flow.sampler import PositionDependentDFMSampler
+from inverse_folding.reference_flow.sampler import (
+    PositionDependentDFMSampler,
+    SamplerBatchLane,
+)
 
 
 VOCAB_SIZE = 5
@@ -221,6 +224,80 @@ def test_remask_is_deterministic_for_same_seed():
     )
     assert torch.equal(out1.tokens, out2.tokens)
     assert out1.unmask_step_by_pos == out2.unmask_step_by_pos
+
+
+def test_batched_sampler_matches_scalar_lanes_with_independent_rngs():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg0 = _baseline_cfg(n_steps=10, remask_enabled=True)
+    cfg1 = ReferenceFlowConfig(
+        sampler=SamplerConfig(
+            n_steps=10,
+            seed=31,
+            temperature=1.0,
+            n_designs_per_protein=1,
+            remask=RemaskConfig(enabled=True),
+        ),
+        schedule=ScheduleConfig(base_form="linear"),
+        amplification=AmplificationConfig(form="constant_one", h_source="h_processed"),
+        h_shuffle=HShuffleConfig(enabled=False, seed=None),
+    )
+    h0 = np.zeros(8, dtype=np.float32)
+    h1 = np.zeros(5, dtype=np.float32)
+
+    scalar0 = sampler.sample(
+        sequence_length=8,
+        h_values=h0,
+        denoiser=biased_denoiser,
+        config=cfg0,
+        save_trajectories=True,
+        protein_id="p0",
+        design_idx=0,
+    )
+    scalar1 = sampler.sample(
+        sequence_length=5,
+        h_values=h1,
+        denoiser=biased_denoiser,
+        config=cfg1,
+        save_trajectories=True,
+        protein_id="p1",
+        design_idx=0,
+    )
+
+    batched_calls: list[list[list[int]]] = []
+
+    def batched_denoiser(x_ts, t, structs):
+        del t, structs
+        batched_calls.append([x.tolist() for x in x_ts])
+        return [biased_denoiser(x_t, 0.0, None) for x_t in x_ts]
+
+    batched = sampler.sample_batch(
+        lanes=[
+            SamplerBatchLane(
+                sequence_length=8,
+                h_values=h0,
+                config=cfg0,
+                protein_id="p0",
+                design_idx=0,
+            ),
+            SamplerBatchLane(
+                sequence_length=5,
+                h_values=h1,
+                config=cfg1,
+                protein_id="p1",
+                design_idx=0,
+            ),
+        ],
+        batched_denoiser=batched_denoiser,
+        save_trajectories=True,
+    )
+
+    assert len(batched_calls) == 10
+    assert torch.equal(batched[0].tokens, scalar0.tokens)
+    assert torch.equal(batched[1].tokens, scalar1.tokens)
+    assert batched[0].unmask_step_by_pos == scalar0.unmask_step_by_pos
+    assert batched[1].unmask_step_by_pos == scalar1.unmask_step_by_pos
+    assert batched[0].trajectory_rows == scalar0.trajectory_rows
+    assert batched[1].trajectory_rows == scalar1.trajectory_rows
 
 
 def test_remask_config_round_trips_through_yaml(tmp_path):

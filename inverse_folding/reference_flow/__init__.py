@@ -13,7 +13,7 @@ from .config import (
     reference_flow_config_to_dict,
     with_reference_flow_overrides,
 )
-from .sampler import PositionDependentDFMSampler, SamplerOutput
+from .sampler import PositionDependentDFMSampler, SamplerBatchLane, SamplerOutput
 
 __all__ = [
     "AmplificationConfig",
@@ -23,6 +23,7 @@ __all__ = [
     "ReferenceFlowConfigError",
     "RemaskConfig",
     "SamplerConfig",
+    "SamplerBatchLane",
     "SamplerOutput",
     "ScheduleConfig",
     "amplification_factor",

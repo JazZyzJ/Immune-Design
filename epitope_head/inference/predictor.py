@@ -395,6 +395,96 @@ class InferencePredictor:
             },
         }
 
+    def _can_batch_encode_records(self, records: list[tuple[str, str]]) -> bool:
+        if len(records) <= 1:
+            return False
+        for _, seq in records:
+            if not isinstance(seq, str) or len(seq) == 0:
+                return False
+            if self.chunking_enabled and len(seq) > self.context_len:
+                return False
+        return True
+
+    def _predict_proteins_batched_encode(
+        self,
+        records: list[tuple[str, str]],
+        allele_idx: int = 0,
+        window_batch_size: int | None = None,
+    ) -> list[dict]:
+        """Predict short proteins with one encoder forward, preserving output order.
+
+        Long proteins that require chunk stitching stay on the serial path in
+        ``predict_proteins``. This keeps the optimization local to the common RF
+        candidate case where every record is a same-protein short sequence.
+        """
+        min_k = self.min_k
+        max_k = self.max_k
+        center_method = self.inference_cfg.get("hotspot_center_method", "median")
+        clamp_method = self.inference_cfg.get("hotspot_clamp", "none")
+        protein_ids = [protein_id for protein_id, _ in records]
+        seqs = [seq for _, seq in records]
+
+        toks = self.tokenize_fn(seqs)
+        token_ids = toks["token_ids"].to(self.device)
+        attention_mask = toks["attention_mask"].to(self.device)
+        with torch.no_grad():
+            g_batch, lengths = self.model.encode_and_project(token_ids, attention_mask)
+        g_batch = g_batch.detach().cpu()
+        lengths = lengths.detach().cpu()
+
+        enumerate_kwargs: dict = {}
+        if window_batch_size is not None:
+            enumerate_kwargs["window_batch_size"] = int(window_batch_size)
+
+        outputs: list[dict] = []
+        for row_idx, (protein_id, seq) in enumerate(zip(protein_ids, seqs)):
+            protein_len = len(seq)
+            encoded_len = int(lengths[row_idx].item())
+            if encoded_len != protein_len:
+                raise RuntimeError(
+                    f"batched head encode length mismatch for {protein_id}: "
+                    f"{encoded_len} != {protein_len}"
+                )
+            G = g_batch[row_idx, :protein_len]
+            window_entries, z_tensor = self.enumerate_and_score(
+                G, protein_len, min_k, max_k, allele_idx, **enumerate_kwargs,
+            )
+
+            if len(window_entries) == 0:
+                h_raw = torch.zeros(protein_len, dtype=torch.float32)
+                h_processed = torch.zeros(protein_len, dtype=torch.float32)
+                R = float("-inf")
+            else:
+                h_raw, h_processed, R = self.aggregate_hotspot_and_risk(
+                    window_entries, z_tensor, protein_len, center_method, clamp_method,
+                )
+
+            prediction = {
+                "window_logits": window_entries,
+                "residue_hotspot": h_processed,
+                "global_risk": R,
+                "meta": {
+                    "protein_len": protein_len,
+                    "n_windows": len(window_entries),
+                    "min_k": min_k,
+                    "max_k": max_k,
+                    "center_method": center_method,
+                    "clamp_method": clamp_method,
+                },
+                "debug": {
+                    "encode": {
+                        "n_chunks": 1,
+                        "chunk_starts": [0],
+                        "residue_owner_chunk": [0] * protein_len,
+                        "residue_reliability": [1.0] * protein_len,
+                    },
+                    "h_raw": h_raw,
+                    "z_tensor": z_tensor,
+                },
+            }
+            outputs.append({"protein_id": protein_id, "prediction": prediction})
+        return outputs
+
     def predict_proteins(
         self,
         records: list[tuple[str, str]],
@@ -417,6 +507,10 @@ class InferencePredictor:
             One ``{"protein_id": str, "prediction": dict}`` per input record,
             in input order.
         """
+        if self._can_batch_encode_records(records):
+            return self._predict_proteins_batched_encode(
+                records, allele_idx=allele_idx, window_batch_size=window_batch_size
+            )
         outputs: list[dict] = []
         for protein_id, seq in records:
             prediction = self.predict_protein(

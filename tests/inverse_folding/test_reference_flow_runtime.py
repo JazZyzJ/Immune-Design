@@ -8,8 +8,10 @@ import pytest
 import torch
 
 from inverse_folding.reference_flow.runtime import (
+    BatchedDPLMDenoiserContext,
     DPLMDenoiserContext,
     decode_residue_tokens,
+    make_batched_dplm_denoiser,
     make_dplm_denoiser,
     prepare_backbone_batch,
 )
@@ -73,6 +75,88 @@ def test_make_dplm_denoiser_masks_x_token_logits():
     denoiser = make_dplm_denoiser(context)
     logits = denoiser(torch.tensor([0, 1], dtype=torch.long), 0.0, None)
     assert torch.isneginf(logits[:, x_id]).all()
+
+
+def test_make_batched_dplm_denoiser_splits_rows_and_masks_invalid_logits():
+    x_id = 4
+
+    class _RecordingDecoder:
+        def __init__(self) -> None:
+            self.calls: list[torch.Tensor] = []
+
+        def __call__(self, batch, encoder_out, need_head_weights=False):
+            del encoder_out, need_head_weights
+            prev_tokens = batch["prev_tokens"]
+            self.calls.append(prev_tokens.detach().clone())
+            batch_size, padded_length = prev_tokens.shape
+            logits = torch.zeros((batch_size, padded_length, 10), dtype=torch.float32)
+            for b in range(batch_size):
+                logits[b, :, b] = 10.0
+            logits[..., x_id] = 100.0
+            return {"logits": logits}
+
+    decoder = _RecordingDecoder()
+    task = SimpleNamespace(
+        alphabet=_FakeAlphabet(
+            {
+                0: "A",
+                1: "C",
+                2: "D",
+                3: "E",
+                4: "X",
+                5: "<mask>",
+                6: "<unk>",
+                7: "<pad>",
+                8: "<cls>",
+                9: "<eos>",
+            }
+        ),
+        model=SimpleNamespace(decoder=decoder, x_id=x_id),
+    )
+    context = BatchedDPLMDenoiserContext(
+        task=task,
+        encoder_out={},
+        template_prev_tokens=torch.tensor(
+            [
+                [8, 5, 5, 9],
+                [8, 5, 9, 7],
+            ],
+            dtype=torch.long,
+        ),
+        residue_mask=torch.tensor(
+            [
+                [False, True, True, False],
+                [False, True, False, False],
+            ]
+        ),
+        tokens_template=torch.tensor(
+            [
+                [8, 0, 1, 9],
+                [8, 2, 9, 7],
+            ],
+            dtype=torch.long,
+        ),
+        sequence_lengths=(2, 1),
+    )
+
+    denoiser = make_batched_dplm_denoiser(context)
+    logits = denoiser(
+        [
+            torch.tensor([0, 1], dtype=torch.long),
+            torch.tensor([2], dtype=torch.long),
+        ],
+        0.0,
+        [None, None],
+    )
+
+    assert len(decoder.calls) == 1
+    assert decoder.calls[0].tolist() == [
+        [8, 0, 1, 9],
+        [8, 2, 9, 7],
+    ]
+    assert [tuple(row.shape) for row in logits] == [(2, 10), (1, 10)]
+    assert torch.isneginf(logits[0][:, x_id]).all()
+    assert torch.isneginf(logits[1][:, x_id]).all()
 
 
 # ── prepare_backbone_batch partial-safety ─────────────────────────────────

@@ -280,21 +280,41 @@ def compute_context_pnll(
     end_0b: int,
 ) -> float | None:
     """Mean pseudo-NLL over committed context residues in ``[start, end)``."""
+    log_probs = torch.log_softmax(struct_logits, dim=-1).detach().cpu()
+    return compute_context_pnll_from_log_probs(
+        log_probs=log_probs,
+        x_t=x_t,
+        mask_token_id=mask_token_id,
+        start_0b=start_0b,
+        end_0b=end_0b,
+    )
+
+
+def compute_context_pnll_from_log_probs(
+    *,
+    log_probs: torch.Tensor,
+    x_t: torch.Tensor,
+    mask_token_id: int,
+    start_0b: int,
+    end_0b: int,
+) -> float | None:
+    """Mean pseudo-NLL using precomputed ``log_softmax(struct_logits)``."""
     s = max(0, int(start_0b))
     e = min(int(x_t.shape[0]), int(end_0b))
     if e <= s:
         return None
-    log_probs = torch.log_softmax(struct_logits, dim=-1).detach().cpu()
+    lp = log_probs.detach()
+    if lp.device.type != "cpu":
+        lp = lp.cpu()
     x = x_t.detach().cpu()
-    vals: list[float] = []
-    for i in range(s, e):
-        tok = int(x[i].item())
-        if tok == int(mask_token_id):
-            continue
-        vals.append(-float(log_probs[i, tok].item()))
-    if not vals:
+    span_tokens = x[s:e].to(torch.long)
+    committed = span_tokens != int(mask_token_id)
+    if not bool(committed.any()):
         return None
-    return float(np.mean(vals))
+    positions = torch.arange(s, e, dtype=torch.long)[committed]
+    tokens = span_tokens[committed]
+    vals = -lp[positions, tokens]
+    return float(vals.to(torch.float64).mean().item())
 
 
 @dataclass(frozen=True)
@@ -556,6 +576,7 @@ class D2Handler:
         completed_tokens: torch.Tensor,
         decode_tokens: Callable[[torch.Tensor], str],
         per_pos_entropy: torch.Tensor,
+        struct_log_probs: torch.Tensor,
         residue_excess: np.ndarray,
         current_window_risks: Sequence[float],
         scorer: Any,
@@ -591,6 +612,7 @@ class D2Handler:
                 completed_tokens=completed_tokens,
                 decode_tokens=decode_tokens,
                 per_pos_entropy=per_pos_entropy,
+                struct_log_probs=struct_log_probs,
                 residue_excess=residue_excess,
                 current_window_risks=current_window_risks,
                 scorer=scorer,
@@ -734,6 +756,7 @@ class D2Handler:
         completed_tokens: torch.Tensor,
         decode_tokens: Callable[[torch.Tensor], str],
         per_pos_entropy: torch.Tensor,
+        struct_log_probs: torch.Tensor,
         residue_excess: np.ndarray,
         current_window_risks: Sequence[float],
         scorer: Any,
@@ -788,8 +811,8 @@ class D2Handler:
             omega_indices=omega,
             aggregation="LME",
         )
-        context_pnll = compute_context_pnll(
-            struct_logits=structural_logits,
+        context_pnll = compute_context_pnll_from_log_probs(
+            log_probs=struct_log_probs,
             x_t=x_t,
             mask_token_id=int(mask_token_id),
             # Same Stage A v1 locality approximation as the completion

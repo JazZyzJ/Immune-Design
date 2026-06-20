@@ -61,6 +61,7 @@ SAVE_TRAJECTORIES="${SAVE_TRAJECTORIES:-0}"
 H_CORPUS_STATS="${H_CORPUS_STATS:-}"
 FLAG="${FLAG:-}"
 RUN_ID="${RUN_ID:-}"
+RF_BATCH_SIZE="${RF_BATCH_SIZE:-1}"
 
 # Phase D1 controller wiring (optional; only consumed by MODE=reference_flow).
 # CONTROLLER_CONFIG empty → controller is disabled and the head flags are
@@ -69,7 +70,7 @@ CONTROLLER_CONFIG="${CONTROLLER_CONFIG:-}"
 HEAD_CHECKPOINT="${HEAD_CHECKPOINT:-}"
 HEAD_CONFIG_DIR="${HEAD_CONFIG_DIR:-${PROJECT_ROOT}/epitope_head/configs}"
 HEAD_VARIANT_ID="${HEAD_VARIANT_ID:-}"
-HEAD_DEVICE="${HEAD_DEVICE:-cpu}"
+HEAD_DEVICE="${HEAD_DEVICE:-cuda}"
 HEAD_WINDOW_BATCH_SIZE="${HEAD_WINDOW_BATCH_SIZE:-}"
 HEAD_ALLELE_IDX="${HEAD_ALLELE_IDX:-0}"
 # Stage C.1 global-pressure calibration JSON (PLAN_RF_UNI_CTRL.md C1.3). Required
@@ -177,6 +178,7 @@ case "${MODE}" in
         echo "  h corpus stats  : ${H_CORPUS_STATS:-<none>}"
         echo "  Resume from     : ${RESUME_FROM:-<fresh run>}"
         echo "  Run ID          : ${RUN_ID:-<auto>}"
+        echo "  RF batch size   : ${RF_BATCH_SIZE}"
         echo "  Controller YAML : ${CONTROLLER_CONFIG:-<disabled>}"
         if [[ -n "${CONTROLLER_CONFIG}" ]]; then
             echo "  Head checkpoint : ${HEAD_CHECKPOINT:-<missing>}"
@@ -206,6 +208,7 @@ case "${MODE}" in
         if [[ -n "${N_STEPS:-}" ]]; then
             EXTRA_FLAGS+=(--n-steps "${N_STEPS}")
         fi
+        EXTRA_FLAGS+=(--batch-size "${RF_BATCH_SIZE}")
         if [[ -n "${RUN_ID}" ]]; then
             EXTRA_FLAGS+=(--run-id "${RUN_ID}")
         fi

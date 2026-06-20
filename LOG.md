@@ -3284,3 +3284,42 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_RF_SC_GR.md` Tasks SC0.1–SC0.5
   - `doc/Self-Cond_GR.md` §1–§7
   - `L0113` (Stage B.1 / Stage C.1 base operating point)
+
+### L0117
+- timestamp: 2026-06-20T01:51:56-04:00
+- type: CODEMAP_DIFF
+- module: RF
+- trigger: User requested merging the RF performance branch after cluster validation of GPU-head/cache and batched-denoiser RF paths.
+- change_summary: Added RF generation performance path: cached/batched head scoring, PNLL precompute reuse, vectorized small helpers, and `run_if_phase_c1.py --batch-size` / `RF_BATCH_SIZE` to batch only the DPLM denoiser forward while keeping controller/RNG/telemetry per lane.
+- rationale: Stage A/C controller runs were bottlenecked by repeated CPU/head/PNLL and scalar DPLM decoder overhead, leaving GPU under-used. The implementation preserves controller semantics by sharing only the structural decoder forward across lanes; D2/D3/SC-GR controller state, RNG, remask, and telemetry remain per-design independent.
+- artifacts:
+  - `epitope_head/inference/predictor.py`
+  - `inverse_folding/reference_flow/actionability.py`
+  - `inverse_folding/reference_flow/controller.py`
+  - `inverse_folding/reference_flow/counterfactual.py`
+  - `inverse_folding/reference_flow/head_scoring.py`
+  - `inverse_folding/reference_flow/runtime.py`
+  - `inverse_folding/reference_flow/sampler.py`
+  - `scripts/run_if_phase_c1.py`
+  - `scripts/submit_if_phase_c.slurm`
+  - `doc/SCRIPTS.md`
+  - `tests/epitope_head/inference/test_batch_predictor.py`
+  - `tests/inverse_folding/test_reference_flow_counterfactual.py`
+  - `tests/inverse_folding/test_reference_flow_head_scoring.py`
+  - `tests/inverse_folding/test_reference_flow_runtime.py`
+  - `tests/inverse_folding/test_reference_flow_sampler.py`
+  - `tests/scripts/test_run_if_phase_c1_script.py`
+- evidence: |
+    Local verification on the perf branch: `bash -n scripts/submit_if_phase_c.slurm`; `git diff --check`; `pytest tests/scripts/test_run_if_phase_c1_script.py tests/scripts/test_run_if_phase_c1_d1.py tests/scripts/test_run_if_phase_c1_d2_d3.py tests/inverse_folding/test_reference_flow_runtime.py tests/inverse_folding/test_reference_flow_sampler.py tests/inverse_folding/test_reference_flow_sampler_controller.py` -> 73 passed; `pytest tests/inverse_folding/test_reference_flow_*.py` -> 269 passed, 1 warning.
+    Cluster smoke (2 proteins / 20 steps): GPU-head path wall time 44.79s vs CPU-head 69.77s (1.56x pipeline speedup; SLURM elapsed 1:34 vs 1:59). Semantic check parent vs perf: `generated.parquet` identical after dropping `wall_seconds`; `controller_events.parquet` schema/row count/discrete fields identical; float telemetry drift max 1.57e-5, within parent-repeat CUDA noise (1.76e-5).
+    Batched RF denoiser validation: scalar vs `RF_BATCH_SIZE=4/8` produced identical `generated.parquet` after dropping `wall_seconds`; `controller_events.parquet` schema and row count identical (535 rows); controller discrete fields identical. Decoder-derived float telemetry drift was bounded but not bit-equivalent (`max_abs` 3.34e-5 for batch4, 3.59e-5 for batch8), concentrated in `struct_top*_logprob/gap`, `logit_struct`, and `logit_corrected`; accepted as trajectory-equivalent with bounded batched-DPLM numerical drift, not scalar float bit-equivalence.
+- impact:
+  - scope: RF runtime/driver performance path and telemetry provenance. Default behavior remains scalar (`--batch-size=1`, `RF_BATCH_SIZE=1`); `RF_BATCH_SIZE>1` is an explicit performance operating point with identical discrete trajectory in smoke validation and bounded decoder-float drift.
+  - risk: medium
+  - confidence: 0.86
+- status: done
+- next_action: Use `RF_BATCH_SIZE=4` as the first cluster full-run setting, escalate to `8` only after confirming memory headroom; evaluate generated/controller discrete equivalence as hard gates and track decoder-derived float telemetry with a relaxed bounded-drift tolerance (e.g. `max_abs <= 5e-5`).
+- refs:
+  - `codex/rf-perf-stagea`
+  - `codex/rf-batched-denoiser`
+  - `L0116` (SC-GR monitor branch preserved during merge)

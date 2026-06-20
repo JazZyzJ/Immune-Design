@@ -27,6 +27,7 @@ from dataclasses import asdict, dataclass
 from inverse_folding.evaluation.h_maps import load_h_maps, sequence_md5
 from inverse_folding.reference_flow import (
     PositionDependentDFMSampler,
+    SamplerBatchLane,
     load_reference_flow_config,
     normalize_h_values,
     reference_flow_config_to_dict,
@@ -44,7 +45,7 @@ from inverse_folding.reference_flow.controller_config import (
     validate_global_pressure_runtime,
 )
 from inverse_folding.reference_flow.head_scoring import OnlineHeadScorer
-from scripts.run_if_phase_c0 import _fmt_hms, write_phase_c_outputs
+from scripts.run_if_phase_c0 import _fmt_hms, _length_buckets, write_phase_c_outputs
 
 
 # ============================================================
@@ -1105,6 +1106,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--n-designs-per-protein", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--n-steps", type=int, default=None)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help=(
+            "Reference-flow denoiser batch size. Values >1 batch only the "
+            "DPLM decoder forward; controller/RNG/telemetry remain per lane."
+        ),
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--save-trajectories", action="store_true")
     parser.add_argument("--fail-pct-threshold", type=float, default=0.05)
@@ -1167,6 +1177,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--n-steps must be positive")
     if args.n_designs_per_protein is not None and args.n_designs_per_protein <= 0:
         parser.error("--n-designs-per-protein must be positive")
+    if args.batch_size <= 0:
+        parser.error("--batch-size must be positive")
     if args.progress_every < 0:
         parser.error("--progress-every must be non-negative")
     return args
@@ -1189,6 +1201,7 @@ def print_resolved_hyperparams(
         "config": str(Path(args.config).resolve()),
         "output_root": str(Path(args.output_root).resolve()),
         "run_dir": str(run_dir),
+        "batch_size": int(args.batch_size),
         "device": args.device,
         "save_trajectories": args.save_trajectories,
         "fail_pct_threshold": args.fail_pct_threshold,
@@ -1444,14 +1457,17 @@ def main(argv: list[str] | None = None) -> int:
 
     from inverse_folding.dplm_refiner.tokens import CANONICAL_AA_ORDER
     from inverse_folding.reference_flow.runtime import (
+        build_batched_dplm_denoiser_context,
         build_dplm_denoiser_context,
         checkpoint_digest,
         decode_residue_tokens,
         git_sha,
         load_if_task,
         load_test_entries,
+        make_batched_dplm_denoiser,
         make_dplm_denoiser,
         prepare_backbone,
+        prepare_backbone_batch,
         safe_allele_tag,
         utc_timestamp,
         write_json,
@@ -1517,6 +1533,7 @@ def main(argv: list[str] | None = None) -> int:
             "h_maps_parquet": str(Path(args.h_maps_parquet).resolve()),
             "n_input_proteins": int(len(entries)),
             "device": args.device,
+            "batch_size": int(args.batch_size),
             "save_trajectories": args.save_trajectories,
             "fail_pct_threshold": args.fail_pct_threshold,
             "run_dir": str(run_dir),
@@ -1656,326 +1673,556 @@ def main(argv: list[str] | None = None) -> int:
     total_entries = int(len(entries))
     run_start = time.time()
     aborted = False
+    trajectory_rows_by_protein: dict[str, list[dict[str, Any]]] = {}
 
-    for entry_idx, (_, entry) in enumerate(entries.iterrows(), start=1):
-        protein_id = str(entry["protein_id"])
-        h_row = h_map_rows.get(protein_id)
-        if h_row is None:
-            failures.append({"protein_id": protein_id, "reason": "missing_h_map"})
+    def _design_config(design_seed: int):
+        return replace(config, sampler=replace(config.sampler, seed=int(design_seed)))
+
+    def _shuffle_seed_for(protein_id: str, design_idx: int) -> int | None:
+        if not config.h_shuffle.enabled:
+            return None
+        return derive_h_shuffle_seed(
+            int(config.h_shuffle.seed),
+            protein_id,
+            int(design_idx),
+        )
+
+    def _build_d1_controller_for_entry(
+        *,
+        entry: pd.Series,
+        protein_id: str,
+        design_idx: int,
+        design_seed: int,
+        task_for_decode: Any,
+    ):
+        if controller_setup is None or head_scorer is None:
+            return None
+        canonical_ids = canonical_aa_token_ids(task_for_decode)
+        return D1MonitorController(
+            protein_id=protein_id,
+            design_idx=int(design_idx),
+            seed=int(design_seed),
+            static_sequence=str(entry["sequence"]),
+            scorer=head_scorer,
+            config=controller_setup.config,
+            decode_tokens=lambda toks: decode_residue_tokens(task_for_decode, toks),
+            canonical_token_ids=canonical_ids,
+        )
+
+    def _record_design_success(
+        *,
+        entry: pd.Series,
+        protein_id: str,
+        sequence_length: int,
+        h_values: Any,
+        design_idx: int,
+        design_seed: int,
+        used_task: Any,
+        out: Any,
+        wall_seconds: float,
+        d1_controller: Any | None,
+    ) -> None:
+        del entry, sequence_length, h_values
+        rows_by_key[(protein_id, int(design_idx))] = {
+            "protein_id": protein_id,
+            "design_idx": int(design_idx),
+            "sequence": decode_residue_tokens(used_task, out.tokens),
+            "seed": int(design_seed),
+            "wall_seconds": float(wall_seconds),
+        }
+        if args.save_trajectories:
+            protein_rows = trajectory_rows_by_protein.setdefault(protein_id, [])
+            for row in out.trajectory_rows:
+                protein_rows.append(
+                    {
+                        "protein_id": protein_id,
+                        "design_idx": int(design_idx),
+                        "seed": int(design_seed),
+                        **row,
+                    }
+                )
+        if d1_controller is None:
+            return
+        design_refreshes = d1_controller.refresh_records()
+        design_events = d1_controller.controller_event_rows()
+        refresh_records_all.extend(design_refreshes)
+        event_rows_all.extend(design_events)
+        design_addenda = d1_controller.refresh_addenda()
+        for refresh_step_key, addendum in design_addenda.items():
+            refresh_addenda_by_key[
+                (protein_id, int(design_idx), int(refresh_step_key))
+            ] = addendum
+        design_productive = (
+            d1_controller.productive_revisit_outcomes()
+            if hasattr(d1_controller, "productive_revisit_outcomes")
+            else None
+        )
+        design_addenda_list = [
+            design_addenda.get(int(rec.refresh_step)) for rec in design_refreshes
+        ]
+        per_protein_summaries.append(
+            compute_per_protein_summary(
+                protein_id=protein_id,
+                design_idx=int(design_idx),
+                seed=int(design_seed),
+                allele=args.allele,
+                arm=controller_setup.config.mode,
+                refresh_records=design_refreshes,
+                event_rows=design_events,
+                controller_config=controller_setup.config,
+                productive_revisit_outcomes=design_productive,
+                refresh_addenda=design_addenda_list,
+            )
+        )
+        tcfg = controller_setup.config.targeting
+        if tcfg.write_actionability_telemetry and hasattr(
+            d1_controller, "actionability_states"
+        ):
+            for state in d1_controller.actionability_states():
+                rows, summary = _actionability_state_to_records(
+                    state,
+                    protein_id=protein_id,
+                    design_idx=int(design_idx),
+                    seed=int(design_seed),
+                    targeting_mode=tcfg.mode,
+                    tau_ref_source=tcfg.tau_ref_source,
+                    d3_evidence_source=controller_setup.config.d3.evidence_source,
+                )
+                actionability_rows_all.extend(rows)
+                actionability_summary_all.append(summary)
+                actionability_g_by_key[
+                    (protein_id, int(design_idx), int(state.refresh_step))
+                ] = {
+                    "G": float(state.G),
+                    "g_GR_diagnostic": float(state.g_GR_diagnostic),
+                }
+        scgr_cfg = controller_setup.config.self_conditioned_gr
+        if scgr_cfg.enabled and hasattr(
+            d1_controller, "self_conditioned_gr_sample_rows"
+        ):
+            sc_gr_sample_rows_all.extend(
+                d1_controller.self_conditioned_gr_sample_rows()
+            )
+            sc_gr_refresh_rows_all.extend(
+                d1_controller.self_conditioned_gr_refresh_rows()
+            )
+
+    def _write_partial_checkpoint() -> None:
+        partial_manifest = {
+            "run_id": run_id,
+            "mode": "c1_reference_flow",
+            "timestamp": utc_timestamp(),
+            "git_sha": git_sha(PROJECT_ROOT),
+            "resume_signature": resume_signature,
+            "n_rows_generated": len(rows_by_key),
+            "n_failures": len(failures),
+            "batch_size": int(args.batch_size),
+        }
+        partial_config = {
+            "mode": "c1_reference_flow",
+            "resume_signature": resume_signature,
+            "batch_size": int(args.batch_size),
+            "resolved_reference_flow_config": config_dict,
+        }
+        _write_partial_state(
+            run_dir=run_dir,
+            rows_by_key=rows_by_key,
+            failures=failures,
+            run_config=partial_config,
+            manifest=partial_manifest,
+        )
+
+    def _emit_loop_progress(entry_idx: int, protein_id: str) -> None:
+        if args.progress_every <= 0:
+            return
+        _emit_progress(
+            entry_idx=entry_idx,
+            total_entries=total_entries,
+            protein_id=protein_id,
+            n_rows=len(rows_by_key),
+            n_failures=len(failures),
+            total_designs=total_designs,
+            run_start=run_start,
+        )
+        elapsed = time.time() - run_start
+        done = len(rows_by_key) + len(failures)
+        avg = elapsed / float(done) if done > 0 else 0.0
+        log_metrics(
+            wandb_run,
+            {
+                "progress/proteins_done": entry_idx,
+                "progress/rows_generated": len(rows_by_key),
+                "progress/failures": len(failures),
+                "progress/elapsed_seconds": elapsed,
+                "progress/avg_seconds_per_design": avg,
+            },
+            step=entry_idx,
+        )
+
+    def _run_scalar_design(
+        *,
+        entry: pd.Series,
+        protein_id: str,
+        sequence_length: int,
+        h_values: Any,
+        design_idx: int,
+    ) -> bool:
+        nonlocal cpu_task
+        design_seed = int(config.sampler.seed) + int(design_idx)
+        d1_controller = _build_d1_controller_for_entry(
+            entry=entry,
+            protein_id=protein_id,
+            design_idx=int(design_idx),
+            design_seed=design_seed,
+            task_for_decode=task,
+        )
+        try:
+            started = time.time()
+            prepared = prepare_backbone(
+                task=task,
+                entry=entry,
+                pdb_root=args.pdb_root,
+                device=args.device,
+            )
+            context = build_dplm_denoiser_context(task=task, prepared=prepared)
+            out = sampler.sample(
+                sequence_length=sequence_length,
+                h_values=h_values,
+                denoiser=make_dplm_denoiser(context),
+                config=_design_config(design_seed),
+                save_trajectories=args.save_trajectories,
+                shuffle_seed=_shuffle_seed_for(protein_id, int(design_idx)),
+                controller=d1_controller,
+                protein_id=protein_id,
+                design_idx=int(design_idx),
+            )
+            _record_design_success(
+                entry=entry,
+                protein_id=protein_id,
+                sequence_length=sequence_length,
+                h_values=h_values,
+                design_idx=int(design_idx),
+                design_seed=design_seed,
+                used_task=task,
+                out=out,
+                wall_seconds=time.time() - started,
+                d1_controller=d1_controller,
+            )
+            return True
+        except RuntimeError as exc:
+            if _is_oom(exc) and str(args.device).startswith("cuda"):
+                if cpu_task is None:
+                    cpu_task = load_if_task(args.checkpoint, device="cpu")
+                try:
+                    started = time.time()
+                    prepared = prepare_backbone(
+                        task=cpu_task,
+                        entry=entry,
+                        pdb_root=args.pdb_root,
+                        device="cpu",
+                    )
+                    context = build_dplm_denoiser_context(task=cpu_task, prepared=prepared)
+                    d1_controller = _build_d1_controller_for_entry(
+                        entry=entry,
+                        protein_id=protein_id,
+                        design_idx=int(design_idx),
+                        design_seed=design_seed,
+                        task_for_decode=cpu_task,
+                    )
+                    out = sampler.sample(
+                        sequence_length=sequence_length,
+                        h_values=h_values,
+                        denoiser=make_dplm_denoiser(context),
+                        config=_design_config(design_seed),
+                        save_trajectories=args.save_trajectories,
+                        shuffle_seed=_shuffle_seed_for(protein_id, int(design_idx)),
+                        controller=d1_controller,
+                        protein_id=protein_id,
+                        design_idx=int(design_idx),
+                    )
+                    _record_design_success(
+                        entry=entry,
+                        protein_id=protein_id,
+                        sequence_length=sequence_length,
+                        h_values=h_values,
+                        design_idx=int(design_idx),
+                        design_seed=design_seed,
+                        used_task=cpu_task,
+                        out=out,
+                        wall_seconds=time.time() - started,
+                        d1_controller=d1_controller,
+                    )
+                    return True
+                except Exception as retry_exc:  # noqa: BLE001
+                    failures.append(
+                        {
+                            "protein_id": protein_id,
+                            "design_idx": int(design_idx),
+                            "reason": f"oom_cpu_retry_failed:{type(retry_exc).__name__}:{retry_exc}",
+                        }
+                    )
+                    return False
+            failures.append(
+                {
+                    "protein_id": protein_id,
+                    "design_idx": int(design_idx),
+                    "reason": f"runtime_failed:{type(exc).__name__}:{exc}",
+                }
+            )
+            return False
+        except FloatingPointError as exc:
+            failures.append(
+                {
+                    "protein_id": protein_id,
+                    "design_idx": int(design_idx),
+                    "reason": f"nan_logits:{exc}",
+                }
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001
+            failures.append(
+                {
+                    "protein_id": protein_id,
+                    "design_idx": int(design_idx),
+                    "reason": f"runtime_failed:{type(exc).__name__}:{exc}",
+                }
+            )
+            return False
+
+    def _validated_entry_inputs() -> tuple[list[Any], dict[str, Any]] | None:
+        valid_indices: list[Any] = []
+        h_values_by_protein: dict[str, Any] = {}
+        for _, entry in entries.iterrows():
+            protein_id = str(entry["protein_id"])
+            h_row = h_map_rows.get(protein_id)
+            if h_row is None:
+                failures.append({"protein_id": protein_id, "reason": "missing_h_map"})
+                continue
+            sequence_length = int(entry["sequence_length"])
+            h_values = _select_h_values(
+                h_row,
+                h_source=config.amplification.h_source,
+                corpus_stats=corpus_stats,
+            )
+            if len(h_values) != sequence_length:
+                print(
+                    f"ERROR: h length mismatch for protein_id={protein_id}: "
+                    f"{len(h_values)} != {sequence_length}",
+                    file=sys.stderr,
+                )
+                return None
+            valid_indices.append(entry.name)
+            h_values_by_protein[protein_id] = h_values
+        return valid_indices, h_values_by_protein
+
+    batch_size = int(args.batch_size)
+    if batch_size > 1:
+        validated = _validated_entry_inputs()
+        if validated is None:
+            return 2
+        valid_indices, h_values_by_protein = validated
+        buckets = _length_buckets(entries.loc[valid_indices], batch_size) if valid_indices else []
+        proteins_done = 0
+        for design_idx in range(config.sampler.n_designs_per_protein):
+            design_seed = int(config.sampler.seed) + int(design_idx)
+            for bucket in buckets:
+                lane_meta: list[dict[str, Any]] = []
+                for df_idx in bucket:
+                    entry = entries.loc[df_idx]
+                    protein_id = str(entry["protein_id"])
+                    row_key = (protein_id, int(design_idx))
+                    if row_key in rows_by_key:
+                        continue
+                    lane_meta.append(
+                        {
+                            "entry": entry,
+                            "protein_id": protein_id,
+                            "sequence_length": int(entry["sequence_length"]),
+                            "h_values": h_values_by_protein[protein_id],
+                        }
+                    )
+                if not lane_meta:
+                    continue
+                started = time.time()
+                kept_meta = lane_meta
+                try:
+                    batch, seq_lengths, _paths, prep_failures, kept_indices = prepare_backbone_batch(
+                        task=task,
+                        entries=[m["entry"] for m in lane_meta],
+                        pdb_root=args.pdb_root,
+                        device=args.device,
+                        skip_invalid=True,
+                    )
+                    kept_set = set(kept_indices)
+                    prep_failure_iter = iter(prep_failures)
+                    for local_i, meta in enumerate(lane_meta):
+                        if local_i in kept_set:
+                            continue
+                        try:
+                            pf = next(prep_failure_iter)
+                            reason = pf.get("reason", "prep_failure")
+                        except StopIteration:
+                            reason = "prep_failure"
+                        failures.append(
+                            {
+                                "protein_id": meta["protein_id"],
+                                "design_idx": int(design_idx),
+                                "reason": str(reason),
+                            }
+                        )
+                    if batch is None or not kept_indices:
+                        continue
+                    kept_meta = [lane_meta[i] for i in kept_indices]
+                    controllers = [
+                        _build_d1_controller_for_entry(
+                            entry=meta["entry"],
+                            protein_id=meta["protein_id"],
+                            design_idx=int(design_idx),
+                            design_seed=design_seed,
+                            task_for_decode=task,
+                        )
+                        for meta in kept_meta
+                    ]
+                    context = build_batched_dplm_denoiser_context(
+                        task=task,
+                        batch=batch,
+                        sequence_lengths=seq_lengths,
+                    )
+                    outs = sampler.sample_batch(
+                        lanes=[
+                            SamplerBatchLane(
+                                sequence_length=int(meta["sequence_length"]),
+                                h_values=meta["h_values"],
+                                config=_design_config(design_seed),
+                                shuffle_seed=_shuffle_seed_for(
+                                    meta["protein_id"], int(design_idx)
+                                ),
+                                controller=controller,
+                                protein_id=meta["protein_id"],
+                                design_idx=int(design_idx),
+                            )
+                            for meta, controller in zip(kept_meta, controllers)
+                        ],
+                        batched_denoiser=make_batched_dplm_denoiser(context),
+                        save_trajectories=args.save_trajectories,
+                    )
+                    per_row_wall = (time.time() - started) / float(len(outs))
+                    for meta, controller, out in zip(kept_meta, controllers, outs):
+                        _record_design_success(
+                            entry=meta["entry"],
+                            protein_id=meta["protein_id"],
+                            sequence_length=int(meta["sequence_length"]),
+                            h_values=meta["h_values"],
+                            design_idx=int(design_idx),
+                            design_seed=design_seed,
+                            used_task=task,
+                            out=out,
+                            wall_seconds=per_row_wall,
+                            d1_controller=controller,
+                        )
+                except Exception as exc:  # noqa: BLE001 - bucket fallback
+                    print(
+                        f"[batched-rf] bucket failure for {len(kept_meta)} lane(s) "
+                        f"({type(exc).__name__}: {exc}); falling back to scalar RF.",
+                        flush=True,
+                    )
+                    for meta in kept_meta:
+                        _run_scalar_design(
+                            entry=meta["entry"],
+                            protein_id=meta["protein_id"],
+                            sequence_length=int(meta["sequence_length"]),
+                            h_values=meta["h_values"],
+                            design_idx=int(design_idx),
+                        )
+                if design_idx == 0:
+                    proteins_done += len(lane_meta)
+                    if proteins_done % 25 == 0:
+                        _write_partial_checkpoint()
+                    if args.progress_every > 0 and (
+                        proteins_done % args.progress_every == 0
+                        or proteins_done >= len(valid_indices)
+                    ):
+                        _emit_loop_progress(
+                            min(proteins_done, total_entries),
+                            "batched_bucket",
+                        )
+                if _should_abort_failures(
+                    failures,
+                    n_total_designs=total_designs,
+                    threshold=args.fail_pct_threshold,
+                ):
+                    aborted = True
+                    break
+            if aborted:
+                break
+    else:
+        for entry_idx, (_, entry) in enumerate(entries.iterrows(), start=1):
+            protein_id = str(entry["protein_id"])
+            h_row = h_map_rows.get(protein_id)
+            if h_row is None:
+                failures.append({"protein_id": protein_id, "reason": "missing_h_map"})
+                if _should_abort_failures(
+                    failures,
+                    n_total_designs=total_designs,
+                    threshold=args.fail_pct_threshold,
+                ):
+                    break
+                continue
+
+            sequence_length = int(entry["sequence_length"])
+            h_values = _select_h_values(
+                h_row,
+                h_source=config.amplification.h_source,
+                corpus_stats=corpus_stats,
+            )
+            if len(h_values) != sequence_length:
+                print(
+                    f"ERROR: h length mismatch for protein_id={protein_id}: "
+                    f"{len(h_values)} != {sequence_length}",
+                    file=sys.stderr,
+                )
+                return 2
+
+            for design_idx in range(config.sampler.n_designs_per_protein):
+                row_key = (protein_id, int(design_idx))
+                if row_key in rows_by_key:
+                    continue
+                _run_scalar_design(
+                    entry=entry,
+                    protein_id=protein_id,
+                    sequence_length=sequence_length,
+                    h_values=h_values,
+                    design_idx=int(design_idx),
+                )
+
+            if entry_idx % 25 == 0:
+                _write_partial_checkpoint()
+
+            if args.progress_every > 0 and (
+                entry_idx % args.progress_every == 0 or entry_idx == total_entries
+            ):
+                _emit_loop_progress(entry_idx, protein_id)
+
             if _should_abort_failures(
                 failures,
                 n_total_designs=total_designs,
                 threshold=args.fail_pct_threshold,
             ):
+                aborted = True
+                print(
+                    f"[abort] failure rate exceeded threshold at entry_idx={entry_idx}: "
+                    f"{len(failures)}/{total_designs} > {args.fail_pct_threshold:.2%}; "
+                    "stopping main loop.",
+                    flush=True,
+                )
                 break
-            continue
 
-        sequence_length = int(entry["sequence_length"])
-        h_values = _select_h_values(
-            h_row,
-            h_source=config.amplification.h_source,
-            corpus_stats=corpus_stats,
-        )
-        if len(h_values) != sequence_length:
-            print(
-                f"ERROR: h length mismatch for protein_id={protein_id}: "
-                f"{len(h_values)} != {sequence_length}",
-                file=sys.stderr,
-            )
-            return 2
-
-        trajectory_rows: list[dict[str, Any]] = []
-        for design_idx in range(config.sampler.n_designs_per_protein):
-            row_key = (protein_id, design_idx)
-            if row_key in rows_by_key:
-                continue
-
-            design_seed = int(config.sampler.seed) + int(design_idx)
-            used_task = task
-
-            def _build_d1_controller(task_for_decode, seed_for_design):
-                if controller_setup is None or head_scorer is None:
-                    return None
-                # D2/D3 candidate enumeration restricts to canonical AA token
-                # IDs (excludes mask/pad/cls/eos/unk). For monitor_only mode
-                # without nested D2/D3 sections the controller ignores this
-                # tuple; for any d2.enabled config it is required.
-                canonical_ids = canonical_aa_token_ids(task_for_decode)
-                return D1MonitorController(
-                    protein_id=protein_id,
-                    design_idx=int(design_idx),
-                    seed=int(seed_for_design),
-                    static_sequence=str(entry["sequence"]),
-                    scorer=head_scorer,
-                    config=controller_setup.config,
-                    decode_tokens=lambda toks: decode_residue_tokens(task_for_decode, toks),
-                    canonical_token_ids=canonical_ids,
-                )
-
-            d1_controller = _build_d1_controller(task, design_seed)
-            try:
-                started = time.time()
-                prepared = prepare_backbone(
-                    task=task,
-                    entry=entry,
-                    pdb_root=args.pdb_root,
-                    device=args.device,
-                )
-                context = build_dplm_denoiser_context(task=task, prepared=prepared)
-                out = sampler.sample(
-                    sequence_length=sequence_length,
-                    h_values=h_values,
-                    denoiser=make_dplm_denoiser(context),
-                    config=replace(
-                        config,
-                        sampler=replace(config.sampler, seed=design_seed),
-                    ),
-                    save_trajectories=args.save_trajectories,
-                    shuffle_seed=(
-                        derive_h_shuffle_seed(
-                            int(config.h_shuffle.seed),
-                            protein_id,
-                            design_idx,
-                        )
-                        if config.h_shuffle.enabled
-                        else None
-                    ),
-                    controller=d1_controller,
-                    protein_id=protein_id,
-                    design_idx=int(design_idx),
-                )
-            except RuntimeError as exc:
-                if _is_oom(exc) and str(args.device).startswith("cuda"):
-                    if cpu_task is None:
-                        cpu_task = load_if_task(args.checkpoint, device="cpu")
-                    try:
-                        started = time.time()
-                        used_task = cpu_task
-                        prepared = prepare_backbone(
-                            task=cpu_task,
-                            entry=entry,
-                            pdb_root=args.pdb_root,
-                            device="cpu",
-                        )
-                        context = build_dplm_denoiser_context(task=cpu_task, prepared=prepared)
-                        d1_controller = _build_d1_controller(cpu_task, design_seed)
-                        out = sampler.sample(
-                            sequence_length=sequence_length,
-                            h_values=h_values,
-                            denoiser=make_dplm_denoiser(context),
-                            config=replace(
-                                config,
-                                sampler=replace(config.sampler, seed=design_seed),
-                            ),
-                            save_trajectories=args.save_trajectories,
-                            shuffle_seed=(
-                                derive_h_shuffle_seed(
-                                    int(config.h_shuffle.seed),
-                                    protein_id,
-                                    design_idx,
-                                )
-                                if config.h_shuffle.enabled
-                                else None
-                            ),
-                            controller=d1_controller,
-                            protein_id=protein_id,
-                            design_idx=int(design_idx),
-                        )
-                    except Exception as retry_exc:  # noqa: BLE001
-                        failures.append(
-                            {
-                                "protein_id": protein_id,
-                                "design_idx": design_idx,
-                                "reason": f"oom_cpu_retry_failed:{type(retry_exc).__name__}:{retry_exc}",
-                            }
-                        )
-                        continue
-                else:
-                    failures.append(
-                        {
-                            "protein_id": protein_id,
-                            "design_idx": design_idx,
-                            "reason": f"runtime_failed:{type(exc).__name__}:{exc}",
-                        }
-                    )
-                    continue
-            except FloatingPointError as exc:
-                failures.append(
-                    {
-                        "protein_id": protein_id,
-                        "design_idx": design_idx,
-                        "reason": f"nan_logits:{exc}",
-                    }
-                )
-                continue
-            except Exception as exc:  # noqa: BLE001
-                failures.append(
-                    {
-                        "protein_id": protein_id,
-                        "design_idx": design_idx,
-                        "reason": f"runtime_failed:{type(exc).__name__}:{exc}",
-                    }
-                )
-                continue
-
-            rows_by_key[row_key] = {
-                "protein_id": protein_id,
-                "design_idx": int(design_idx),
-                "sequence": decode_residue_tokens(used_task, out.tokens),
-                "seed": design_seed,
-                "wall_seconds": time.time() - started,
-            }
-            if args.save_trajectories:
-                for row in out.trajectory_rows:
-                    trajectory_rows.append(
-                        {
-                            "protein_id": protein_id,
-                            "design_idx": int(design_idx),
-                            "seed": design_seed,
-                            **row,
-                        }
-                    )
-            if d1_controller is not None:
-                design_refreshes = d1_controller.refresh_records()
-                design_events = d1_controller.controller_event_rows()
-                refresh_records_all.extend(design_refreshes)
-                event_rows_all.extend(design_events)
-                design_addenda = d1_controller.refresh_addenda()
-                for refresh_step_key, addendum in design_addenda.items():
-                    refresh_addenda_by_key[
-                        (protein_id, int(design_idx), int(refresh_step_key))
-                    ] = addendum
-                design_productive = (
-                    d1_controller.productive_revisit_outcomes()
-                    if hasattr(d1_controller, "productive_revisit_outcomes")
-                    else None
-                )
-                # Snapshot per-refresh D2 block diagnostics (one entry per
-                # refresh in the same order as design_refreshes) so
-                # compute_per_protein_summary can score candidate
-                # feasibility from explicit per-block flags.
-                design_addenda_list = [
-                    design_addenda.get(int(rec.refresh_step))
-                    for rec in design_refreshes
-                ]
-                per_protein_summaries.append(
-                    compute_per_protein_summary(
-                        protein_id=protein_id,
-                        design_idx=int(design_idx),
-                        seed=design_seed,
-                        allele=args.allele,
-                        arm=controller_setup.config.mode,
-                        refresh_records=design_refreshes,
-                        event_rows=design_events,
-                        controller_config=controller_setup.config,
-                        productive_revisit_outcomes=design_productive,
-                        refresh_addenda=design_addenda_list,
-                    )
-                )
-                # Stage B: collect per-refresh typed actionability snapshots
-                # (PLAN_RF_UNI_CTRL.md Task B6). Empty in static_excess mode.
-                tcfg = controller_setup.config.targeting
-                if tcfg.write_actionability_telemetry and hasattr(
-                    d1_controller, "actionability_states"
-                ):
-                    for state in d1_controller.actionability_states():
-                        rows, summary = _actionability_state_to_records(
-                            state,
-                            protein_id=protein_id,
-                            design_idx=int(design_idx),
-                            seed=design_seed,
-                            targeting_mode=tcfg.mode,
-                            tau_ref_source=tcfg.tau_ref_source,
-                            d3_evidence_source=controller_setup.config.d3.evidence_source,
-                        )
-                        actionability_rows_all.extend(rows)
-                        actionability_summary_all.append(summary)
-                        actionability_g_by_key[
-                            (protein_id, int(design_idx), int(state.refresh_step))
-                        ] = {
-                            "G": float(state.G),
-                            "g_GR_diagnostic": float(state.g_GR_diagnostic),
-                        }
-                # SC-GR: collect per-design probe rows (PLAN_RF_SC_GR.md SC0.4).
-                # The controller only appends rows when write_probe_telemetry, so
-                # gating on enabled here is sufficient.
-                scgr_cfg = controller_setup.config.self_conditioned_gr
-                if scgr_cfg.enabled and hasattr(
-                    d1_controller, "self_conditioned_gr_sample_rows"
-                ):
-                    sc_gr_sample_rows_all.extend(
-                        d1_controller.self_conditioned_gr_sample_rows()
-                    )
-                    sc_gr_refresh_rows_all.extend(
-                        d1_controller.self_conditioned_gr_refresh_rows()
-                    )
-
-        if args.save_trajectories:
-            _write_trajectories(run_dir=run_dir, protein_id=protein_id, rows=trajectory_rows)
-
-        if entry_idx % 25 == 0:
-            partial_manifest = {
-                "run_id": run_id,
-                "mode": "c1_reference_flow",
-                "timestamp": utc_timestamp(),
-                "git_sha": git_sha(PROJECT_ROOT),
-                "resume_signature": resume_signature,
-                "n_rows_generated": len(rows_by_key),
-                "n_failures": len(failures),
-            }
-            partial_config = {
-                "mode": "c1_reference_flow",
-                "resume_signature": resume_signature,
-                "resolved_reference_flow_config": config_dict,
-            }
-            _write_partial_state(
-                run_dir=run_dir,
-                rows_by_key=rows_by_key,
-                failures=failures,
-                run_config=partial_config,
-                manifest=partial_manifest,
-            )
-
-        if args.progress_every > 0 and (
-            entry_idx % args.progress_every == 0 or entry_idx == total_entries
-        ):
-            _emit_progress(
-                entry_idx=entry_idx,
-                total_entries=total_entries,
+    if args.save_trajectories:
+        for protein_id, trajectory_rows in trajectory_rows_by_protein.items():
+            _write_trajectories(                run_dir=run_dir,
                 protein_id=protein_id,
-                n_rows=len(rows_by_key),
-                n_failures=len(failures),
-                total_designs=total_designs,
-                run_start=run_start,
+                rows=trajectory_rows,
             )
-            elapsed = time.time() - run_start
-            done = len(rows_by_key) + len(failures)
-            avg = elapsed / float(done) if done > 0 else 0.0
-            log_metrics(
-                wandb_run,
-                {
-                    "progress/proteins_done": entry_idx,
-                    "progress/rows_generated": len(rows_by_key),
-                    "progress/failures": len(failures),
-                    "progress/elapsed_seconds": elapsed,
-                    "progress/avg_seconds_per_design": avg,
-                },
-                step=entry_idx,
-            )
-
-        if _should_abort_failures(
-            failures,
-            n_total_designs=total_designs,
-            threshold=args.fail_pct_threshold,
-        ):
-            aborted = True
-            print(
-                f"[abort] failure rate exceeded threshold at entry_idx={entry_idx}: "
-                f"{len(failures)}/{total_designs} > {args.fail_pct_threshold:.2%}; "
-                "stopping main loop.",
-                flush=True,
-            )
-            break
 
     if _should_abort_failures(
         failures,
@@ -1990,10 +2237,12 @@ def main(argv: list[str] | None = None) -> int:
             "resume_signature": resume_signature,
             "n_rows_generated": len(rows_by_key),
             "n_failures": len(failures),
+            "batch_size": int(args.batch_size),
         }
         partial_config = {
             "mode": "c1_reference_flow",
             "resume_signature": resume_signature,
+            "batch_size": int(args.batch_size),
             "resolved_reference_flow_config": config_dict,
         }
         _write_partial_state(
@@ -2024,6 +2273,7 @@ def main(argv: list[str] | None = None) -> int:
         "h_corpus_stats": str(Path(args.h_corpus_stats).resolve()) if args.h_corpus_stats else None,
         "allele": args.allele,
         "device": args.device,
+        "batch_size": int(args.batch_size),
         "resolved_reference_flow_config": config_dict,
     }
     manifest = {
@@ -2033,6 +2283,7 @@ def main(argv: list[str] | None = None) -> int:
         "checkpoint_digest": checkpoint_digest(args.checkpoint),
         "timestamp": utc_timestamp(),
         "allele": args.allele,
+        "batch_size": int(args.batch_size),
         "h_maps_source_path": str(Path(args.h_maps_parquet).resolve()),
         "h_maps_source_run_id": h_maps_meta["run_id"],
         "h_source": config.amplification.h_source,

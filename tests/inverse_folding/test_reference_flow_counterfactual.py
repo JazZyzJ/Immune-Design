@@ -13,6 +13,7 @@ from inverse_folding.reference_flow.counterfactual import (
     build_candidate_support,
     build_safe_candidate_support,
     compute_context_pnll,
+    compute_context_pnll_from_log_probs,
     compute_delta_logit,
     compute_ensemble_diagnostics,
     compute_ess,
@@ -515,6 +516,32 @@ def test_context_pnll_uses_committed_context_and_skips_masks():
         start_0b=0,
         end_0b=4,
     ) is None
+
+
+def test_context_pnll_precomputed_log_probs_matches_legacy_helper():
+    logits = _struct_logits(seed=9, length=7)
+    x_t = torch.tensor([10, MASK_TOKEN_ID, 12, 13, MASK_TOKEN_ID, 11, 14])
+    log_probs = torch.log_softmax(logits, dim=-1).detach().cpu()
+
+    for start, end in [(0, 7), (1, 5), (4, 6), (6, 7)]:
+        legacy = compute_context_pnll(
+            struct_logits=logits,
+            x_t=x_t,
+            mask_token_id=MASK_TOKEN_ID,
+            start_0b=start,
+            end_0b=end,
+        )
+        precomputed = compute_context_pnll_from_log_probs(
+            log_probs=log_probs,
+            x_t=x_t,
+            mask_token_id=MASK_TOKEN_ID,
+            start_0b=start,
+            end_0b=end,
+        )
+        if legacy is None:
+            assert precomputed is None
+        else:
+            assert precomputed == pytest.approx(legacy)
 
 
 def test_ensemble_diagnostics_use_mean_variance_and_sign_consistency_without_gating():
