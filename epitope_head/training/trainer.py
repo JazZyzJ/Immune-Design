@@ -27,6 +27,7 @@ import yaml
 from epitope_head.configs import validate_himp_train_blocks
 from epitope_head.training.eval_metrics import full_val_eval
 from epitope_head.training.losses import compute_loss, residue_pairwise_margin_loss
+from epitope_head.training.span_geom import max_iou_per_window
 from epitope_head.training.negatives import sample_negatives
 from epitope_head.training.registry import (
     append_registry_row,
@@ -58,6 +59,8 @@ class StepMetrics:
     n_residue_pairs: int = 0
     residue_skipped_chunks: int = 0
     n_residue_chunks: int = 0
+    # Wave-3: window IoU-ranking loss decomposition
+    loss_iou_rank: float = 0.0
     mean_pos_logit: float = 0.0
     mean_neg_logit: float = 0.0
     logit_gap: float = 0.0
@@ -76,6 +79,7 @@ class StepMetrics:
             "n_residue_pairs": self.n_residue_pairs,
             "residue_skipped_chunks": self.residue_skipped_chunks,
             "n_residue_chunks": self.n_residue_chunks,
+            "loss_iou_rank": self.loss_iou_rank,
             "mean_pos_logit": self.mean_pos_logit,
             "mean_neg_logit": self.mean_neg_logit,
             "logit_gap": self.logit_gap,
@@ -155,6 +159,10 @@ def aggregate_epoch_metrics(step_metrics_list: list[StepMetrics]) -> dict:
         "n_residue_pairs": residue_pairs_total,
         "n_residue_chunks": n_residue_chunks_total,
         "residue_skipped_chunks": residue_skipped_total,
+        "loss_iou_rank": (
+            sum(m.loss_iou_rank for m in step_metrics_list if m.loss_iou_rank != 0.0)
+            / max(len([m for m in step_metrics_list if m.loss_iou_rank != 0.0]), 1)
+        ),
         "mean_pos_logit": sum(m.mean_pos_logit for m in step_metrics_list) / n,
         "mean_neg_logit": sum(m.mean_neg_logit for m in step_metrics_list) / n,
         "logit_gap": sum(m.logit_gap for m in step_metrics_list) / n,
@@ -243,7 +251,8 @@ def normalize_loss_cfg(loss_cfg: dict) -> dict:
         normalized["T_mp"] = normalized.pop("tau_mp")
 
     required = {"tau", "T_mp", "lambda_mp", "lambda_smooth"}
-    optional = {"objective_mode", "margin_m", "hard_topk", "lambda_margin"}
+    optional = {"objective_mode", "margin_m", "hard_topk", "lambda_margin",
+                "lambda_iou_rank", "iou_rank_margin", "iou_rank_min_gap"}
     missing = required - set(normalized.keys())
     if missing:
         raise ValueError(f"Loss config missing required keys after normalization: {sorted(missing)}")
@@ -566,7 +575,10 @@ def _forward_union_and_compute_losses(
         "n_residue_pairs": 0,
         "residue_skipped_chunks": 0,
         "n_residue_chunks": 0,
+        "loss_iou_rank_sum": 0.0,
+        "n_iou_rank_chunks": 0,
     }
+    lambda_iou_rank = float(loss_cfg.get("lambda_iou_rank", 0.0))
     n_chunks_with_pos = 0
 
     for i, logits in enumerate(logits_list):
@@ -586,9 +598,26 @@ def _forward_union_and_compute_losses(
         if neg_w is not None:
             neg_w = neg_w.to(device)
 
-        loss_dict = compute_loss(pos_logits, neg_logits, **loss_cfg, neg_weights=neg_w)
+        # Wave-3: window IoU-ranking auxiliary. Rank the union candidate windows
+        # (pos ∪ neg) by their max IoU to this chunk's GT positives so the span
+        # scorer learns the M6 region-AP ordering. No-op when lambda_iou_rank==0.
+        iou_rank_kwargs: dict = {}
+        if lambda_iou_rank > 0.0:
+            win = torch.cat([pos_spans_list[i], neg_spans_list[i]], dim=0).to(device)
+            gt = pos_spans_list[i].to(device)
+            iou_rank_kwargs = {
+                "window_logits": logits[: pc + nc],
+                "window_ious": max_iou_per_window(win, gt),
+            }
+
+        loss_dict = compute_loss(
+            pos_logits, neg_logits, **loss_cfg, neg_weights=neg_w, **iou_rank_kwargs
+        )
         nan_guard(loss_dict["loss_total"], f"loss_total[chunk={i}]")
         chunk_loss = loss_dict["loss_total"]
+        if iou_rank_kwargs:
+            residue_stats["loss_iou_rank_sum"] += float(loss_dict["loss_iou_rank"].detach().item())
+            residue_stats["n_iou_rank_chunks"] += 1
 
         # HIMP3: residue ranking loss
         if residue_enabled and extras_i.get("residue_meta") is not None:
@@ -761,6 +790,10 @@ def _attach_residue_stats(metrics: StepMetrics, residue_stats: dict) -> None:
     metrics.n_residue_pairs = int(residue_stats.get("n_residue_pairs", 0))
     metrics.residue_skipped_chunks = n_skipped
     metrics.n_residue_chunks = n_chunks
+    n_iou = int(residue_stats.get("n_iou_rank_chunks", 0))
+    metrics.loss_iou_rank = (
+        float(residue_stats.get("loss_iou_rank_sum", 0.0)) / n_iou if n_iou > 0 else 0.0
+    )
 
 
 @torch.no_grad()

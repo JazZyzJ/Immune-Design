@@ -1,0 +1,33 @@
+# Wave-3 experiment Arm B = current 0701 best (cnn_himp_beta4: residue-only,
+# log_mean_exp beta=4) + the window IoU-ranking span loss (lambda_iou_rank).
+# Tests whether training the span scorer to rank candidate windows by IoU-to-GT
+# lifts M6 region AP at matched residue density over the converged baseline.
+# Arm A = cnn_himp_beta4.yaml (no loss block change). Only train.loss differs.
+train:
+  near_positive:
+    enabled: false
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: false
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 4.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
+  loss:
+    # Additive window IoU-ranking term on the span objective (Wave-3).
+    # mixed_margin (objective_mode) + lambda_margin are inherited from the LC1
+    # profile; this block only deep-merges the new IoU-ranking keys in.
+    lambda_iou_rank: 0.3
+    iou_rank_margin: 0.5
+    iou_rank_min_gap: 0.1
