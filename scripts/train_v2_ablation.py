@@ -94,6 +94,10 @@ def parse_args() -> argparse.Namespace:
                          "Format mirrors train.yaml, e.g. train.loss.tau, train.lr, etc.")
     p.add_argument("--data-dir", type=str, default=None,
                     help="Manifest directory (default: outputs/manifests)")
+    p.add_argument("--splits-subdir", type=str, default=None,
+                    help="Wave-3 CV: subdir under splits/<profile>/ holding fold-specific "
+                         "train_ids.txt / val_ids.txt (e.g. 'cv5/fold0'). Default uses the "
+                         "top-level split.")
     p.add_argument("--output-root", type=str, default=None,
                     help="Root for ablation outputs (default: outputs/ablation/encoder_v2)")
 
@@ -209,8 +213,12 @@ def main() -> dict:
     manifest_dir = Path(args.data_dir) if args.data_dir else (PROJECT_ROOT / "outputs" / "manifests")
     profile = args.profile
     samples_path = manifest_dir / f"protein_samples_{profile}.parquet"
-    train_ids_path = manifest_dir / "splits" / profile / "train_ids.txt"
-    val_ids_path = manifest_dir / "splits" / profile / "val_ids.txt"
+    split_dir = manifest_dir / "splits" / profile
+    if getattr(args, "splits_subdir", None):
+        # Wave-3 CV: read fold-specific id files, e.g. splits/<profile>/cv5/fold0/.
+        split_dir = split_dir / args.splits_subdir
+    train_ids_path = split_dir / "train_ids.txt"
+    val_ids_path = split_dir / "val_ids.txt"
 
     for p in [samples_path, train_ids_path, val_ids_path]:
         if not p.exists():
