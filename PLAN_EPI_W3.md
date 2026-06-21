@@ -69,3 +69,10 @@ training folds, held-out fold = test. Report mean±std; then an all-data final m
   span-loss-bottleneck claim is falsified; stop span-loss variants; the win is the density
   paradigm. (Also: free check — does adding `best_goal` selection alone recover the +0.029 the
   epoch-sweep measured? validates Harness B before judging the loss.)
+
+## Fail-fast result (2026-06-20) — PASS
+Single-split 0701, seed42, goal-selected (val IoU50) held-out TEST:
+- Arm A beta4 (e19): IoU50 0.551 / IoU70 0.516 / Pearson 0.367 / exactAP 0.229
+- Arm B beta4+IoU-rank λ=0.3 (e14): IoU50 0.585 / IoU70 0.545 / Pearson 0.413 / exactAP 0.223
+- Δ(B−A): IoU50 +0.034, IoU70 +0.030, Pearson +0.046, exactAP −0.007 → BOTH goal axes up,
+  exact-AP guardrail intact. Lever confirmed; KILL not triggered. Proceed to 5-fold CV.
