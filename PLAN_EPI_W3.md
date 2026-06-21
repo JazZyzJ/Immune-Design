@@ -76,3 +76,22 @@ Single-split 0701, seed42, goal-selected (val IoU50) held-out TEST:
 - Arm B beta4+IoU-rank λ=0.3 (e14): IoU50 0.585 / IoU70 0.545 / Pearson 0.413 / exactAP 0.223
 - Δ(B−A): IoU50 +0.034, IoU70 +0.030, Pearson +0.046, exactAP −0.007 → BOTH goal axes up,
   exact-AP guardrail intact. Lever confirmed; KILL not triggered. Proceed to 5-fold CV.
+
+## 5-fold CV result (2026-06-21) — mild, directionally-positive, within fold variance
+Cluster-level 5-fold CV, 0701, seed42, goal-selected per fold (val IoU50, exact-AP guard),
+held-out TEST mean±std:
+| arm | IoU50 | IoU70 | Pearson | ExAP |
+|---|---|---|---|---|
+| beta4 (A)        | 0.579±0.019 | 0.543±0.019 | 0.383±0.035 | 0.252±0.014 |
+| beta4+IoU-rank(B)| 0.587±0.037 | 0.560±0.037 | 0.393±0.056 | 0.261±0.027 |
+| NMP (reference)  | 0.682       | —           | 0.170       | 0.336       |
+Δ(B−A): IoU50 +0.007, IoU70 +0.017, Pearson +0.010, ExAP +0.009.
+
+READ: B ≥ A on ALL four axes (no regression; exact-AP + density both up), but the IoU50
+gain (+0.007) is BELOW the +0.01 KILL bar and WITHIN fold variance (per-fold B IoU50
+ranges 0.546→0.649). The single-split +0.034 was an optimistic draw. Head still trails NMP
+on IoU region AP (~0.10 gap) but CRUSHES NMP on density (Pearson +0.223). Caveat: per-fold
+epoch selection on the small (262) val sets is noisy and tends to pick B's early epochs.
+CONCLUSION: the IoU-ranking loss is a mild, "free" directional improvement, not a dramatic
+IoU lift. Density paradigm remains the headline. Next lever to test: lambda_iou_rank sweep
+(only 0.3 tried) and/or a more robust selection; otherwise accept the mild gain.

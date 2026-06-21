@@ -19,8 +19,28 @@ import argparse
 import json
 import re
 import statistics as st
+import subprocess
 from collections import defaultdict
 from pathlib import Path
+
+
+def _read_macro(path: Path):
+    """Stream out only the small ``.macro`` block via jq.
+
+    The benchmark JSONs carry per-protein score_distributions and can be ~400MB
+    each; loading them whole OOMs. jq extracts the tiny macro object in seconds.
+    """
+    try:
+        out = subprocess.run(["jq", "-c", ".macro", str(path)],
+                             capture_output=True, text=True, timeout=120)
+    except Exception:
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    try:
+        return json.loads(out.stdout)
+    except Exception:
+        return None
 
 FN = re.compile(r"^bench_cvf(\d+)_(val|test)_([a-z0-9]+)_(e\d+|best)\.json$")
 GOAL = ("iou50", "iou70", "pears", "exap")
@@ -59,7 +79,10 @@ def load(eval_dir: Path):
         if not m:
             continue
         k, split, arm, tag = m.groups()
-        macro = json.loads(f.read_text())["macro"]
+        macro = _read_macro(f)
+        if macro is None:
+            print(f"[warn] could not read macro from {f.name}")
+            continue
         data[(arm, int(k))][split][tag] = _head(macro)
         nmp[(arm, int(k))][split][tag] = _nmp(macro)
     return data, nmp
