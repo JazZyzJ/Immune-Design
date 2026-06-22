@@ -283,6 +283,82 @@ class SpanFeatureBuilder(nn.Module):
 
         return phi
 
+    def forward_batched(
+        self,
+        G: torch.Tensor,
+        spans: torch.Tensor,
+        chunk_len: int,
+        allele_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        """Batched ``forward`` over K candidates sharing one span template.
+
+        Numerically identical to running :meth:`forward` once per candidate (up
+        to float reduction reorder), but adds a leading candidate axis ``K`` so
+        the prefix-sum pool, endpoint/flank gathers, and embeddings are computed
+        once for all K. ``spans``/``chunk_len``/``allele_idx`` are shared across
+        the K candidates (the RF same-length candidate case), so only ``G`` carries
+        the ``K`` dimension.
+
+        Args:
+            G: [K, L, D_proj] projected embeddings for K candidates of one length.
+            spans: [N, 2] int tensor of (start, end), 0b half-open, shared by all K.
+            chunk_len: residue count shared by all K candidates.
+            allele_idx: [N] int tensor of allele indices, shared by all K.
+
+        Returns:
+            phi: [K, N, D_phi] feature vectors.
+        """
+        if G.dim() != 3:
+            raise ValueError(f"forward_batched expects G [K, L, D_proj], got {tuple(G.shape)}")
+        K = G.shape[0]
+        N = spans.shape[0]
+        device = G.device
+
+        starts = spans[:, 0]            # [N]
+        ends = spans[:, 1]             # [N]
+        pep_lens = ends - starts        # [N]
+
+        # 1. Mean-pooled interior via batched prefix-sum over the L axis.
+        prefix_sum = torch.zeros(K, chunk_len + 1, self.d_proj, device=device, dtype=G.dtype)
+        prefix_sum[:, 1:chunk_len + 1] = torch.cumsum(G[:, :chunk_len], dim=1)
+        sum_interior = prefix_sum[:, ends] - prefix_sum[:, starts]  # [K, N, D_proj]
+        mean_pool = sum_interior / pep_lens.view(1, N, 1).float().clamp(min=1)
+
+        # 2. In-span endpoints.
+        ep_left = G[:, starts]          # [K, N, D_proj]
+        ep_right = G[:, ends - 1]       # [K, N, D_proj]
+
+        # 3. Boundary flanks. The boundary masks are span-only (shared across K);
+        # clamp the gather index for boundary spans and overwrite them with the
+        # learnable pad vectors so the result matches the per-candidate forward.
+        at_left_boundary = (starts == 0)        # [N]
+        at_right_boundary = (ends == chunk_len)  # [N]
+        fl_left = G[:, (starts - 1).clamp(min=0)]          # [K, N, D_proj]
+        fl_right = G[:, ends.clamp(max=chunk_len - 1)]     # [K, N, D_proj]
+        if at_left_boundary.any():
+            fl_left[:, at_left_boundary] = self.pad_left
+        if at_right_boundary.any():
+            fl_right[:, at_right_boundary] = self.pad_right
+
+        # 4. Length embedding (same validity guard as forward).
+        raw_len_idx = pep_lens - self.length_offset
+        if torch.any((raw_len_idx < 0) | (raw_len_idx > self.max_k - self.min_k)):
+            bad = pep_lens[(raw_len_idx < 0) | (raw_len_idx > self.max_k - self.min_k)]
+            raise ValueError(
+                f"Span lengths outside [{self.min_k}, {self.max_k}]: {bad.tolist()}"
+            )
+        len_emb = self.length_embedding(raw_len_idx)        # [N, length_emb_dim]
+        len_emb = len_emb.unsqueeze(0).expand(K, -1, -1)    # [K, N, length_emb_dim]
+
+        # 5. Allele embedding.
+        allele_emb = self.allele_embedding(allele_idx)      # [N, allele_emb_dim]
+        allele_emb = allele_emb.unsqueeze(0).expand(K, -1, -1)  # [K, N, allele_emb_dim]
+
+        phi = torch.cat([
+            mean_pool, ep_left, ep_right, fl_left, fl_right, len_emb, allele_emb,
+        ], dim=2)  # [K, N, D_phi]
+        return phi
+
 
 # ── Scorer MLP ──────────────────────────────────────────────────────────────
 

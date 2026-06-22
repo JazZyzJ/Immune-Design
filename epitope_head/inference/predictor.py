@@ -405,6 +405,120 @@ class InferencePredictor:
                 return False
         return True
 
+    def _batched_span_score_and_aggregate(
+        self,
+        *,
+        g_batch_dev: torch.Tensor,
+        protein_len: int,
+        min_k: int,
+        max_k: int,
+        allele_idx: int,
+        center_method: str,
+        clamp_method: str,
+        window_batch_size: int,
+    ) -> tuple | None:
+        """Score + aggregate K same-length candidates in one batched tensor pass.
+
+        ``g_batch_dev`` is ``[K, L_pad, D_proj]`` on ``self.device`` (the batched
+        encoder output, not yet moved to CPU). Because the span template
+        (``all_spans``, covering indices, ``n_windows``) depends only on
+        ``(protein_len, min_k, max_k)`` — not on the candidate sequence — it is
+        enumerated once and reused across all K candidates. Span features, the
+        scorer MLP, and the hotspot/risk aggregation all carry the candidate axis
+        ``K`` and stay on ``self.device``; only the returned tensors are moved to
+        CPU. Returns ``None`` when there are no valid windows
+        (``protein_len < min_k``) so the caller falls back to the per-candidate
+        zero-window path.
+
+        Returns ``(all_spans, z_batch_cpu[K,W], h_raw_cpu[K,L], h_processed_cpu[K,L],
+        R_cpu[K])``; numerically identical to the per-candidate
+        ``enumerate_and_score`` + ``aggregate_hotspot_and_risk`` path up to float
+        reduction reorder.
+        """
+        K = int(g_batch_dev.shape[0])
+        L = int(protein_len)
+
+        # Enumerate spans once, in the SAME (start, then k) order as
+        # ``enumerate_and_score`` so window_logits ordering is bit-identical.
+        all_spans: list[tuple[int, int, int]] = []
+        for s in range(L):
+            for k in range(min_k, max_k + 1):
+                e = s + k
+                if e <= L:
+                    all_spans.append((s, e, k))
+        W = len(all_spans)
+        if W == 0:
+            return None
+
+        spans_t = torch.tensor(
+            [[s, e] for s, e, _ in all_spans], dtype=torch.long, device=self.device,
+        )
+        allele_t = torch.full((W,), allele_idx, dtype=torch.long, device=self.device)
+        G = g_batch_dev[:, :L]  # [K, L, D_proj]
+
+        with torch.no_grad():
+            phi = self.model.span_features.forward_batched(G, spans_t, L, allele_t)  # [K, W, D_phi]
+            phi_flat = phi.reshape(K * W, phi.shape[-1])
+            z_chunks = []
+            for start in range(0, K * W, window_batch_size):
+                z_chunks.append(self.model.scorer(phi_flat[start : start + window_batch_size]))
+            z_batch = torch.cat(z_chunks, dim=0).reshape(K, W)  # [K, W]
+
+        # Global risk: log-mean-exp over all windows, per candidate.
+        R = torch.logsumexp(z_batch, dim=1) - math.log(W)  # [K]
+
+        # Per-residue covering-window structure — shared across all K candidates.
+        cover_lists: list[list[int]] = [[] for _ in range(L)]
+        for i, (s, e, _k) in enumerate(all_spans):
+            for r in range(s, e):
+                cover_lists[r].append(i)
+        cover_count = torch.tensor(
+            [len(c) for c in cover_lists], dtype=torch.long, device=self.device,
+        )  # [L]
+        max_cover = int(cover_count.max().item())
+        cover_index = torch.zeros(L, max_cover, dtype=torch.long, device=self.device)
+        cover_mask = torch.zeros(L, max_cover, dtype=torch.bool, device=self.device)
+        for r, lst in enumerate(cover_lists):
+            if lst:
+                cover_index[r, : len(lst)] = torch.tensor(
+                    lst, dtype=torch.long, device=self.device,
+                )
+                cover_mask[r, : len(lst)] = True
+
+        # h_raw[k, r] = log-mean-exp of the logits of windows covering residue r.
+        z_cover = z_batch[:, cover_index]  # [K, L, max_cover]
+        z_cover = z_cover.masked_fill(~cover_mask.unsqueeze(0), float("-inf"))
+        h_raw = torch.logsumexp(z_cover, dim=2) - torch.log(
+            cover_count.clamp(min=1).to(z_batch.dtype)
+        )  # [K, L]
+        zero_cover = cover_count == 0  # [L]
+        if bool(zero_cover.any()):
+            h_raw[:, zero_cover] = float("-inf")
+
+        # Center on finite residues (shared finite set across K since cover_count
+        # is sequence-independent), then clamp — matching aggregate_hotspot_and_risk.
+        h_processed = h_raw.clone()
+        finite_cols = cover_count > 0  # [L]; ~zero_cover
+        if center_method in ("median", "mean") and bool(finite_cols.any()):
+            finite_vals = h_processed[:, finite_cols]  # [K, n_finite]
+            if center_method == "median":
+                center = torch.median(finite_vals, dim=1).values  # [K]
+            else:
+                center = torch.mean(finite_vals, dim=1)  # [K]
+            h_processed[:, finite_cols] = h_processed[:, finite_cols] - center.unsqueeze(1)
+        if clamp_method == "softplus":
+            h_processed = F.softplus(h_processed)
+        elif clamp_method == "relu":
+            h_processed = F.relu(h_processed)
+
+        return (
+            all_spans,
+            z_batch.detach().cpu(),
+            h_raw.detach().cpu(),
+            h_processed.detach().cpu(),
+            R.detach().cpu(),
+        )
+
     def _predict_proteins_batched_encode(
         self,
         records: list[tuple[str, str]],
@@ -416,6 +530,12 @@ class InferencePredictor:
         Long proteins that require chunk stitching stay on the serial path in
         ``predict_proteins``. This keeps the optimization local to the common RF
         candidate case where every record is a same-protein short sequence.
+
+        When every record has the SAME length, span scoring and hotspot/risk
+        aggregation are also batched across candidates via
+        :meth:`_batched_span_score_and_aggregate` (one scorer pass over all K*W
+        spans, computed on ``self.device``). Mixed-length records fall back to the
+        per-candidate ``enumerate_and_score`` path.
         """
         min_k = self.min_k
         max_k = self.max_k
@@ -429,27 +549,77 @@ class InferencePredictor:
         attention_mask = toks["attention_mask"].to(self.device)
         with torch.no_grad():
             g_batch, lengths = self.model.encode_and_project(token_ids, attention_mask)
-        g_batch = g_batch.detach().cpu()
-        lengths = lengths.detach().cpu()
+        # Keep g_batch on self.device; the same-length path scores + aggregates on
+        # device and only moves the results to CPU at the end.
+        lengths_cpu = lengths.detach().cpu()
 
+        protein_lens = [len(seq) for seq in seqs]
+        for row_idx, (protein_id, _seq) in enumerate(zip(protein_ids, seqs)):
+            encoded_len = int(lengths_cpu[row_idx].item())
+            if encoded_len != protein_lens[row_idx]:
+                raise RuntimeError(
+                    f"batched head encode length mismatch for {protein_id}: "
+                    f"{encoded_len} != {protein_lens[row_idx]}"
+                )
+
+        wbs = int(window_batch_size) if window_batch_size is not None else 4096
+
+        # Same-length fast path: span scoring + hotspot/risk aggregation batched
+        # across candidates on self.device (one scorer pass over all K*W spans).
+        if len(set(protein_lens)) == 1:
+            batched = self._batched_span_score_and_aggregate(
+                g_batch_dev=g_batch,
+                protein_len=protein_lens[0],
+                min_k=min_k,
+                max_k=max_k,
+                allele_idx=allele_idx,
+                center_method=center_method,
+                clamp_method=clamp_method,
+                window_batch_size=wbs,
+            )
+            if batched is not None:
+                all_spans, z_batch, h_raw_b, h_processed_b, R_b = batched
+                outputs: list[dict] = []
+                for row_idx, protein_id in enumerate(protein_ids):
+                    z_row = z_batch[row_idx]
+                    window_entries = [
+                        {"start_0b": s, "end_0b": e, "k": k, "z": float(z_row[i].item())}
+                        for i, (s, e, k) in enumerate(all_spans)
+                    ]
+                    outputs.append({
+                        "protein_id": protein_id,
+                        "prediction": self._short_prediction_dict(
+                            protein_len=protein_lens[row_idx],
+                            window_entries=window_entries,
+                            # Clone the per-candidate row slices so each prediction
+                            # owns a fresh tensor (matching the serial path's
+                            # per-protein torch.cat) instead of a view that keeps
+                            # the shared [K, .] batch tensor alive.
+                            h_processed=h_processed_b[row_idx].clone(),
+                            R=float(R_b[row_idx].item()),
+                            h_raw=h_raw_b[row_idx].clone(),
+                            z_tensor=z_row.clone(),
+                            min_k=min_k,
+                            max_k=max_k,
+                            center_method=center_method,
+                            clamp_method=clamp_method,
+                        ),
+                    })
+                return outputs
+
+        # Fallback: mixed-length (or zero-window) records score per candidate.
+        g_batch = g_batch.detach().cpu()
         enumerate_kwargs: dict = {}
         if window_batch_size is not None:
             enumerate_kwargs["window_batch_size"] = int(window_batch_size)
 
-        outputs: list[dict] = []
-        for row_idx, (protein_id, seq) in enumerate(zip(protein_ids, seqs)):
-            protein_len = len(seq)
-            encoded_len = int(lengths[row_idx].item())
-            if encoded_len != protein_len:
-                raise RuntimeError(
-                    f"batched head encode length mismatch for {protein_id}: "
-                    f"{encoded_len} != {protein_len}"
-                )
+        outputs = []
+        for row_idx, (protein_id, _seq) in enumerate(zip(protein_ids, seqs)):
+            protein_len = protein_lens[row_idx]
             G = g_batch[row_idx, :protein_len]
             window_entries, z_tensor = self.enumerate_and_score(
                 G, protein_len, min_k, max_k, allele_idx, **enumerate_kwargs,
             )
-
             if len(window_entries) == 0:
                 h_raw = torch.zeros(protein_len, dtype=torch.float32)
                 h_processed = torch.zeros(protein_len, dtype=torch.float32)
@@ -458,32 +628,61 @@ class InferencePredictor:
                 h_raw, h_processed, R = self.aggregate_hotspot_and_risk(
                     window_entries, z_tensor, protein_len, center_method, clamp_method,
                 )
-
-            prediction = {
-                "window_logits": window_entries,
-                "residue_hotspot": h_processed,
-                "global_risk": R,
-                "meta": {
-                    "protein_len": protein_len,
-                    "n_windows": len(window_entries),
-                    "min_k": min_k,
-                    "max_k": max_k,
-                    "center_method": center_method,
-                    "clamp_method": clamp_method,
-                },
-                "debug": {
-                    "encode": {
-                        "n_chunks": 1,
-                        "chunk_starts": [0],
-                        "residue_owner_chunk": [0] * protein_len,
-                        "residue_reliability": [1.0] * protein_len,
-                    },
-                    "h_raw": h_raw,
-                    "z_tensor": z_tensor,
-                },
-            }
-            outputs.append({"protein_id": protein_id, "prediction": prediction})
+            outputs.append({
+                "protein_id": protein_id,
+                "prediction": self._short_prediction_dict(
+                    protein_len=protein_len,
+                    window_entries=window_entries,
+                    h_processed=h_processed,
+                    R=R,
+                    h_raw=h_raw,
+                    z_tensor=z_tensor,
+                    min_k=min_k,
+                    max_k=max_k,
+                    center_method=center_method,
+                    clamp_method=clamp_method,
+                ),
+            })
         return outputs
+
+    @staticmethod
+    def _short_prediction_dict(
+        *,
+        protein_len: int,
+        window_entries: list[dict],
+        h_processed: torch.Tensor,
+        R: float,
+        h_raw: torch.Tensor,
+        z_tensor: torch.Tensor,
+        min_k: int,
+        max_k: int,
+        center_method: str,
+        clamp_method: str,
+    ) -> dict:
+        """Assemble the single-chunk prediction dict shared by both short paths."""
+        return {
+            "window_logits": window_entries,
+            "residue_hotspot": h_processed,
+            "global_risk": R,
+            "meta": {
+                "protein_len": protein_len,
+                "n_windows": len(window_entries),
+                "min_k": min_k,
+                "max_k": max_k,
+                "center_method": center_method,
+                "clamp_method": clamp_method,
+            },
+            "debug": {
+                "encode": {
+                    "n_chunks": 1,
+                    "chunk_starts": [0],
+                    "residue_owner_chunk": [0] * protein_len,
+                    "residue_reliability": [1.0] * protein_len,
+                },
+                "h_raw": h_raw,
+                "z_tensor": z_tensor,
+            },
+        }
 
     def predict_proteins(
         self,
