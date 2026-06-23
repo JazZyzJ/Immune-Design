@@ -40,6 +40,7 @@ from inverse_folding.reference_flow.controller_config import (
 )
 from inverse_folding.reference_flow.head_scoring import (
     BatchHeadScores,
+    CompactBatchHeadScores,
     HeadScore,
     WindowRiskRecord,
 )
@@ -97,6 +98,53 @@ class _StubScorer:
         return self.score_batch_same_protein(
             protein_id=protein_id, records=[("static", sequence)]
         ).scores[0]
+
+
+class _CompactD2Scorer(_StubScorer):
+    """Stub that permits normal D1 scoring but requires D2 candidate batches to
+    use the compact [K, W] API instead of materializing HeadScore.windows."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.compact_calls = 0
+
+    def score_batch_same_protein(
+        self, *, protein_id: str, records: list[tuple[str, str]]
+    ) -> BatchHeadScores:
+        labels = [label for label, _seq in records]
+        if len(records) > 1 and labels and all(label.startswith("d2_") for label in labels):
+            raise AssertionError("D2 candidate scoring must use compact window risks")
+        return super().score_batch_same_protein(protein_id=protein_id, records=records)
+
+    def score_window_risk_batch_same_protein(
+        self, *, protein_id: str, records: list[tuple[str, str]]
+    ) -> CompactBatchHeadScores:
+        del protein_id
+        self.compact_calls += 1
+        starts = tuple(int(s) for s, _e, _k in self.window_specs)
+        ends = tuple(int(e) for _s, e, _k in self.window_specs)
+        ks = tuple(int(k) for _s, _e, k in self.window_specs)
+        risks = np.asarray(
+            [
+                [float(seq[start:end].count("Y")) for start, end, _k in self.window_specs]
+                for _label, seq in records
+            ],
+            dtype=np.float64,
+        )
+        return CompactBatchHeadScores(
+            protein_id="P1",
+            labels=tuple(label for label, _seq in records),
+            sequence_md5=tuple(
+                hashlib.md5(seq.encode("utf-8")).hexdigest() for _label, seq in records
+            ),
+            sequence_lengths=tuple(len(seq) for _label, seq in records),
+            allele=self.allele,
+            score_scale="raw_logit",
+            window_starts_0b=starts,
+            window_ends_0b=ends,
+            window_ks=ks,
+            window_risks=risks,
+        )
 
 
 def _make_config(
@@ -269,6 +317,34 @@ def test_d2_logits_mode_corrects_supported_tokens_at_active_block_positions():
     # the active block spans [0,8). Positions [8, L) are untouched at ALL tokens.
     for i in range(8, L):
         assert torch.allclose(res.logits[i], logits[i], atol=1e-12)
+
+
+def test_d2_candidate_scoring_uses_compact_window_risk_api():
+    """D2 candidate batches are the K*W hot path; they should consume compact
+    window-risk matrices instead of materializing one HeadScore.windows tuple per
+    candidate."""
+    L = 10
+    static_seq = "A" * L
+    logits = _struct_logits(L)
+    x_t = torch.tensor(
+        [_HIGH_RISK] * 4 + [_MASK_ID] * (L - 4), dtype=torch.long
+    )
+    scorer = _CompactD2Scorer()
+    controller = ReferenceFlowController(
+        protein_id="P1",
+        design_idx=0,
+        seed=42,
+        static_sequence=static_seq,
+        scorer=scorer,
+        config=_make_config(mode="d2_logits", d2_enabled=True, d3_enabled=False),
+        decode_tokens=_decode,
+        canonical_token_ids=_CANONICAL,
+    )
+
+    res = controller.step(_make_context(x_t=x_t, logits=logits, step=5, t=0.5))
+
+    assert (res.logits - logits).abs().max().item() > 1e-3
+    assert scorer.compact_calls >= 1
 
 
 def test_stage_a_d2_sampled_mode_with_shortlist_raises_guard():

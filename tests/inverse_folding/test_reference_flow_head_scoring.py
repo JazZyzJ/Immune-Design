@@ -14,6 +14,7 @@ from epitope_head.inference.predictor import (
 )
 from inverse_folding.reference_flow.head_scoring import (
     BatchHeadScores,
+    CompactBatchHeadScores,
     HeadScore,
     HeadScoringCacheError,
     OnlineHeadScorer,
@@ -121,6 +122,46 @@ def test_score_batch_same_protein_deduplicates_dynamic_sequence_md5():
     assert CountingPredictor.scored_records == 2
     assert [s.sequence_md5 for s in first.scores] == [_md5(seq_a), _md5(seq_b), _md5(seq_a)]
     assert [s.sequence_md5 for s in second.scores] == [_md5(seq_a), _md5(seq_b)]
+
+
+def test_score_window_risk_batch_same_protein_returns_matrix_without_wrapping_records(monkeypatch):
+    """Compact D2 path should return a [K, W] risk matrix without constructing
+    K * W WindowRiskRecord objects through _wrap_prediction."""
+    predictor = _build_predictor()
+    scorer = OnlineHeadScorer(
+        predictor=predictor,
+        allele="DRB1_0101",
+        allele_idx=0,
+        head_checkpoint_digest="ckpt-abc",
+        head_config_hash="cfg-xyz",
+        score_scale="raw_logit",
+        window_k_min=12,
+        window_k_max=25,
+    )
+    seq_a = "ACDEFGHIKLMNPQRSTVWY" * 2
+    seq_b = "MNPQRSTVWYACDEFGHIKL" * 2
+
+    def _fail_wrap(*_args, **_kwargs):
+        raise AssertionError("compact path must not call _wrap_prediction")
+
+    monkeypatch.setattr(scorer, "_wrap_prediction", _fail_wrap)
+    compact = scorer.score_window_risk_batch_same_protein(
+        protein_id="protein_1",
+        records=[("seq_a", seq_a), ("seq_b", seq_b), ("seq_a_dup", seq_a)],
+    )
+
+    assert isinstance(compact, CompactBatchHeadScores)
+    assert compact.window_risks.shape == (
+        3,
+        len(compact.window_starts_0b),
+    )
+    assert compact.sequence_md5 == (_md5(seq_a), _md5(seq_b), _md5(seq_a))
+    assert compact.window_starts_0b == tuple(sorted(compact.window_starts_0b))
+    # Duplicated sequences are expanded back to input order without rescoring or
+    # object materialization.
+    assert compact.window_risks[0].tolist() == pytest.approx(
+        compact.window_risks[2].tolist()
+    )
 
 
 # ---------- static cache ----------

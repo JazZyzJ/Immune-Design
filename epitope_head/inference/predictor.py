@@ -405,6 +405,60 @@ class InferencePredictor:
                 return False
         return True
 
+    @staticmethod
+    def _enumerate_spans(
+        protein_len: int, min_k: int, max_k: int
+    ) -> list[tuple[int, int, int]]:
+        """Enumerate scoring spans in the canonical (start, then k) order."""
+        all_spans: list[tuple[int, int, int]] = []
+        for s in range(int(protein_len)):
+            for k in range(int(min_k), int(max_k) + 1):
+                e = s + k
+                if e <= int(protein_len):
+                    all_spans.append((s, e, k))
+        return all_spans
+
+    def _batched_span_score(
+        self,
+        *,
+        g_batch_dev: torch.Tensor,
+        protein_len: int,
+        min_k: int,
+        max_k: int,
+        allele_idx: int,
+        window_batch_size: int,
+    ) -> tuple[list[tuple[int, int, int]], torch.Tensor] | None:
+        """Score K same-length candidates, returning only ``[K, W]`` logits.
+
+        This is the compact D2 path: it avoids hotspot/global aggregation and
+        avoids materializing one dict/object per window when callers only need
+        local risk over selected window indices. The returned tensor stays on
+        ``self.device`` so the full prediction path can aggregate on device.
+        """
+        K = int(g_batch_dev.shape[0])
+        L = int(protein_len)
+        all_spans = self._enumerate_spans(L, min_k, max_k)
+        W = len(all_spans)
+        if W == 0:
+            return None
+
+        spans_t = torch.tensor(
+            [[s, e] for s, e, _ in all_spans], dtype=torch.long, device=self.device,
+        )
+        allele_t = torch.full((W,), allele_idx, dtype=torch.long, device=self.device)
+        G = g_batch_dev[:, :L]  # [K, L, D_proj]
+
+        with torch.no_grad():
+            phi = self.model.span_features.forward_batched(G, spans_t, L, allele_t)
+            phi_flat = phi.reshape(K * W, phi.shape[-1])
+            z_chunks = []
+            for start in range(0, K * W, int(window_batch_size)):
+                z_chunks.append(
+                    self.model.scorer(phi_flat[start : start + int(window_batch_size)])
+                )
+            z_batch = torch.cat(z_chunks, dim=0).reshape(K, W)  # [K, W]
+        return all_spans, z_batch
+
     def _batched_span_score_and_aggregate(
         self,
         *,
@@ -435,34 +489,19 @@ class InferencePredictor:
         ``enumerate_and_score`` + ``aggregate_hotspot_and_risk`` path up to float
         reduction reorder.
         """
-        K = int(g_batch_dev.shape[0])
         L = int(protein_len)
-
-        # Enumerate spans once, in the SAME (start, then k) order as
-        # ``enumerate_and_score`` so window_logits ordering is bit-identical.
-        all_spans: list[tuple[int, int, int]] = []
-        for s in range(L):
-            for k in range(min_k, max_k + 1):
-                e = s + k
-                if e <= L:
-                    all_spans.append((s, e, k))
-        W = len(all_spans)
-        if W == 0:
-            return None
-
-        spans_t = torch.tensor(
-            [[s, e] for s, e, _ in all_spans], dtype=torch.long, device=self.device,
+        scored = self._batched_span_score(
+            g_batch_dev=g_batch_dev,
+            protein_len=L,
+            min_k=min_k,
+            max_k=max_k,
+            allele_idx=allele_idx,
+            window_batch_size=window_batch_size,
         )
-        allele_t = torch.full((W,), allele_idx, dtype=torch.long, device=self.device)
-        G = g_batch_dev[:, :L]  # [K, L, D_proj]
-
-        with torch.no_grad():
-            phi = self.model.span_features.forward_batched(G, spans_t, L, allele_t)  # [K, W, D_phi]
-            phi_flat = phi.reshape(K * W, phi.shape[-1])
-            z_chunks = []
-            for start in range(0, K * W, window_batch_size):
-                z_chunks.append(self.model.scorer(phi_flat[start : start + window_batch_size]))
-            z_batch = torch.cat(z_chunks, dim=0).reshape(K, W)  # [K, W]
+        if scored is None:
+            return None
+        all_spans, z_batch = scored
+        W = len(all_spans)
 
         # Global risk: log-mean-exp over all windows, per candidate.
         R = torch.logsumexp(z_batch, dim=1) - math.log(W)  # [K]
@@ -683,6 +722,97 @@ class InferencePredictor:
                 "z_tensor": z_tensor,
             },
         }
+
+    def predict_proteins_window_logits(
+        self,
+        records: list[tuple[str, str]],
+        allele_idx: int = 0,
+        window_batch_size: int | None = None,
+    ) -> list[dict]:
+        """Return only per-window logits for a batch of records.
+
+        This is an array-first companion to :meth:`predict_proteins` for D2
+        counterfactual scoring, where callers only need the window risk matrix.
+        Same-length short records use the batched encoder + batched span scorer
+        and skip hotspot/global aggregation plus ``window_logits`` dict creation.
+        Mixed-length, long, and singleton inputs fall back to the canonical
+        prediction path and are converted to the compact shape.
+        """
+        if not records:
+            return []
+
+        min_k = self.min_k
+        max_k = self.max_k
+        wbs = int(window_batch_size) if window_batch_size is not None else 4096
+
+        if self._can_batch_encode_records(records):
+            protein_ids = [protein_id for protein_id, _ in records]
+            seqs = [seq for _, seq in records]
+            protein_lens = [len(seq) for seq in seqs]
+
+            toks = self.tokenize_fn(seqs)
+            token_ids = toks["token_ids"].to(self.device)
+            attention_mask = toks["attention_mask"].to(self.device)
+            with torch.no_grad():
+                g_batch, lengths = self.model.encode_and_project(token_ids, attention_mask)
+            lengths_cpu = lengths.detach().cpu()
+            for row_idx, (protein_id, _seq) in enumerate(zip(protein_ids, seqs)):
+                encoded_len = int(lengths_cpu[row_idx].item())
+                if encoded_len != protein_lens[row_idx]:
+                    raise RuntimeError(
+                        f"batched head encode length mismatch for {protein_id}: "
+                        f"{encoded_len} != {protein_lens[row_idx]}"
+                    )
+
+            if len(set(protein_lens)) == 1:
+                scored = self._batched_span_score(
+                    g_batch_dev=g_batch,
+                    protein_len=protein_lens[0],
+                    min_k=min_k,
+                    max_k=max_k,
+                    allele_idx=allele_idx,
+                    window_batch_size=wbs,
+                )
+                if scored is None:
+                    empty = torch.tensor([], dtype=torch.float32)
+                    return [
+                        {
+                            "protein_id": protein_id,
+                            "protein_len": protein_lens[row_idx],
+                            "window_spans": (),
+                            "z_tensor": empty.clone(),
+                        }
+                        for row_idx, protein_id in enumerate(protein_ids)
+                    ]
+                all_spans, z_batch = scored
+                z_batch = z_batch.detach().cpu()
+                spans = tuple(all_spans)
+                return [
+                    {
+                        "protein_id": protein_id,
+                        "protein_len": protein_lens[row_idx],
+                        "window_spans": spans,
+                        "z_tensor": z_batch[row_idx].clone(),
+                    }
+                    for row_idx, protein_id in enumerate(protein_ids)
+                ]
+
+        rows: list[dict] = []
+        for pred_row in self.predict_proteins(
+            records, allele_idx=allele_idx, window_batch_size=window_batch_size,
+        ):
+            prediction = pred_row["prediction"]
+            entries = prediction["window_logits"]
+            rows.append({
+                "protein_id": pred_row["protein_id"],
+                "protein_len": int(prediction["meta"]["protein_len"]),
+                "window_spans": tuple(
+                    (int(w["start_0b"]), int(w["end_0b"]), int(w["k"]))
+                    for w in entries
+                ),
+                "z_tensor": prediction["debug"]["z_tensor"].detach().cpu().clone(),
+            })
+        return rows
 
     def predict_proteins(
         self,

@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 import pandas as pd
 
 from epitope_head.inference.predictor import InferencePredictor
@@ -78,6 +79,26 @@ class BatchHeadScores:
     """Ordered batch of ``HeadScore`` matching the caller's input order."""
 
     scores: tuple[HeadScore, ...]
+
+
+@dataclass(frozen=True)
+class CompactBatchHeadScores:
+    """Array-first window risks for records sharing one window template.
+
+    This is the D2 candidate hot-path representation: ``window_risks`` is
+    ``[K, W]`` in input order, while window coordinates are stored once.
+    """
+
+    protein_id: str
+    labels: tuple[str, ...]
+    sequence_md5: tuple[str, ...]
+    sequence_lengths: tuple[int, ...]
+    allele: str
+    score_scale: str
+    window_starts_0b: tuple[int, ...]
+    window_ends_0b: tuple[int, ...]
+    window_ks: tuple[int, ...]
+    window_risks: np.ndarray
 
 
 @dataclass
@@ -236,6 +257,145 @@ class OnlineHeadScorer:
                 raise RuntimeError("head predictor returned fewer rows than requested")
             final_scores.append(score)
         return BatchHeadScores(scores=tuple(final_scores))
+
+    def score_window_risk_batch_same_protein(
+        self,
+        *,
+        protein_id: str,
+        records: list[tuple[str, str]],
+    ) -> CompactBatchHeadScores:
+        """Return compact ``[K, W]`` window risks without WindowRiskRecord wrapping.
+
+        D2 candidate scoring uses only raw window logits over known window
+        indices, so materializing K * W dataclass objects is avoidable. All rows
+        must share the same window template; that holds for same-protein RF
+        candidates and is validated here.
+        """
+        if not records:
+            return CompactBatchHeadScores(
+                protein_id=str(protein_id),
+                labels=(),
+                sequence_md5=(),
+                sequence_lengths=(),
+                allele=self.allele,
+                score_scale=self.score_scale,
+                window_starts_0b=(),
+                window_ends_0b=(),
+                window_ks=(),
+                window_risks=np.zeros((0, 0), dtype=np.float64),
+            )
+
+        flat_records = [(str(label), seq) for label, seq in records]
+        labels = tuple(label for label, _seq in flat_records)
+        sequence_md5 = tuple(_md5(seq) for _label, seq in flat_records)
+        sequence_lengths = tuple(len(seq) for _label, seq in flat_records)
+        risk_rows: list[np.ndarray | None] = [None] * len(flat_records)
+        templates: list[tuple[tuple[int, int, int], ...] | None] = [
+            None
+        ] * len(flat_records)
+        pending: dict[tuple[str, str], tuple[str, list[int]]] = {}
+        predictor_records: list[tuple[str, str]] = []
+
+        for idx, (label, seq) in enumerate(flat_records):
+            key = (str(protein_id), _md5(seq))
+            cached = self._dynamic_cache.get(key)
+            if cached is not None:
+                self._dynamic_cache.move_to_end(key)
+                templates[idx] = tuple(
+                    (int(w.start_0b), int(w.end_0b), int(w.k))
+                    for w in cached.windows
+                )
+                risk_rows[idx] = np.asarray(
+                    [float(w.z) for w in cached.windows], dtype=np.float64
+                )
+                continue
+            existing = pending.get(key)
+            if existing is not None:
+                existing[1].append(idx)
+                continue
+            pending[key] = (seq, [idx])
+            predictor_records.append((label, seq))
+
+        if predictor_records:
+            if hasattr(self.predictor, "predict_proteins_window_logits"):
+                compact_predictions = self.predictor.predict_proteins_window_logits(
+                    predictor_records,
+                    allele_idx=self.allele_idx,
+                    window_batch_size=self.window_batch_size,
+                )
+            else:
+                full_predictions = self.predictor.predict_proteins(
+                    predictor_records,
+                    allele_idx=self.allele_idx,
+                    window_batch_size=self.window_batch_size,
+                )
+                compact_predictions = []
+                for pred_row in full_predictions:
+                    prediction = pred_row["prediction"]
+                    entries = prediction["window_logits"]
+                    compact_predictions.append({
+                        "protein_id": pred_row["protein_id"],
+                        "protein_len": int(prediction["meta"]["protein_len"]),
+                        "window_spans": tuple(
+                            (int(w["start_0b"]), int(w["end_0b"]), int(w["k"]))
+                            for w in entries
+                        ),
+                        "z_tensor": prediction["debug"]["z_tensor"],
+                    })
+
+            for (_label, seq), pred_row in zip(predictor_records, compact_predictions):
+                key = (str(protein_id), _md5(seq))
+                spans = tuple(
+                    (int(s), int(e), int(k))
+                    for s, e, k in pred_row["window_spans"]
+                )
+                z_obj = pred_row["z_tensor"]
+                if hasattr(z_obj, "detach"):
+                    z_arr = z_obj.detach().cpu().numpy()
+                else:
+                    z_arr = np.asarray(z_obj)
+                row = np.asarray(z_arr, dtype=np.float64).reshape(-1)
+                if row.shape[0] != len(spans):
+                    raise RuntimeError(
+                        "compact head predictor returned z/window length mismatch: "
+                        f"{row.shape[0]} != {len(spans)}"
+                    )
+                for idx in pending[key][1]:
+                    templates[idx] = spans
+                    risk_rows[idx] = row
+
+        template: tuple[tuple[int, int, int], ...] | None = None
+        final_rows: list[np.ndarray] = []
+        for idx, row in enumerate(risk_rows):
+            if row is None or templates[idx] is None:
+                raise RuntimeError("head predictor returned fewer compact rows than requested")
+            if template is None:
+                template = templates[idx]
+            elif templates[idx] != template:
+                raise ValueError(
+                    "compact window-risk batch requires all records to share "
+                    "the same window template"
+                )
+            final_rows.append(row)
+
+        template = template or ()
+        window_risks = (
+            np.vstack(final_rows).astype(np.float64, copy=False)
+            if final_rows
+            else np.zeros((0, 0), dtype=np.float64)
+        )
+        return CompactBatchHeadScores(
+            protein_id=str(protein_id),
+            labels=labels,
+            sequence_md5=sequence_md5,
+            sequence_lengths=sequence_lengths,
+            allele=self.allele,
+            score_scale=self.score_scale,
+            window_starts_0b=tuple(int(s) for s, _e, _k in template),
+            window_ends_0b=tuple(int(e) for _s, e, _k in template),
+            window_ks=tuple(int(k) for _s, _e, k in template),
+            window_risks=window_risks,
+        )
 
     def _remember_dynamic(self, key: tuple[str, str], head_score: HeadScore) -> None:
         if self.dynamic_cache_size == 0:

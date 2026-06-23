@@ -1137,6 +1137,124 @@ def test_sc_calibration_inverted_band_fails_fast(tmp_path: Path):
         )
 
 
+def _write_scgr_amplify_yaml(tmp_path: Path) -> Path:
+    """A beta_pressure + amplify config (g_min<1<g_max); band stamped from JSON."""
+    base = _write_d2_d3_yaml(tmp_path).read_text()
+    extra = (
+        "  targeting:\n"
+        "    mode: typed_actionability\n"
+        "    within_block_source: v_target\n"
+        "  global_pressure:\n"
+        "    enabled: true\n"
+        "    pressure_source: self_conditioned_probe\n"
+        "    mapping: smoothstep\n"
+        "    amplify: true\n"
+        "    g_min: 0.5\n"
+        "    g_max: 1.5\n"
+        "    min_reliable_refreshes: 1\n"
+        "    unready_g: 1.0\n"
+        "    scale_beta: true\n"
+        "    scale_lambda: false\n"
+        "  self_conditioned_gr:\n"
+        "    enabled: true\n"
+        "    mode: beta_pressure\n"
+        "    arms: [fresh, self_conditioned]\n"
+        "    ensemble_size: 3\n"
+        "    confidence_threshold: 0.70\n"
+        "    top_m: 16\n"
+        "    lse_temperature: 1.0\n"
+        "    supra_tau_values: [11.75]\n"
+        "    actuation_aggregator: topm_lse\n"
+        "    actuation_arm: fresh\n"
+        "    freeze_after_reliable_refreshes: 1\n"
+        "    actuation_reduce: median\n"
+    )
+    path = tmp_path / "controller_scgr_amplify.yaml"
+    path.write_text(base + extra)
+    return path
+
+
+def _write_sc_amplify_calibration_json(
+    tmp_path, *, B_low=-0.5, B_high=2.5, B_median=1.0, g_min=0.5, g_max=1.5,
+    aggregator="topm_lse", arm="fresh", refresh_step=0, name="sc_amp_calib.json",
+    drop_b_median=False, amplify=True,
+):
+    payload = {
+        "schema_version": "scgr_betaonly_calibration.v1",
+        "pressure_source": "self_conditioned_probe",
+        "aggregator": aggregator,
+        "arm": arm,
+        "refresh_step": refresh_step,
+        "g_min": g_min,
+        "g_max": g_max,
+        "B_low": B_low,
+        "B_high": B_high,
+    }
+    if amplify:
+        payload["amplify"] = True
+    if not drop_b_median:
+        payload["B_median"] = B_median
+    p = tmp_path / name
+    p.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return p
+
+
+def test_sc_amplify_calibration_stamps_band(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_amplify_yaml(tmp_path)
+    calib = _write_sc_amplify_calibration_json(tmp_path)
+    setup = load_controller_setup(
+        _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(calib))
+    )
+    assert setup is not None
+    gp = setup.config.global_pressure
+    assert gp.amplify is True
+    assert gp.B_low == -0.5 and gp.B_high == 2.5
+    assert gp.g_min == 0.5 and gp.g_max == 1.5
+
+
+def test_sc_amplify_config_rejects_non_amplify_calibration(tmp_path: Path):
+    # amplify config must NOT silently eat an SC1 (non-amplify) calibration JSON.
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_amplify_yaml(tmp_path)
+    bad = _write_sc_calibration_json(tmp_path, name="sc1band.json")  # no amplify field
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_sc1_config_rejects_amplify_calibration(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)  # amplify=false
+    bad = _write_sc_amplify_calibration_json(tmp_path, name="ampband.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_sc_amplify_calibration_g_mismatch_fails(tmp_path: Path):
+    # band solved for g_max=2.0 must not be applied to a g_max=1.5 config.
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_amplify_yaml(tmp_path)  # g_max=1.5
+    bad = _write_sc_amplify_calibration_json(tmp_path, g_max=2.0, name="gmm.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
+def test_sc_amplify_calibration_missing_b_median_fails(tmp_path: Path):
+    _fake_head_dir(tmp_path)
+    ctrl_yaml = _write_scgr_amplify_yaml(tmp_path)
+    bad = _write_sc_amplify_calibration_json(tmp_path, drop_b_median=True, name="nomed.json")
+    with pytest.raises(SystemExit):
+        load_controller_setup(
+            _make_args(tmp_path, ctrl_yaml, global_pressure_calibration_json=str(bad))
+        )
+
+
 def test_sc_calibration_missing_refresh_step_fails_fast(tmp_path: Path):
     _fake_head_dir(tmp_path)
     ctrl_yaml = _write_scgr_betaonly_yaml(tmp_path)

@@ -506,13 +506,15 @@ Pass criteria:
 best Spearman(B_sc, oracle burden) >= 0.60
 Recall@High improves over old C.1 B_GR
 P(probe low | oracle high) drops versus old C.1 B_GR
-self_conditioned arm beats or matches fresh arm at a multi-refresh step
+actuation arm is selected by Recall@High first, Spearman second
+self_conditioned is promoted only if its edge is larger than the reseed-noise floor
 ```
 
 Failure interpretation:
 
 ```text
-fresh good, self_conditioned bad -> recycling is too conservative; keep Fresh-K as estimator candidate
+fresh good, self_conditioned within noise -> use Fresh-K for the v1 actuator; keep self-conditioned monitored for v2
+fresh good, self_conditioned worse beyond noise -> recycling is too conservative; keep Fresh-K as estimator candidate
 both weak -> probe time or aggregator is wrong; inspect refresh-index curves
 Spearman okay, Recall@High weak -> tail-sensitive aggregator or instability trigger is needed
 ```
@@ -529,7 +531,7 @@ These stages connect a **monitor-validated** `B_sc` estimator to the **existing*
 best Spearman(B_sc, oracle burden) >= 0.60        (from sc_gr_monitor_summary.json)
 Recall@High beats old C.1 B_GR; P(probe low | oracle high) drops
 best_metric pinned in {mean_excess, topm_lse, supra_mass}
-actuation_arm decided in {fresh, self_conditioned}
+actuation_arm decided in {fresh, self_conditioned}; self_conditioned requires a signal above reseed-noise floor
 ```
 
 If the gate fails, **stop**: SC-GR is not a usable estimator, these stages do not run, and the legacy `trajectory_thresholded_G` configs stay the only GR baseline.
@@ -557,7 +559,7 @@ Goal: gate D2 `beta` **only** by `g_GR = smoothstep(B_sc)`, where `B_sc` is the 
 ```python
 mode: str = "monitor_only"              # monitor_only | beta_pressure
 actuation_aggregator: str = "topm_lse"  # mean_excess | topm_lse | supra_mass (= SC0.5 best_metric)
-actuation_arm: str = "fresh"            # fresh | self_conditioned (= SC0.5 recycling decision)
+actuation_arm: str = "fresh"            # fresh | self_conditioned (= SC0.5 recycling decision; RAR 0010 keeps SC monitored, not promoted to v1 actuator)
 freeze_after_reliable_refreshes: int = 1   # RAR 0010: B.1 cadence gives only 2 post-t_start refreshes; freeze at the first (unguided, refresh_step=0)
 actuation_reduce: str = "median"        # median | ema  (over the frozen window; moot at window size 1)
 ```
@@ -634,7 +636,7 @@ a pressure_source=trajectory_thresholded_G run is byte-identical to pre-SC1 beha
 
 - [ ] Extend the loader: when `payload["pressure_source"] == "self_conditioned_probe"`, require keys `aggregator`, `arm`, `B_low`, `B_high` (`B_high > B_low`); `tau_prom` is not required for this source. Stamp `B_low`/`B_high` via the existing `dataclasses.replace` path (`run_if_phase_c1.py:244-253`).
 - [ ] **Option A (YAML authoritative).** `aggregator` / `arm` live in `SelfConditionedGRConfig.actuation_aggregator` / `actuation_arm` (Task SC1.1), **not** in `GlobalPressureConfig`. The YAML must already set them; the loader only **validates consistency** — reject if JSON `aggregator`/`arm` != `self_conditioned_gr.actuation_aggregator`/`actuation_arm`, and reject `pressure_source` mismatch (mirror `run_if_phase_c1.py:236-243`). The loader stamps **only** `B_low`/`B_high` into `global_pressure`; it never mutates `self_conditioned_gr` (one config block touched, not two).
-- [ ] `sc_gr_monitor_probe.py --emit-calibration PATH` writes `{schema_version, pressure_source:"self_conditioned_probe", aggregator:<best_metric>, arm:<actuation_arm>, B_low:q_low(B_sc), B_high:q_high(B_sc)}` from the monitor `B_sc` distribution at the **freeze horizon** — i.e. the refresh_step that SC1 actually actuates on, not necessarily the summary's best-discrimination step. For the RAR-0010 config that is `refresh_step=0`, `arm=fresh`, `metric=topm_lse` (`freeze_after_reliable_refreshes=1`), so the bands match the distribution that gets frozen and applied (`--low-quantile`/`--high-quantile`, default 0.25/0.75).
+- [ ] `sc_gr_monitor_probe.py --emit-calibration PATH` writes `{schema_version, pressure_source:"self_conditioned_probe", aggregator:<best_metric>, arm:<actuation_arm>, B_low:q_low(B_sc), B_high:q_high(B_sc)}` from the monitor `B_sc` distribution at the **runtime frozen horizon** — i.e. the same arm/aggregator/reliable-refresh rule that SC1 will freeze and actuate on, not necessarily the summary's best-discrimination step. For the shipped RAR-0010 SC1 config this is the first reliable refresh, expected to be `refresh_step=0`, `arm=fresh`, `metric=topm_lse` (`freeze_after_reliable_refreshes=1`), so the bands match the values actually frozen and applied. If a future run's first reliable refresh is not `refresh_step=0`, the calibration emitter must use that actual frozen-horizon subset rather than hard-code step 0 (`--low-quantile`/`--high-quantile`, default 0.25/0.75).
 
 - [ ] Required tests:
 
@@ -676,7 +678,7 @@ controller:
     enabled: true
     mode: beta_pressure
     actuation_aggregator: topm_lse       # RAR 0010 best_metric (decisive: 0.742 vs supra_mass 0.630 vs mean_excess 0.344)
-    actuation_arm: fresh                 # RAR 0010: SC edge +0.009 << 0.078 reseed noise floor; override summary's raw best.arm=self_conditioned
+    actuation_arm: fresh                 # RAR 0010: SC edge +0.009 << 0.078 reseed noise floor; SC is monitored/v2, not promoted to the v1 actuator
     freeze_after_reliable_refreshes: 1   # freeze at refresh_step=0 (unguided trajectory); gates both post-t_start refreshes
     actuation_reduce: median             # window size 1 -> moot
 ```
@@ -700,11 +702,16 @@ pressure-bin vs NoD-burden-bin diagonal markedly above old C.1
 
 ### 6.2 Stage SC2 — Amplify-High (`g > 1`)
 
-> **Not a current coder handoff.** Deferred until SC1 passes its readouts; kept here as the planned next lever, not work to dispatch now.
-
-**Entry gate (SC1 → SC2):** SC1 passes its four readouts **and** true-high gain is preserved (not eroded). Then test the larger lever: push high-NoD-burden proteins harder.
+**Entry gate (SC1 → SC2) — MET (RAR 0011).** SC2 requires SC1 to have validated, in order: (a) actuation + pressure diagonal correct (`Spearman(g_GR, NoD)=0.61`, `beta_eff=g_GR·beta_base` exact, `scale_lambda=false`); (b) **high-burden gain not eroded** (Δhigh≈0, even at the suppressed `g_GR`≈0.76 SC1 applied there); (c) structure no worse (SC1 scTM 0.946). The protect-low *immune payoff* is **NOT** a prerequisite — SC1 confirmed it is within-noise (Δlow −0.41, Wilcoxon p=0.38), exactly the small lever §1 predicted; SC2 tests the large lever (amplify-high), which is independent of it. All three required conditions hold → proceed. Then test the larger lever: push high-NoD-burden proteins harder.
 
 Mechanism: the existing `smoothstep_pressure(B; B_low, B_high, g_min, g_max)` (`actionability.py:320-329`) is **already two-sided** — with `g_min < 1 < g_max` it maps low burden → `g_min` (suppress) and high burden → `g_max` (amplify) on one monotone curve. So SC2 is mostly a **calibration + bounds** change, not a new mapping function.
+
+**SC1 learnings that shape SC2 (RAR 0011):**
+
+- **`g_max` must not be timid.** In SC1 the high tercile ran at `g_GR`≈0.76→1.0 yet Δ vs full-beta B1 was ≈0 — the high-burden gain is **flat in beta near the base (3.0)**. A small amplify (`g_max=1.25`) will likely not move the outcome; the earlier high-risk `beta=5` run (scTM 0.93) reduced risk strongly, so the dose–response needs a real step. Start `g_max=1.5` and sweep **upward**, not down toward 1.0.
+- **De-emphasize the low side.** SC1 showed low-burden beta-suppression is immune-neutral (within-noise), so the dynamic range is better spent on amplify; `g_min=0.5` is fine as cheap do-no-harm insurance, no need to push it lower.
+- **Calibration horizon = SC1's.** Inherit freeze@`refresh_step=0`, `arm=fresh`, `metric=topm_lse` (SC1.4); `--emit-calibration --amplify` builds bands on that same refresh-0 fresh `topm_lse` `B_sc` distribution, crossover (`g=1`) at the NoD-burden median.
+- **Structure baseline = SC1 itself** (scTM 0.946, 200 designs, same operating point) — a clean comparator now exists, so compare SC2 scTM directly to SC1 (SC1 had to use a proxy; SC2 does not).
 
 #### Task SC2.1: Allow `g_max > 1` (two-sided gain)
 
@@ -747,7 +754,7 @@ true-low / NoD-low not harmed beyond SC1 (g_min < 1 still protects)
 structure cost is bounded (scTM not materially worse than SC1)
 ```
 
-- [ ] If structure degrades at `g_max=1.5`, sweep `g_max in {1.25, 1.5, 2.0}` and report the Pareto knee. Optional alternative mapping (defer unless the two-sided smoothstep is too stiff): `mapping: zscore_linear`, `g = clip(1 + a*z(B_sc), g_min, g_max)`, calibration carrying `B_mean`/`B_sd`.
+- [ ] Sweep `g_max in {1.5, 2.0, 2.5}` (NOT 1.25 — SC1 showed near-base saturation, so a timid step won't move high-burden) and report the immune-vs-structure Pareto knee. Primary question this run answers: **does amplifying high-burden beta beyond base reduce risk further at all, or is the gain already saturated at base beta?** (SC1's Δhigh≈0 at g≈0.76 is consistent with saturation; the `beta=5` high-risk run argues a large enough step still bites.) Optional alternative mapping (defer unless the two-sided smoothstep is too stiff): `mapping: zscore_linear`, `g = clip(1 + a*z(B_sc), g_min, g_max)`, calibration carrying `B_mean`/`B_sd`.
 
 ---
 

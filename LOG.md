@@ -3383,3 +3383,32 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_RF_SC_GR.md` §6.1 (Stage SC1)
   - `doc/Self-Cond_GR.md` §4, §6
   - `L0116` (SC0 monitor — gated predecessor)
+
+### L0119
+- timestamp: 2026-06-20T00:00:00-04:00
+- type: FEATURE
+- module: RF
+- trigger: Implement the CODE part of Stage SC2 (amplify-high, g>1) from `PLAN_RF_SC_GR.md` §6.2 — unlock a two-sided gain so the SC-GR `beta_pressure` actuator can both suppress low-NoD-burden proteins (g_min<1) AND amplify high-burden ones (g_max>1) on the one existing smoothstep. The experiment config (`d2_d3_full_stageC_scgr_amplify_aopen.yaml`) and the pilot run are deferred (config provided after an experiment).
+- change_summary: (SC2.1) `controller_config.py`: `GlobalPressureConfig` gains `amplify: bool=False`; `_materialize_global_pressure` parses it and validates `amplify=true ⇒ g_min < 1.0 < g_max <= 3.0` (so a two-sided gain is well-formed and bounded). `_cross_validate_scgr` gates the SC1 `g_max==1.0` enforcement on `amplify`: `beta_pressure ∧ ¬amplify ⇒ g_max==1.0` (SC1 unchanged), `beta_pressure ∧ amplify ⇒ g_max>1` allowed — a coder cannot silently amplify. NO controller-runtime change: `smoothstep_pressure(B; B_low, B_high, g_min, g_max)` is already two-sided (maps low→g_min, high→g_max on one monotone curve) and `_scgr_frozen_pressure` already passes `g_min`/`g_max` through unclamped, so `g_max>1` flows to `beta_eff = beta·g_GR` with no code change. (SC2.2 code) `sc_gr_monitor_probe.py`: `emit_calibration(..., amplify=True, g_min, g_max)` + `--amplify`/`--g-min`/`--g-max` CLI **solve** the band so the smoothstep crossover `g==1` lands EXACTLY at the NoD-burden median for the (possibly asymmetric) gain — `s* = (1−g_min)/(g_max−g_min)`, `q*` is its smoothstep inverse (`_solve_smoothstep_q`, bisection), width `W=q_high−q_low`, `B_low = median − q*·W`, `B_high = median + (1−q*)·W`; median-centering (`q*=0.5`) is the special case of symmetric `g_min+g_max==2` (P1: a naive median-centered band gives `g(median)=(g_min+g_max)/2 ≠ 1` for asymmetric `g`, e.g. `1.25` at `g_min=0.5,g_max=2.0`). The JSON carries `amplify:true` + `B_median` + the `g_min`/`g_max` it was solved against. The SC1 (suppress-low) path keeps the literal `[q_low, q_high]` band. **Runtime type guard (P1):** `_load_global_pressure_calibration` reads the calibration `amplify` flag (+ requires `B_median`/`g_min`/`g_max` when amplify); `load_controller_setup` rejects `calib.amplify != global_pressure.amplify` (an amplify config can no longer silently consume an SC1 band or vice-versa) and, for amplify, rejects `calib.g_min/g_max != config.g_min/g_max` (a band solved for a different gain). `doc/SCRIPTS.md` updated.
+- rationale: RAR 0008 reframed the GR objective — the amplify-high direction (the −1.0 nat high-burden lever) is the larger lever; do-no-harm of low-burden is secondary. SC2 turns the SC1 protect-low gate into the two-sided gain the corrected objective wants. The PLAN notes the smoothstep is already two-sided, so SC2 is a calibration + bounds change, not a new mapping. The `amplify` flag keeps SC1 (`g_max=1`) and SC2 (`g_max>1`) configs distinct and fail-fast, and the median-centered emit makes the crossover interpretable (g==1 at the burden median). All new behavior is gated on `global_pressure.amplify`, so SC1 / legacy-thresholded / monitor / static runs are byte-for-byte unchanged. The experiment config (g_min/g_max start `0.5`/`1.5`, band from `--emit-calibration --amplify`) is deferred until the SC1 readout informs the conservative starting bounds.
+- artifacts:
+  - `inverse_folding/reference_flow/controller_config.py`
+  - `scripts/analysis/sc_gr_monitor_probe.py`
+  - `doc/SCRIPTS.md`
+  - `tests/inverse_folding/test_reference_flow_controller_config.py`
+  - `tests/scripts/test_sc_gr_monitor_probe.py`
+- evidence: |
+    TDD red→green per task (SC2.1 amplify gate; SC2.2 amplify emit).
+    `pytest tests/inverse_folding/test_reference_flow_controller_config.py -q` -> 117 passed; `pytest tests/scripts/test_sc_gr_monitor_probe.py -q` -> 24 passed; `pytest tests/scripts/test_run_if_phase_c1_d2_d3.py -q` -> 43 passed.
+    `pytest tests/inverse_folding/ tests/scripts/ -q` (excluding 3 pre-existing Biopython-broken files) -> 905 passed, 42 skipped; `git diff --check` clean.
+    Verified: amplify=true requires g_min<1.0<g_max<=3.0 (g_max=1.0, g_min=1.0, g_max=3.5 each fail fast); amplify=false keeps beta_pressure g_max==1.0 (SC1 unchanged); amplify=true with g_min=0.5/g_max=1.5 loads. emit --amplify solves the band so smoothstep_pressure(B_median; band, g_min, g_max)==1.0 for BOTH symmetric (0.5/1.5, band midpoint==median) AND asymmetric (0.5/2.0, midpoint≠median) gains; requires g_min/g_max; fails fast on zero spread. Loader: an amplify config rejects a non-amplify (SC1) calibration and vice-versa; an amplify band with g_min/g_max != config fails fast; a missing B_median fails fast. No controller.py change ⇒ SC1/legacy/static runs unchanged.
+- impact:
+  - scope: RF actuation config — one new `global_pressure.amplify` field + its validation gate, and the amplify calibration emitter. No controller-runtime change (smoothstep already two-sided), no model retraining. CONFIG (`d2_d3_full_stageC_scgr_amplify_aopen.yaml`) and the pilot run are deferred (user provides the config after the SC1 experiment). SC3 (instability trigger) deferred.
+  - risk: low
+  - confidence: 0.85
+- status: partial (code complete + tested; experiment config + pilot run pending)
+- next_action: Await the SC1 readout, then author `d2_d3_full_stageC_scgr_amplify_aopen.yaml` (copy `d2_d3_full_stageC_scgr_betaonly_aopen.yaml`; set `global_pressure: {amplify: true, g_min: 0.5, g_max: 1.5}`). Emit the amplify band (`sc_gr_monitor_probe.py --emit-calibration --amplify`), run the 50-protein pilot, readout: true-high reduction EXCEEDS SC1, true-low not harmed beyond SC1, structure cost bounded; if scTM degrades at g_max=1.5, sweep g_max∈{1.25,1.5,2.0} for the Pareto knee.
+- refs:
+  - `PLAN_RF_SC_GR.md` §6.2 (Stage SC2)
+  - `doc/Self-Cond_GR.md` §1 (amplify objective), §3 step 5
+  - `L0118` (SC1 beta-only — gated predecessor)

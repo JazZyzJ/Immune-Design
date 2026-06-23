@@ -250,6 +250,27 @@ _B_SC_MEDIAN_FIXED = {
 _B_SC_SUPRA_RE = re.compile(r"^B_sc_supra_mass_tau_(.+)_median$")
 
 
+def _solve_smoothstep_q(s_target: float) -> float:
+    """Invert the cubic smoothstep ``s(q)=3q²-2q³`` for ``q ∈ (0,1)``.
+
+    ``s`` is strictly increasing on ``[0, 1]`` (``s'(q)=6q(1-q) >= 0``), so a
+    bisection converges to the unique root. Requires ``0 < s_target < 1``.
+    """
+    if not (0.0 < s_target < 1.0):
+        raise ValueError(
+            f"smoothstep inversion requires 0 < s_target < 1 (got {s_target})"
+        )
+    lo, hi = 0.0, 1.0
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        s = mid * mid * (3.0 - 2.0 * mid)
+        if s < s_target:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
 def _b_sc_median_column(probe_df: pd.DataFrame, aggregator: str) -> str:
     """Map an actuation aggregator name -> its B_sc-median column in the frame."""
     if aggregator in _B_SC_MEDIAN_FIXED:
@@ -273,13 +294,25 @@ def emit_calibration(
     refresh_step: int,
     low_quantile: float,
     high_quantile: float,
+    amplify: bool = False,
+    g_min: float | None = None,
+    g_max: float | None = None,
     schema_version: str = "scgr_betaonly_calibration.v1",
 ) -> dict[str, Any]:
-    """Build the SC1 ``self_conditioned_probe`` calibration band (PLAN SC1.3).
+    """Build the ``self_conditioned_probe`` calibration band (PLAN SC1.3 / SC2.2).
 
     Bands come from the per-protein ``B_sc`` distribution at the **freeze horizon**
     — the ``(arm, refresh_step)`` SC1 actually actuates on, NOT necessarily the
     summary's best-discrimination step. Per-protein burden = median over designs.
+
+    SC1 (``amplify=False``): the literal quantile band ``[q_low, q_high]`` (suppress-
+    low). SC2 (``amplify=True``): requires ``g_min``/``g_max`` and **solves** for the
+    band so the smoothstep crossover ``g==1`` falls EXACTLY at the NoD-burden median
+    for that (possibly asymmetric) gain — `s* = (1-g_min)/(g_max-g_min)`, `q*` is its
+    smoothstep inverse, band width `W = q_high - q_low`, `B_low = median - q*·W`,
+    `B_high = median + (1-q*)·W`. Median-centering (q*=0.5) is the special case of
+    symmetric `g_min + g_max == 2`. The emitted JSON carries `g_min`/`g_max` so the
+    loader can reject a band solved for a different gain than the run's config.
     """
     col = _b_sc_median_column(probe_df, aggregator)
     sub = probe_df[
@@ -295,15 +328,7 @@ def emit_calibration(
         raise ValueError(
             f"need >=2 finite per-protein B_sc values to calibrate (got {vals.size})"
         )
-    B_low = float(np.quantile(vals, float(low_quantile)))
-    B_high = float(np.quantile(vals, float(high_quantile)))
-    if not (B_high > B_low):
-        raise ValueError(
-            "calibration band collapsed: requires B_high > B_low "
-            f"(got B_low={B_low}, B_high={B_high}); the B_sc distribution at this "
-            "horizon is too concentrated"
-        )
-    return {
+    payload: dict[str, Any] = {
         "schema_version": schema_version,
         "pressure_source": "self_conditioned_probe",
         "aggregator": aggregator,
@@ -311,9 +336,50 @@ def emit_calibration(
         "refresh_step": int(refresh_step),
         "low_quantile": float(low_quantile),
         "high_quantile": float(high_quantile),
-        "B_low": B_low,
-        "B_high": B_high,
     }
+    if amplify:
+        if g_min is None or g_max is None:
+            raise ValueError(
+                "amplify calibration requires g_min and g_max (the band is solved "
+                "so the smoothstep crossover g==1 lands at the burden median)"
+            )
+        g_min = float(g_min)
+        g_max = float(g_max)
+        if not (g_min < 1.0 < g_max):
+            raise ValueError(
+                "amplify calibration requires g_min < 1.0 < g_max "
+                f"(got g_min={g_min}, g_max={g_max})"
+            )
+        B_med = float(np.median(vals))
+        width = float(np.quantile(vals, float(high_quantile))) - float(
+            np.quantile(vals, float(low_quantile))
+        )
+        if not (width > 0.0):
+            raise ValueError(
+                "amplify calibration band collapsed: the B_sc spread at this "
+                "horizon is zero (q_high == q_low)"
+            )
+        # Solve the band so g(median) == 1 for this (possibly asymmetric) gain.
+        s_star = (1.0 - g_min) / (g_max - g_min)
+        q_star = _solve_smoothstep_q(s_star)
+        payload["amplify"] = True
+        payload["B_median"] = B_med
+        payload["g_min"] = g_min
+        payload["g_max"] = g_max
+        payload["B_low"] = B_med - q_star * width
+        payload["B_high"] = B_med + (1.0 - q_star) * width
+    else:
+        B_low = float(np.quantile(vals, float(low_quantile)))
+        B_high = float(np.quantile(vals, float(high_quantile)))
+        if not (B_high > B_low):
+            raise ValueError(
+                "calibration band collapsed: requires B_high > B_low "
+                f"(got B_low={B_low}, B_high={B_high}); the B_sc distribution at "
+                "this horizon is too concentrated"
+            )
+        payload["B_low"] = B_low
+        payload["B_high"] = B_high
+    return payload
 
 
 def select_best_metric(table: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -414,6 +480,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calibration-refresh-step", type=int, default=0)
     parser.add_argument("--low-quantile", type=float, default=0.25)
     parser.add_argument("--high-quantile", type=float, default=0.75)
+    # SC2.2: emit a two-sided (amplify) band; g_min/g_max position the crossover
+    # g==1 at the burden median and MUST equal the run config's gain bounds.
+    parser.add_argument("--amplify", action="store_true")
+    parser.add_argument("--g-min", type=float, default=0.5)
+    parser.add_argument("--g-max", type=float, default=1.5)
     args = parser.parse_args(argv)
 
     result = analyze(
@@ -437,6 +508,9 @@ def main(argv: list[str] | None = None) -> int:
             refresh_step=args.calibration_refresh_step,
             low_quantile=args.low_quantile,
             high_quantile=args.high_quantile,
+            amplify=args.amplify,
+            g_min=args.g_min if args.amplify else None,
+            g_max=args.g_max if args.amplify else None,
         )
         args.emit_calibration.parent.mkdir(parents=True, exist_ok=True)
         with open(args.emit_calibration, "w") as f:

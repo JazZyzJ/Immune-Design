@@ -194,6 +194,11 @@ class GlobalPressureConfig:
     enabled: bool = False
     g_min: float = 0.0
     g_max: float = 1.0
+    # SC2 two-sided gain (PLAN_RF_SC_GR.md Task SC2.1). ``amplify=false`` (default)
+    # keeps ``g_max == 1.0`` for a beta_pressure run (protect-low only).
+    # ``amplify=true`` unlocks ``g_min < 1.0 < g_max <= 3.0`` so low burden →
+    # suppress (g_min) and high burden → amplify (g_max) on the one smoothstep.
+    amplify: bool = False
     # Stage C.1 actuator. ``G_step`` is the prominence-thresholded mass
     # ``(1/L) Σ ReLU(u_pressure − τ_prom)`` (G3 / RAR 0006); ``pressure_source`` is
     # its trajectory aggregation. ``trajectory_thresholded_G`` = median over
@@ -1009,10 +1014,19 @@ def _materialize_global_pressure(payload: Any) -> GlobalPressureConfig:
             "controller.global_pressure.unready_g must be within [0, g_max] "
             f"(got unready_g={unready_g}, g_max={g_max})"
         )
+    amplify = bool(payload.get("amplify", defaults.amplify))
+    # SC2.1: a two-sided gain needs g_min below 1 (suppress low) and g_max above
+    # 1 (amplify high), bounded to keep beta scaling sane.
+    if amplify and not (g_min < 1.0 < g_max <= 3.0):
+        raise ControllerConfigError(
+            "controller.global_pressure.amplify=true requires "
+            f"g_min < 1.0 < g_max <= 3.0 (got g_min={g_min}, g_max={g_max})"
+        )
     return GlobalPressureConfig(
         enabled=enabled,
         g_min=g_min,
         g_max=g_max,
+        amplify=amplify,
         pressure_source=pressure_source,
         tau_prom_source=tau_prom_source,
         tau_prom=tau_prom,
@@ -1362,10 +1376,14 @@ def _cross_validate_scgr(
                 "controller.global_pressure.scale_lambda=false (RAR 0008: scaling "
                 "lambda reverts suppressed designs and loses D3's commit)"
             )
-        if global_pressure.g_max != 1.0:
+        # SC2.1: g_max>1 (amplify-high) is allowed ONLY when amplify=true, so a
+        # coder cannot silently amplify (SC1 stays g_max==1.0). The amplify
+        # bounds (g_min<1<g_max<=3) are validated in _materialize_global_pressure.
+        if not global_pressure.amplify and global_pressure.g_max != 1.0:
             raise ControllerConfigError(
                 "controller.self_conditioned_gr.mode='beta_pressure' requires "
-                "controller.global_pressure.g_max=1.0 (amplify g>1 is SC2, not SC1); "
+                "controller.global_pressure.g_max=1.0 unless "
+                "global_pressure.amplify=true (amplify g>1 is SC2); "
                 f"got g_max={global_pressure.g_max}"
             )
 

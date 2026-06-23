@@ -1286,6 +1286,55 @@ def test_beta_pressure_rejects_g_max_not_one():
         )
 
 
+def test_global_pressure_amplify_defaults_false():
+    assert GlobalPressureConfig().amplify is False
+
+
+def test_amplify_true_allows_g_max_above_one():
+    config = materialize_controller_config(
+        _beta_pressure_payload(gp_overrides={"amplify": True, "g_min": 0.5, "g_max": 1.5})
+    )
+    assert config.global_pressure.amplify is True
+    assert config.global_pressure.g_max == 1.5
+    assert config.global_pressure.g_min == 0.5
+
+
+def test_amplify_false_keeps_g_max_one_for_beta_pressure():
+    # amplify defaults false -> beta_pressure still forces g_max == 1.0 (SC1).
+    with pytest.raises(ControllerConfigError, match="g_max"):
+        materialize_controller_config(
+            _beta_pressure_payload(gp_overrides={"g_max": 1.5})
+        )
+
+
+def test_amplify_true_requires_g_max_above_one():
+    with pytest.raises(ControllerConfigError, match="amplify"):
+        materialize_controller_config(
+            _beta_pressure_payload(gp_overrides={"amplify": True, "g_min": 0.5, "g_max": 1.0})
+        )
+
+
+def test_amplify_true_requires_g_min_below_one():
+    with pytest.raises(ControllerConfigError, match="amplify"):
+        materialize_controller_config(
+            _beta_pressure_payload(gp_overrides={"amplify": True, "g_min": 1.0, "g_max": 1.5})
+        )
+
+
+def test_amplify_true_rejects_g_max_above_three():
+    with pytest.raises(ControllerConfigError, match="amplify"):
+        materialize_controller_config(
+            _beta_pressure_payload(gp_overrides={"amplify": True, "g_min": 0.5, "g_max": 3.5})
+        )
+
+
+def test_amplify_in_to_dict():
+    config = materialize_controller_config(
+        _beta_pressure_payload(gp_overrides={"amplify": True, "g_min": 0.5, "g_max": 1.5})
+    )
+    assert controller_config_to_dict(config)["global_pressure"]["amplify"] is True
+
+
 def test_invalid_actuation_aggregator_rejected():
     payload = _base_enabled_payload()
     payload["controller"]["self_conditioned_gr"] = _scgr_block(

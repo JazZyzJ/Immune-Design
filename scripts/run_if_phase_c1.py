@@ -172,10 +172,17 @@ def _load_global_pressure_calibration(path: str) -> dict:
     p, calib_hash = _calibration_file_provenance(path)
     payload = json.loads(p.read_bytes().decode("utf-8"))
     pressure_source = str(payload.get("pressure_source", ""))
+    sc_amplify = pressure_source == "self_conditioned_probe" and bool(
+        payload.get("amplify", False)
+    )
     if pressure_source == "trajectory_thresholded_G":
         required = ("tau_prom", "B_low", "B_high")
     elif pressure_source == "self_conditioned_probe":
-        required = ("aggregator", "arm", "refresh_step", "B_low", "B_high")
+        required = ["aggregator", "arm", "refresh_step", "B_low", "B_high"]
+        # SC2: an amplify band is solved for a specific gain — it MUST carry the
+        # g_min/g_max it was computed against + the median crossover anchor.
+        if sc_amplify:
+            required += ["B_median", "g_min", "g_max"]
     else:
         print(
             "ERROR: global-pressure calibration JSON pressure_source must be "
@@ -199,6 +206,13 @@ def _load_global_pressure_calibration(path: str) -> dict:
         print(
             f"ERROR: global-pressure calibration requires B_high > B_low "
             f"(got B_low={B_low}, B_high={B_high})",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if sc_amplify and not np.isfinite(float(payload["B_median"])):
+        print(
+            "ERROR: amplify calibration B_median must be finite "
+            f"(got {payload['B_median']!r})",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -227,6 +241,10 @@ def _load_global_pressure_calibration(path: str) -> dict:
             if pressure_source == "self_conditioned_probe"
             else None
         ),
+        "amplify": sc_amplify,
+        "B_median": float(payload["B_median"]) if sc_amplify else None,
+        "amplify_g_min": float(payload["g_min"]) if sc_amplify else None,
+        "amplify_g_max": float(payload["g_max"]) if sc_amplify else None,
     }
 
 
@@ -295,6 +313,33 @@ def load_controller_setup(args: argparse.Namespace) -> ControllerSetup | None:
                     file=sys.stderr,
                 )
                 raise SystemExit(2)
+            # SC2: the calibration's amplify flag MUST match the config so an
+            # amplify config never silently consumes an SC1 (suppress-low) band
+            # and vice-versa; an amplify band is also only valid for the exact
+            # g_min/g_max it was solved against.
+            if bool(calib["amplify"]) != bool(config.global_pressure.amplify):
+                print(
+                    "ERROR: SC calibration amplify="
+                    f"{bool(calib['amplify'])} does not match "
+                    f"global_pressure.amplify={bool(config.global_pressure.amplify)} "
+                    "(an amplify band has different semantics than a suppress-low band)",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            if calib["amplify"]:
+                for key, cfg_val, cal_val in (
+                    ("g_min", config.global_pressure.g_min, calib["amplify_g_min"]),
+                    ("g_max", config.global_pressure.g_max, calib["amplify_g_max"]),
+                ):
+                    if abs(float(cfg_val) - float(cal_val)) > 1e-9:
+                        print(
+                            f"ERROR: SC amplify calibration {key}={cal_val} does not "
+                            f"match global_pressure.{key}={cfg_val}; the band was "
+                            "solved for a different gain (crossover would not land at "
+                            "the median)",
+                            file=sys.stderr,
+                        )
+                        raise SystemExit(2)
             # The band must be computed at the SC1 freeze horizon, else
             # smoothstep(B_sc) consumes a distribution from a different refresh
             # than the one actually frozen/actuated (PLAN_RF_SC_GR.md SC1.3).

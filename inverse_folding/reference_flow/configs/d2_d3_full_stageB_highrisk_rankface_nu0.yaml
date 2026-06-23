@@ -1,0 +1,112 @@
+# Rank-face destructive control [nu0] (Stage 2 — run only if Stage 1 shows movement)
+# Base: cap20 + L2_ttl12_nobenefit (d2_d3_full_stageB_highrisk_commit_gate_L2_ttl12_nobenefit.yaml).
+#   cap20 = d2.top_k_tokens=20 + d2.delta_struct=1e6 + d2.max_candidates_per_block=20.
+#   L2    = d3.d2_evidence_requires_benefit=false + d3.d2_evidence_ttl_steps=12.
+# Fixed at base alpha_struct=0.3, max_abs_logit_shift=10.
+# Edit (this arm): d3.d2_evidence_nu 1.0 -> 0.0  (D2 evidence credit OFF in the remask rank).
+# Intent: nu axis. Predicted immune-inert (it upweights the same local-head evidence L1/L2
+#   already moved) -> confirms signal-not-weight on the z_d2 channel.
+# NOTE: diagnostic destructive-control arm — NOT a baseline or estimator. Do not cp as a preset.
+# Anchor (reuse existing L2 run, do not re-run): nu=1 == L2.
+# See d2_d3_full_stageB_highrisk_rankface_README.md for the full matrix + decision rules.
+controller:
+  enabled: true
+  mode: d2_d3_full
+  t_start: 0.5
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+    local_risk_aggregation: LME
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 16
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    min_completion_fraction: 0.0
+    min_rho_to_emit_event: 0.0
+  d2:
+    enabled: true
+    beta: 5.0
+    eta: 1.0
+    struct_temperature: 1.0
+    delta_struct: 1000000.0
+    context_pnll_h0: 2.0
+    context_jsd_h0: 0.5
+    epsilon: 1.0e-08
+    candidate_mode: structure_topk
+    top_k_tokens: 20
+    max_positions_per_block: 4
+    max_candidates_per_block: 20
+    selection_score: residue_excess_then_low_entropy
+    min_delta_R_improvement: 0.0
+    min_ess_fraction: 0.0
+    max_abs_logit_shift: 10.0
+    paired_uncorrected_sample: true
+    completion_ensemble_enabled: true
+    completion_ensemble_size: 3
+    completion_ensemble_scope: local_windows
+    completion_ensemble_rescore_top_m: 20
+    completion_ensemble_use_variance_gate: false
+    sticky_ttl_steps: 5
+    sticky_clear_on_selected: true
+    sticky_clear_on_remask: true
+    sticky_overwrite_on_refresh: true
+  d3:
+    enabled: true
+    window_to_residue_projection: max_covering_window
+    gamma_min: 0.4
+    gamma_max: 0.9
+    lambda_commit: 1.0
+    alpha_struct: 0.3
+    d2_evidence_nu: 0.0
+    d2_evidence_ttl_steps: 12
+    d2_evidence_requires_benefit: false
+    zscore_epsilon: 1.0e-06
+    same_refresh_grace: true
+    final_freeze_steps: 1
+    evidence_source: legacy_window_excess
+  attribution:
+    write_paired_counterfactual: true
+    write_independent_delta_R_i: true
+    productive_delta_logp: 0.5
+  controls:
+    allow_wrong_allele_head: true
+    allow_shuffled_head: true
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true
+  targeting:
+    mode: typed_actionability
+    tau_ref_source: static_median
+    tau_ref_quantile: 0.5
+    projection: max_covering_window
+    env_seed_top_current: 16
+    env_seed_top_uncertain: 16
+    env_seed_max_windows: 32
+    env_ensemble_size: 3
+    env_consistency_floor: 0.3333333333
+    softor_tau: 0.5
+    r_ctx_floor: 0.25
+    mem_half_life_refreshes: 3
+    mem_cold_start: zero
+    cluster_radius: 4
+    cluster_min_mass: 3.0
+    cluster_floor: 0.25
+    use_cluster_for_active_blocks: false
+    active_window_source: v_target
+    active_window_min_excess: 0.0
+    within_block_source: v_target
+    write_actionability_telemetry: true
+  global_pressure:
+    enabled: false
+    g_min: 0.25
+    g_max: 1.0
+    G0_source: stageB_pilot_median
+    s_G_source: stageB_pilot_iqr_half

@@ -114,7 +114,7 @@ Gate:
 
 - Gate: best `Spearman(B_sc, NoD)` = 0.742 (fresh) / 0.752 (self_conditioned) ≥ 0.60; `Recall@High` 0.765 vs old `B_GR` literal 0.471; `P(probe low | NoD high)` 0.000 vs old 0.235 (n=50, high tercile=17).
 - **Aggregator pinned = `topm_lse`** (decisive: 0.742 vs `supra_mass` 0.630 vs `mean_excess` 0.344 at refresh_step=1; `mean_excess` is gating-bad — the ensemble cannot rescue it, 0.306→0.344 — so the aggregator is the limiting factor).
-- **Arm = `fresh`** (the `self_conditioned` +0.009 Spearman edge is an order of magnitude below the K=3 reseed noise floor of 0.078, measured fresh-vs-bootstrap at refresh_step=0; `Recall@High` identical). Recycling is *not harmful* but *not measurably helpful* → use the simpler memoryless arm. SC1 therefore overrides the analysis script's raw `best.arm=self_conditioned`.
+- **Arm = `fresh` for the v1 actuator** (the `self_conditioned` +0.009 Spearman edge is an order of magnitude below the K=3 reseed noise floor of 0.078, measured fresh-vs-bootstrap at refresh_step=0; `Recall@High` identical). This does **not** reject self-conditioning as a mechanism; it only means the current monitor data do not justify promoting it into the first behavior run. SC1 uses the simpler memoryless arm, while self-conditioned recycling stays monitored as a v2 candidate.
 - **Freeze horizon.** At the B.1 cadence only 2 refreshes fall after `t_start` (refresh_step 0,1), with ρ 0.62 (step 0) → 0.74 (step 1). SC1 freezes at the **first** reliable refresh (`freeze_after_reliable_refreshes=1`): refresh_step=0 is the genuinely *unguided* trajectory (no steering before `t_start`, `controller.py:485`), so it is the closed-loop-cleanest estimate, and one frozen value gates both steering refreshes. Calibration bands (`B_low`/`B_high`) come from this run's refresh_step=0 fresh `topm_lse` `B_sc` distribution. (Fallback if step-0's small tail leak `P(low|high)=0.06` surfaces in SC1: freeze at refresh_step=1 instead, gating only the later refresh.)
 
 ### Stage 2 — behavior (only if monitor passes)
@@ -125,6 +125,8 @@ Gate:
 - true-high / NoD-high gain preserved vs B1;
 - structure no worse than B1;
 - pressure-bin vs burden-bin diagonal markedly higher than old C.1.
+
+**SC1 outcome (RAR 0011).** Actuation + pressure diagonal validated (`Spearman(g_GR, NoD)=0.61`, `scale_lambda=false`, scTM 0.946); high-burden gain preserved (Δ≈0); protect-low immune effect directionally correct (low-tercile Δmean −0.41, recovering B1's tail-driven over-intervention) but **within-noise** (Wilcoxon p=0.38) — the small lever §1 predicted. The decisive test is the amplify-high lever (SC2 / `PLAN_RF_SC_GR.md` §6.2).
 
 Prerequisites Stage 1 must hand off (none exist yet, all out of scope for the monitor — `PLAN_RF_SC_GR.md` §6): a **single pinned aggregator** (the §3 monitored candidate maximizing `Recall@High`); its **own calibration JSON** with `tau_prom` / `B_low` / `B_high` recomputed on the `B_sc` distribution (the `B_GR` bands do **not** transfer); and a **new `pressure_source` value + actuator dispatch seam** — the current `pressure_source` is only a config-load validator, not a runtime branch, so the estimator code (`_update_pressure_state`) needs a real seam before a probe-fed `B_sc` changes behavior (D2/D3 actuation stays untouched).
 

@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from inverse_folding.reference_flow.actionability import smoothstep_pressure
 from scripts.analysis.sc_gr_monitor_probe import (
     aggregate_oracle,
     compute_monitor_table,
@@ -314,6 +315,115 @@ def test_emit_calibration_main_writes_json(tmp_path: Path):
     assert calib["aggregator"] == "topm_lse"
     assert calib["arm"] == "fresh"
     assert calib["B_high"] > calib["B_low"]
+
+
+_SKEW_VALS = [0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 100.0]
+
+
+def test_emit_calibration_amplify_crossover_at_median_symmetric_g():
+    # symmetric g (0.5/1.5) -> q*=0.5 -> band midpoint == median, g(median)==1.
+    proteins = {f"P{i}": v for i, v in enumerate(_SKEW_VALS)}
+    probe = _probe_df(proteins, arm="fresh", refresh_step=0, metric_col="B_sc_topm_lse_median")
+    payload = emit_calibration(
+        probe, aggregator="topm_lse", arm="fresh", refresh_step=0,
+        low_quantile=0.25, high_quantile=0.75, amplify=True, g_min=0.5, g_max=1.5,
+    )
+    med = float(np.median(_SKEW_VALS))
+    assert payload["amplify"] is True
+    assert payload["B_median"] == pytest.approx(med)
+    assert payload["g_min"] == 0.5 and payload["g_max"] == 1.5
+    assert payload["B_high"] > payload["B_low"]
+    assert (payload["B_low"] + payload["B_high"]) / 2 == pytest.approx(med)
+    g_at_med = smoothstep_pressure(
+        med, B_low=payload["B_low"], B_high=payload["B_high"], g_min=0.5, g_max=1.5
+    )
+    assert g_at_med == pytest.approx(1.0)
+
+
+def test_emit_calibration_amplify_crossover_at_median_asymmetric_g():
+    # asymmetric g (0.5/2.0): median is NOT the band midpoint, but g(median)==1.
+    proteins = {f"P{i}": v for i, v in enumerate(_SKEW_VALS)}
+    probe = _probe_df(proteins, arm="fresh", refresh_step=0, metric_col="B_sc_topm_lse_median")
+    payload = emit_calibration(
+        probe, aggregator="topm_lse", arm="fresh", refresh_step=0,
+        low_quantile=0.25, high_quantile=0.75, amplify=True, g_min=0.5, g_max=2.0,
+    )
+    med = float(np.median(_SKEW_VALS))
+    g_at_med = smoothstep_pressure(
+        med, B_low=payload["B_low"], B_high=payload["B_high"], g_min=0.5, g_max=2.0
+    )
+    assert g_at_med == pytest.approx(1.0, abs=1e-6)
+    # midpoint is NOT the median for asymmetric g (would mis-amplify the median)
+    assert (payload["B_low"] + payload["B_high"]) / 2 != pytest.approx(med)
+
+
+def test_emit_calibration_amplify_requires_g_min_max():
+    proteins = {f"P{i}": v for i, v in enumerate(_SKEW_VALS)}
+    probe = _probe_df(proteins, arm="fresh", refresh_step=0, metric_col="B_sc_topm_lse_median")
+    with pytest.raises(ValueError, match="g_min"):
+        emit_calibration(
+            probe, aggregator="topm_lse", arm="fresh", refresh_step=0,
+            low_quantile=0.25, high_quantile=0.75, amplify=True,
+        )
+
+
+def test_emit_calibration_non_amplify_not_median_centered_for_skew():
+    proteins = {f"P{i}": v for i, v in enumerate(_SKEW_VALS)}
+    probe = _probe_df(proteins, arm="fresh", refresh_step=0, metric_col="B_sc_topm_lse_median")
+    payload = emit_calibration(
+        probe, aggregator="topm_lse", arm="fresh", refresh_step=0,
+        low_quantile=0.25, high_quantile=0.75, amplify=False,
+    )
+    med = float(np.median(_SKEW_VALS))
+    assert "amplify" not in payload
+    # the literal quantile band is NOT centered on the median for a skewed dist
+    assert (payload["B_low"] + payload["B_high"]) / 2 != pytest.approx(med)
+
+
+def test_emit_calibration_amplify_collapsed_spread_fails():
+    proteins = {f"P{i}": 1.0 for i in range(9)}  # zero spread
+    probe = _probe_df(proteins, arm="fresh", refresh_step=0, metric_col="B_sc_topm_lse_median")
+    with pytest.raises(ValueError):
+        emit_calibration(
+            probe, aggregator="topm_lse", arm="fresh", refresh_step=0,
+            low_quantile=0.25, high_quantile=0.75, amplify=True, g_min=0.5, g_max=1.5,
+        )
+
+
+def test_emit_calibration_amplify_via_main(tmp_path: Path):
+    run_dir = tmp_path / "generation"
+    run_dir.mkdir()
+    proteins = {f"P{i}": v for i, v in enumerate(_SKEW_VALS)}
+    frames = [_probe_df(proteins, arm=a, refresh_step=0, metric_col="B_sc_topm_lse_median")
+              for a in ("fresh", "self_conditioned")]
+    pd.concat(frames, ignore_index=True).to_parquet(
+        run_dir / "sc_gr_probe_refresh.parquet", index=False
+    )
+    oracle_path = tmp_path / "imm_head.parquet"
+    pd.DataFrame({"protein_id": list(proteins), "global_risk": list(proteins.values())}).to_parquet(
+        oracle_path, index=False
+    )
+    out = tmp_path / "summary.json"
+    calib_out = tmp_path / "amplify_calib.json"
+    rc = main([
+        "--run-dir", str(run_dir),
+        "--oracle-parquet", str(oracle_path),
+        "--output", str(out),
+        "--emit-calibration", str(calib_out),
+        "--calibration-aggregator", "topm_lse",
+        "--calibration-arm", "fresh",
+        "--calibration-refresh-step", "0",
+        "--amplify", "--g-min", "0.5", "--g-max", "2.0",
+    ])
+    assert rc == 0
+    calib = json.loads(calib_out.read_text())
+    assert calib["amplify"] is True
+    assert calib["g_min"] == 0.5 and calib["g_max"] == 2.0
+    g_at_med = smoothstep_pressure(
+        calib["B_median"], B_low=calib["B_low"], B_high=calib["B_high"],
+        g_min=0.5, g_max=2.0,
+    )
+    assert g_at_med == pytest.approx(1.0, abs=1e-6)
 
 
 def test_emit_calibration_degenerate_band_fails():

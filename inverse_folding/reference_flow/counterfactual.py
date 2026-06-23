@@ -234,6 +234,58 @@ def compute_local_risk(
     raise ValueError(f"unsupported aggregation: {aggregation!r}")
 
 
+def compute_local_risk_batch(
+    *,
+    window_risks: np.ndarray,
+    omega_indices: Sequence[int],
+    aggregation: str = "LME",
+) -> np.ndarray:
+    """Vectorized ``compute_local_risk`` for a ``[K, W]`` window-risk matrix."""
+    if aggregation != "LME":
+        raise ValueError(f"unsupported aggregation: {aggregation!r}")
+    arr = np.asarray(window_risks, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim != 2:
+        raise ValueError(f"window_risks must be [K, W], got shape {arr.shape}")
+    indices = np.asarray([int(i) for i in omega_indices], dtype=np.int64)
+    if indices.size == 0:
+        return np.full((arr.shape[0],), float("-inf"), dtype=np.float64)
+    vals = arr[:, indices]
+    m = vals.max(axis=1)
+    out = np.empty((arr.shape[0],), dtype=np.float64)
+    finite = np.isfinite(m)
+    out[~finite] = m[~finite]
+    if finite.any():
+        centered = vals[finite] - m[finite, None]
+        out[finite] = m[finite] + np.log(np.exp(centered).mean(axis=1))
+    return out
+
+
+def _score_window_risk_matrix(
+    *,
+    scorer: Any,
+    protein_id: str,
+    records: list[tuple[str, str]],
+) -> np.ndarray:
+    """Score records as a compact ``[K, W]`` matrix when the scorer supports it."""
+    if not records:
+        return np.zeros((0, 0), dtype=np.float64)
+    if hasattr(scorer, "score_window_risk_batch_same_protein"):
+        compact = scorer.score_window_risk_batch_same_protein(
+            protein_id=str(protein_id), records=records
+        )
+        return np.asarray(compact.window_risks, dtype=np.float64)
+
+    batch = scorer.score_batch_same_protein(
+        protein_id=str(protein_id), records=records
+    )
+    return np.asarray(
+        [[float(w.z) for w in score.windows] for score in batch.scores],
+        dtype=np.float64,
+    )
+
+
 def compute_Q_B_per_candidate(
     *,
     candidates: Sequence[tuple[int, ...]],
@@ -730,16 +782,16 @@ class D2Handler:
                 mapping.append(int(cand_idx))
         if not records:
             return {}
-        batch = scorer.score_batch_same_protein(
-            protein_id=str(protein_id), records=records
+        window_risk_matrix = _score_window_risk_matrix(
+            scorer=scorer, protein_id=str(protein_id), records=records
+        )
+        local_risks = compute_local_risk_batch(
+            window_risks=window_risk_matrix,
+            omega_indices=omega,
+            aggregation="LME",
         )
         out: dict[int, list[float]] = {int(i): [] for i in candidate_indices}
-        for score, cand_idx in zip(batch.scores, mapping):
-            risk = compute_local_risk(
-                window_risks=tuple(float(w.z) for w in score.windows),
-                omega_indices=omega,
-                aggregation="LME",
-            )
+        for risk, cand_idx in zip(local_risks, mapping):
             out[int(cand_idx)].append(float(risk - float(r_current)))
         return {
             int(idx): np.asarray(vals, dtype=np.float64)
@@ -865,21 +917,16 @@ class D2Handler:
             records.append(
                 (f"d2_b{int(block.block_id)}_c{c_idx}", decode_tokens(tokens))
             )
-        batch = scorer.score_batch_same_protein(
-            protein_id=str(protein_id), records=records
+        window_risk_matrix = _score_window_risk_matrix(
+            scorer=scorer, protein_id=str(protein_id), records=records
         )
-
-        delta_R_argmax = np.array(
-            [
-                compute_local_risk(
-                    window_risks=tuple(float(w.z) for w in batch.scores[c_idx].windows),
-                    omega_indices=omega,
-                    aggregation="LME",
-                )
-                - r_current
-                for c_idx in range(len(candidates))
-            ],
-            dtype=np.float64,
+        delta_R_argmax = (
+            compute_local_risk_batch(
+                window_risks=window_risk_matrix,
+                omega_indices=omega,
+                aggregation="LME",
+            )
+            - float(r_current)
         )
         argmax_best_delta_R_B = (
             float(delta_R_argmax.min()) if delta_R_argmax.size else float("nan")
