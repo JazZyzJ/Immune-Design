@@ -18,8 +18,9 @@ export PS1
 
 # Paths
 PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"
-DATA_DIR="${DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/fast}"
-OUTPUT_DIR="${OUTPUT_DIR:-${DATA_DIR}/h_maps_v2}"
+DATA_DIR="${DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready}"
+# fast-scoped output dir so the default never clobbers the canonical if_ready/h_maps_v2
+OUTPUT_DIR="${OUTPUT_DIR:-${DATA_DIR}/h_maps_fast_v2}"
 LOG_DIR="${LOG_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval}"
 
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
@@ -42,7 +43,7 @@ else
     exit 2
 fi
     
-INPUT_PARQUET="${INPUT_PARQUET:-${DATA_DIR}/test_proteins_if_ready_fast_${ALLELE_FILE_TAG}.parquet}"
+INPUT_PARQUET="${INPUT_PARQUET:-${DATA_DIR}/fast/fast_v2_${ALLELE_FILE_TAG}.parquet}"
 OUTPUT_PARQUET="${OUTPUT_PARQUET:-${OUTPUT_DIR}/h_maps_${ALLELE_TAG}.parquet}"
 OUTPUT_META="${OUTPUT_META:-${OUTPUT_DIR}/h_maps_${ALLELE_TAG}.meta.json}"
 INFERENCE_CONFIG="${INFERENCE_CONFIG:-${PROJECT_ROOT}/epitope_head/configs/inference.yaml}"

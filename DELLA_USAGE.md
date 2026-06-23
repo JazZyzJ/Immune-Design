@@ -1,13 +1,13 @@
 # Princeton Della 使用指南（zc1519 / kaiyijiang）
 
-Snapshot 日期：2026-05-14。集群配置会变，过期时用文末命令重新生成。
+Snapshot 日期：2026-05-14。PLI 权限更新：2026-06-19。集群配置会变，过期时用文末命令重新生成。
 
 ## 1. 账户、配额、权限
 
 | 项 | 值 |
 |------|-------|
 | 用户名 | `zc1519` |
-| Account (`-A`) | `kaiyijiang` |
+| Account (`-A`) | 默认 `kaiyijiang`；PLI 使用 `pli_x` |
 | 主组 | `kaiyijiang` (gid 30707) |
 | Home | `/home/zc1519` — 50 GiB，约 2 M inode；当前已用 6.5 GiB / 90.8 K inode |
 | Scratch（组共享） | `/scratch/gpfs/KAIYIJIANG` — 上限 100 TiB（组已用 22.4 TiB；`zc1519` 已用 80.3 GiB / 269.4 K files） |
@@ -17,7 +17,7 @@ Snapshot 日期：2026-05-14。集群配置会变，过期时用文末命令重�
 
 - **CPU**: `test` / `short` / `medium` / `vlong`
 - **GPU**: `gpu-test` / `gpu-short` / `gpu-medium` / `gpu-long`
-- **PLI**: 没有 `pli-short` / `pli-lc` / `pli-cpu` — 虽然 `pli` partition 本身 `AllowAccounts=ALL`，但它必须搭配 `pli-*` QOS 才能提交。**所以目前你跑不了 PLI 的 H100×8 节点**，要 Kaiyi 给你申请 PLI allocation 后才能用。
+- **PLI**: 当前可用 `account=pli_x` + `qos=pli-low` 提交到 `pli` partition；`pli-lc` 目前用该 QOS 仍报 `Invalid qos specification`。
 - **ailab**: 当前可用 `ailab` partition；用 `--partition=ailab --constraint="h200"` 可提交到 H200 节点。
 
 ## 2. 分区（Partition）和 GPU 节点
@@ -31,8 +31,8 @@ Snapshot 日期：2026-05-14。集群配置会变，过期时用文末命令重�
 | `mig` | 15 d | 2 | `della-l01g[1-2]` 的 `1g.10gb` MIG 切片 | 极小切片，适合最快 smoke/inference |
 | `gputest` | 15 d | 111 | 所有 GPU 节点 | 不要显式写 `--partition=gputest`；用 `--qos` / `--constraint` 让 Slurm 自动落入 |
 | `grace` | 15 d | 1 | GH200（ARM） | 特殊需求 |
-| `pli` | 15 d | 38 | H100×8 | **需要 PLI QOS，目前你没有** |
-| `pli-lc` | 3 d | 9 | H100×8 | 同上 |
+| `pli` | 15 d | 38 | H100×8 | 当前可用：`--account=pli_x --qos=pli-low --partition=pli` |
+| `pli-lc` | 3 d | 9 | H100×8 | 当前 `pli_x/pli-low` dry-run 不通过 |
 | `ailab` | 15 d | 18 | H200×8 | 需 `ailab` group 权限；当前账号可用 |
 
 ### `cpu` 分区里的节点类型
@@ -71,7 +71,7 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 | `della-l01g[13-16]...` | `gpu`, `gputest` | 4× A100 | **80 GB** 完整卡 | `a100&gpu80&nomig` |
 | `della-l07g[2-7]...` | `gputest` | 4× A100 SXM | 80 GB | `a100&gpu80&sxm`；当前不在常规 `gpu` partition |
 | `della-h19g*`, `della-h20g*`, `della-h21g*` | `all` / cryoem pool | 4× H100 SXM | 80 GB | 非日常 A100 路线；不要假设可用 |
-| `della-j*` | `pli`, `pli-lc` | 8× H100 | 80 GB | 需要 `pli-*` QOS，目前账号没有 |
+| `della-j*` | `pli`, `pli-lc` | 8× H100 | 80 GB | `pli` 用 `--account=pli_x --qos=pli-low`；`pli-lc` 暂未确认可用 |
 | `della-i19g*`–`della-i24g*` | `ailab` | 8× H200 | 141 GB | `--partition=ailab --constraint="h200"` |
 
 ### GPU 提交策略速查
@@ -102,6 +102,12 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 #SBATCH --partition=ailab
 #SBATCH --constraint="h200"
 
+# H100（PLI）
+#SBATCH --account=pli_x
+#SBATCH --qos=pli-low
+#SBATCH --partition=pli
+#SBATCH --gres=gpu:h100:1
+
 # 1g.10gb MIG 切片（只跑极小推理 / smoke）
 #SBATCH --partition=mig
 # 不要写 --constraint="mig"；当前 mig 节点 feature 只有 rh9
@@ -124,6 +130,7 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 | `gpu-short` | 1 d | 44 | 1100 | 优先级 5000，日常主力 |
 | `gpu-medium` | 3 d | 24 | 1100 | 优先级 2000 |
 | `gpu-long` | 6 d | 10 | 100 | 优先级 1000，node=16 上限 |
+| `pli-low` | 见 PLI policy | — | — | PLI H100；必须配合 `--account=pli_x --partition=pli` |
 | `short` | — | 400 | 2201 | CPU，优先级 5000 |
 | `medium` | — | 200 | 2000 | CPU，优先级 3000 |
 | `vlong` | — | 60 | 2000 | CPU，优先级 1200 |
@@ -294,6 +301,10 @@ salloc --qos=gpu-short --constraint="a100&gpu40&nomig" \
 salloc --partition=ailab --constraint="h200" \
        --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=1:00:00
 
+# 交互式 H100（PLI，1 小时）
+salloc --account=pli_x --qos=pli-low --partition=pli \
+       --gres=gpu:h100:1 --cpus-per-task=8 --mem=128G --time=1:00:00
+
 # 存储配额
 checkquota
 ```
@@ -308,13 +319,33 @@ checkquota
 4. 若节点本身有问题：`scontrol show node <nodename>`，反复失败就报 RC。
 5. `seff <jobid>` 看 CPU/mem 利用率 vs 申请量，用于调优。
 
-## 7. 拿到 PLI 权限
+## 7. PLI 使用方式
 
-从 `sacctmgr show assoc user=zc1519` 可确认你当前 QOS 列表里**没有** `pli-*`。`pli` partition 虽然 `AllowAccounts=ALL`，但必须搭配 `pli-*` QOS，`sbatch` 会报 `Invalid qos`。要开通：
+2026-06-19 确认：当前账号可以用 PLI H100，但必须显式写 PLI account 和 QOS。
 
-1. Kaiyi 在 <https://researchcomputing.princeton.edu/services/pli> 申请 PLI allocation。
-2. 批准后 RC 会用 `sacctmgr` 给你加上 `pli-short`（或 `pli-lc` 低竞争）。
-3. 然后提交 `--partition=pli --qos=pli-short --constraint="h100"`。
+```bash
+# SBATCH
+#SBATCH --account=pli_x
+#SBATCH --qos=pli-low
+#SBATCH --partition=pli
+#SBATCH --gres=gpu:h100:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=128G
+#SBATCH --time=00:30:00
+
+# dry-run 检查，不实际提交运行
+timeout 8s sbatch --test-only \
+  --account=pli_x \
+  --qos=pli-low \
+  --partition=pli \
+  --gres=gpu:h100:1 \
+  --cpus-per-task=8 \
+  --mem=128G \
+  --time=00:30:00 \
+  --wrap 'hostname'
+```
+
+实测 dry-run 可调度到 `pli` partition。`pli-lc` 目前用 `--account=pli_x --qos=pli-low --partition=pli-lc` 会报 `Invalid qos specification`，先不要把正式脚本写到 `pli-lc`。
 
 `ailab` 权限当前已可用；提交 H200 job 时使用 `--partition=ailab --constraint="h200"`。
 

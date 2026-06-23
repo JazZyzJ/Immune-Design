@@ -46,7 +46,7 @@ else
     echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
     exit 2
 fi
-TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/if_ready/fast/test_proteins_if_ready_fast_${ALLELE_FILE_TAG}.parquet}"
+TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/if_ready/fast/fast_v2_${ALLELE_FILE_TAG}.parquet}"
 PDB_ROOT="${PDB_ROOT:-${WORK_DIR}/if_test_set/pdbs_if_ready/${ALLELE_SHORT}}"
 
 # CATH 4.3 split (PROGRESS.md §Cluster — `work/immune-design/cath_4.3/`)

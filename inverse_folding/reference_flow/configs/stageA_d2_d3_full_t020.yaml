@@ -1,0 +1,77 @@
+# Stage A early-actuation full controller.
+#
+# Matched to d2_d3_full.yaml except t_start=0.20. Keeps delta_struct=1.5 and
+# D2 evidence enabled, so it can be paired with stageA_d2_d3_full_t020_nu0.yaml
+# to test whether nu-backed survival pays off when actuation starts early.
+controller:
+  enabled: true
+  mode: d2_d3_full
+  t_start: 0.20
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+    local_risk_aggregation: LME
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 16
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    min_completion_fraction: 0.0
+    min_rho_to_emit_event: 0.0
+  d2:
+    enabled: true
+    beta: 1.0
+    eta: 0.7
+    struct_temperature: 1.0
+    delta_struct: 1.5
+    context_pnll_h0: 2.0
+    context_jsd_h0: 0.5
+    epsilon: 1.0e-8
+    candidate_mode: structure_topk
+    top_k_tokens: 4
+    max_positions_per_block: 2
+    max_candidates_per_block: 32
+    selection_score: residue_excess_then_low_entropy
+    min_delta_R_improvement: 0.0
+    min_ess_fraction: 0.25
+    max_abs_logit_shift: 5.0
+    paired_uncorrected_sample: true
+    completion_ensemble_enabled: true
+    completion_ensemble_size: 3
+    completion_ensemble_scope: local_windows
+    completion_ensemble_rescore_top_m: 8
+    completion_ensemble_use_variance_gate: false
+    sticky_ttl_steps: 5
+    sticky_clear_on_selected: true
+    sticky_clear_on_remask: true
+    sticky_overwrite_on_refresh: true
+  d3:
+    enabled: true
+    window_to_residue_projection: max_covering_window
+    gamma_min: 0.40
+    gamma_max: 0.90
+    lambda_commit: 1.0
+    alpha_struct: 0.3
+    d2_evidence_nu: 1.0
+    d2_evidence_ttl_steps: 5
+    d2_evidence_requires_benefit: true
+    zscore_epsilon: 1.0e-6
+    same_refresh_grace: true
+    final_freeze_steps: 1
+  attribution:
+    write_paired_counterfactual: true
+    write_independent_delta_R_i: true
+    productive_delta_logp: 0.5
+  controls:
+    allow_wrong_allele_head: true
+    allow_shuffled_head: true
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true

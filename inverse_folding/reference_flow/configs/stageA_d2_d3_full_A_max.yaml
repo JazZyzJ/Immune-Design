@@ -1,0 +1,78 @@
+# Stage A expanded-candidate arm A_max.
+#
+# Fixed: structure_topk candidates, T_struct=1.0, t_start=0.50, commit
+# alpha=0.3 / nu=1 / lambda=1, min_ess_fraction=0.0. The candidate ceiling is
+# above the 9^4 worst-case cartesian budget, so ensemble shortlisting remains
+# on without entering sampled mode.
+controller:
+  enabled: true
+  mode: d2_d3_full
+  t_start: 0.50
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+    local_risk_aggregation: LME
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 16
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    min_completion_fraction: 0.0
+    min_rho_to_emit_event: 0.0
+  d2:
+    enabled: true
+    beta: 3.0
+    eta: 0.7
+    struct_temperature: 1.0
+    delta_struct: 6.0
+    context_pnll_h0: 2.0
+    context_jsd_h0: 0.5
+    epsilon: 1.0e-8
+    candidate_mode: structure_topk
+    top_k_tokens: 9
+    max_positions_per_block: 4
+    max_candidates_per_block: 8000
+    selection_score: residue_excess_then_low_entropy
+    min_delta_R_improvement: 0.0
+    min_ess_fraction: 0.0
+    max_abs_logit_shift: 10.0
+    paired_uncorrected_sample: true
+    completion_ensemble_enabled: true
+    completion_ensemble_size: 3
+    completion_ensemble_scope: local_windows
+    completion_ensemble_rescore_top_m: 8
+    completion_ensemble_use_variance_gate: false
+    sticky_ttl_steps: 5
+    sticky_clear_on_selected: true
+    sticky_clear_on_remask: true
+    sticky_overwrite_on_refresh: true
+  d3:
+    enabled: true
+    window_to_residue_projection: max_covering_window
+    gamma_min: 0.40
+    gamma_max: 0.90
+    lambda_commit: 1.0
+    alpha_struct: 0.3
+    d2_evidence_nu: 1.0
+    d2_evidence_ttl_steps: 5
+    d2_evidence_requires_benefit: true
+    zscore_epsilon: 1.0e-6
+    same_refresh_grace: true
+    final_freeze_steps: 1
+  attribution:
+    write_paired_counterfactual: true
+    write_independent_delta_R_i: true
+    productive_delta_logp: 0.5
+  controls:
+    allow_wrong_allele_head: true
+    allow_shuffled_head: true
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true

@@ -91,12 +91,12 @@ case "${MODE}" in
             ALLELE_FILE_TAG="HLA-DRB1_07_01"
             ALLELE_TAG="DRB1_07_01"
             PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0701"
-            TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_07_01.parquet"
+            TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_07_01.parquet"
         elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
             ALLELE_FILE_TAG="HLA-DRB1_04_01"
             ALLELE_TAG="DRB1_04_01"
             PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0401"
-            TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/test_proteins_if_ready_HLA-DRB1_04_01.parquet"
+            TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_04_01.parquet"
         else
             echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
             exit 2

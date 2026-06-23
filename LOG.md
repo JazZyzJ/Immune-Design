@@ -3249,7 +3249,20 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `doc/RF_Controller_Architecture.md` §2.8
   - `L0112` (superseded Stage C.1 route)
 
-### L0116
+### L0114
+- timestamp: 2026-06-09T22:30:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: Need a dataset that demonstrates RF's de-immunization gain on genuinely high-risk proteins. User's thesis: select on the BASELINE generative distribution's risk (where the baseline can't avoid epitopes → real headroom), NOT on WT — if the unconditional distribution is already low-risk, the gain is invisible regardless of WT.
+- change_summary: Added `scripts/build_highrisk_demo.py` (registered SCRIPTS.md §Module L #12) and built `if_ready/highrisk_demo_v1_<tag>.parquet` (both alleles, **n=400 each**). Selection anchors on the **ProteinMPNN** 8-design immunogenicity distribution (`v2_8design_20260604T024603Z` eval_immune): per-protein strong-window fraction `n_strong/n_windows`, ranked by `pm_med` (top-400 after a 10% head-`global_risk` soft floor so RF guidance has signal). Structure NOT gated (ProteinMPNN scTM median 0.96–0.97). Each row is a canonical IF-ready subset + diagnostic columns (`pm_min/med/mean/max`, `wt_sf`, `pm_head`, `wt_head`, `highrisk_rank`) for later re-filtering against the DPLM no-guidance distribution (running) without recomputation. Generous size by design — to be narrowed to ~50–100 later. Required building the **0401 WT immune baseline** first (see L0109).
+- evidence: Empirical grounding before build — among WT-high (top-quartile) proteins, 34%(0701)/24%(0401) already have ProteinMPNN best-of-8 ≤ median (baseline ~solves → no headroom); corr(WT coverage_fraction, ProteinMPNN pm_med)=0.38/0.54 (WT is a weak proxy). v2 test-set validation: WT coverage_fraction is the intended unimodal Gaussian (median 0.386/0.444, near-symmetric) — construction sound — but its `min-per-bin=40` floor admits ~150/2999 tier2 that are WT-immune-free (n_strong=0), confirming v2 is a moderate-load REPRESENTATIVE set, not a high-risk set. Built set: 0701 pm_med 0.030–0.127 (median 0.038, vs full-set median 0.014); 0401 pm_med 0.051–0.163 (median 0.072, vs 0.020); both 400 unique, 0 pdb_path nulls, all in canonical if_ready + h_maps_v2.
+- impact: scope — new high-risk demonstration subset; canonical test set, pilot/fast untouched. risk low (read-only canonical subset; generous, re-filterable). NOTE the head-floor uses the epitope head (the RF guidance) — accepted as a soft secondary floor only (NMP/ProteinMPNN burden is the non-circular primary axis).
+- status: done
+- next_action: When the DPLM no-guidance distribution lands, re-filter to proteins also-hard-for-DPLM; add an NMP strong-window evenness metric to drop single-peak cases; narrow to the final ~50–100 per allele.
+- refs:
+  - `L0109` (WT immune baseline tooling), `L0108` (pilot rebuild), `L0098`/`L0100` (v2 build/promotion)
+
+### L0115
 - timestamp: 2026-06-19T00:00:00-04:00
 - type: FEATURE
 - module: RF
@@ -3284,6 +3297,19 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_RF_SC_GR.md` Tasks SC0.1–SC0.5
   - `doc/Self-Cond_GR.md` §1–§7
   - `L0113` (Stage B.1 / Stage C.1 base operating point)
+
+### L0116
+- timestamp: 2026-06-19T22:40:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: The full DPLM-native immune baseline (0701, 3014 proteins, 8 designs) landed (`run/benchmark/phase_d/baselines/dplm_native_full_v2/.../c0_..._imm_full_single64_20260619T024206Z`). Comparing it to ProteinMPNN showed the two baselines' high-burden tails barely overlap, so the single ProteinMPNN-only set (L0114) is reframed into two purpose-separated sets per user decision.
+- change_summary: Refactored `scripts/build_highrisk_demo.py` to a general selector — `--primary-imm-dir` (the baseline to select on) + `--rank-mode both_nmp_head` (rank by `min(nmp_pct, head_pct)`, i.e. NMP strong_frac AND head global_risk both high; head promoted from gate to co-ranking axis) + repeatable `--diag-imm-dir LABEL=DIR` for cross-baseline diagnostic columns. Built two SEPARATE 0701 top-100 sets: `if_ready/highrisk_pmpnn_demo_v1_HLA-DRB1_07_01.parquet` (primary=ProteinMPNN — demonstration / "beat the reported baseline") and `if_ready/highrisk_dplm_iter_v1_HLA-DRB1_07_01.parquet` (primary=DPLM-native — RF validation/iteration, where RF's own base distribution is hard). Each row = canonical IF-ready subset + `sel_nmp/sel_head/both_min_pct/highrisk_rank` + the other two baselines' `*_nmp/*_head` diagnostics. (Supersedes the L0114 ProteinMPNN-only 400-set `highrisk_demo_v1_*`.)
+- evidence: DPLM-native vs ProteinMPNN per-protein strong_frac: marginals near-identical (med 0.013 vs 0.014) but alignment only Pearson 0.45 / Spearman 0.46 full-range, **0.11 in the top decile** (top-150 share 31/150) — high-risk is baseline-dependent. DPLM 8 designs near-constant burden (min≈med) vs ProteinMPNN high design-diversity (min 0.005 ≪ med 0.014). Both built sets: nmp_pct AND head_pct in [0.90,1.00]; head–NMP correlate Pearson 0.60(A)/0.53(B) so the co-rank sharpens not distorts; **Set A ∩ Set B = 15/100** (genuinely separate); each set top-9% under its own baseline, ~q77 under the other. 100 unique each, 0 pdb_path nulls, all in canonical if_ready + h_maps_v2.
+- impact: scope — two new 0701 high-risk subsets + generalized selector; canonical set / pilot / fast untouched. 0401 DPLM-native not yet available → Set B is 0701-only for now; Set A could be built for 0401 on ProteinMPNN alone if needed. risk low (read-only canonical subsets).
+- status: done
+- next_action: (1) build 0401 once its DPLM-native baseline lands; (2) optionally add an NMP strong-window evenness column; (3) run RF on Set B (iteration) and report gain vs ProteinMPNN on Set A.
+- refs:
+  - `L0114` (superseded ProteinMPNN-only 400-set), `L0109` (WT baseline), `L0100` (v2 promotion)
 
 ### L0117
 - timestamp: 2026-06-20T01:51:56-04:00

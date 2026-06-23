@@ -63,6 +63,7 @@ SLURM `--output/--error` 必须指向 `logs/`，不能混入 `run/`。
 
 Return experiment results via `mhc-if-local` to `/Users/jerry/Project/MHC-IF/Results`.
 Use buckets `RF/`, `EpitopeHead/`, `IFStandalone/`, `TestSets/`; RF runs use `RF/<allele>/<run_tag>__<timestamp>/{generation,eval_immune,eval_structure,analysis,logs,meta}`. Returning does not require LOG.md modification.
+Group AlphaFold 3 is at `/scratch/gpfs/KAIYIJIANG/tools/alphafold3`; usage docs are in `docs/README.md` under that root.
 
 ## 4. Plan & Progress Files
 
