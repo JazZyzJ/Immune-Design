@@ -18,6 +18,8 @@
 
 **This plan owns:** the SC-GR monitor-only burden-estimator branch. If the monitor passes, a later plan may connect a selected `B_sc` estimator to the existing `global_pressure` actuator.
 
+**Follow-on (post close-out):** after Decision B (Stage-1 rank-face, structure-pinned) and RAR 0017 (remask close-out) showed the actuation strength/retention/remask surface is closed, the live SC-GR axis became the **candidate-ranking signal direction** (local ΔR → terminal probe). That diagnostic is specified in `PLAN_RF_SC_GR_signal_diag.md` — it validates the probe as a **candidate-level** ranker (the ρ0.75 in RAR 0010 is protein-level only).
+
 **Discard / freeze for this stage:**
 
 - Do not extend `trajectory_thresholded_G` as the main GR estimator.
