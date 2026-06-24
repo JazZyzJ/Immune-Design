@@ -25,9 +25,17 @@ class RemaskConfig:
     position-dependent unmasking schedule (analogous to MaskGIT iterative
     decoding). The position-dependent schedule still drives *first*-unmask
     timing and remains the only place the h-map signal is injected.
+
+    ``fraction_scale`` multiplies the per-step remask cutoff ``1 - (step+1)/T``.
+    At ``1.0`` (default) the remask is byte-identical to the legacy rule; at
+    ``0.0`` no positions are remasked while ``enabled`` stays ``True`` (so the
+    controller ``post_step`` / telemetry path still runs). This isolates the
+    remask attractor cleanly: ``enabled=False`` would also skip ``post_step``,
+    conflating "no remask" with "no controller post-step lifecycle".
     """
 
     enabled: bool = False
+    fraction_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -97,7 +105,10 @@ def materialize_reference_flow_config(payload: dict[str, Any]) -> ReferenceFlowC
     remask_payload = sampler.get("remask", {})
     if not isinstance(remask_payload, dict):
         raise ReferenceFlowConfigError("sampler.remask must be a mapping")
-    remask_cfg = RemaskConfig(enabled=bool(remask_payload.get("enabled", False)))
+    remask_cfg = RemaskConfig(
+        enabled=bool(remask_payload.get("enabled", False)),
+        fraction_scale=float(remask_payload.get("fraction_scale", 1.0)),
+    )
 
     sampler_cfg = SamplerConfig(
         n_steps=_require_int(sampler, "n_steps"),
@@ -112,6 +123,10 @@ def materialize_reference_flow_config(payload: dict[str, Any]) -> ReferenceFlowC
         raise ReferenceFlowConfigError("sampler.temperature must be positive")
     if sampler_cfg.n_designs_per_protein <= 0:
         raise ReferenceFlowConfigError("sampler.n_designs_per_protein must be positive")
+    if not 0.0 <= sampler_cfg.remask.fraction_scale <= 1.0:
+        raise ReferenceFlowConfigError(
+            "sampler.remask.fraction_scale must be in [0, 1]"
+        )
 
     base_form = str(schedule.get("base_form"))
     if base_form not in {"linear", "cosine", "cubic"}:

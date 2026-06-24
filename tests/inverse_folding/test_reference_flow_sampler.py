@@ -345,3 +345,121 @@ def test_remask_defaults_to_disabled_when_absent_in_yaml(tmp_path):
     )
     cfg = load_reference_flow_config(cfg_path)
     assert cfg.sampler.remask.enabled is False
+
+
+# ---- remask.fraction_scale (clean no-remask probe substrate) ----
+
+
+def _remask_unit_inputs():
+    """Eight committed (non-mask) positions with spread-out scores."""
+    x_t = torch.tensor([0, 1, 2, 3, 0, 1, 2, 3], dtype=torch.long)
+    scores = np.array([0.9, 0.1, 0.8, 0.2, 0.7, 0.3, 0.6, 0.4], dtype=np.float64)
+    unmask_step_by_pos = [0] * 8
+    return x_t, scores, unmask_step_by_pos
+
+
+def test_apply_reparam_remask_cutoff_scale_one_matches_default():
+    from inverse_folding.reference_flow.sampler import _apply_reparam_remask
+
+    x1, s1, u1 = _remask_unit_inputs()
+    r_default = _apply_reparam_remask(
+        x_t=x1.clone(), scores=s1.copy(), unmask_step_by_pos=list(u1),
+        mask_token_id=MASK_ID, step=2, n_steps=10,
+    )
+    x2, s2, u2 = _remask_unit_inputs()
+    r_scaled = _apply_reparam_remask(
+        x_t=x2.clone(), scores=s2.copy(), unmask_step_by_pos=list(u2),
+        mask_token_id=MASK_ID, step=2, n_steps=10, cutoff_scale=1.0,
+    )
+    # The default (1.0) path must be byte-identical to the legacy unscaled path.
+    assert r_default.count == r_scaled.count
+    assert r_default.remasked_positions == r_scaled.remasked_positions
+    assert r_default.count > 0  # sanity: remask actually fired in this setup
+
+
+def test_apply_reparam_remask_cutoff_scale_zero_remasks_nothing():
+    from inverse_folding.reference_flow.sampler import _apply_reparam_remask
+
+    x, s, u = _remask_unit_inputs()
+    r = _apply_reparam_remask(
+        x_t=x.clone(), scores=s.copy(), unmask_step_by_pos=list(u),
+        mask_token_id=MASK_ID, step=2, n_steps=10, cutoff_scale=0.0,
+    )
+    assert r.count == 0
+    assert r.remasked_positions == ()
+
+
+def test_remask_fraction_scale_zero_keeps_enabled_path_but_remasks_nothing():
+    """enabled=True keeps the post_step/remask code path live; fraction_scale=0
+    must remask zero positions (the clean no-remask probe substrate)."""
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = ReferenceFlowConfig(
+        sampler=SamplerConfig(
+            n_steps=10, seed=7, temperature=1.0, n_designs_per_protein=1,
+            remask=RemaskConfig(enabled=True, fraction_scale=0.0),
+        ),
+        schedule=ScheduleConfig(base_form="linear"),
+        amplification=AmplificationConfig(form="constant_one", h_source="h_processed"),
+        h_shuffle=HShuffleConfig(enabled=False, seed=None),
+    )
+    out = sampler.sample(
+        sequence_length=8, h_values=np.zeros(8, dtype=np.float32),
+        denoiser=biased_denoiser, config=cfg, save_trajectories=True,
+    )
+    assert MASK_ID not in out.tokens.tolist()
+    assert all(row["remasked_count"] == 0 for row in out.trajectory_rows)
+
+
+def test_remask_fraction_scale_defaults_to_one_when_absent(tmp_path):
+    from inverse_folding.reference_flow.config import load_reference_flow_config
+
+    cfg_path = tmp_path / "remask_default_scale.yaml"
+    cfg_path.write_text(
+        "sampler:\n  n_steps: 8\n  seed: 42\n  temperature: 1.0\n"
+        "  n_designs_per_protein: 1\n  remask:\n    enabled: true\n"
+        "schedule:\n  base_form: linear\n"
+        "amplification:\n  form: constant_one\n  h_source: h_processed\n"
+    )
+    cfg = load_reference_flow_config(cfg_path)
+    assert cfg.sampler.remask.fraction_scale == 1.0
+
+
+def test_remask_fraction_scale_round_trips_through_yaml(tmp_path):
+    from inverse_folding.reference_flow.config import (
+        load_reference_flow_config,
+        reference_flow_config_to_dict,
+    )
+
+    cfg_path = tmp_path / "remask_scale.yaml"
+    cfg_path.write_text(
+        "sampler:\n  n_steps: 16\n  seed: 42\n  temperature: 1.0\n"
+        "  n_designs_per_protein: 1\n  remask:\n    enabled: true\n"
+        "    fraction_scale: 0.0\n"
+        "schedule:\n  base_form: linear\n"
+        "amplification:\n  form: constant_one\n  h_source: h_processed\n"
+    )
+    cfg = load_reference_flow_config(cfg_path)
+    assert cfg.sampler.remask.fraction_scale == 0.0
+    payload = reference_flow_config_to_dict(cfg)
+    assert payload["sampler"]["remask"]["fraction_scale"] == 0.0
+
+
+def test_remask_fraction_scale_out_of_range_raises():
+    import pytest
+
+    from inverse_folding.reference_flow.config import (
+        ReferenceFlowConfigError,
+        materialize_reference_flow_config,
+    )
+
+    payload = {
+        "sampler": {
+            "n_steps": 8,
+            "seed": 42,
+            "remask": {"enabled": True, "fraction_scale": 1.5},
+        },
+        "schedule": {"base_form": "linear"},
+        "amplification": {"form": "constant_one", "h_source": "h_processed"},
+    }
+    with pytest.raises(ReferenceFlowConfigError):
+        materialize_reference_flow_config(payload)

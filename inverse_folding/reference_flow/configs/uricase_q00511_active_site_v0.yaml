@@ -1,0 +1,24 @@
+# Uricase enzyme mode v0 hard-anchor constraint manifest (Q00511 / 1wrr).
+# Frozen set: doc/Uricases_Design.md §9.0 (2026-06-23, user-approved).
+# 0-based index = PDB 1wrr = UniProt - 1 (both Met-excluded). Hard set =
+# catalytic triad (Lys11/Thr58/His257) + binding (Asp59/Phe160/Asn255) +
+# stabilizers (Arg177/Gln229), all family-conserved 0.92-0.99. UniProt binding
+# Val228 (0-based 227, cons 0.649, family-variable) is NOT hard-fixed.
+# The driver fail-fast asserts resolved_sequence[index_0b] == expected_aa before
+# any generation (doc/Uricases_Design.md §7.2 — the single mitigation that catches
+# numbering/labeling errors).
+schema_version: uricase_active_site_v0
+description: Q00511 (Aspergillus flavus urate oxidase) v0 hard-anchor constraint
+entries:
+  - protein_id: Q00511
+    hard_anchors:
+      - {index_0b: 10,  expected_aa: K, label: Lys11,  biological_role: catalytic_triad,              source: UniProt Q00511 active site / M-CSA:118}
+      - {index_0b: 57,  expected_aa: T, label: Thr58,  biological_role: catalytic_triad_and_binding,  source: UniProt Q00511 active+binding site / M-CSA:118}
+      - {index_0b: 58,  expected_aa: D, label: Asp59,  biological_role: binding,                      source: UniProt Q00511 binding site / M-CSA:118}
+      - {index_0b: 159, expected_aa: F, label: Phe160, biological_role: binding_purine_stacking,      source: UniProt Q00511 binding site / M-CSA:118}
+      - {index_0b: 176, expected_aa: R, label: Arg177, biological_role: substrate_stabilizer,         source: UniProt Q00511 binding site / M-CSA:118}
+      - {index_0b: 228, expected_aa: Q, label: Gln229, biological_role: substrate_stabilizer,         source: UniProt Q00511 binding site / M-CSA:118}
+      - {index_0b: 254, expected_aa: N, label: Asn255, biological_role: binding_cross_protomer_W1,    source: UniProt Q00511 binding site / M-CSA:118}
+      - {index_0b: 256, expected_aa: H, label: His257, biological_role: catalytic_triad,              source: UniProt Q00511 active site / M-CSA:118}
+    monitored_shell:
+      - {index_0b: 227, expected_aa: V, label: Val228, enforcement: monitored_posthoc, rationale: UniProt binding annotation but family-variable (cons 0.649); not hard-fixed in v0}

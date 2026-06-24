@@ -44,6 +44,12 @@ from inverse_folding.reference_flow.controller_config import (
     load_controller_config,
     validate_global_pressure_runtime,
 )
+from inverse_folding.reference_flow.constraints import (
+    build_constraint_application_report,
+    build_run_constraints,
+    constraint_manifest_provenance,
+    load_constraint_manifest,
+)
 from inverse_folding.reference_flow.head_scoring import OnlineHeadScorer
 from scripts.run_if_phase_c0 import _fmt_hms, _length_buckets, write_phase_c_outputs
 
@@ -1276,6 +1282,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "only) otherwise."
         ),
     )
+    parser.add_argument(
+        "--constraint-manifest",
+        default=None,
+        help=(
+            "Optional YAML hard-anchor constraint manifest (uricase enzyme mode v0, "
+            "PLAN_URICASE_ENZYME_MODE). When set, per-protein fixed-token maps are "
+            "validated fail-fast against each resolved sequence and threaded into "
+            "the sampler; absent => unconstrained global RF (unchanged behavior)."
+        ),
+    )
 
     from inverse_folding.observability import add_wandb_cli_args
 
@@ -1668,6 +1684,56 @@ def main(argv: list[str] | None = None) -> int:
         vocab_size=len(task.alphabet),
     )
 
+    # Uricase enzyme mode v0 (PLAN_URICASE_ENZYME_MODE Task U3): load the optional
+    # hard-anchor constraint manifest and build per-protein fixed-token maps. AA ->
+    # token-id conversion happens HERE at the runtime boundary; validation is
+    # fail-fast against each resolved sequence before any generation runs.
+    constraint_manifest = None
+    per_protein_constraints: dict[str, dict[int, int]] = {}
+    if args.constraint_manifest:
+        constraint_manifest = load_constraint_manifest(args.constraint_manifest)
+        sequences_by_protein = {
+            str(entry["protein_id"]): str(entry["sequence"])
+            for _, entry in entries.iterrows()
+        }
+        per_protein_constraints = build_run_constraints(
+            constraint_manifest,
+            sequences_by_protein,
+            aa_to_token=lambda aa: task.alphabet.get_idx(aa),
+        )
+        n_anchors_total = sum(len(m) for m in per_protein_constraints.values())
+        print(
+            f"[enzyme-mode] constraint manifest {constraint_manifest.source_path} "
+            f"(schema={constraint_manifest.schema_version}, "
+            f"hash={constraint_manifest.manifest_hash[:12]}): "
+            f"{len(per_protein_constraints)} constrained proteins, "
+            f"{n_anchors_total} hard anchors",
+            flush=True,
+        )
+        absent = sorted(
+            constraint_manifest.constrained_protein_ids - set(sequences_by_protein)
+        )
+        if absent:
+            print(
+                f"[enzyme-mode] WARNING: {len(absent)} manifest proteins absent from "
+                f"this test set (skipped): {absent[:10]}",
+                flush=True,
+            )
+        if n_anchors_total == 0:
+            # Refuse to stamp a false-positive enzyme-mode run: a manifest that
+            # matches zero hard anchors (wrong protein_id / test-set mismatch) would
+            # otherwise produce an "enzyme_mode_enabled / 0 anchors / preserved=true"
+            # artifact. Fail fast before any generation.
+            print(
+                f"[enzyme-mode] FATAL: --constraint-manifest {args.constraint_manifest} "
+                f"applied 0 hard anchors to this run "
+                f"({len(constraint_manifest.constrained_protein_ids)} manifest proteins, "
+                "none present in the test set with hard anchors). Check protein_id / "
+                "test-set alignment.",
+                file=sys.stderr,
+            )
+            return 2
+
     # Phase D1 controller wiring. Built ONCE per process when enabled; reused
     # across all proteins and designs. Telemetry buffers accumulate across
     # designs and are flushed at the end of the run.
@@ -2007,6 +2073,7 @@ def main(argv: list[str] | None = None) -> int:
                 controller=d1_controller,
                 protein_id=protein_id,
                 design_idx=int(design_idx),
+                fixed_tokens=per_protein_constraints.get(protein_id, {}),
             )
             _record_design_success(
                 entry=entry,
@@ -2212,6 +2279,9 @@ def main(argv: list[str] | None = None) -> int:
                                 controller=controller,
                                 protein_id=meta["protein_id"],
                                 design_idx=int(design_idx),
+                                fixed_tokens=per_protein_constraints.get(
+                                    meta["protein_id"], {}
+                                ),
                             )
                             for meta, controller in zip(kept_meta, controllers)
                         ],
@@ -2409,6 +2479,16 @@ def main(argv: list[str] | None = None) -> int:
         "wall_clock_seconds": float(time.time() - run_start),
         "aborted_on_failure_threshold": bool(aborted),
     }
+    if constraint_manifest is not None:
+        manifest.update(
+            constraint_manifest_provenance(
+                constraint_manifest,
+                num_constrained_proteins=len(per_protein_constraints),
+                num_hard_anchors_total=sum(
+                    len(m) for m in per_protein_constraints.values()
+                ),
+            )
+        )
     if controller_setup is not None and head_scorer is not None:
         manifest.update(
             d1_manifest_provenance(
@@ -2477,9 +2557,43 @@ def main(argv: list[str] | None = None) -> int:
             source_dataset_rowcount=int(len(entries)),
         )
 
+    # Hard-constraint telemetry + gate (Task U4). The sampler guarantees anchor
+    # preservation; this is defense-in-depth. Persist evidence and stamp the
+    # manifest, then fail the run (after writing) if any anchor was not preserved.
+    if constraint_manifest is not None:
+        constraint_report = build_constraint_application_report(
+            rows,
+            constraint_manifest,
+            aa_to_token=lambda aa: task.alphabet.get_idx(aa),
+        )
+        write_json(
+            run_dir / "constraints_applied_summary.json", constraint_report.summary
+        )
+        manifest["all_anchors_preserved"] = bool(
+            constraint_report.summary["all_anchors_preserved"]
+        )
+        manifest["num_anchor_mismatches"] = int(
+            constraint_report.summary["num_anchor_mismatches"]
+        )
+        if constraint_report.rows:
+            pd.DataFrame(list(constraint_report.rows)).to_parquet(
+                run_dir / "constraints_applied.parquet", index=False
+            )
+            manifest["constraints_applied_path"] = "constraints_applied.parquet"
+
     write_phase_c_outputs(run_dir, rows, run_config, manifest)
     if failures:
         write_json(run_dir / "failures.json", {"failures": failures})
+
+    if constraint_manifest is not None and not manifest["all_anchors_preserved"]:
+        print(
+            f"[enzyme-mode] HARD-CONSTRAINT GATE FAILED: "
+            f"{manifest['num_anchor_mismatches']} anchor mismatch(es) in run {run_id}; "
+            f"see constraints_applied.parquet / constraints_applied_summary.json in "
+            f"{run_dir}",
+            file=sys.stderr,
+        )
+        return 3
 
     total_wall = time.time() - run_start
     n_rows = int(len(rows))

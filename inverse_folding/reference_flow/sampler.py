@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -19,6 +20,9 @@ class SamplerOutput:
     unmask_step_by_pos: list[int]
     g_values: list[float]
     trajectory_rows: list[dict[str, Any]]
+    # Positions held fixed by a hard-anchor constraint (uricase enzyme mode v0).
+    # Distinct from ordinary residues that merely commit at step 0.
+    fixed_positions: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,7 @@ class SamplerBatchLane:
     controller: Any | None = None
     protein_id: str = ""
     design_idx: int = 0
+    fixed_tokens: Mapping[int, int] | None = None
 
 
 @dataclass
@@ -44,6 +49,38 @@ class _SamplerLaneState:
     trajectory_rows: list[dict[str, Any]]
     last_logits: torch.Tensor | None
     remask_enabled: bool
+    remask_fraction_scale: float
+    fixed_positions: frozenset[int]
+
+
+def _resolve_fixed_positions(
+    fixed_tokens: Mapping[int, int] | None, sequence_length: int
+) -> frozenset[int]:
+    """Validate and collect hard-anchor positions (fail-fast on out-of-range index)."""
+    if not fixed_tokens:
+        return frozenset()
+    positions: set[int] = set()
+    for idx in fixed_tokens:
+        i = int(idx)
+        if not (0 <= i < sequence_length):
+            raise ValueError(
+                f"fixed_tokens position {i} out of range [0, {sequence_length})"
+            )
+        positions.add(i)
+    return frozenset(positions)
+
+
+def _union_protected(
+    post_protected: tuple[int, ...], fixed_positions: frozenset[int]
+) -> tuple[int, ...]:
+    """Union controller-protected positions with the permanent hard-anchor set.
+
+    With no fixed positions this returns ``post_protected`` unchanged so the
+    no-constraint path stays bit-equivalent to legacy behavior.
+    """
+    if not fixed_positions:
+        return post_protected
+    return tuple(sorted(set(post_protected) | fixed_positions))
 
 
 class PositionDependentDFMSampler:
@@ -66,6 +103,7 @@ class PositionDependentDFMSampler:
         controller: Any | None = None,
         protein_id: str = "",
         design_idx: int = 0,
+        fixed_tokens: Mapping[int, int] | None = None,
     ) -> SamplerOutput:
         if sequence_length <= 0:
             raise ValueError("sequence_length must be positive")
@@ -87,6 +125,13 @@ class PositionDependentDFMSampler:
         rng = np.random.default_rng(int(config.sampler.seed))
         x_t = torch.full((sequence_length,), self.mask_token_id, dtype=torch.long)
         unmask_step_by_pos = [-1] * sequence_length
+        # Hard-anchor constraint (uricase enzyme mode v0): seed fixed tokens and
+        # mark them committed at step 0. They are never re-sampled (non-mask -> not
+        # in masked_positions) and are protected from remask via _union_protected.
+        fixed_positions = _resolve_fixed_positions(fixed_tokens, sequence_length)
+        for fixed_idx, fixed_token_id in (fixed_tokens or {}).items():
+            x_t[int(fixed_idx)] = int(fixed_token_id)
+            unmask_step_by_pos[int(fixed_idx)] = 0
         # log-prob of the currently committed token at each position; -inf for
         # positions still masked (or freshly remasked). Used by the optional
         # reparam refinement to pick the bottom-k committed positions.
@@ -96,6 +141,7 @@ class PositionDependentDFMSampler:
         dt = 1.0 / float(n_steps)
         last_logits: torch.Tensor | None = None
         remask_enabled = bool(config.sampler.remask.enabled)
+        remask_fraction_scale = float(config.sampler.remask.fraction_scale)
 
         for step in range(n_steps):
             t = step / float(n_steps)
@@ -225,7 +271,8 @@ class PositionDependentDFMSampler:
                     step=step,
                     n_steps=n_steps,
                     rank_scores=post_rank_scores,
-                    protected_positions=post_protected,
+                    protected_positions=_union_protected(post_protected, fixed_positions),
+                    cutoff_scale=remask_fraction_scale,
                 )
                 remask_count = remask_result.count
                 # D3 remask telemetry hook (PLAN §D3-14). Skipped when the
@@ -274,6 +321,7 @@ class PositionDependentDFMSampler:
             unmask_step_by_pos=unmask_step_by_pos,
             g_values=g_values.astype(np.float32, copy=False).tolist(),
             trajectory_rows=trajectory_rows,
+            fixed_positions=tuple(sorted(fixed_positions)),
         )
 
     def sample_batch(
@@ -349,16 +397,24 @@ class PositionDependentDFMSampler:
             )
             h = shuffle_h_values(h, seed=effective_shuffle_seed)
         g_values = amplification_factor(h, lane.config.amplification)
+        x_t = torch.full((sequence_length,), self.mask_token_id, dtype=torch.long)
+        unmask_step_by_pos = [-1] * sequence_length
+        fixed_positions = _resolve_fixed_positions(lane.fixed_tokens, sequence_length)
+        for fixed_idx, fixed_token_id in (lane.fixed_tokens or {}).items():
+            x_t[int(fixed_idx)] = int(fixed_token_id)
+            unmask_step_by_pos[int(fixed_idx)] = 0
         return _SamplerLaneState(
             lane=lane,
             g_values=g_values,
             rng=np.random.default_rng(int(lane.config.sampler.seed)),
-            x_t=torch.full((sequence_length,), self.mask_token_id, dtype=torch.long),
-            unmask_step_by_pos=[-1] * sequence_length,
+            x_t=x_t,
+            unmask_step_by_pos=unmask_step_by_pos,
             scores=np.full(sequence_length, -np.inf, dtype=np.float64),
             trajectory_rows=[],
             last_logits=None,
             remask_enabled=bool(lane.config.sampler.remask.enabled),
+            remask_fraction_scale=float(lane.config.sampler.remask.fraction_scale),
+            fixed_positions=fixed_positions,
         )
 
     def _sample_batch_lane_step(
@@ -488,7 +544,10 @@ class PositionDependentDFMSampler:
                 step=step,
                 n_steps=n_steps,
                 rank_scores=post_rank_scores,
-                protected_positions=post_protected,
+                protected_positions=_union_protected(
+                    post_protected, state.fixed_positions
+                ),
+                cutoff_scale=state.remask_fraction_scale,
             )
             remask_count = remask_result.count
             if controller is not None and remask_result.remasked_positions:
@@ -543,6 +602,7 @@ class PositionDependentDFMSampler:
             unmask_step_by_pos=state.unmask_step_by_pos,
             g_values=state.g_values.astype(np.float32, copy=False).tolist(),
             trajectory_rows=state.trajectory_rows,
+            fixed_positions=tuple(sorted(state.fixed_positions)),
         )
 
 
@@ -579,6 +639,7 @@ def _apply_reparam_remask(
     n_steps: int,
     rank_scores: np.ndarray | None = None,
     protected_positions: tuple[int, ...] = (),
+    cutoff_scale: float = 1.0,
 ) -> ReparamRemaskResult:
     """Re-mask the lowest-confidence committed positions.
 
@@ -589,8 +650,10 @@ def _apply_reparam_remask(
     ``rank_scores`` overrides ``scores[]`` as the per-residue ranking signal
     (D3 commit-score path). When ``None`` the function uses ``scores[]``
     exactly as before. ``protected_positions`` removes positions from the
-    remask candidate pool (D3 grace / final freeze). With both defaults the
-    output is byte-equivalent to the pre-D2/D3 implementation.
+    remask candidate pool (D3 grace / final freeze). ``cutoff_scale``
+    (``sampler.remask.fraction_scale``) multiplies the cutoff length: ``1.0``
+    is a no-op, ``0.0`` re-masks nothing. With all defaults the output is
+    byte-equivalent to the pre-D2/D3 implementation.
 
     Returns the number of positions re-masked this step.
     """
@@ -599,7 +662,7 @@ def _apply_reparam_remask(
     if n_committed == 0:
         return ReparamRemaskResult(count=0, remasked_positions=())
     rate = 1.0 - (step + 1) / float(n_steps)
-    cutoff_len = int(n_committed * rate)
+    cutoff_len = int(n_committed * rate * cutoff_scale)
     if cutoff_len <= 0:
         return ReparamRemaskResult(count=0, remasked_positions=())
     committed_positions = np.flatnonzero(committed_mask)

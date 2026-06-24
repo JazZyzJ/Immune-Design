@@ -206,6 +206,14 @@ Tests:
 - [ ] Mark anchors as committed in a way that keeps them out of first-unmask.
       Prefer a separate `fixed_positions` set for telemetry over overloading
       `unmask_step_by_pos`.
+- [ ] Set `unmask_step_by_pos[index] = 0` for hard anchors to mean
+      "step-0 committed by constraint"; do not leave anchors at `-1`, because
+      downstream telemetry may read `-1` as still masked / never committed.
+      Also expose `fixed_positions` so constrained anchors remain distinguishable
+      from ordinary positions first sampled at step 0.
+- [ ] Audit every consumer of `unmask_step_by_pos` before implementation lands.
+      If a consumer assumes `0` means stochastic first-unmask, use the explicit
+      `fixed_positions` marker to branch.
 - [ ] On every remask call, pass `protected_positions =
       permanent_fixed_positions union controller_post_protected`.
 - [ ] Ensure this permanent protection runs even when `controller=None`.
@@ -218,6 +226,8 @@ Tests:
 - [ ] With constraints and `remask.enabled=true`, anchors remain fixed.
 - [ ] With a stub controller that asks to remask broadly, anchors remain fixed.
 - [ ] Batch and single-lane sampling enforce the same anchors.
+- [ ] Anchor `unmask_step_by_pos` values are `0`, and `fixed_positions` identifies
+      them as constraint-committed rather than sampled-at-step-0 residues.
 
 ### Task U3 - RF Driver And Manifest Wiring
 
@@ -292,11 +302,33 @@ Inputs:
 
 ```text
 generated.parquet
-WT facade eval outputs under the same allele/protocol
+WT facade eval outputs (eval_immune/imm_nmp*.parquet) via --wt-facade-eval-dir
 imm_nmp.parquet
 imm_nmp_peptides.parquet from evaluate_phase_c.py --imm-full
 constraint manifest
 ```
+
+WT facade wiring (B1):
+
+- The WT facade run dir is passed via a new optional analysis flag
+  `--wt-facade-eval-dir PATH` (no hardcoded paths in Python). First-run instance:
+  `Results/RF/HLA-DRB1_07_01/wt_uricase_v2_HLA-DRB1_07_01_imm_full__20260607T185243Z`.
+- That dir currently carries `eval_immune/imm_nmp.parquet` +
+  `imm_nmp_peptides.parquet` (same schema as a design eval) and the WT sequences
+  under `generation/`, so immune deltas are computable now.
+- When the flag is absent, every `*_vs_wt` immune column is `NA`, never a
+  placeholder value.
+
+Join key normalization:
+
+- Normalize every input to `(protein_id, design_idx, design_id)` before joining.
+  Current `evaluate_phase_c.py` reconstructs `design_id = design_{design_idx:04d}`,
+  but sidecar builders must not assume every historical parquet carries both
+  columns.
+- If `design_idx` is missing but `design_id` has the canonical `design_0000`
+  format, reconstruct `design_idx` and assert uniqueness.
+- If `design_id` is missing, reconstruct it from `design_idx`.
+- Any duplicate `(protein_id, design_idx)` after normalization is a hard error.
 
 Required window-level sidecar: `enzyme_nmp_windows.parquet`
 
@@ -370,17 +402,19 @@ refresh_step
 step
 t
 block_id
-window_start_0b
-window_end_0b
-window_indices
+block_residue_start_0b
+block_residue_end_0b
+window_indices                      # IDs into refresh r_windows_dyn, not residue indices
+window_spans_0b                     # expanded from r_windows_dyn[window_indices]
 overlaps_hard_anchor
 covered_anchor_indices
 window_excess_sum
 window_excess_max
 candidate_feasibility
 best_delta_R_B
-safe_support_min
-safe_support_mean
+safe_support_size_min
+safe_support_size_mean
+safe_support_size_values
 selected_positions
 selected_hard_anchor_count        # must be 0
 selected_flank_in_anchor_window_count
@@ -389,6 +423,49 @@ final_persistence_rate
 remasked_hard_anchor_count        # must be 0
 visible_noneditable_pressure_flag
 ```
+
+Field semantics:
+
+- `window_indices` are `ActiveBlock.window_indices`: IDs of windows in the refresh
+  record's `r_windows_dyn`, not residue indices.
+- `block_residue_start_0b` / `block_residue_end_0b` come from the merged
+  `ActiveBlock` span and are half-open.
+- `overlaps_hard_anchor` must be computed as:
+
+```text
+bool(set(range(block_residue_start_0b, block_residue_end_0b)) & hard_anchor_set)
+```
+
+  The implementation may also expand `window_indices -> r_windows_dyn[id] ->
+  (start_0b, end_0b)` to report `window_spans_0b`, but it must not treat
+  `window_indices` themselves as residue positions.
+- `window_excess_sum` / `window_excess_max` are reductions over the windows named
+  by `window_indices`.
+- `safe_support_size_values` is `list(exported_safe_support_sizes.values())` for
+  the block. `safe_support_size_min` and `safe_support_size_mean` are reductions
+  over those values only. In the current checkout the exported map is a
+  block-local editable-position support-size map; older notes may describe this
+  as a token/support count. Do not infer residue or token semantics from the dict
+  keys; this sidecar only needs the value distribution.
+- `realized_benefit_rate` and `final_persistence_rate` are not native per-window
+  fields. The sidecar builder must compute them by joining block-level refresh
+  diagnostics to `controller_events.parquet` and aggregating the D2 rows assigned
+  to that `(protein_id, design_idx, refresh_step, block_id)`.
+- Required block/event join:
+
+```text
+refresh_log.jsonl block diagnostics
+  keyed by protein_id, design_idx, refresh_step, block_id
+controller_events.parquet D2 rows
+  keyed by protein_id, design_idx, refresh_step, block_id, position_i
+```
+
+  The builder owns this join; do not rely on the existing run aggregator to have
+  precomputed per-block rates.
+- `realized_benefit_rate` for a block is the mean of non-null
+  `realized_benefit_flag` over joined D2 rows for that block.
+- `final_persistence_rate` for a block is the fraction of joined selected D2
+  positions that are not later remasked in the same design trajectory.
 
 Suggested flag:
 
@@ -435,17 +512,41 @@ f_anchor_status              # pass | fail
 num_anchor_mismatches
 f_fold_status                # ranking_only | predictor_failed | unavailable
 scTM
-scRMSD
+bb_RMSD
 pLDDT
-pTM_or_confidence_if_available
+recovery
+foldability
 delta_scTM_vs_wt
-delta_scRMSD_vs_wt
+delta_bb_RMSD_vs_wt
 delta_pLDDT_vs_wt
+delta_recovery_vs_wt
 reference_type               # predicted_target for v0 uricase cases
 predictor
 predictor_version
 calibration_status
 ```
+
+Structure source:
+
+- v0 `f_fold` reads `structural.parquet` produced by
+  `scripts/evaluate_phase_c.py --mode struct` or `--mode all`.
+- Required current columns are:
+
+```text
+protein_id, design_id, design_idx, sequence, scTM, pLDDT, bb_RMSD,
+recovery, foldability, refold_backend
+```
+
+- Deltas require a same-protocol WT facade structural run (passed via
+  `--wt-facade-struct-dir PATH`) normalized to the same
+  `(protein_id, design_idx, design_id)` convention as U5.
+- NOTE (B1): the packaged WT facade run
+  `wt_uricase_v2_..._imm_full__20260607T185243Z` carries `eval_immune` only — no
+  `structural.parquet`. Until a WT facade `--mode struct` run is produced, every
+  `delta_*_vs_wt` structural column is `NA` (not placeholder); the absolute
+  `scTM/bb_RMSD/pLDDT/recovery` columns are still emitted.
+- Do not use `scRMSD` unless a future structural evaluator emits that exact column;
+  the current evaluator column is `bb_RMSD`.
 
 Rules:
 

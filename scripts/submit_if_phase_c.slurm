@@ -78,6 +78,10 @@ HEAD_ALLELE_IDX="${HEAD_ALLELE_IDX:-0}"
 # forwarded (the controller fails fast at load if the band is needed).
 GLOBAL_PRESSURE_CALIBRATION_JSON="${GLOBAL_PRESSURE_CALIBRATION_JSON:-}"
 
+# Uricase enzyme mode v0 hard-anchor constraint manifest (optional; consumed only
+# by MODE=reference_flow). Empty → unconstrained global RF (unchanged behavior).
+CONSTRAINT_MANIFEST="${CONSTRAINT_MANIFEST:-}"
+
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
 module purge
@@ -230,6 +234,12 @@ case "${MODE}" in
             if [[ -n "${GLOBAL_PRESSURE_CALIBRATION_JSON}" ]]; then
                 EXTRA_FLAGS+=(--global-pressure-calibration-json "${GLOBAL_PRESSURE_CALIBRATION_JSON}")
             fi
+        fi
+        # Uricase enzyme mode v0 hard-anchor constraint manifest (optional;
+        # PLAN_URICASE_ENZYME_MODE). Forwarded only in MODE=reference_flow, with or
+        # without a controller.
+        if [[ -n "${CONSTRAINT_MANIFEST}" ]]; then
+            EXTRA_FLAGS+=(--constraint-manifest "${CONSTRAINT_MANIFEST}")
         fi
 
         python -u "${PROJECT_ROOT}/scripts/run_if_phase_c1.py" \

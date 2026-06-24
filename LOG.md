@@ -3412,3 +3412,37 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_RF_SC_GR.md` §6.2 (Stage SC2)
   - `doc/Self-Cond_GR.md` §1 (amplify objective), §3 step 5
   - `L0118` (SC1 beta-only — gated predecessor)
+
+### L0120
+- timestamp: 2026-06-23T17:30:00-04:00
+- type: FEATURE
+- module: RF
+- trigger: Implement uricase enzyme mode v0 (`PLAN_URICASE_ENZYME_MODE.md`, Tasks U1–U9): active-site-constrained global Reference Flow redesign. Hard active-site anchors are fixed from step 0 and permanently protected from remask; controller semantics (D1–D3, SC-GR, control law, DPLM decoder) are untouched. WT never enters generation (post-hoc decision layer only).
+- change_summary: (U1) `inverse_folding/reference_flow/constraints.py`: YAML hard-anchor manifest loader (`HardAnchor`/`MonitoredShellResidue`/`ActiveSiteConstraint`/`ConstraintManifest`), content-stable sha256 hash, `validate_against_sequence` fail-fast (index bounds + expected_AA identity), duplicate-index / empty-without-control hard errors; AA→token conversion deliberately kept OUT of the parser. Plus driver-boundary helpers `build_run_constraints` (per-protein fixed-token map, validate present proteins, skip absent), `constraint_manifest_provenance`, and `build_constraint_application_report` (U4). (U2) `sampler.py`: `sample()`/`SamplerBatchLane`/`sample_batch()` gain optional `fixed_tokens`; anchors are initialized committed (`x_t[i]=tok`, `unmask_step_by_pos[i]=0`) and exposed as a separate `fixed_positions` set; the permanent anchor set is unioned into `protected_positions` at BOTH `_apply_reparam_remask` call sites (single + batch) — which run independent of the controller — so anchors (carrying `scores=-inf`, otherwise the first remask target) survive `remask.enabled=true` AND `controller=None` AND a broadly-remasking controller. Empty `fixed_tokens` ⇒ byte-for-byte legacy behavior. (U3) `run_if_phase_c1.py`: `--constraint-manifest`; preflight loads the manifest, builds per-protein fixed-token maps (fail-fast on AA mismatch BEFORE generation), threads `fixed_tokens` into both sampler call sites, stamps `enzyme_mode_*` manifest provenance, and **fails fast (return 2) if the manifest matches 0 hard anchors** (no false-positive enzyme run). `submit_if_phase_c.slurm` forwards `CONSTRAINT_MANIFEST` only in `MODE=reference_flow`. (U4) writes `constraints_applied.parquet` + `constraints_applied_summary.json` and fails the run (non-zero, AFTER persisting evidence) if any anchor is not preserved. (U5–U7) post-hoc sidecar builders `enzyme_telemetry.py` (shared `normalize_design_keys` join-key normalization with design_id/design_idx consistency check + `anchor_overlap`), `enzyme_immune.py` (`enzyme_nmp_windows` + `enzyme_immune_summary`; WT deltas computed ONLY on a matched `(protein_id, pep_length, pos)` window grid, else `NA` + `wt_window_support_matched=False`), `enzyme_controller.py` (`enzyme_controller_overlap`; `final_persistence_rate` judged by sampler `step` not `refresh_step`; `selected/remasked_hard_anchor_count` must be 0), `enzyme_fpost.py` (`f_post_v0`: `f_anchor` hard-invariant + monomer `f_fold` ranking-only; `f_assembly`/`f_site_scaffold` unavailable). Consolidated CLI `scripts/build_enzyme_telemetry.py` (optional `--wt-facade-eval-dir`/`--wt-facade-struct-dir`; missing WT ⇒ NA deltas). Manifest config `configs/uricase_q00511_active_site_v0.yaml` (frozen set {10,57,58,159,176,228,254,256}). `doc/SCRIPTS.md` updated.
+- rationale: The constraint belongs in the sampler, not DPLM (`runtime.py:526` writes `prev_tokens[residue_positions]=x_t`, so a native-valued anchor in `x_t` conditions DPLM automatically — verified). v0 makes zero control-law / risk-estimation / D1–D3 change: only anchor init + permanent remask protection. The hard-anchor preservation is a defense-in-depth invariant (the sampler guarantees it; the U4 gate is the runtime check). Telemetry is the v0 product: it surfaces whether the controller spends pressure on visible-but-noneditable anchor-overlap risk (U6) without realized benefit, and the external-NMP immune readout vs WT (U5), without changing any controller decision. Three Codex review findings fixed before completion: (P1a) 0-anchor manifest match now fail-fast; (P1b) WT immune deltas now matched-window-gated (no aggregate subtraction over mismatched supports) + design_id/idx consistency check; (P2) persistence judged by sampler step (a same-refresh later-step remask no longer over-counts persistence).
+- artifacts:
+  - `inverse_folding/reference_flow/constraints.py`
+  - `inverse_folding/reference_flow/sampler.py`
+  - `inverse_folding/reference_flow/enzyme_telemetry.py`
+  - `inverse_folding/reference_flow/enzyme_immune.py`
+  - `inverse_folding/reference_flow/enzyme_controller.py`
+  - `inverse_folding/reference_flow/enzyme_fpost.py`
+  - `inverse_folding/reference_flow/configs/uricase_q00511_active_site_v0.yaml`
+  - `scripts/run_if_phase_c1.py`
+  - `scripts/submit_if_phase_c.slurm`
+  - `scripts/build_enzyme_telemetry.py`
+  - `doc/SCRIPTS.md`
+- evidence: |
+    TDD red→green per task; new suites: test_reference_flow_{constraints,sampler_constraints,enzyme_telemetry,enzyme_immune,enzyme_controller,enzyme_fpost}.py -> 81 passed.
+    `pytest tests/inverse_folding/test_reference_flow*.py tests/scripts/test_run_if_phase_c1_d2_d3.py -q` -> 459 passed, 1 pre-existing amplification warning; zero regression (no-constraint path byte-equivalent).
+    `run_if_phase_c1.py --help` shows `--constraint-manifest`; `bash -n submit_if_phase_c.slurm` OK; py_compile OK.
+    Real-data smokes (cwd-local, not committed): Q00511 (seq_len 302, 3983 NMP windows) via build_enzyme_telemetry.py — enzyme_nmp_windows (1455 anchor-overlap, 98 strong @rank<=2 ≈ design doc §7.3 "WT≈97"), enzyme_immune_summary delta_total_strong=0 + wt_window_support_matched=True for design==WT; U6/U7 builders run on real refresh_log/controller_events/structural schemas (an unconstrained run correctly surfaces non-zero selected/remasked anchor counts, proving the 0-invariant diagnostic fires).
+- impact:
+  - scope: RF sampler gains an optional hard-anchor constraint layer (additive; default off ⇒ unchanged), a Phase-C driver CLI flag + manifest provenance + hard gate, and a post-hoc enzyme-telemetry builder. No controller-runtime / risk-estimation change, no model retraining. First run (Q00511) is launch-ready; the enzyme sidecars are an analysis layer over the run.
+  - risk: low
+  - confidence: 0.86
+- status: done (code complete + tested; Q00511 first run + WT structural facade pending)
+- next_action: Launch the Q00511 constrained smoke (`MODE=reference_flow CONSTRAINT_MANIFEST=.../uricase_q00511_active_site_v0.yaml`), confirm `constraints_applied.parquet` has 0 mismatches, then run `build_enzyme_telemetry.py` over the run + the WT facade for the (F_post, R, C) readout. A same-protocol WT `--mode struct` facade run is still needed for U7 structural deltas (currently NA).
+- refs:
+  - `PLAN_URICASE_ENZYME_MODE.md` (Tasks U1–U9)
+  - `doc/Uricases_Design.md` §9.0 (v0 freeze), Appendix A (verified code surface)
