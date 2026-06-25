@@ -58,6 +58,10 @@ def _head(macro):
         "iou70": _dig(macro, "iou_ladder", "head", "iou_0p70", "pp_ap"),
         "pears": _dig(macro, "residue", "head", "pp_pearson"),
         "spear": _dig(macro, "residue", "head", "pp_spearman"),
+        # residue landscape AUC/AP — the downstream-critical metric (GATE-1
+        # no-regression). The flow consumes the per-residue hotspot field.
+        "rauc":  _dig(macro, "residue", "head", "pp_auc"),
+        "rap":   _dig(macro, "residue", "head", "pp_ap"),
         "exap":  _dig(macro, "iou_ladder", "head", "exact", "pp_ap"),
     }
 
@@ -66,6 +70,8 @@ def _nmp(macro):
     return {
         "iou50": _dig(macro, "iou_ladder", "nmp", "iou_0p50", "pp_ap"),
         "pears": _dig(macro, "residue", "nmp", "pp_pearson"),
+        "rauc":  _dig(macro, "residue", "nmp", "pp_auc"),
+        "rap":   _dig(macro, "residue", "nmp", "pp_ap"),
         "exap":  _dig(macro, "iou_ladder", "nmp", "exact", "pp_ap"),
     }
 
@@ -113,8 +119,12 @@ def main() -> None:
     data, nmp = load(eval_dir)
     arms = args.arms.split(",")
 
+    # region metrics (paper credibility) | landscape metrics (downstream-critical)
+    HEAD_METRICS = ("iou50", "iou70", "exap", "pears", "spear", "rauc", "rap")
+    NMP_METRICS = ("iou50", "exap", "pears", "rauc", "rap")
+
     summary = {"arms": {}, "nmp_reference": {}}
-    print(f"{'arm':14} fold sel_ep | TEST IoU50 IoU70  Pears  Spear  ExAP")
+    print(f"{'arm':16} fold sel_ep | IoU50 IoU70  ExAP | Pears Spear  rAUC   rAP")
     per_arm_test = {a: defaultdict(list) for a in arms}
     nmp_test = defaultdict(list)
     for arm in arms:
@@ -124,40 +134,44 @@ def main() -> None:
             ep = select_epoch(d.get("val", {}), args.exact_floor_frac)
             te = d.get("test", {}).get(ep) if ep else None
             if not te:
-                print(f"{arm:14} {k}    {str(ep):6} | (missing test eval)")
+                print(f"{arm:16} {k}    {str(ep):6} | (missing test eval)")
                 continue
-            for m in ("iou50", "iou70", "pears", "spear", "exap"):
+            for m in HEAD_METRICS:
                 if te.get(m) is not None:
                     per_arm_test[arm][m].append(te[m])
             nt = nmp[(arm, k)].get("test", {}).get(ep, {})
-            for m in ("iou50", "pears", "exap"):
+            for m in NMP_METRICS:
                 if nt.get(m) is not None:
                     nmp_test[m].append(nt[m])
-            print(f"{arm:14} {k}    {ep:6} | {te['iou50']:.3f} {te['iou70']:.3f} "
-                  f"{te['pears']:.3f} {te.get('spear',0) or 0:.3f} {te['exap']:.3f}")
+            g = lambda m: (te.get(m) if te.get(m) is not None else 0.0)
+            print(f"{arm:16} {k}    {ep:6} | {g('iou50'):.3f} {g('iou70'):.3f} "
+                  f"{g('exap'):.3f} | {g('pears'):.3f} {g('spear'):.3f} "
+                  f"{g('rauc'):.3f} {g('rap'):.3f}")
 
     def ms(v):
         return (round(st.mean(v), 4), round(st.pstdev(v) if len(v) > 1 else 0.0, 4), len(v)) if v else (None, None, 0)
 
-    print("\n=== 5-fold CV (mean±std over held-out test folds, goal-selected) ===")
-    print(f"{'arm':16} {'IoU50':>14} {'IoU70':>14} {'Pearson':>14} {'ExAP':>14}")
+    print("\n=== 5-fold CV (mean±std, held-out test, goal-selected) — region | landscape ===")
+    print(f"{'arm':18} {'IoU50':>13} {'IoU70':>13} {'ExAP':>13} | {'Pearson':>13} {'ResAUC':>13} {'ResAP':>13}")
     for arm in arms:
         t = per_arm_test[arm]
-        row = {m: ms(t[m]) for m in ("iou50", "iou70", "pears", "spear", "exap")}
+        row = {m: ms(t[m]) for m in HEAD_METRICS}
         summary["arms"][arm] = row
         def c(m): mu, sd, n = row[m]; return f"{mu:.3f}±{sd:.3f}" if mu is not None else "—"
-        print(f"{arm:16} {c('iou50'):>14} {c('iou70'):>14} {c('pears'):>14} {c('exap'):>14}")
-    summary["nmp_reference"] = {m: ms(nmp_test[m]) for m in ("iou50", "pears", "exap")}
+        print(f"{arm:18} {c('iou50'):>13} {c('iou70'):>13} {c('exap'):>13} | "
+              f"{c('pears'):>13} {c('rauc'):>13} {c('rap'):>13}")
+    summary["nmp_reference"] = {m: ms(nmp_test[m]) for m in NMP_METRICS}
     nm = summary["nmp_reference"]
     def nmcell(m):
         mu = nm[m][0]
         return f"{mu:.3f}" if mu is not None else "—"
-    print(f"{'NMP (ref)':16} {nmcell('iou50'):>14} {'':>14} {nmcell('pears'):>14} {nmcell('exap'):>14}")
+    print(f"{'NMP (ref)':18} {nmcell('iou50'):>13} {'':>13} {nmcell('exap'):>13} | "
+          f"{nmcell('pears'):>13} {nmcell('rauc'):>13} {nmcell('rap'):>13}")
 
-    # A-vs-B delta on the primary axes
+    # A-vs-B delta on region + landscape axes
     if all(a in summary["arms"] for a in arms[:2]):
         A, B = summary["arms"][arms[0]], summary["arms"][arms[1]]
-        d = {m: round(B[m][0] - A[m][0], 4) for m in ("iou50", "iou70", "pears", "exap")
+        d = {m: round(B[m][0] - A[m][0], 4) for m in HEAD_METRICS
              if A[m][0] is not None and B[m][0] is not None}
         summary["delta_B_minus_A"] = d
         print(f"\nΔ({arms[1]}−{arms[0]}): " + " ".join(f"{m} {v:+.3f}" for m, v in d.items()))

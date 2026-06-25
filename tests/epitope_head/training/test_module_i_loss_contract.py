@@ -172,6 +172,27 @@ class TestI2ComputeLossObjectiveMode:
         result["loss_total"].backward()
         assert pos.grad is not None and torch.isfinite(pos.grad).all()
 
+    def test_diagnostic_loss_dict_iou_rank_only_no_failfast(self):
+        """train/val diagnostic recompute over concatenated logits must NOT hit
+        compute_loss's iou_rank_only fail-fast (it has no window inputs) — it
+        returns zeroed span terms instead. Regression for the A2 train_step/
+        val_step crash."""
+        from epitope_head.training.trainer import _diagnostic_loss_dict
+        cat_pos = torch.tensor([1.0, 0.5])
+        cat_neg = torch.tensor([0.2, 0.1])
+        d = _diagnostic_loss_dict(cat_pos, cat_neg,
+                                  {"objective_mode": "iou_rank_only", "lambda_iou_rank": 1.0})
+        for k in ("loss_total", "loss_intra", "loss_mp", "loss_smooth", "loss_margin"):
+            assert d[k].item() == 0.0
+
+    def test_diagnostic_loss_dict_other_modes_delegate(self):
+        """Non-iou_rank_only modes still compute the real diagnostic loss."""
+        from epitope_head.training.trainer import _diagnostic_loss_dict
+        cat_pos = torch.tensor([1.0, 0.5])
+        cat_neg = torch.tensor([0.2, 0.1])
+        d = _diagnostic_loss_dict(cat_pos, cat_neg, {"objective_mode": "infonce"})
+        assert d["loss_intra"].item() > 0.0
+
 
 # ── I3: Trainer schema updates ────────────────────────────────────────────────
 

@@ -126,6 +126,22 @@ def compute_sanity_metrics(
     )
 
 
+def _diagnostic_loss_dict(cat_pos, cat_neg, loss_cfg):
+    """Recompute span loss terms over concatenated logits, for logging only.
+
+    In ``iou_rank_only`` the span InfoNCE/margin terms are 0 by definition and
+    the iou-rank term needs per-chunk window inputs unavailable on these
+    concatenated logits, so report zeros instead of calling ``compute_loss``
+    (which would hit its training-time fail-fast). The real backprop loss is
+    ``avg_loss``; ``loss_iou_rank`` is attached separately from ``residue_stats``.
+    """
+    if loss_cfg.get("objective_mode") == "iou_rank_only":
+        z = torch.zeros(())
+        return {k: z for k in (
+            "loss_total", "loss_intra", "loss_mp", "loss_smooth", "loss_margin")}
+    return compute_loss(cat_pos, cat_neg, **loss_cfg)
+
+
 def aggregate_epoch_metrics(step_metrics_list: list[StepMetrics]) -> dict:
     """Aggregate step metrics into epoch-level summary.
 
@@ -770,7 +786,7 @@ def train_step(
     # the actual quantity that ``avg_loss.backward()`` minimized.
     cat_pos = torch.cat(all_pos_logits) if all_pos_logits else torch.tensor([])
     cat_neg = torch.cat(all_neg_logits) if all_neg_logits else torch.tensor([])
-    loss_for_metrics = compute_loss(cat_pos, cat_neg, **loss_cfg)
+    loss_for_metrics = _diagnostic_loss_dict(cat_pos, cat_neg, loss_cfg)
 
     metrics = compute_sanity_metrics(cat_pos, cat_neg, loss_for_metrics)
     metrics.loss_total = float(avg_loss.detach().item())
@@ -838,7 +854,7 @@ def val_step(
 
     cat_pos = torch.cat(all_pos_logits) if all_pos_logits else torch.tensor([])
     cat_neg = torch.cat(all_neg_logits) if all_neg_logits else torch.tensor([])
-    loss_dict = compute_loss(cat_pos, cat_neg, **loss_cfg)
+    loss_dict = _diagnostic_loss_dict(cat_pos, cat_neg, loss_cfg)
     metrics = compute_sanity_metrics(cat_pos, cat_neg, loss_dict)
     # Override loss_total with the actual HIMP objective (weighted span +
     # lambda_residue * residue), matching what train_step backprops on.
