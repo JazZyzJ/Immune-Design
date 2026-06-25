@@ -412,7 +412,18 @@ def compute_loss(
         loss_smooth = torch.tensor(0.0, device=device)
 
     # Total loss by mode
-    if objective_mode == "infonce":
+    if objective_mode == "iou_rank_only":
+        # Span objective is PURE IoU-graded window ranking: InfoNCE + margin OFF.
+        # Fail-fast — a missing ranking signal would silently train the span
+        # scorer on nothing (the residue landscape loss is added separately by
+        # the trainer and is unaffected by this mode).
+        if lambda_iou_rank <= 0.0 or window_logits is None or window_ious is None:
+            raise ValueError(
+                "objective_mode='iou_rank_only' requires lambda_iou_rank>0 and "
+                "window_logits/window_ious (the span objective has nothing to rank)."
+            )
+        loss_total = lambda_mp * loss_mp + lambda_smooth * loss_smooth
+    elif objective_mode == "infonce":
         loss_total = loss_intra + lambda_mp * loss_mp + lambda_smooth * loss_smooth
     elif objective_mode == "mixed_margin":
         loss_total = loss_intra + lambda_margin * loss_margin + lambda_mp * loss_mp + lambda_smooth * loss_smooth
@@ -421,7 +432,8 @@ def compute_loss(
     else:
         raise ValueError(f"Unknown objective_mode: {objective_mode}")
 
-    # Additive Wave-3 term (no-op when lambda_iou_rank == 0 -> legacy bit-for-bit).
+    # Additive Wave-3 term (no-op when lambda_iou_rank == 0 -> legacy bit-for-bit;
+    # the SOLE span term in iou_rank_only mode).
     loss_total = loss_total + lambda_iou_rank * loss_iou_rank
 
     return {

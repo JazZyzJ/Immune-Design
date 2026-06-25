@@ -129,6 +129,49 @@ class TestI2ComputeLossObjectiveMode:
         assert result["loss_margin"].item() > 0.0
         assert result["loss_total"].item() == pytest.approx(result["loss_margin"].item(), abs=1e-5)
 
+    # ── Wave-3 A2: iou_rank_only — ranking REPLACES InfoNCE+margin ──────────────
+
+    def test_iou_rank_only_zeros_infonce_and_margin(self):
+        """iou_rank_only: both InfoNCE and margin terms are off; total == λ·iou_rank."""
+        pos = torch.tensor([1.0, 0.8])
+        neg = torch.tensor([0.9, 0.2, 0.1])
+        win_logits = torch.cat([pos, neg])                      # [pos | neg] order
+        win_ious = torch.tensor([1.0, 0.9, 0.6, 0.0, 0.0])       # graded IoU spectrum
+        result = compute_loss(pos, neg, tau=0.1, T_mp=0.1,
+                              lambda_mp=0.0, lambda_smooth=0.0,
+                              objective_mode="iou_rank_only",
+                              window_logits=win_logits, window_ious=win_ious,
+                              lambda_iou_rank=1.0, iou_rank_margin=0.5,
+                              iou_rank_min_gap=0.1)
+        assert result["loss_intra"].item() == 0.0
+        assert result["loss_margin"].item() == 0.0
+        assert result["loss_iou_rank"].item() > 0.0
+        assert result["loss_total"].item() == pytest.approx(
+            result["loss_iou_rank"].item(), abs=1e-6)
+
+    def test_iou_rank_only_requires_window_inputs(self):
+        """iou_rank_only must fail-fast (no placeholder 0 loss) when the span
+        objective has nothing to rank — a silent 0 would train nothing."""
+        pos = torch.tensor([1.0])
+        neg = torch.tensor([0.9])
+        with pytest.raises(ValueError, match="iou_rank_only"):
+            compute_loss(pos, neg, tau=0.1, T_mp=0.1,
+                         objective_mode="iou_rank_only",
+                         lambda_iou_rank=0.0)
+
+    def test_iou_rank_only_gradient_flows(self):
+        """The ranking term must backprop to the window logits in this mode."""
+        pos = torch.tensor([1.0, 0.8], requires_grad=True)
+        neg = torch.tensor([0.9, 0.2, 0.1], requires_grad=True)
+        win_logits = torch.cat([pos, neg])
+        win_ious = torch.tensor([1.0, 0.9, 0.6, 0.0, 0.0])
+        result = compute_loss(pos, neg, tau=0.1, T_mp=0.1,
+                              objective_mode="iou_rank_only",
+                              window_logits=win_logits, window_ious=win_ious,
+                              lambda_iou_rank=0.7)
+        result["loss_total"].backward()
+        assert pos.grad is not None and torch.isfinite(pos.grad).all()
+
 
 # ── I3: Trainer schema updates ────────────────────────────────────────────────
 

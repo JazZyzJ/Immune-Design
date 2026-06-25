@@ -1,0 +1,31 @@
+# Wave-4 Arm A2: span objective = PURE IoU-graded window ranking
+# (objective_mode=iou_rank_only). InfoNCE + margin span terms OFF; the residue
+# landscape ranking loss is UNCHANGED (lambda_residue=0.1) — that is the
+# downstream-critical density signal and must survive. This is the clean test
+# of "IoU-ranking REPLACES InfoNCE as the span objective".
+train:
+  near_positive:
+    enabled: false
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: false
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 4.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
+  loss:
+    objective_mode: iou_rank_only
+    lambda_iou_rank: 1.0
+    iou_rank_margin: 0.5
+    iou_rank_min_gap: 0.1
