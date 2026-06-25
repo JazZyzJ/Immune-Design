@@ -255,6 +255,11 @@ class SelfConditionedGRConfig:
     lse_temperature: float = 1.0
     supra_tau_values: tuple[float, ...] = (11.75,)
     write_probe_telemetry: bool = True
+    # Per-residue ``r_i`` map persistence (SC-GR signal-direction follow-up):
+    # when True the probe appends the per-completion ``residue_excess`` array to
+    # sc_gr_probe_samples.parquet for sub-protein r_i targeting validation.
+    # Default False keeps existing monitor telemetry byte-identical.
+    write_residue_telemetry: bool = False
     # SC1.1 actuation knobs (only consumed when ``mode='beta_pressure'``). The
     # aggregator/arm are the SC0.5 monitor decision; ``B_sc`` is the early-frozen
     # per-design burden over the first ``freeze_after_reliable_refreshes`` reliable
@@ -1310,6 +1315,9 @@ def _materialize_self_conditioned_gr(payload: Any) -> SelfConditionedGRConfig:
         supra_tau_values=supra_tau_values,
         write_probe_telemetry=bool(
             payload.get("write_probe_telemetry", defaults.write_probe_telemetry)
+        ),
+        write_residue_telemetry=bool(
+            payload.get("write_residue_telemetry", defaults.write_residue_telemetry)
         ),
         actuation_aggregator=actuation_aggregator,
         actuation_arm=actuation_arm,

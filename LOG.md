@@ -3446,3 +3446,28 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN_URICASE_ENZYME_MODE.md` (Tasks U1–U9)
   - `doc/Uricases_Design.md` §9.0 (v0 freeze), Appendix A (verified code surface)
+
+### L0121
+- timestamp: 2026-06-25T12:30:58-04:00
+- type: CODEMAP_DIFF
+- module: D
+- trigger: Enable the SC-GR per-residue `r_i` accuracy gate (position-dependent / "local SC1" path); the validated ensemble's per-residue map was computed internally then discarded (RAR 0010 validated only the protein scalar).
+- change_summary: SC-GR probe now surfaces `SCGRRiskAggregates.residue_excess` and appends the per-completion per-residue map to `sc_gr_probe_samples.parquet` behind a new `self_conditioned_gr.write_residue_telemetry` flag (default False → existing monitor telemetry byte-identical); adds the per-residue accuracy analysis script + a flag-on monitor config.
+- rationale: `r_i` is a LEVEL (per-residue terminal risk) and MHC-II burden concentrates at a few anchor sites, so it may inherit RAR 0010's protein-scalar accuracy even though the candidate-tuple MARGINAL did not (RAR 0018); validating it gates whether position-dependent pressure is on the table.
+- artifacts:
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/self_conditioned_gr.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/controller_config.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/controller.py`
+  - `/Users/jerry/Project/MHC-IF/inverse_folding/reference_flow/configs/d2_d3_full_stageB_aopen_scgr_monitor_residue.yaml`
+  - `/Users/jerry/Project/MHC-IF/scripts/analysis/scgr_residue_accuracy.py`
+  - `/Users/jerry/Project/MHC-IF/PLAN_RF_SC_GR_ri_accuracy.md`
+- evidence: `pytest tests/inverse_folding/test_reference_flow_self_conditioned_gr.py tests/inverse_folding/test_reference_flow_controller_config.py tests/inverse_folding/test_reference_flow_d1_controller.py tests/scripts/test_run_if_phase_c1_d2_d3.py tests/scripts/test_scgr_residue_accuracy.py -q` → 219 passed; config round-trip + parquet list-column round-trip verified manually.
+- impact:
+  - scope: SC-GR monitor telemetry (gated additive column), one new config + one new analysis script; no D2/D3/remask/global_pressure/actuation change.
+  - risk: low
+  - confidence: 0.95
+- status: done
+- next_action: Run the two cluster jobs in `PLAN_RF_SC_GR_ri_accuracy.md` §3 (flag-on monitor re-run + NoD `--imm-full` re-eval), then `scgr_residue_accuracy.py` locally and apply the §1 gate.
+- refs:
+  - `PLAN_RF_SC_GR_ri_accuracy.md`
+  - `doc/Self-Cond_GR.md` §3 step 4 / §5; RAR 0010, RAR 0018

@@ -1897,6 +1897,10 @@ class ReferenceFlowController:
                     row[f"G_supra_mass_tau_{supra_tau_label(tau)}"] = float(
                         agg.supra_masses[float(tau)]
                     )
+                # Per-residue r_i map for sub-protein targeting validation
+                # (gated; default off keeps the sample schema byte-identical).
+                if scfg.write_residue_telemetry:
+                    row["residue_excess"] = [float(x) for x in agg.residue_excess]
                 self._scgr_sample_rows.append(row)
 
         # Per-refresh per-arm reduction. Computed UNCONDITIONALLY because the

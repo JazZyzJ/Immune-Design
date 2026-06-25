@@ -1071,6 +1071,46 @@ def test_sc_gr_probe_collects_fresh_and_self_conditioned_rows():
     assert [4] == [len(c) for c in scorer.batch_call_labels if len(c) > 1]
 
 
+def test_sc_gr_residue_telemetry_off_by_default_omits_residue_excess():
+    cfg = _scgr_config(ensemble_size=2)  # write_residue_telemetry defaults False
+    assert cfg.self_conditioned_gr.write_residue_telemetry is False
+    scorer = _SCGRStubScorer(windows=_SCGR_WINDOWS)
+    controller = _make_scgr_controller(cfg, scorer)
+    ctx = _make_context(
+        x_t=torch.full((12,), _MASK_ID, dtype=torch.long),
+        logits=_sharp_logits(12, peak_token=1),
+        step=10, t=0.5,
+    )
+    controller.step(ctx)
+    sample_rows = controller.self_conditioned_gr_sample_rows()
+    assert sample_rows
+    assert all("residue_excess" not in r for r in sample_rows)
+
+
+def test_sc_gr_residue_telemetry_on_persists_per_residue_map():
+    cfg = _scgr_config(ensemble_size=2)
+    cfg = replace(
+        cfg,
+        self_conditioned_gr=replace(
+            cfg.self_conditioned_gr, write_residue_telemetry=True
+        ),
+    )
+    scorer = _SCGRStubScorer(windows=_SCGR_WINDOWS)
+    controller = _make_scgr_controller(cfg, scorer, L=12)
+    ctx = _make_context(
+        x_t=torch.full((12,), _MASK_ID, dtype=torch.long),
+        logits=_sharp_logits(12, peak_token=1),
+        step=10, t=0.5,
+    )
+    controller.step(ctx)
+    sample_rows = controller.self_conditioned_gr_sample_rows()
+    assert sample_rows
+    for r in sample_rows:
+        assert "residue_excess" in r
+        # one excess value per residue; the stub design has L=12
+        assert len(r["residue_excess"]) == 12
+
+
 def test_sc_gr_probe_does_not_mutate_logits_or_x_t():
     x_t = torch.full((12,), _MASK_ID, dtype=torch.long)
     logits = _sharp_logits(12, peak_token=1)

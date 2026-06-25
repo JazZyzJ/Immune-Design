@@ -28,7 +28,7 @@ map is identical to ``b_cur`` up to the ensemble + aggregator differences.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -75,13 +75,22 @@ class SCGRProbeSample:
 
 @dataclass(frozen=True)
 class SCGRRiskAggregates:
-    """Trajectory-level burden aggregates for one scored completion."""
+    """Trajectory-level burden aggregates for one scored completion.
+
+    ``residue_excess`` is the per-residue map ``max(0, Proj_i(z) - tau_ref_B)``
+    the scalar aggregators reduce (the full-sequence ``b_cur`` scope). It is
+    surfaced so the per-residue ``r_i`` signal can be persisted for sub-protein
+    targeting validation; the scalar fields are unchanged reductions of it.
+    """
 
     G_mean_excess: float
     G_topm_lse: float
     supra_masses: dict[float, float]
     head_risk_LME: float
     head_risk_max: float
+    residue_excess: np.ndarray = field(
+        default_factory=lambda: np.empty(0, dtype=float)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +317,7 @@ def compute_risk_aggregates(
         supra_masses=supra_masses,
         head_risk_LME=head_risk_LME,
         head_risk_max=head_risk_max,
+        residue_excess=residue_excess,
     )
 
 

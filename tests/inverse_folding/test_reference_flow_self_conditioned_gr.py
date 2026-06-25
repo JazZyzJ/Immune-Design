@@ -242,6 +242,39 @@ def test_compute_risk_aggregates_empty_windows_returns_zeros():
     assert agg.head_risk_max == 0.0
 
 
+def test_compute_risk_aggregates_exposes_residue_excess_map():
+    # The per-residue excess map underlying the scalar aggregators is surfaced
+    # for per-residue (r_i) targeting telemetry (SC-GR signal-direction
+    # follow-up). It must equal max-covering projection minus tau, clipped at 0.
+    L = 10
+    windows = [_win(0, 10, 5.0), _win(0, 2, 20.0)]  # 2 residues at 20, 8 at 5
+    agg = compute_risk_aggregates(
+        windows=windows,
+        length=L,
+        tau_ref_B=0.0,
+        top_m=4,
+        lse_temperature=1.0,
+        supra_tau_values=[11.75],
+    )
+    assert agg.residue_excess.shape == (L,)
+    assert agg.residue_excess.tolist() == [20.0, 20.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+    # the scalar mean_excess is exactly the mean of the exposed per-residue map
+    assert agg.G_mean_excess == pytest.approx(float(agg.residue_excess.mean()))
+
+
+def test_residue_excess_empty_windows_is_length_l_zeros():
+    agg = compute_risk_aggregates(
+        windows=[],
+        length=8,
+        tau_ref_B=0.0,
+        top_m=4,
+        lse_temperature=1.0,
+        supra_tau_values=[11.75],
+    )
+    assert agg.residue_excess.shape == (8,)
+    assert not agg.residue_excess.any()
+
+
 def test_tau_ref_subtraction_clips_at_zero():
     L = 4
     windows = [_win(0, 4, 2.0)]
