@@ -63,6 +63,9 @@ SLURM `--output/--error` 必须指向 `logs/`，不能混入 `run/`。
 
 Return experiment results via `mhc-if-local` to `/Users/jerry/Project/MHC-IF/Results`.
 Use buckets `RF/`, `EpitopeHead/`, `IFStandalone/`, `TestSets/`; RF runs use `RF/<allele>/<run_tag>__<timestamp>/{generation,eval_immune,eval_structure,analysis,logs,meta}`. Returning does not require LOG.md modification.
+For RAR / analysis artifacts under `Results/Analysis/`, keep large generated data out of git and sync through the stable Della archive path `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/rar_analysis_archive/current/Results/Analysis/`.
+Use local aliases `rar-update-dry` / `rar-update` for Mac -> Della sync, and Della aliases `rar-return-dry` / `rar-return` for Della -> Mac sync via `mhc-if-local`.
+Do not create timestamped routine RAR archive directories; rsync to the stable path so only new or changed files transfer. RAR sync/return does not require LOG.md modification.
 Group AlphaFold 3 is at `/scratch/gpfs/KAIYIJIANG/tools/alphafold3`; usage docs are in `docs/README.md` under that root.
 
 ## 4. Plan & Progress Files

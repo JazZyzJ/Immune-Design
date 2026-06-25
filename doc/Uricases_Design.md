@@ -7,13 +7,19 @@ RF. Uricase is the working instance. The doc integrates a multi-session Thinker
 discussion and is the source for a later implementation PLAN; it is not itself an
 implementation plan.
 
-**Status:** design, frozen-ready for §9's two contracts. The RF inpainting hook
-does not exist in the code today (Appendix A). Codebase claims and uricase biology
-were cross-checked at file:line and against M-CSA entry 118 / primary literature
+**Status:** design frozen AND implemented. The RF inpainting hook landed
+(`inverse_folding/reference_flow/constraints.py` + `run_if_phase_c1.py
+--constraint-manifest`, per `PLAN_URICASE_ENZYME_MODE.md`); Appendix A documents the
+*pre-implementation* code surface. The full-pool per-protein constraint manifest is
+materialized — `configs/uricase_q00511_active_site_perprotein_v0.yaml` (6387 deduped
+proteins, 49378 anchors projected from Q00511 by `scripts/build_uricase_active_site_manifest.py`,
+all `validate_against_sequence`-clean). Codebase claims and uricase biology were
+cross-checked at file:line and against M-CSA entry 118 / primary literature
 (2026-06-21); a review pass tightened the locked-floor, proxy-typing, calibration,
 routing, and residual-diagnosis claims (2026-06-22); a workflow-verified pass over
 Kaiyi's `data/Uricase/` evolutionary analysis grounded the §7 anchor set, conservation
-tiering, and immune landscape and corrected the caseset provenance (2026-06-23).
+tiering, and immune landscape and corrected the caseset provenance (2026-06-23); the
+per-protein manifest + deduped caseset were built and verified (2026-06-24).
 
 ## TL;DR — current definition
 

@@ -1,0 +1,49 @@
+# Curated OWN-UniProt active-site anchors for `characterized_special` uricases —
+# experimentally-active enzymes whose Q00511 projection is incomplete because they
+# are structurally divergent / multidomain (NOT because they lack an active site).
+#
+# Scientific note: O32141 / Q45697 are bifunctional urate-oxidase + OHCU-decarboxylase
+# fusions (Bacillus PucL family) whose urate-oxidase catalytic machinery is a
+# Lys-Lys-Thr "charge relay" (NO catalytic His) — which is exactly why Q00511's
+# His257 projection fails for them. The fix is each protein's OWN UniProt annotation.
+#
+# All index_0b are 0-based into the resolved IF-ready `sequence` (= UniProt position - 1;
+# verified offset 0 / IF-ready == original for all three). expected_aa was read from the
+# IF-ready sequence; the loader's validate_against_sequence re-checks it before generation.
+#
+# W8X3B8 (Castellaniella defragrans) has NO UniProt active/binding-site annotation and
+# cannot be completed here — it stays `characterized_special` with its partial Q00511
+# projection (would need structural / family-profile annotation to complete).
+schema_version: uricase_active_site_special_overrides_v0
+entries:
+  - protein_id: O32141
+    note: "Bacillus subtilis 168 PucL (494 aa) — urate oxidase + OHCU decarboxylase fusion; Lys-Lys-Thr charge relay, no catalytic His. UniProt O32141 active+binding sites."
+    hard_anchors:
+      - {index_0b: 67,  expected_aa: H, label: His68,  biological_role: active_site_ohcu_decarboxylase,      source: UniProt O32141 active site}
+      - {index_0b: 178, expected_aa: K, label: Lys179, biological_role: catalytic_charge_relay_urate_oxidase, source: UniProt O32141 active site}
+      - {index_0b: 189, expected_aa: K, label: Lys190, biological_role: catalytic_charge_relay_urate_oxidase, source: UniProt O32141 active site}
+      - {index_0b: 238, expected_aa: T, label: Thr239, biological_role: catalytic_charge_relay_urate_oxidase, source: UniProt O32141 active site}
+      - {index_0b: 239, expected_aa: D, label: Asp240, biological_role: substrate_binding,                   source: UniProt O32141 binding site}
+      - {index_0b: 365, expected_aa: R, label: Arg366, biological_role: substrate_binding,                   source: UniProt O32141 binding site}
+      - {index_0b: 414, expected_aa: Q, label: Gln415, biological_role: substrate_binding,                   source: UniProt O32141 binding site}
+      - {index_0b: 440, expected_aa: N, label: Asn441, biological_role: substrate_binding,                   source: UniProt O32141 binding site}
+  - protein_id: Q45697
+    note: "Bacillus sp. TB-90 (502 aa) — urate oxidase + OHCU decarboxylase fusion; Lys-Lys-Thr charge relay, no catalytic His. UniProt Q45697 active+binding sites."
+    hard_anchors:
+      - {index_0b: 67,  expected_aa: H, label: His68,  biological_role: active_site_ohcu_decarboxylase,      source: UniProt Q45697 active site}
+      - {index_0b: 182, expected_aa: K, label: Lys183, biological_role: catalytic_charge_relay_urate_oxidase, source: UniProt Q45697 active site}
+      - {index_0b: 193, expected_aa: K, label: Lys194, biological_role: catalytic_charge_relay_urate_oxidase, source: UniProt Q45697 active site}
+      - {index_0b: 242, expected_aa: T, label: Thr243, biological_role: catalytic_charge_relay_urate_oxidase, source: UniProt Q45697 active site}
+      - {index_0b: 243, expected_aa: D, label: Asp244, biological_role: substrate_binding,                   source: UniProt Q45697 binding site}
+      - {index_0b: 370, expected_aa: R, label: Arg371, biological_role: substrate_binding,                   source: UniProt Q45697 binding site}
+      - {index_0b: 419, expected_aa: Q, label: Gln420, biological_role: substrate_binding,                   source: UniProt Q45697 binding site}
+      - {index_0b: 445, expected_aa: N, label: Asn446, biological_role: substrate_binding,                   source: UniProt Q45697 binding site}
+  - protein_id: C5HDG5
+    note: "Metabacillus fastidiosus (320 aa) — UniProt C5HDG5 annotates binding-pocket residues only (no active-site feature); these protect the substrate pocket but not an explicit catalytic triad."
+    hard_anchors:
+      - {index_0b: 66,  expected_aa: T, label: Thr67,  biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
+      - {index_0b: 67,  expected_aa: D, label: Asp68,  biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
+      - {index_0b: 176, expected_aa: F, label: Phe177, biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
+      - {index_0b: 193, expected_aa: R, label: Arg194, biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
+      - {index_0b: 242, expected_aa: Q, label: Gln243, biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
+      - {index_0b: 268, expected_aa: N, label: Asn269, biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
