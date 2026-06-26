@@ -135,6 +135,9 @@ def evaluate(run_tag: str, ckpt_file: str, split: str, fold, arm_tag: str,
         # (not 0 — _bootstrap_ci(n=0) crashes on np.quantile of an empty array)
         # makes the bootstrap a near-no-op without touching the canonical script.
         "--bootstrap-n", "1",
+        # EMD is unused by the CV aggregator and is the slowest residue
+        # aggregation on the longest proteins — skip it for sweep throughput.
+        "--no-emd",
     ]
     env = {**os.environ, "PYTHONPATH": REPO}
     subprocess.run(cmd, check=True, env=env, cwd=REPO)

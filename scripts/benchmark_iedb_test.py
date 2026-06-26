@@ -106,6 +106,12 @@ def parse_args() -> argparse.Namespace:
              "extensions; 'all' (default) enables residue+iou_ladder+emd.",
     )
     p.add_argument(
+        "--no-emd", action="store_true",
+        help="Force-skip the M3 EMD family even under --metric-suite all. EMD is "
+             "the slowest residue aggregation on very long proteins and is unused "
+             "by the CV aggregator; skip it for sweep throughput.",
+    )
+    p.add_argument(
         "--iou-thresholds",
         type=float,
         nargs="+",
@@ -1064,7 +1070,7 @@ def main() -> int:
     suite = args.metric_suite
     do_residue = suite in ("residue", "all")
     do_iou = suite in ("iou_ladder", "all")
-    do_emd = suite in ("emd", "all")
+    do_emd = suite in ("emd", "all") and not args.no_emd
     iou_thresholds = list(args.iou_thresholds)
 
     # ── Step 1: Load test entries ──────────────────────────────────────
