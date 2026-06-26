@@ -214,7 +214,8 @@ class InferencePredictor:
         max_k: int,
         allele_idx: int = 0,
         window_batch_size: int = 4096,
-    ) -> tuple[list[dict], torch.Tensor]:
+        return_exact: bool = False,
+    ) -> tuple[list[dict], torch.Tensor] | tuple[list[dict], torch.Tensor, torch.Tensor]:
         """Enumerate all valid windows and score them (F3).
 
         Args:
@@ -224,11 +225,17 @@ class InferencePredictor:
             max_k: maximum peptide length.
             allele_idx: allele index (default 0).
             window_batch_size: batch size for scoring.
+            return_exact: when True AND the dual-head is enabled, additionally
+                compute the exact readout ``z_exact = z_region + boundary_head``,
+                attach ``z_exact`` to each entry, and return a 3-tuple. The region
+                score ``z`` (and hence the residue landscape) is untouched.
 
         Returns:
-            window_entries: list of dicts {start_0b, end_0b, k, z}.
-            z_tensor: [N_windows] raw logits tensor.
+            ``(window_entries, z_tensor)`` (default), or
+            ``(window_entries, z_tensor, z_exact_tensor)`` when ``return_exact``.
         """
+        want_exact = return_exact and getattr(self.model, "enable_boundary_head", False)
+
         # Enumerate all (start, k) pairs, ordered by (start, k).
         all_spans = []
         for s in range(protein_len):
@@ -238,10 +245,12 @@ class InferencePredictor:
                     all_spans.append((s, e, k))
 
         if len(all_spans) == 0:
-            return [], torch.tensor([], dtype=torch.float32)
+            empty = torch.tensor([], dtype=torch.float32)
+            return ([], empty, empty) if return_exact else ([], empty)
 
         G_dev = G.to(self.device)
         all_logits = []
+        all_exact: list[torch.Tensor] = []
 
         for batch_start in range(0, len(all_spans), window_batch_size):
             batch = all_spans[batch_start : batch_start + window_batch_size]
@@ -254,19 +263,24 @@ class InferencePredictor:
             with torch.no_grad():
                 phi = self.model.span_features(G_dev, spans_t, protein_len, allele_t)
                 z = self.model.scorer(phi)
-            all_logits.append(z.cpu())
+                all_logits.append(z.cpu())
+                if want_exact:
+                    feats = self.model._extract_boundary_features(phi)
+                    all_exact.append((z + self.model.boundary_head(feats)).cpu())
 
         z_tensor = torch.cat(all_logits, dim=0)
+        z_exact_tensor = torch.cat(all_exact, dim=0) if want_exact else None
 
         window_entries = []
         for i, (s, e, k) in enumerate(all_spans):
-            window_entries.append({
-                "start_0b": s,
-                "end_0b": e,
-                "k": k,
-                "z": float(z_tensor[i].item()),
-            })
+            entry = {"start_0b": s, "end_0b": e, "k": k, "z": float(z_tensor[i].item())}
+            if want_exact:
+                entry["z_exact"] = float(z_exact_tensor[i].item())
+            window_entries.append(entry)
 
+        if return_exact:
+            # When the head is disabled, mirror z so callers always get a tensor.
+            return window_entries, z_tensor, (z_exact_tensor if want_exact else z_tensor)
         return window_entries, z_tensor
 
     def aggregate_hotspot_and_risk(
@@ -340,6 +354,7 @@ class InferencePredictor:
         seq: str,
         allele_idx: int = 0,
         window_batch_size: int | None = None,
+        return_exact: bool = False,
     ) -> dict:
         """Full protein prediction: encode → enumerate → score → aggregate (F3+F4).
 
@@ -348,6 +363,10 @@ class InferencePredictor:
             allele_idx: allele index (default 0).
             window_batch_size: optional batch size for span scoring. ``None``
                 inherits ``enumerate_and_score``'s default (4096).
+            return_exact: when True AND the dual-head is enabled, each entry in
+                ``window_logits`` additionally carries ``z_exact``. The
+                ``residue_hotspot`` landscape is always from the region score and
+                is unaffected.
 
         Returns:
             dict with keys: window_logits, residue_hotspot, global_risk, meta, debug.
@@ -363,9 +382,15 @@ class InferencePredictor:
         enumerate_kwargs: dict = {}
         if window_batch_size is not None:
             enumerate_kwargs["window_batch_size"] = int(window_batch_size)
-        window_entries, z_tensor = self.enumerate_and_score(
-            G, protein_len, min_k, max_k, allele_idx, **enumerate_kwargs,
-        )
+        if return_exact:
+            window_entries, z_tensor, _ = self.enumerate_and_score(
+                G, protein_len, min_k, max_k, allele_idx, return_exact=True,
+                **enumerate_kwargs,
+            )
+        else:
+            window_entries, z_tensor = self.enumerate_and_score(
+                G, protein_len, min_k, max_k, allele_idx, **enumerate_kwargs,
+            )
 
         if len(window_entries) == 0:
             h_raw = torch.zeros(protein_len, dtype=torch.float32)
