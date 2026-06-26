@@ -332,6 +332,31 @@ class ScorerMLP(nn.Module):
         return logit_scale * similarity
 
 
+# ── Boundary (exact) head ────────────────────────────────────────────────────
+
+class BoundaryHeadMLP(nn.Module):
+    """Small per-window head producing an exactness correction b(s, e).
+
+    Wave-4 dual-head: ``z_exact = stopgrad(z_region) + b_boundary``. The input is
+    a DETACHED subset of the span feature phi (boundary flanks + length), so the
+    exact objective's gradient reaches only these parameters — never the shared
+    (trainable) projection / span-feature / scorer trunk that defines the
+    per-residue landscape the downstream Reference Flow consumes.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int = 64, dropout: float = 0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, feats: torch.Tensor) -> torch.Tensor:
+        return self.net(feats).squeeze(-1)
+
+
 # ── Full Model ──────────────────────────────────────────────────────────────
 
 class EpitopeScorer(nn.Module):
@@ -359,6 +384,9 @@ class EpitopeScorer(nn.Module):
         projection_layer_norm: bool = True,
         pad_left_init: str = "zeros",
         pad_right_init: str = "zeros",
+        enable_boundary_head: bool = False,
+        boundary_head_hidden_dim: int = 64,
+        boundary_head_dropout: float = 0.1,
     ):
         super().__init__()
         self.encoder = encoder
@@ -381,6 +409,17 @@ class EpitopeScorer(nn.Module):
             logit_scale_init=logit_scale_init,
             logit_scale_max=logit_scale_max,
         )
+        # Wave-4 dual-head: constructed ONLY when enabled, so a default model is
+        # bit-for-bit legacy (no extra state_dict keys, no extra init RNG draws).
+        self._d_proj = d_proj
+        self._length_emb_dim = length_emb_dim
+        self.enable_boundary_head = enable_boundary_head
+        if enable_boundary_head:
+            self.boundary_head = BoundaryHeadMLP(
+                input_dim=2 * d_proj + length_emb_dim,
+                hidden_dim=boundary_head_hidden_dim,
+                dropout=boundary_head_dropout,
+            )
 
     @property
     def d_phi(self) -> int:
@@ -405,13 +444,29 @@ class EpitopeScorer(nn.Module):
         G = self.projection(H)
         return G, lengths
 
+    def _extract_boundary_features(self, phi: torch.Tensor) -> torch.Tensor:
+        """Slice the boundary-flank + length features from phi and DETACH them.
+
+        phi concat order (SpanFeatureBuilder): [mean_pool, ep_left, ep_right,
+        fl_left, fl_right, len_emb, allele_emb]. We take fl_left, fl_right,
+        len_emb. Detaching the input is load-bearing: it blocks the exact loss
+        from leaking into the (trainable) projection / span-feature trunk.
+        """
+        d = self._d_proj
+        le = self._length_emb_dim
+        fl_left = phi[:, 3 * d:4 * d]
+        fl_right = phi[:, 4 * d:5 * d]
+        len_emb = phi[:, 5 * d:5 * d + le]
+        return torch.cat([fl_left, fl_right, len_emb], dim=-1).detach()
+
     def score_spans(
         self,
         G: torch.Tensor,
         chunk_len: int,
         spans: torch.Tensor,
         allele_idx: torch.Tensor,
-    ) -> torch.Tensor:
+        return_dual: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Score spans for a single chunk.
 
         Args:
@@ -419,12 +474,20 @@ class EpitopeScorer(nn.Module):
             chunk_len: actual residue count.
             spans: [N, 2] (start, end) in chunk-local coords.
             allele_idx: [N] allele indices.
+            return_dual: when True AND the boundary head is enabled, also return
+                the exact readout ``z_exact = stopgrad(z_region) + b_boundary``.
 
         Returns:
-            z: [N] raw logits.
+            ``z_region: [N]`` (default / legacy), or ``(z_region, z_exact)`` when
+            ``return_dual`` and the boundary head is enabled.
         """
         phi = self.span_features(G, spans, chunk_len, allele_idx)
-        return self.scorer(phi)
+        z_region = self.scorer(phi)
+        if return_dual and self.enable_boundary_head:
+            feats = self._extract_boundary_features(phi)  # already detached
+            z_exact = z_region.detach() + self.boundary_head(feats)
+            return z_region, z_exact
+        return z_region
 
     def forward(
         self,
@@ -433,7 +496,8 @@ class EpitopeScorer(nn.Module):
         spans_list: list[torch.Tensor],
         allele_idx_list: list[torch.Tensor],
         chunk_lengths: torch.Tensor,
-    ) -> list[torch.Tensor]:
+        return_dual: bool = False,
+    ) -> list[torch.Tensor] | list[tuple[torch.Tensor, torch.Tensor]]:
         """Full forward: encode batch of chunks, score per-chunk spans.
 
         Args:
@@ -442,9 +506,12 @@ class EpitopeScorer(nn.Module):
             spans_list: list of B tensors, each [N_i, 2] chunk-local spans.
             allele_idx_list: list of B tensors, each [N_i] allele indices.
             chunk_lengths: [B] residue counts per chunk.
+            return_dual: thread to ``score_spans`` — when True and the boundary
+                head is enabled, each element is ``(z_region, z_exact)``.
 
         Returns:
-            list of B tensors, each [N_i] logits.
+            list of B ``[N_i]`` logits, or list of B ``(z_region, z_exact)`` pairs
+            when ``return_dual`` and the boundary head is enabled.
         """
         G, lengths = self.encode_and_project(token_ids, attention_mask)
         B = G.shape[0]
@@ -461,7 +528,7 @@ class EpitopeScorer(nn.Module):
             L_i = int(chunk_lengths[i].item())
             G_i = G[i]  # [L_max, D_proj] — only first L_i are valid
             logits_i = self.score_spans(
-                G_i, L_i, spans_list[i], allele_idx_list[i],
+                G_i, L_i, spans_list[i], allele_idx_list[i], return_dual=return_dual,
             )
             logits_list.append(logits_i)
 

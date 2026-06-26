@@ -208,6 +208,28 @@ def margin_hard_loss(
     return losses.mean()
 
 
+def exact_margin_loss(
+    pos_exact_logits: torch.Tensor,
+    neg_exact_logits: torch.Tensor,
+    margin_m: float = 0.3,
+    hard_topk: int = 8,
+) -> torch.Tensor:
+    """Wave-4 dual-head exact objective on the ``z_exact`` readout.
+
+    Ranks exact-match positive windows above the top-k hardest negatives via
+    ``relu(margin_m - (z_pos - z_neg))``, reusing the margin-hard machinery
+    (no ``neg_weights`` — the exact head sits downstream of the region negative
+    schedule). Returns a differentiable ``0`` when positives or negatives are
+    empty. This term is added to the total at weight ``lambda_exact``; because
+    ``z_exact = stopgrad(z_region) + boundary_head(detach(phi))`` its gradient
+    reaches only the boundary head, never the landscape trunk.
+    """
+    return margin_hard_loss(
+        pos_exact_logits, neg_exact_logits,
+        margin_m=margin_m, hard_topk=hard_topk, neg_weights=None,
+    )
+
+
 def residue_pairwise_margin_loss(
     residue_scores: torch.Tensor,
     label: torch.Tensor,
