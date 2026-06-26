@@ -1,0 +1,39 @@
+# Wave-4 dual-head, built on the round-2 winner a1res03 (mixed_margin +
+# lambda_iou_rank=1.0 + lambda_residue=0.3). Adds a gradient-isolated exact
+# readout: z_exact = stopgrad(z_region) + boundary_head(detach(phi)), trained
+# with a low-weight exact-margin loss. The region/residue landscape (what the
+# downstream Reference Flow consumes) is provably unchanged vs a1res03 — only the
+# tiny boundary head learns. Targets the exact-AP gap to NMP (0.262 vs 0.336)
+# that the near-exact-candidate arm (a1nearx) failed to close.
+model:
+  enable_boundary_head: true
+  boundary_head_hidden_dim: 64
+  boundary_head_dropout: 0.1
+train:
+  near_positive:
+    enabled: false
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: false
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.3
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 4.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
+  loss:
+    lambda_iou_rank: 1.0
+    iou_rank_margin: 0.5
+    iou_rank_min_gap: 0.1
+    lambda_exact: 0.1
+    exact_margin_m: 0.3
+    exact_hard_topk: 8

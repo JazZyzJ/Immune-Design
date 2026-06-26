@@ -63,6 +63,8 @@ ARM_TAG = {
     # Round-3: aggregation-sharpness (beta) re-probe under the new objective.
     "cnn_himp_a1_beta2": "a1beta2",
     "cnn_himp_a1_beta8": "a1beta8",
+    # Dual-head: a1res03 base + gradient-isolated exact readout (lambda_exact).
+    "cnn_himp_a1res03_exact": "a1res03exact",
 }
 
 

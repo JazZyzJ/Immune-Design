@@ -185,7 +185,6 @@ def main() -> dict:
             sys.exit(1)
         with open(override_path) as f:
             override_raw = yaml.safe_load(f)
-        override = override_raw.get("train", override_raw)
 
         def _deep_update(base: dict, patch: dict) -> dict:
             for k, v in patch.items():
@@ -195,12 +194,20 @@ def main() -> dict:
                     base[k] = v
             return base
 
-        _deep_update(train_cfg, override)
+        # train overrides: prefer the explicit `train:` block; a bare mapping
+        # (no train/model wrapper) is treated as the train block for back-compat.
+        has_model = isinstance(override_raw, dict) and "model" in override_raw
+        train_override = override_raw.get("train", {} if has_model else override_raw)
+        _deep_update(train_cfg, train_override)
         # Re-validate HIMP blocks after override merge — load_train_config only
         # validated the base yaml, so unknown schedule names / wrong types in
         # the override would otherwise reach training silently.
         validate_himp_train_blocks(train_cfg)
-        logger.info("User override config applied from %s: %s", override_path, override)
+        # Wave-4: an optional `model:` block configures the head itself
+        # (e.g. dual-head enable_boundary_head); merge it into model_cfg.
+        if has_model:
+            _deep_update(model_cfg, override_raw["model"])
+        logger.info("User override config applied from %s: %s", override_path, train_override)
 
     # ── Override seed ─────────────────────────────────────────────────
     train_cfg["seed"] = args.seed
@@ -319,7 +326,15 @@ def main() -> dict:
         scorer_hidden_dim=frozen["scorer_hidden_dim"],
         scorer_activation=frozen["scorer_activation"],
         scorer_dropout=frozen.get("scorer_dropout", 0.3),
+        # Wave-4 dual-head (default off -> legacy). Enabled via a `model:` block
+        # in the experiment override config.
+        enable_boundary_head=bool(model_cfg.get("enable_boundary_head", False)),
+        boundary_head_hidden_dim=int(model_cfg.get("boundary_head_hidden_dim", 64)),
+        boundary_head_dropout=float(model_cfg.get("boundary_head_dropout", 0.1)),
     )
+    if model.enable_boundary_head:
+        logger.info("Dual-head ENABLED (boundary_head_hidden_dim=%d)",
+                    int(model_cfg.get("boundary_head_hidden_dim", 64)))
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
