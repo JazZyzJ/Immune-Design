@@ -60,6 +60,9 @@ ARM_TAG = {
     "cnn_himp_a1_res03": "a1res03",
     "cnn_himp_a1_res05": "a1res05",
     "cnn_himp_a1_nearx": "a1nearx",
+    # Round-3: aggregation-sharpness (beta) re-probe under the new objective.
+    "cnn_himp_a1_beta2": "a1beta2",
+    "cnn_himp_a1_beta8": "a1beta8",
 }
 
 
