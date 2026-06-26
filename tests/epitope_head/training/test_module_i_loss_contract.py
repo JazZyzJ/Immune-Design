@@ -193,6 +193,19 @@ class TestI2ComputeLossObjectiveMode:
         d = _diagnostic_loss_dict(cat_pos, cat_neg, {"objective_mode": "infonce"})
         assert d["loss_intra"].item() > 0.0
 
+    def test_diagnostic_loss_dict_strips_dualhead_exact_keys(self):
+        """Dual-head exact keys must be stripped before compute_loss (the diagnostic
+        recompute sees the un-popped loss_cfg). Regression for the a1res03_exact
+        smoke crash: compute_loss() got an unexpected keyword 'lambda_exact'."""
+        from epitope_head.training.trainer import _diagnostic_loss_dict
+        cat_pos = torch.tensor([1.0, 0.5])
+        cat_neg = torch.tensor([0.2, 0.1])
+        cfg = {"objective_mode": "mixed_margin", "margin_m": 0.5, "hard_topk": 8,
+               "lambda_margin": 0.1, "lambda_exact": 0.1, "exact_margin_m": 0.3,
+               "exact_hard_topk": 8}
+        d = _diagnostic_loss_dict(cat_pos, cat_neg, cfg)  # must not raise
+        assert "loss_total" in d
+
 
 # ── I3: Trainer schema updates ────────────────────────────────────────────────
 

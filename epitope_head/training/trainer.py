@@ -139,7 +139,13 @@ def _diagnostic_loss_dict(cat_pos, cat_neg, loss_cfg):
         z = torch.zeros(())
         return {k: z for k in (
             "loss_total", "loss_intra", "loss_mp", "loss_smooth", "loss_margin")}
-    return compute_loss(cat_pos, cat_neg, **loss_cfg)
+    # Strip dual-head exact keys — compute_loss does not accept them; the exact
+    # term is a trainer-level addition (in _forward_union), not part of the span
+    # objective. _forward_union pops them from a local copy, so the original
+    # loss_cfg reaching this diagnostic recompute still carries them.
+    cfg = {k: v for k, v in loss_cfg.items()
+           if k not in ("lambda_exact", "exact_margin_m", "exact_hard_topk")}
+    return compute_loss(cat_pos, cat_neg, **cfg)
 
 
 def aggregate_epoch_metrics(step_metrics_list: list[StepMetrics]) -> dict:
