@@ -1,0 +1,28 @@
+# Wave-4 Round-2: A1 (mixed_margin + IoU-ranking) with lambda_iou_rank=0.5.
+# Dose-response below the winning 1.0 — is the span-ranking effect monotone or
+# is 1.0 past the optimum? Residue/negs identical to A1.
+train:
+  near_positive:
+    enabled: false
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: false
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 4.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
+  loss:
+    lambda_iou_rank: 0.5
+    iou_rank_margin: 0.5
+    iou_rank_min_gap: 0.1

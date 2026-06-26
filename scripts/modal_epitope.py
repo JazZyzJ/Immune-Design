@@ -54,6 +54,12 @@ ARM_TAG = {
     "cnn_himp_beta4": "beta4",
     "cnn_himp_beta4_iourank_main": "beta4iourankmain",
     "cnn_himp_beta4_iouonly": "beta4iouonly",
+    # Round-2: refine the winning A1 (mixed_margin + lambda_iou_rank=1.0).
+    "cnn_himp_a1_iou05": "a1iou05",
+    "cnn_himp_a1_iou20": "a1iou20",
+    "cnn_himp_a1_res03": "a1res03",
+    "cnn_himp_a1_res05": "a1res05",
+    "cnn_himp_a1_nearx": "a1nearx",
 }
 
 
@@ -191,3 +197,10 @@ def run_cv(arms: str = "cnn_himp_beta4,cnn_himp_beta4_iourank_main,cnn_himp_beta
 
     arms_tags = ",".join(ARM_TAG[a] for a in arm_list)
     print(aggregate.remote("/runs/benchmark/w4", arms_tags))
+
+
+@app.local_entrypoint()
+def agg(arms: str, eval_dir: str = "/runs/benchmark/w4"):
+    """Aggregate already-evaluated arms (comma-separated arm tags) over an eval
+    dir — e.g. to compare new arms against earlier ones whose JSONs persist."""
+    print(aggregate.remote(eval_dir, arms))
