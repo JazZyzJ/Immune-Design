@@ -26,7 +26,7 @@ import yaml
 
 from epitope_head.configs import validate_himp_train_blocks
 from epitope_head.training.eval_metrics import full_val_eval
-from epitope_head.training.losses import compute_loss, residue_pairwise_margin_loss
+from epitope_head.training.losses import compute_loss, exact_margin_loss, residue_pairwise_margin_loss
 from epitope_head.training.span_geom import max_iou_per_window
 from epitope_head.training.negatives import sample_negatives
 from epitope_head.training.registry import (
@@ -268,7 +268,8 @@ def normalize_loss_cfg(loss_cfg: dict) -> dict:
 
     required = {"tau", "T_mp", "lambda_mp", "lambda_smooth"}
     optional = {"objective_mode", "margin_m", "hard_topk", "lambda_margin",
-                "lambda_iou_rank", "iou_rank_margin", "iou_rank_min_gap"}
+                "lambda_iou_rank", "iou_rank_margin", "iou_rank_min_gap",
+                "lambda_exact", "exact_margin_m", "exact_hard_topk"}
     missing = required - set(normalized.keys())
     if missing:
         raise ValueError(f"Loss config missing required keys after normalization: {sorted(missing)}")
@@ -580,7 +581,23 @@ def _forward_union_and_compute_losses(
         neg_counts.append(int(ns.shape[0]))
         residue_extra_counts.append(n_extra)
 
-    logits_list = model(token_ids, attention_mask, all_spans_list, all_allele_list, chunk_lengths)
+    # Wave-4 dual-head: strip exact-head keys (compute_loss does not accept them)
+    # from a local copy, and request the z_exact readout only when the exact term
+    # is active. want_dual=False => bit-for-bit legacy forward + loss.
+    loss_cfg = dict(loss_cfg)
+    lambda_exact = float(loss_cfg.pop("lambda_exact", 0.0))
+    exact_margin_m = float(loss_cfg.pop("exact_margin_m", 0.3))
+    exact_hard_topk = int(loss_cfg.pop("exact_hard_topk", 8))
+    want_dual = lambda_exact > 0.0 and getattr(model, "enable_boundary_head", False)
+
+    # Only pass return_dual when actually needed, so legacy/stub models (and any
+    # caller without the kwarg) stay bit-for-bit compatible.
+    if want_dual:
+        logits_list = model(token_ids, attention_mask, all_spans_list, all_allele_list,
+                            chunk_lengths, return_dual=True)
+    else:
+        logits_list = model(token_ids, attention_mask, all_spans_list, all_allele_list,
+                            chunk_lengths)
 
     # Per-chunk: span loss + (optional) residue loss
     all_pos_logits: list[torch.Tensor] = []
@@ -593,11 +610,18 @@ def _forward_union_and_compute_losses(
         "n_residue_chunks": 0,
         "loss_iou_rank_sum": 0.0,
         "n_iou_rank_chunks": 0,
+        "loss_exact_sum": 0.0,
+        "n_exact_chunks": 0,
     }
     lambda_iou_rank = float(loss_cfg.get("lambda_iou_rank", 0.0))
     n_chunks_with_pos = 0
 
-    for i, logits in enumerate(logits_list):
+    for i, item in enumerate(logits_list):
+        # Dual readout unpacks to (z_region, z_exact); legacy is a bare z_region.
+        if want_dual:
+            logits, z_exact_i = item
+        else:
+            logits, z_exact_i = item, None
         pc = pos_counts[i]
         nc = neg_counts[i]
         if pc == 0:
@@ -634,6 +658,18 @@ def _forward_union_and_compute_losses(
         if iou_rank_kwargs:
             residue_stats["loss_iou_rank_sum"] += float(loss_dict["loss_iou_rank"].detach().item())
             residue_stats["n_iou_rank_chunks"] += 1
+
+        # Wave-4 dual-head: exact term on z_exact. Gradient reaches only the
+        # boundary head (z_exact = stopgrad(z_region) + boundary_head(detach(phi))),
+        # so the region/residue landscape trajectory is unchanged.
+        if want_dual and z_exact_i is not None:
+            loss_exact = exact_margin_loss(
+                z_exact_i[:pc], z_exact_i[pc:pc + nc],
+                margin_m=exact_margin_m, hard_topk=exact_hard_topk,
+            )
+            chunk_loss = chunk_loss + lambda_exact * loss_exact
+            residue_stats["loss_exact_sum"] += float(loss_exact.detach().item())
+            residue_stats["n_exact_chunks"] += 1
 
         # HIMP3: residue ranking loss
         if residue_enabled and extras_i.get("residue_meta") is not None:
