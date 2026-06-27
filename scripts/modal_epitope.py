@@ -235,6 +235,27 @@ def run_cv(arms: str = "cnn_himp_beta4,cnn_himp_beta4_iourank_main,cnn_himp_beta
 
 
 @app.local_entrypoint()
+def eval_cv(arms: str, folds: str = "0,1,2,3,4", agg_arms: str = ""):
+    """Eval + aggregate already-trained CV arms (no re-train) — recovers a run
+    whose orchestration was interrupted after training. agg_arms (optional) is the
+    comma-separated tag list to aggregate over (defaults to the trained arms)."""
+    arm_list = arms.split(",")
+    fold_list = [int(f) for f in folds.split(",")]
+    eval_jobs = []
+    for a in arm_list:
+        at = ARM_TAG[a]
+        for f in fold_list:
+            rt = _run_tag(a, f, 42)
+            for cf in list_ckpts.remote(rt):
+                for split in ("val", "test"):
+                    eval_jobs.append((rt, cf, split, f, at))
+    print(f"[eval_cv] evaluating {len(eval_jobs)} jobs ...")
+    list(evaluate.starmap(eval_jobs))
+    tags = agg_arms or ",".join(ARM_TAG[a] for a in arm_list)
+    print(aggregate.remote("/runs/benchmark/w4", tags))
+
+
+@app.local_entrypoint()
 def agg(arms: str, eval_dir: str = "/runs/benchmark/w4"):
     """Aggregate already-evaluated arms (comma-separated arm tags) over an eval
     dir — e.g. to compare new arms against earlier ones whose JSONs persist."""
