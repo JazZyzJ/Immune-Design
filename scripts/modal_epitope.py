@@ -44,10 +44,32 @@ data_vol = modal.Volume.from_name("immune-design-data")
 runs_vol = modal.Volume.from_name("immune-design-runs")
 VOLS = {"/data": data_vol, "/runs": runs_vol}
 
-ALLELE = "HLA-DRB1*07:01"
-DATA_DIR = "/data/manifests/drb0701"
-NMP_CACHE = "/data/nmp/cache_0701_all1308.parquet"
-PROT_PARQUET = f"{DATA_DIR}/protein_samples_strict.parquet"
+# allele_tag -> (NetMHCIIpan allele string, data dir). 0701 uses a full-protein
+# NMP cache + 5-fold CV; 0401 uses the original train/val/test split with
+# per-split NMP caches (no full cache exists — NMP recompute needs Della).
+ALLELES = {
+    "drb0701": ("HLA-DRB1*07:01", "/data/manifests/drb0701"),
+    "drb0401": ("HLA-DRB1*04:01", "/data/manifests/drb0401"),
+}
+
+
+def _data_dir(allele_tag: str) -> str:
+    return ALLELES[allele_tag][1]
+
+
+def _prot(allele_tag: str) -> str:
+    return f"{_data_dir(allele_tag)}/protein_samples_strict.parquet"
+
+
+def _nmp_cache(allele_tag: str, split: str) -> str:
+    if allele_tag == "drb0701":
+        return "/data/nmp/cache_0701_all1308.parquet"
+    return f"/data/nmp/cache_0401_{split}.parquet"  # 0401: per-split caches
+
+
+def _ids_path(allele_tag: str, fold, split: str) -> str:
+    base = f"{_data_dir(allele_tag)}/splits/strict"
+    return f"{base}/{split}_ids.txt" if fold is None else f"{base}/cv5/fold{fold}/{split}_ids.txt"
 
 # config-name -> aggregator arm tag ([a-z0-9]+, no underscores).
 ARM_TAG = {
@@ -68,9 +90,9 @@ ARM_TAG = {
 }
 
 
-def _run_tag(arm: str, fold, seed: int) -> str:
-    suffix = f"_cv5_fold{fold}" if fold is not None else "_alldata"
-    return f"{arm}_drb0701_seed{seed}{suffix}"
+def _run_tag(arm: str, fold, seed: int, allele_tag: str = "drb0701") -> str:
+    suffix = f"_cv5_fold{fold}" if fold is not None else "_single"
+    return f"{arm}_{allele_tag}_seed{seed}{suffix}"
 
 
 def _ckpt_tag(ckpt_file: str) -> str:
@@ -81,8 +103,9 @@ def _ckpt_tag(ckpt_file: str) -> str:
 
 
 @app.function(gpu="A10", volumes=VOLS, timeout=7200)
-def train(arm: str, fold=None, seed: int = 42, smoke: bool = False) -> str:
-    run_tag = _run_tag(arm, fold, seed)
+def train(arm: str, fold=None, seed: int = 42, smoke: bool = False,
+          allele_tag: str = "drb0701") -> str:
+    run_tag = _run_tag(arm, fold, seed, allele_tag)
     out_root = f"/runs/epitope_head/{run_tag}"
     cmd = [
         "python", f"{REPO}/scripts/train_v2_ablation.py",
@@ -90,7 +113,7 @@ def train(arm: str, fold=None, seed: int = 42, smoke: bool = False) -> str:
         "--profile", "strict",
         "--config-dir", f"{REPO}/epitope_head/configs",
         "--override-config", f"{REPO}/epitope_head/configs/{arm}.yaml",
-        "--data-dir", DATA_DIR,
+        "--data-dir", _data_dir(allele_tag),
         "--output-root", out_root,
     ]
     if fold is not None:
@@ -118,21 +141,22 @@ def list_ckpts(run_tag: str, seed_subdir: str = "seed_42") -> list:
 
 @app.function(gpu="A10", volumes=VOLS, timeout=1800)
 def evaluate(run_tag: str, ckpt_file: str, split: str, fold, arm_tag: str,
-             seed_subdir: str = "seed_42", exact_head: bool = False) -> str:
+             seed_subdir: str = "seed_42", exact_head: bool = False,
+             allele_tag: str = "drb0701", eval_dir: str = "/runs/benchmark/w4") -> str:
     ckpt_path = f"/runs/epitope_head/{run_tag}/runs/LC1/{seed_subdir}/{ckpt_file}"
-    ids = f"{DATA_DIR}/splits/strict/cv5/fold{fold}/{split}_ids.txt"
-    out_dir = "/runs/benchmark/w4"
-    os.makedirs(out_dir, exist_ok=True)
-    out_json = f"{out_dir}/bench_cvf{fold}_{split}_{arm_tag}_{_ckpt_tag(ckpt_file)}.json"
+    ids = _ids_path(allele_tag, fold, split)
+    os.makedirs(eval_dir, exist_ok=True)
+    fold_tag = fold if fold is not None else 0   # single-split -> cvf0 placeholder
+    out_json = f"{eval_dir}/bench_cvf{fold_tag}_{split}_{arm_tag}_{_ckpt_tag(ckpt_file)}.json"
     cmd = [
         "python", f"{REPO}/scripts/benchmark_iedb_test.py",
-        "--protein-samples-parquet", PROT_PARQUET,
+        "--protein-samples-parquet", _prot(allele_tag),
         "--test-ids", ids,
         "--epitope-ckpt", ckpt_path,
         "--netmhciipan-bin", "/bin/true",
-        "--allele", ALLELE,
+        "--allele", ALLELES[allele_tag][0],
         "--output-json", out_json,
-        "--reuse-nmp-from-cache", NMP_CACHE,
+        "--reuse-nmp-from-cache", _nmp_cache(allele_tag, split),
     ] + (["--exact-head"] if exact_head else []) + [
         # CV folds provide the uncertainty; per-eval CI is wasted compute. n=1
         # (not 0 — _bootstrap_ci(n=0) crashes on np.quantile of an empty array)
@@ -213,6 +237,31 @@ def agg(arms: str, eval_dir: str = "/runs/benchmark/w4"):
     """Aggregate already-evaluated arms (comma-separated arm tags) over an eval
     dir — e.g. to compare new arms against earlier ones whose JSONs persist."""
     print(aggregate.remote(eval_dir, arms))
+
+
+@app.local_entrypoint()
+def run_single(arms: str = "cnn_himp_beta4,cnn_himp_beta4_iourank_main,cnn_himp_a1_res03",
+               allele_tag: str = "drb0401", seed: int = 42):
+    """Single-split run for an allele with no full NMP cache (e.g. 0401): train on
+    the base train split (fold=None), eval each ckpt on val (epoch selection) +
+    test (report) with per-split caches, aggregate into a per-allele eval dir.
+    Validates whether the 0701 recipe (A0 -> A1 -> a1res03) transfers."""
+    arm_list = arms.split(",")
+    eval_dir = f"/runs/benchmark/w4_{allele_tag}"
+    sd = f"seed_{seed}"
+    tags = list(train.starmap([(a, None, seed, False, allele_tag) for a in arm_list]))
+    print("[run_single] trained:", tags)
+
+    eval_jobs = []
+    for a in arm_list:
+        at = ARM_TAG[a]
+        rt = _run_tag(a, None, seed, allele_tag)
+        for cf in list_ckpts.remote(rt, sd):
+            for split in ("val", "test"):
+                eval_jobs.append((rt, cf, split, None, at, sd, False, allele_tag, eval_dir))
+    print(f"[run_single] evaluating {len(eval_jobs)} jobs ...")
+    list(evaluate.starmap(eval_jobs))
+    print(aggregate.remote(eval_dir, ",".join(ARM_TAG[a] for a in arm_list)))
 
 
 @app.local_entrypoint()
