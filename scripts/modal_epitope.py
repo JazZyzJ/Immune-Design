@@ -118,7 +118,7 @@ def list_ckpts(run_tag: str, seed_subdir: str = "seed_42") -> list:
 
 @app.function(gpu="A10", volumes=VOLS, timeout=1800)
 def evaluate(run_tag: str, ckpt_file: str, split: str, fold, arm_tag: str,
-             seed_subdir: str = "seed_42") -> str:
+             seed_subdir: str = "seed_42", exact_head: bool = False) -> str:
     ckpt_path = f"/runs/epitope_head/{run_tag}/runs/LC1/{seed_subdir}/{ckpt_file}"
     ids = f"{DATA_DIR}/splits/strict/cv5/fold{fold}/{split}_ids.txt"
     out_dir = "/runs/benchmark/w4"
@@ -133,6 +133,7 @@ def evaluate(run_tag: str, ckpt_file: str, split: str, fold, arm_tag: str,
         "--allele", ALLELE,
         "--output-json", out_json,
         "--reuse-nmp-from-cache", NMP_CACHE,
+    ] + (["--exact-head"] if exact_head else []) + [
         # CV folds provide the uncertainty; per-eval CI is wasted compute. n=1
         # (not 0 — _bootstrap_ci(n=0) crashes on np.quantile of an empty array)
         # makes the bootstrap a near-no-op without touching the canonical script.
@@ -212,3 +213,30 @@ def agg(arms: str, eval_dir: str = "/runs/benchmark/w4"):
     """Aggregate already-evaluated arms (comma-separated arm tags) over an eval
     dir — e.g. to compare new arms against earlier ones whose JSONs persist."""
     print(aggregate.remote(eval_dir, arms))
+
+
+@app.local_entrypoint()
+def run_dualhead(arm: str = "cnn_himp_a1res03_exact", folds: str = "0,1,2,3,4"):
+    """Train the dual-head and eval each checkpoint BOTH ways: normal (z_region ->
+    region IoU + landscape + exact-AP(z_region)) and --exact-head (z_exact ->
+    exact-AP(z_exact)). Aggregates {a1res03 (base, already evaluated), <arm>
+    (z_region), <arm>z (z_exact)} so we can read: does z_exact lift exact-AP, and
+    does z_region match the base (gradient isolation preserved the landscape)?"""
+    fold_list = [int(f) for f in folds.split(",")]
+    at = ARM_TAG[arm]          # e.g. a1res03exact (z_region readout)
+    atz = at + "z"             # e.g. a1res03exactz (z_exact readout)
+
+    tags = list(train.starmap([(arm, f) for f in fold_list]))
+    print("[run_dualhead] trained:", tags)
+
+    eval_jobs = []
+    for f in fold_list:
+        rt = _run_tag(arm, f, 42)
+        for cf in list_ckpts.remote(rt):
+            for split in ("val", "test"):
+                eval_jobs.append((rt, cf, split, f, at, "seed_42", False))   # z_region
+                eval_jobs.append((rt, cf, split, f, atz, "seed_42", True))   # z_exact
+    print(f"[run_dualhead] evaluating {len(eval_jobs)} jobs (both readouts) ...")
+    list(evaluate.starmap(eval_jobs))
+
+    print(aggregate.remote("/runs/benchmark/w4", f"a1res03,{at},{atz}"))
