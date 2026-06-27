@@ -224,6 +224,8 @@ class SpanFeatureBuilder(nn.Module):
         ``W = max_k-8 <= 17`` candidate cores. Spans with ``k<9`` (unreachable in
         the frozen k in [12,25] config) fall back to the full-span core sum.
         """
+        if starts.shape[-1] == 0:                                       # empty span set
+            return prefix_c.new_zeros(starts.shape)
         lens = ends - starts                                            # [N]
         W = max(1, int(lens.max().item()) - 8)
         offsets = torch.arange(W, device=starts.device)                 # [W]

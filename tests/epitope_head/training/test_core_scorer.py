@@ -38,6 +38,19 @@ def test_pool_9mer_cores():
     r3 = b._pool_9mer_cores(prefix, torch.tensor([0]), torch.tensor([5]), 14)
     assert torch.isfinite(r3).all()
     assert torch.allclose(r3, (prefix[5] - prefix[0]).unsqueeze(0))
+    # empty span set (chunk with no pos/neg/extra) -> empty, no crash
+    empty = torch.zeros(0, dtype=torch.long)
+    r4 = b._pool_9mer_cores(prefix, empty, empty, 14)
+    assert r4.shape == (0,)
+
+
+def test_forward_empty_spans():
+    b = _builder(True)
+    G = torch.randn(20, 128)
+    spans = torch.zeros(0, 2, dtype=torch.long)
+    allele = torch.zeros(0, dtype=torch.long)
+    phi = b(G, spans, 20, allele)
+    assert phi.shape == (0, 673)
 
 
 def test_forward_disabled_shape_and_enabled_grad():
