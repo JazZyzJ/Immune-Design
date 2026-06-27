@@ -331,10 +331,14 @@ def main() -> dict:
         enable_boundary_head=bool(model_cfg.get("enable_boundary_head", False)),
         boundary_head_hidden_dim=int(model_cfg.get("boundary_head_hidden_dim", 64)),
         boundary_head_dropout=float(model_cfg.get("boundary_head_dropout", 0.1)),
+        use_core_scorer=bool(model_cfg.get("use_core_scorer", False)),
     )
     if model.enable_boundary_head:
         logger.info("Dual-head ENABLED (boundary_head_hidden_dim=%d)",
                     int(model_cfg.get("boundary_head_hidden_dim", 64)))
+    if model.span_features.use_core_scorer:
+        logger.info("Core-aware scorer ENABLED (9-mer-core feature, d_phi=%d)",
+                    model.span_features.d_phi)
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())

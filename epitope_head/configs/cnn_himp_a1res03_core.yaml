@@ -1,0 +1,33 @@
+# Wave-4 core-aware scorer, built on the round-2 winner a1res03 (mixed_margin +
+# lambda_iou_rank=1.0 + lambda_residue=0.3). Adds a 9-mer-core feature to the
+# span feature phi (use_core_scorer): a learned per-residue core logit pooled by
+# logsumexp over the span's 9-mer sub-windows, letting the dominant ~9-mer
+# binding core drive the window score. Default off elsewhere -> legacy. Targets
+# region IoU (a1res03 0.581 vs NMP 0.682).
+model:
+  use_core_scorer: true
+train:
+  near_positive:
+    enabled: false
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: false
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.3
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 4.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
+  loss:
+    lambda_iou_rank: 1.0
+    iou_rank_margin: 0.5
+    iou_rank_min_gap: 0.1

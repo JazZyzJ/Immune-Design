@@ -328,6 +328,7 @@ def load_epitope_predictor(
     _enable_bh = any(k.startswith("boundary_head.") for k in _sd)
     _bh_hidden = (int(_sd["boundary_head.net.0.weight"].shape[0])
                   if "boundary_head.net.0.weight" in _sd else 64)
+    _use_core = any("core_scorer" in k for k in _sd)  # span_features.core_scorer.*
 
     model = EpitopeScorer(
         encoder=encoder,
@@ -349,6 +350,7 @@ def load_epitope_predictor(
         pad_right_init=str(model_cfg.get("pad_right_init", "zeros")),
         enable_boundary_head=_enable_bh,
         boundary_head_hidden_dim=_bh_hidden,
+        use_core_scorer=_use_core,
     )
 
     predictor = InferencePredictor.from_checkpoint(

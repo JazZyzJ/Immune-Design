@@ -87,6 +87,8 @@ ARM_TAG = {
     "cnn_himp_a1_beta8": "a1beta8",
     # Dual-head: a1res03 base + gradient-isolated exact readout (lambda_exact).
     "cnn_himp_a1res03_exact": "a1res03exact",
+    # Core-aware: a1res03 base + 9-mer-core feature.
+    "cnn_himp_a1res03_core": "a1res03core",
 }
 
 

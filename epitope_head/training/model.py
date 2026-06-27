@@ -173,6 +173,7 @@ class SpanFeatureBuilder(nn.Module):
         n_alleles: int = 1,
         pad_left_init: str = "zeros",
         pad_right_init: str = "zeros",
+        use_core_scorer: bool = False,
     ):
         super().__init__()
         self.d_proj = d_proj
@@ -196,6 +197,44 @@ class SpanFeatureBuilder(nn.Module):
         self.allele_embedding = nn.Embedding(n_alleles, allele_emb_dim)
 
         self.d_phi = 5 * d_proj + length_emb_dim + allele_emb_dim
+
+        # Wave-4 core-aware scorer (default off -> bit-for-bit legacy). A learned
+        # per-residue core logit, pooled over a window's 9-mer sub-windows by
+        # logsumexp, appended to phi so the strongest ~9-mer binding core can
+        # drive the window score instead of the diluting mean-pool. Constructed
+        # LAST so disabled-mode RNG/state_dict are identical to legacy.
+        self.use_core_scorer = use_core_scorer
+        if use_core_scorer:
+            self.core_scorer = nn.Linear(d_proj, 1)
+            self.d_phi += 1
+
+    def _pool_9mer_cores(
+        self,
+        prefix_c: torch.Tensor,
+        starts: torch.Tensor,
+        ends: torch.Tensor,
+        chunk_len: int,
+    ) -> torch.Tensor:
+        """Pool a per-residue core prefix-sum to one core feature per span.
+
+        For each span ``[s, e)`` take the sum of the per-residue core logit over
+        every length-9 sub-window and ``logsumexp`` them (soft-max of the 9-mer
+        core sums). ``prefix_c`` is ``[chunk_len+1]`` (cumulative sum, prefix_c[0]=0);
+        ``starts``/``ends`` are ``[N]``; returns ``[N]``. Vectorized over the
+        ``W = max_k-8 <= 17`` candidate cores. Spans with ``k<9`` (unreachable in
+        the frozen k in [12,25] config) fall back to the full-span core sum.
+        """
+        lens = ends - starts                                            # [N]
+        W = max(1, int(lens.max().item()) - 8)
+        offsets = torch.arange(W, device=starts.device)                 # [W]
+        win_start = starts.unsqueeze(-1) + offsets                      # [N, W]
+        valid = offsets.view(1, W) < (lens - 8).clamp(min=0).unsqueeze(-1)  # [N, W]
+        win_start_c = win_start.clamp(max=chunk_len - 9)                # keep gather in range
+        win_sum = prefix_c[win_start_c + 9] - prefix_c[win_start_c]     # [N, W]
+        masked = win_sum.masked_fill(~valid, float("-inf"))
+        pooled = torch.logsumexp(masked, dim=-1)                        # [N]
+        full_span = prefix_c[ends] - prefix_c[starts]                   # [N]
+        return torch.where(valid.any(dim=-1), pooled, full_span)
 
     def forward(
         self,
@@ -280,6 +319,16 @@ class SpanFeatureBuilder(nn.Module):
             len_emb,      # [N, length_emb_dim]
             allele_emb,   # [N, allele_emb_dim]
         ], dim=1)  # [N, D_phi]
+
+        if self.use_core_scorer:
+            # Per-residue core logit -> prefix-sum -> logsumexp over the span's
+            # 9-mer sub-windows -> one appended feature. Lets the dominant ~9-mer
+            # binding core drive the window score instead of the mean over the span.
+            c = self.core_scorer(G[:chunk_len]).squeeze(-1)  # [chunk_len]
+            prefix_c = torch.zeros(chunk_len + 1, device=G.device, dtype=G.dtype)
+            prefix_c[1:] = torch.cumsum(c, dim=0)
+            core_feat = self._pool_9mer_cores(prefix_c, starts, ends, chunk_len)
+            phi = torch.cat([phi, core_feat.unsqueeze(-1)], dim=1)
 
         return phi
 
@@ -387,6 +436,7 @@ class EpitopeScorer(nn.Module):
         enable_boundary_head: bool = False,
         boundary_head_hidden_dim: int = 64,
         boundary_head_dropout: float = 0.1,
+        use_core_scorer: bool = False,
     ):
         super().__init__()
         self.encoder = encoder
@@ -400,6 +450,7 @@ class EpitopeScorer(nn.Module):
             n_alleles=n_alleles,
             pad_left_init=pad_left_init,
             pad_right_init=pad_right_init,
+            use_core_scorer=use_core_scorer,
         )
         self.scorer = ScorerMLP(
             d_phi=self.span_features.d_phi,
