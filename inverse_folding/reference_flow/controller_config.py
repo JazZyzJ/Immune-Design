@@ -59,6 +59,16 @@ _ALLOWED_SCGR_ACTUATION_AGGREGATORS = frozenset(
 )
 _ALLOWED_SCGR_ACTUATION_REDUCE = frozenset({"median", "ema"})
 
+# Allocation layer (PLAN_PLANNER_SC_GR.md §2). ``selection_field_mode`` chooses
+# WHICH per-residue field ranks D2 position selection: ``v_target`` (default,
+# current typed behavior = the H1 uniform-allocation control), ``v_target_x_alloc``
+# (tilt the typed field by the frozen editability mass Phi_i), or ``flat``
+# (content-blind pseudo-random control). The allocation ``arm`` reuses the SC-GR
+# probe arms (Phi_i is derived from one arm's per-residue residue_excess).
+_ALLOWED_SELECTION_FIELD_MODES = frozenset(
+    {"v_target", "v_target_x_alloc", "flat"}
+)
+
 
 @dataclass(frozen=True)
 class CompletionConfig:
@@ -169,6 +179,10 @@ class TargetingConfig:
     # 'v_target' ranks within-block positions by the typed field so the typed
     # signal reaches the D2 position layer. 'e_fresh' is reserved (not v1).
     within_block_source: str = "legacy_excess"
+    # Allocation layer (PLAN_PLANNER_SC_GR.md §2). Which per-residue field ranks
+    # D2 position selection at the two selection seams. 'v_target' (default) is
+    # the current typed behavior (= the H1 uniform-allocation control).
+    selection_field_mode: str = "v_target"
 
 
 @dataclass(frozen=True)
@@ -272,6 +286,26 @@ class SelfConditionedGRConfig:
 
 
 @dataclass(frozen=True)
+class AllocationConfig:
+    """Allocation layer (PLAN_PLANNER_SC_GR.md §2). Reweights the selection
+    field ``v_target`` by a frozen per-residue editability mass ``Phi_i``.
+
+    WHERE-only: it never touches ``v_target`` construction, pressure, memory, or
+    the denoising schedule. ``Phi_i`` is distinct from the typed-actionability
+    field ``A_i(t)`` — it only *reweights* the field at the selection seams.
+    ``enabled=False`` (default) makes the controller skip the freeze entirely;
+    the ``selection_field_mode`` on :class:`TargetingConfig` is authoritative for
+    whether Phi_i is actually consumed.
+    """
+
+    enabled: bool = False
+    arm: str = "fresh"
+    smooth_half_width: int = 4
+    reweight_c: float = 1.0
+    reweight_eps: float = 0.05
+
+
+@dataclass(frozen=True)
 class ActiveWindowsConfig:
     excess_threshold: float = 0.0
     max_windows: int = 16
@@ -319,6 +353,7 @@ class ControllerConfig:
     targeting: TargetingConfig = TargetingConfig()
     global_pressure: GlobalPressureConfig = GlobalPressureConfig()
     self_conditioned_gr: SelfConditionedGRConfig = SelfConditionedGRConfig()
+    allocation: AllocationConfig = AllocationConfig()
 
 
 def load_controller_config(path: str | Path) -> ControllerConfig:
@@ -453,11 +488,18 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
     self_conditioned_gr = _materialize_self_conditioned_gr(
         controller_payload.get("self_conditioned_gr")
     )
+    allocation = _materialize_allocation(controller_payload.get("allocation"))
     _cross_validate_stage_bc(
         targeting=targeting, global_pressure=global_pressure, d3=d3
     )
     _cross_validate_scgr(
         self_conditioned_gr=self_conditioned_gr, global_pressure=global_pressure
+    )
+    _cross_validate_allocation(
+        targeting=targeting,
+        allocation=allocation,
+        self_conditioned_gr=self_conditioned_gr,
+        global_pressure=global_pressure,
     )
 
     tel_payload = controller_payload.get("telemetry", {})
@@ -486,6 +528,7 @@ def materialize_controller_config(payload: dict[str, Any]) -> ControllerConfig:
         targeting=targeting,
         global_pressure=global_pressure,
         self_conditioned_gr=self_conditioned_gr,
+        allocation=allocation,
     )
 
 
@@ -905,6 +948,15 @@ def _materialize_targeting(payload: Any) -> TargetingConfig:
             "'e_fresh' is reserved (deferred per RAR 0006)"
         )
 
+    selection_field_mode = str(
+        payload.get("selection_field_mode", defaults.selection_field_mode)
+    )
+    if selection_field_mode not in _ALLOWED_SELECTION_FIELD_MODES:
+        raise ControllerConfigError(
+            "controller.targeting.selection_field_mode must be one of "
+            f"{sorted(_ALLOWED_SELECTION_FIELD_MODES)} (got {selection_field_mode!r})"
+        )
+
     return TargetingConfig(
         mode=mode,
         tau_ref_source=tau_ref_source,
@@ -937,6 +989,48 @@ def _materialize_targeting(payload: Any) -> TargetingConfig:
             )
         ),
         within_block_source=within_block_source,
+        selection_field_mode=selection_field_mode,
+    )
+
+
+def _materialize_allocation(payload: Any) -> AllocationConfig:
+    if payload is None:
+        return AllocationConfig()
+    if not isinstance(payload, dict):
+        raise ControllerConfigError(
+            "controller.allocation must be a mapping when present"
+        )
+    defaults = AllocationConfig()
+    arm = str(payload.get("arm", defaults.arm))
+    if arm not in _ALLOWED_SCGR_ARMS:
+        raise ControllerConfigError(
+            "controller.allocation.arm must be one of "
+            f"{sorted(_ALLOWED_SCGR_ARMS)} (got {arm!r})"
+        )
+    smooth_half_width = int(
+        payload.get("smooth_half_width", defaults.smooth_half_width)
+    )
+    if smooth_half_width < 0:
+        raise ControllerConfigError(
+            "controller.allocation.smooth_half_width must be >= 0 "
+            f"(got {smooth_half_width})"
+        )
+    reweight_c = float(payload.get("reweight_c", defaults.reweight_c))
+    if reweight_c < 0.0:
+        raise ControllerConfigError(
+            f"controller.allocation.reweight_c must be >= 0 (got {reweight_c})"
+        )
+    reweight_eps = float(payload.get("reweight_eps", defaults.reweight_eps))
+    if reweight_eps < 0.0:
+        raise ControllerConfigError(
+            f"controller.allocation.reweight_eps must be >= 0 (got {reweight_eps})"
+        )
+    return AllocationConfig(
+        enabled=bool(payload.get("enabled", defaults.enabled)),
+        arm=arm,
+        smooth_half_width=smooth_half_width,
+        reweight_c=reweight_c,
+        reweight_eps=reweight_eps,
     )
 
 
@@ -1393,6 +1487,60 @@ def _cross_validate_scgr(
                 "controller.global_pressure.g_max=1.0 unless "
                 "global_pressure.amplify=true (amplify g>1 is SC2); "
                 f"got g_max={global_pressure.g_max}"
+            )
+
+
+def _cross_validate_allocation(
+    *,
+    targeting: TargetingConfig,
+    allocation: AllocationConfig,
+    self_conditioned_gr: SelfConditionedGRConfig,
+    global_pressure: GlobalPressureConfig,
+) -> None:
+    """Enforce the allocation-layer contract (PLAN_PLANNER_SC_GR.md §2 / Task 4-5).
+
+    ``Φ_i`` is derived from the SC-GR probe's per-residue ``residue_excess`` and is
+    frozen INSIDE the SC-GR pressure path (``_scgr_frozen_pressure``). So a config
+    that asks for ``v_target_x_alloc`` but cannot actually form/freeze ``Φ_i`` would
+    silently degrade the treatment arm to the raw ``v_target`` control — a circular
+    no-op that looks like a valid experiment. These checks turn every such
+    degeneration into a config-time fail-fast (no silent control collapse).
+    """
+    scgr = self_conditioned_gr
+    gp = global_pressure
+    if allocation.enabled:
+        # Φ_i comes from the probe; an arm that is never probed yields an empty
+        # r_i and Φ_i never freezes.
+        if not scgr.enabled:
+            raise ControllerConfigError(
+                "controller.allocation.enabled=true requires "
+                "controller.self_conditioned_gr.enabled=true (Φ_i is derived from "
+                "the SC-GR probe's per-residue residue_excess)"
+            )
+        if allocation.arm not in scgr.arms:
+            raise ControllerConfigError(
+                f"controller.allocation.arm={allocation.arm!r} must be one of the "
+                f"probed controller.self_conditioned_gr.arms {list(scgr.arms)!r} "
+                "(Φ_i reduces over that arm's residue_excess; an unprobed arm "
+                "yields an empty r_i)"
+            )
+    if targeting.selection_field_mode == "v_target_x_alloc":
+        if not allocation.enabled:
+            raise ControllerConfigError(
+                "controller.targeting.selection_field_mode='v_target_x_alloc' "
+                "requires controller.allocation.enabled=true; otherwise Φ_i never "
+                "forms and the selection field silently degrades to the raw "
+                "v_target control (the H1 treatment arm becomes its own control)"
+            )
+        if not (
+            gp.enabled and gp.pressure_source == "self_conditioned_probe"
+        ):
+            raise ControllerConfigError(
+                "controller.targeting.selection_field_mode='v_target_x_alloc' "
+                "requires controller.global_pressure.enabled=true with "
+                "pressure_source='self_conditioned_probe' (Φ_i is frozen inside the "
+                "SC-GR pressure path; without it Φ_i never freezes and the arm "
+                "degrades to v_target)"
             )
 
 

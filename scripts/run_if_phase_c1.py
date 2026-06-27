@@ -836,6 +836,9 @@ _ACTIONABILITY_RESIDUE_COLUMNS = [
     "g_time_pre", "g_comp_pre", "g_ent_pre", "g_pnll_pre", "g_stability_pre",
     "v_target", "u_pressure", "active_target_flag", "cluster_support",
     "legacy_residue_excess", "active_block_id", "d3_fresh_input_flag",
+    # Allocation layer (PLAN_PLANNER_SC_GR.md Task 6): editability mass actually
+    # applied + the mode-selected selection field fed to D2 (H1 failure diagnosis).
+    "phi_alloc", "selection_field",
 ]
 
 
@@ -848,6 +851,8 @@ def _actionability_state_to_records(
     targeting_mode: str,
     tau_ref_source: str,
     d3_evidence_source: str,
+    selection_field_mode: str = "v_target",
+    allocation_frozen: bool = False,
 ) -> tuple[list[dict], dict]:
     """Explode one typed actionability state into residue rows + a summary row.
 
@@ -895,6 +900,19 @@ def _actionability_state_to_records(
                 "legacy_residue_excess": float(state.legacy_residue_excess[i]),
                 "active_block_id": int(state.active_block_id[i]),
                 "d3_fresh_input_flag": d3_flag,
+                # Allocation layer telemetry — None-safe: static / non-typed states
+                # never set these, so phi degrades to 1 and selection_field to
+                # v_target (the uniform-allocation baseline).
+                "phi_alloc": (
+                    float(state.phi_alloc[i])
+                    if getattr(state, "phi_alloc", None) is not None
+                    else 1.0
+                ),
+                "selection_field": (
+                    float(state.selection_field[i])
+                    if getattr(state, "selection_field", None) is not None
+                    else float(state.v_target[i])
+                ),
             }
         )
     summary = {
@@ -934,6 +952,10 @@ def _actionability_state_to_records(
         "max_u_pressure": float(np.max(state.u_pressure)) if L else 0.0,
         "stability_available": bool(state.stability_available),
         "d3_evidence_source": d3_evidence_source,
+        # Allocation layer (PLAN_PLANNER_SC_GR.md Task 6): the WHERE-arm mode and
+        # whether Phi_i actually froze this design (H1 FAIL localization — see §5).
+        "selection_field_mode": selection_field_mode,
+        "allocation_frozen_flag": bool(allocation_frozen),
     }
     return rows, summary
 
@@ -1776,6 +1798,17 @@ def main(argv: list[str] | None = None) -> int:
         print("[controller] resolved self_conditioned_gr config:", flush=True)
         for key, val in resolved_controller_cfg["self_conditioned_gr"].items():
             print(f"[controller]   self_conditioned_gr.{key}: {val}", flush=True)
+        # Allocation layer: print the resolved allocation config + the authoritative
+        # selection_field_mode one key per line (PLAN_PLANNER_SC_GR.md Task 3/6;
+        # CLAUDE.md feedback "print hyperparams").
+        print("[controller] resolved allocation config:", flush=True)
+        for key, val in resolved_controller_cfg["allocation"].items():
+            print(f"[controller]   allocation.{key}: {val}", flush=True)
+        print(
+            "[controller]   targeting.selection_field_mode: "
+            f"{resolved_controller_cfg['targeting']['selection_field_mode']}",
+            flush=True,
+        )
         if controller_setup.config.global_pressure.enabled:
             # Stage C.1: echo the calibration source so the run log records which
             # pilot produced the stamped B_low/B_high band (CLAUDE.md "print
@@ -1965,6 +1998,11 @@ def main(argv: list[str] | None = None) -> int:
                     targeting_mode=tcfg.mode,
                     tau_ref_source=tcfg.tau_ref_source,
                     d3_evidence_source=controller_setup.config.d3.evidence_source,
+                    selection_field_mode=tcfg.selection_field_mode,
+                    allocation_frozen=(
+                        getattr(d1_controller, "_scgr_frozen_allocation", None)
+                        is not None
+                    ),
                 )
                 actionability_rows_all.extend(rows)
                 actionability_summary_all.append(summary)

@@ -355,3 +355,56 @@ def test_summarize_probe_refresh_per_arm_reductions_and_old_argmax():
     assert sc["B_sc_mean_excess_median"] == pytest.approx(2.0)
     assert sc["reuse_fraction_mean"] == pytest.approx(0.5)
     assert sc["G_mean_excess_std"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# reduce_residue_excess_over_k (per-residue r_i, PLAN_PLANNER_SC_GR.md Task 1)
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_residue_excess_over_k_medians_fresh_arm():
+    from inverse_folding.reference_flow.self_conditioned_gr import (
+        reduce_residue_excess_over_k,
+        SCGRProbeSample,
+        SCGRRiskAggregates,
+    )
+    import numpy as np
+
+    def mk(arm, idx, excess):
+        s = SCGRProbeSample(
+            arm=arm,
+            sample_idx=idx,
+            tokens=np.zeros(1),
+            num_masked=0,
+            num_reused_from_prev=0,
+            reuse_fraction=0.0,
+            mean_prev_confidence_reused=0.0,
+            mean_sample_entropy=0.0,
+            state_bootstrap_flag=False,
+        )
+        a = SCGRRiskAggregates(
+            G_mean_excess=0.0,
+            G_topm_lse=0.0,
+            supra_masses={},
+            head_risk_LME=0.0,
+            head_risk_max=0.0,
+            residue_excess=np.asarray(excess, dtype=float),
+        )
+        return (s, a)
+
+    per_sample = [
+        mk("fresh", 0, [0.0, 2.0, 4.0]),
+        mk("fresh", 1, [0.0, 6.0, 0.0]),
+        mk("fresh", 2, [0.0, 4.0, 2.0]),
+        mk("self_conditioned", 0, [9.0, 9.0, 9.0]),
+    ]
+    r_i = reduce_residue_excess_over_k(per_sample, arm="fresh")
+    np.testing.assert_allclose(r_i, [0.0, 4.0, 2.0])
+
+
+def test_reduce_residue_excess_over_k_empty_arm_returns_empty():
+    from inverse_folding.reference_flow.self_conditioned_gr import (
+        reduce_residue_excess_over_k,
+    )
+
+    assert reduce_residue_excess_over_k([], arm="fresh").size == 0

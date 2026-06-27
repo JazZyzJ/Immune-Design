@@ -253,6 +253,11 @@ def main() -> None:
     parser.add_argument("--out-caseset", default=str(_DEFAULT_OUT_CASESET))
     parser.add_argument("--out-audit", default=str(_DEFAULT_OUT_AUDIT))
     parser.add_argument("--special-overrides", default=str(_DEFAULT_OVERRIDES))
+    parser.add_argument(
+        "--exclude",
+        default="C5HDG5,W8X3B8",
+        help="comma-separated protein_ids thrown out of the viable set (no manifest entry)",
+    )
     args = parser.parse_args()
 
     ref_seq = _read_fasta_seq(args.ref_fasta)
@@ -296,6 +301,10 @@ def main() -> None:
             f"{sorted(override_by_protein)}"
         )
     override_ids = set(override_by_protein)
+
+    exclude_ids = {x.strip() for x in str(args.exclude).split(",") if x.strip()}
+    if exclude_ids:
+        print(f"[exclude] thrown out of the viable set (no manifest entry): {sorted(exclude_ids)}")
 
     df_raw = pd.read_parquet(args.caseset)
     n_in = len(df_raw)
@@ -347,6 +356,9 @@ def main() -> None:
         if active_site_complete:
             n_triad_complete += 1
             complete_dist[n_matched] = complete_dist.get(n_matched, 0) + 1
+
+        if pid in exclude_ids:
+            continue  # thrown out of the viable set — no manifest entry
 
         override = override_by_protein.get(pid)
         entry_anchors = resolve_hard_anchors(matched_hard, override, args.ref_protein_id)
@@ -403,7 +415,9 @@ def main() -> None:
     ]
     if override_ids:  # own-UniProt-annotated characterized_special enzymes
         df.loc[df["protein_id"].isin(override_ids), "viability"] = "characterized_own_annotated"
-    df["design_viable"] = df["viability"] != "gated"  # the run-selection gate
+    if exclude_ids:  # thrown out (binding-only / unannotated)
+        df.loc[df["protein_id"].isin(exclude_ids), "viability"] = "excluded"
+    df["design_viable"] = ~df["viability"].isin(["gated", "excluded"])  # run-selection gate
     df.to_parquet(args.out_caseset, index=False)
     pd.DataFrame(audit_rows).to_parquet(args.out_audit, index=False)
 

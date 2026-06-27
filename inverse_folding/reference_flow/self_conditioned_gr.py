@@ -391,3 +391,28 @@ def summarize_probe_refresh(
             )
         rows.append(row)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Per-residue K reduction (PLAN_PLANNER_SC_GR.md Task 1)
+# ---------------------------------------------------------------------------
+
+
+def reduce_residue_excess_over_k(
+    per_sample: "Sequence[tuple[SCGRProbeSample, SCGRRiskAggregates]]",
+    *,
+    arm: str,
+) -> np.ndarray:
+    """Median over the K completions of one arm's per-residue ``residue_excess``.
+
+    Returns the per-residue prospective-risk map ``r_i`` (RAR 0020 form:
+    median-over-K, ``fresh`` arm). Empty completions skipped; no match ⇒ empty.
+    """
+    arrays = [
+        a.residue_excess
+        for s, a in per_sample
+        if s.arm == arm and a.residue_excess.size
+    ]
+    if not arrays:
+        return np.empty(0, dtype=float)
+    return np.median(np.stack(arrays, axis=0), axis=0)

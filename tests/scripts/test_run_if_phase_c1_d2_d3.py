@@ -36,6 +36,7 @@ from scripts.run_if_phase_c1 import (
     write_actionability_artifacts,
     write_d1_artifacts,
     write_sc_gr_probe_artifacts,
+    _ACTIONABILITY_RESIDUE_COLUMNS,
     _actionability_state_to_records,
     _refresh_record_to_jsonable,
 )
@@ -1329,6 +1330,45 @@ def test_write_actionability_artifacts_emits_residues_and_summary(tmp_path: Path
     summ_lines = (tmp_path / "actionability_refresh_summary.jsonl").read_text().splitlines()
     assert len(summ_lines) == 1
     assert json.loads(summ_lines[0])["max_v_target"] == pytest.approx(3 * 0.25)
+
+
+def test_actionability_records_carry_allocation_columns():
+    # Allocation layer (PLAN_PLANNER_SC_GR.md Task 6): per-residue phi_alloc /
+    # selection_field columns + summary selection_field_mode / allocation_frozen_flag.
+    L = 4
+    state = _make_actionability_state(L)
+    state.phi_alloc = np.array([0.5, 0.5, 1.5, 1.5])
+    state.selection_field = state.v_target * (0.05 + 1.0 * state.phi_alloc)
+    rows, summary = _actionability_state_to_records(
+        state, protein_id="P1", design_idx=0, seed=42,
+        targeting_mode="typed_actionability", tau_ref_source="static_median",
+        d3_evidence_source="legacy_window_excess",
+        selection_field_mode="v_target_x_alloc", allocation_frozen=True,
+    )
+    assert "phi_alloc" in rows[0] and "selection_field" in rows[0]
+    assert rows[2]["phi_alloc"] == pytest.approx(1.5)
+    assert rows[2]["selection_field"] == pytest.approx(
+        float(state.v_target[2]) * (0.05 + 1.0 * 1.5)
+    )
+    assert summary["selection_field_mode"] == "v_target_x_alloc"
+    assert summary["allocation_frozen_flag"] is True
+    assert "phi_alloc" in _ACTIONABILITY_RESIDUE_COLUMNS
+    assert "selection_field" in _ACTIONABILITY_RESIDUE_COLUMNS
+
+
+def test_actionability_records_allocation_columns_none_safe():
+    # static / non-typed states never set phi_alloc/selection_field: the writer
+    # must degrade to phi=1 / selection_field=v_target without raising.
+    state = _make_actionability_state(3)  # phi_alloc / selection_field default None
+    rows, summary = _actionability_state_to_records(
+        state, protein_id="P1", design_idx=0, seed=42,
+        targeting_mode="typed_actionability", tau_ref_source="static_median",
+        d3_evidence_source="legacy_window_excess",
+    )
+    assert all(r["phi_alloc"] == 1.0 for r in rows)
+    assert rows[1]["selection_field"] == pytest.approx(float(state.v_target[1]))
+    assert summary["selection_field_mode"] == "v_target"  # default
+    assert summary["allocation_frozen_flag"] is False
 
 
 # ---------------------------------------------------------------------------

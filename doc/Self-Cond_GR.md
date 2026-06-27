@@ -135,3 +135,45 @@ Prerequisites Stage 1 must hand off (none exist yet, all out of scope for the mo
 ## 7. Evaluation references (oracles only — never runtime)
 
 NoD (DPLM unconditional, `phaseD_pilot50r2_nod_n8`) and ProteinMPNN-unconditional are **evaluation oracles**: they define ground-truth burden and measure do-no-harm / amplification. They are never a runtime prior — the runtime substitute is the SC-GR probe. WT stays attribution only (`resolved` / `new` hotspot), never a runtime classifier.
+
+---
+
+## 8. From scalar sensing to a three-resolution steering field — status & goals
+
+This section sets the forward direction past the **v1 §2 engineering boundary** ("the probe's only job is to sense a trajectory-level burden scalar; it never emits per-token direction — token steering stays in D2") and the §3-step-4 note that `r_i(t)` is "telemetry / a later targeting study only." The estimator is unchanged; what changes is how many of its readouts we consume. Method is deliberately left open here (under active design).
+
+### 8.1 Recent results — one estimator, three resolutions
+
+The same SC terminal estimator (§3: one frozen-head ensemble over stochastic completions) is read at three decreasing granularities, each validated against the NoD oracle; accuracy falls as granularity rises (~0.74 / ~0.6 / ~0.44):
+
+- **`B_sc` — trajectory/protein scalar** — [RAR 0010](../Results/Analysis/0010-sc-gr-monitor-estimator-x-aggregator-dec/record.md): the `topm_lse` ensemble `B_sc` tracks NoD per-protein burden at ρ≈0.74 (old single-argmax `B_GR` ≈0.41), closing the true-high-as-low tail. *(= the §6 Stage-1 gate, restated as the coarsest rung.)*
+- **`r_i` — per-residue / region map** — [RAR 0020](../Results/Analysis/0020-sc-gr-per-residue-r-i-accuracy-vs-nod-pe/record.md): per-residue `residue_excess` ranks residues within a protein like the NoD per-residue oracle (region ρ median 0.578, `Recall@HighResidue` 0.645 at the frozen horizon) — the "where to push" gate PASSES.
+- **`P_cheap` — block-candidate tuple score** — [RAR 0019](../Results/Analysis/0019-candidate-level-signal-direction-v2-pair/record.md): a paired-seed, omega-LME-aligned cheap probe ranks D2 candidate tuples by terminal immune at ρ≈0.44 vs 0.28 for local `L` (~0.62 of the oracle's noise-capped ceiling), usable as a **soft** ranker but not a hard selector (`probe_capture` 0.09–0.16); the conditioned variant `P_cond` is weaker and not promoted.
+
+`r_i` is not a separate object — it is the per-residue field that `B_sc` reduces to a scalar, and `P_cheap` is the same machinery read on a candidate tuple. One forward pass, three projections.
+
+### 8.2 Status — estimation is sufficient for first consumption; remaining gains are in actuation
+
+The question this branch opened — *can the recycled probe sense terminal immune risk accurately enough to steer?* — is answered **well enough to consume** at all three resolutions: none is a precise per-token causal oracle (`P_cheap` is a soft ranker, `r_i` a region-level pass), but all three are usable for steering. Further estimator-precision work is not the next move: the per-candidate "single best" target is itself noise-limited (the K=8 oracle's own split-half reliability caps any probe at ρ≈0.70, RAR 0019 M2; `P_cheap` already reaches ~0.62 of it), so a sharper selector fights oracle noise rather than improving control. What we set out to show next is therefore **field consumption, not field accuracy** — the open question is actuation: whether steering by this field moves terminal immune at held scTM.
+
+### 8.3 Goal — close the loop as a budget → allocation → value-correction edit stack
+
+The next deliverable is the first **closed-loop** run that converts the field into terminal-immune reduction at preserved scTM. The design is **task-driven** — lower MHC-II terminal risk at held structure — and reads each resolution where it is strongest, as a three-layer stack (*how much / where & how long / which token*). The where-vs-what split echoes training-free path-planning masked-diffusion samplers (cf. P2, arXiv 2502.03540, validated on DPLM), but the organizing logic is the task, not their sampler: we borrow the idea, not the scheme.
+
+- **Budget — `B_sc` — *how much*.** The coarsest, most reliable readout sets one per-trajectory scalar gain `G`: *how much total immune-edit budget this trajectory deserves* — not where, not what. v1's protect-low gain (`g ≤ 1`, §6) extends to amplify-high (`g_max > 1`, the −1.0-nat lever of §1). The budget must **not** be spent as uniform per-position strength — that is just stronger uniform guidance, the thing the thesis must beat.
+- **Allocation — `r_i` — *where & how long* (the position-dependent thesis).** `r_i` distributes the budget across positions as a **budget-preserving editability mass** `Φ_i` (the allocation mass — **distinct from the typed-actionability field `A_i(t)`**; `Φ_i` *reweights* that field, it never is it): the raw signal smoothed to window/region grain (MHC-II risk is register-level; RAR 0020's region signal, ρ 0.578, is the validated resolution) and normalized **at the protein level to mean 1** (so budget flows toward high-risk regions). The controller consumes `Φ_i` by **reweighting the existing typed selection field `v_target`** — `s_alloc = v_target·(ε + c·Φ_i)` — **not** by replacing it (so `v_target`'s reliability/memory/envelope structure is preserved) and **not** as a per-residue pressure multiplier `β_i = β·r_i`. This where-editable lever, not a larger logit correction at a fixed schedule, is what makes the reference flow position-dependent and is the chapter's core claim. Reweighting (vs replacing) insulates the controller from `r_i`'s scale drift and makes the uniform control exact: `Φ_i ≡ 1` rescales `v_target` by a constant → identical selection at the **same** `G`. High `Φ_i` ⇒ selected/edited sooner; low ⇒ left to the baseline. *(v1 actuates the **where** via this selection reweight; **how long editable** needs the schedule/remask seam and is deferred — `PLAN_PLANNER_SC_GR.md`.)*
+- **Value correction — `P_cheap` — *which token*.** At the sites Allocation opens, bias *which token* lands toward low terminal immune. `P_cheap` is **not** a replacement actuator and does not pick tokens alone: it is a reliability-gated **correction added to local `L`** (soft, not argmin; RAR 0019), active only where reliable/actionable. Token choice stays the denoiser's job, and the §3 firewall holds: `P_cheap` and the external head never enter the budget/allocation (sensing) decision; they only nudge values at already-selected sites, so the *where* can never be contaminated by the *what*.
+
+**Thesis spine — pre-registered, falsifiable (H1).** v1 must show first **not** "immune dropped by X" but that the allocation *itself* helps. With budget `G` and structure held, the `r_i`-driven allocation Pareto-dominates the uniform one:
+
+$$
+Y_{\text{imm}}(G,\,\Phi^{r}) \;<\; Y_{\text{imm}}(G,\,\Phi^{\text{unif}}) \quad \text{at matched scTM}
+$$
+
+where `Y_imm` is residual terminal immune (lower = better), `Φ^r` the `r_i` allocation mass, `Φ^unif ≡ 1` the uniform control (which, under reweighting, *is* the baseline `v_target` selection arm), `G` the shared budget. Because both arms spend the same `G` and differ only in `A`, any immune/scTM-Pareto gain is attributable to **position-dependence**, not to more pressure. If H1 holds, the claim generalizes past "adaptive β" to a methods statement: *a hard-completion prospective-risk field can allocate discrete-diffusion editability more efficiently than uniform guidance.* Maximizing the absolute immune drop is a **later** objective, gated on H1.
+
+**Time axis — fixed for v1, not dropped.** The *when* is the other half of "where/when-editable," so it stays in the conceptual controller; v1 **fixes** it rather than tuning it. v1 freezes **both** the budget and the allocation mass `Φ_i` early (§4 early-freeze, firewall-clean) and steers over the controller's **existing schedule + early-freeze window** — it does **not** add a new time-varying ramp-up knob. The current read of the evidence — suppress early (early guidance over-accelerates unmasking → premature commit), strengthen through middle/late where steering is both more reliable (ρ 0.62→0.74, §6) and most effective (cf. discrete-masked-diffusion guidance, arXiv 2507.08965), *not* a quiet-late stabilization phase — is the **shape a tuned ramp-up should take**, deferred to a later variant. Freezing `Φ_i` early also sidesteps, for v1, the self-reinforcement that late `r_i` re-reading would invite; **updating `Φ_i` timing online** under the firewall is that first deferred variant.
+
+**Dropped from v1.** Ensemble instability `σ_i` (no accuracy gate yet, unlike `r_i`/RAR 0020) and content-dependent noise schedules (hyperschedules are training-bound, not an inference-time field).
+
+Method — the budget→mass coupling, the editability mapping of `A_i`, and the `P_cheap` correction form — remains under design; this section fixes the task decomposition, the budget-preserving control, and the H1 falsification, not the implementation.

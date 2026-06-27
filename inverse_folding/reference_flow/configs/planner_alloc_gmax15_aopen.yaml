@@ -1,0 +1,139 @@
+# Planner v1 allocation experiment (PLAN_PLANNER_SC_GR.md Task 7).
+# selection_field_mode=v_target_x_alloc (treatment: immune-tilted allocation); amplify g_min=0.5 g_max=1.5.
+# Copies d2_d3_full_stageC_scgr_betaonly_aopen.yaml (the Budget layer) and adds
+# the Allocation layer: a frozen per-residue Phi_i reweights the typed selection
+# field at the two WHERE seams. B_low/B_high stamped at run setup from the SC2
+# amplify calibration JSON (amplify_calib_gmax15.json, emitted with --amplify
+# --g-min 0.5 --g-max 1.5); they must NOT be hardcoded.
+controller:
+  enabled: true
+  mode: d2_d3_full
+  t_start: 0.50
+  refresh_interval: 5
+  completion:
+    method: argmax
+  head:
+    score_scale: raw_logit
+    static_cache_policy: lazy_write
+    local_risk_aggregation: LME
+  active_windows:
+    excess_threshold: 0.0
+    max_windows: 16
+    selection: threshold_then_top_n
+    merge_overlapping_scoring_windows: true
+  d2:
+    enabled: true
+    beta: 3.0
+    eta: 0.7
+    struct_temperature: 1.0
+    delta_struct: 3.0
+    context_pnll_h0: 2.0
+    context_jsd_h0: 0.5
+    epsilon: 1.0e-8
+    candidate_mode: structure_topk
+    top_k_tokens: 8
+    max_positions_per_block: 4
+    max_candidates_per_block: 4096
+    selection_score: residue_excess_then_low_entropy
+    min_delta_R_improvement: 0.0
+    min_ess_fraction: 0.0
+    max_abs_logit_shift: 10.0
+    paired_uncorrected_sample: true
+    completion_ensemble_enabled: true
+    completion_ensemble_size: 3
+    completion_ensemble_scope: local_windows
+    completion_ensemble_rescore_top_m: 8
+    completion_ensemble_use_variance_gate: false
+    sticky_ttl_steps: 5
+    sticky_clear_on_selected: true
+    sticky_clear_on_remask: true
+    sticky_overwrite_on_refresh: true
+  d3:
+    enabled: true
+    window_to_residue_projection: max_covering_window
+    gamma_min: 0.40
+    gamma_max: 0.90
+    lambda_commit: 1.0
+    alpha_struct: 0.3
+    d2_evidence_nu: 1.0
+    d2_evidence_ttl_steps: 5
+    d2_evidence_requires_benefit: true
+    zscore_epsilon: 1.0e-6
+    same_refresh_grace: true
+    final_freeze_steps: 1
+    evidence_source: legacy_window_excess
+  reliability:
+    time_k: 20.0
+    entropy_h0: 1.5
+    min_completion_fraction: 0.0
+    min_rho_to_emit_event: 0.0
+  attribution:
+    write_paired_counterfactual: true
+    write_independent_delta_R_i: true
+    productive_delta_logp: 0.5
+  controls:
+    allow_wrong_allele_head: true
+    allow_shuffled_head: true
+  telemetry:
+    write_refresh_log: true
+    write_controller_events: true
+    write_per_protein_summary: true
+  targeting:
+    mode: typed_actionability
+    tau_ref_source: static_median
+    tau_ref_quantile: 0.50
+    projection: max_covering_window
+    env_seed_top_current: 16
+    env_seed_top_uncertain: 16
+    env_seed_max_windows: 32
+    env_ensemble_size: 3
+    env_consistency_floor: 0.3333333333
+    softor_tau: 0.5
+    r_ctx_floor: 0.25
+    mem_half_life_refreshes: 3
+    mem_cold_start: zero
+    cluster_radius: 4
+    cluster_min_mass: 3.0
+    cluster_floor: 0.25
+    use_cluster_for_active_blocks: false
+    active_window_source: v_target
+    active_window_min_excess: 0.0
+    within_block_source: v_target
+    write_actionability_telemetry: true
+    selection_field_mode: v_target_x_alloc
+  global_pressure:
+    enabled: true
+    pressure_source: self_conditioned_probe
+    amplify: true
+    mapping: smoothstep
+    g_min: 0.5
+    g_max: 1.5
+    min_reliable_refreshes: 1
+    unready_g: 1.0
+    scale_beta: true
+    scale_lambda: false
+  self_conditioned_gr:
+    enabled: true
+    mode: beta_pressure
+    arms: [fresh, self_conditioned]
+    ensemble_size: 3
+    struct_temperature: 1.0
+    confidence_source: canonical_softmax_max
+    confidence_threshold: 0.70
+    update_state_from: structural_argmax
+    probe_refresh_policy: all_typed_refreshes
+    top_m: 16
+    lse_temperature: 1.0
+    supra_tau_values: [11.75]
+    write_probe_telemetry: true
+    write_residue_telemetry: true
+    actuation_aggregator: topm_lse
+    actuation_arm: fresh
+    freeze_after_reliable_refreshes: 1
+    actuation_reduce: median
+  allocation:
+    enabled: true            # flat/v_target arms ignore the field; selection_field_mode is authoritative
+    arm: fresh
+    smooth_half_width: 4
+    reweight_c: 1.0
+    reweight_eps: 0.05

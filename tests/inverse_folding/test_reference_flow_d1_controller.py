@@ -33,8 +33,10 @@ from inverse_folding.reference_flow.actionability import (
     protein_pressure_burden,
     smoothstep_pressure,
 )
+from inverse_folding.reference_flow.allocation import reweight_by_allocation
 from inverse_folding.reference_flow.controller_config import (
     ActiveWindowsConfig,
+    AllocationConfig,
     CompletionConfig,
     ControllerConfig,
     GlobalPressureConfig,
@@ -1251,6 +1253,162 @@ def _make_beta_pressure_controller(config, *, length=30):
         canonical_token_ids=_CANONICAL,
     )
     return controller
+
+
+# ---------- allocation layer harness (PLAN_PLANNER_SC_GR.md Tasks 4-6) ----------
+
+
+def build_guided_controller(
+    *,
+    length=30,
+    n_refreshes=2,
+    selection_field_mode=None,
+    allocation=None,
+    write_residue_telemetry=True,
+    frozen_allocation=None,
+    drive=True,
+    **config_overrides,
+):
+    """Build + drive a beta_pressure SC-GR controller with the allocation layer.
+
+    Typed-override harness layered on the proven ``_scgr_beta_pressure_config`` +
+    ``_make_beta_pressure_controller`` + ``_drive_pressure_refreshes`` stack.
+    Overrides apply via ``dataclasses.replace`` on the typed sub-configs (no
+    nested-dict merge — matches the production config style). ``allocation`` is an
+    :class:`AllocationConfig`; ``selection_field_mode`` overrides
+    ``targeting.selection_field_mode``; ``config_overrides`` forwards to
+    ``_scgr_beta_pressure_config`` (``B_low``/``g_max``/``freeze``/...).
+    ``frozen_allocation(L) -> (L,) array`` is injected into
+    ``controller._scgr_frozen_allocation`` BEFORE driving so the selection seam
+    can be tested independently of the Task-4 freeze (freeze-once leaves the
+    injected value intact).
+    """
+    cfg = _scgr_beta_pressure_config(**config_overrides)
+    cfg = replace(
+        cfg,
+        self_conditioned_gr=replace(
+            cfg.self_conditioned_gr, write_residue_telemetry=write_residue_telemetry
+        ),
+    )
+    if allocation is not None:
+        cfg = replace(cfg, allocation=allocation)
+    if selection_field_mode is not None:
+        cfg = replace(
+            cfg,
+            targeting=replace(
+                cfg.targeting, selection_field_mode=selection_field_mode
+            ),
+        )
+    controller = _make_beta_pressure_controller(cfg, length=length)
+    if frozen_allocation is not None:
+        controller._scgr_frozen_allocation = np.asarray(
+            frozen_allocation(length), dtype=float
+        )
+    if drive:
+        _drive_pressure_refreshes(controller, length=length, n_refreshes=n_refreshes)
+    return controller
+
+
+def test_frozen_allocation_persisted_when_enabled():
+    ctrl = build_guided_controller(allocation=AllocationConfig(enabled=True))
+    phi = ctrl._scgr_frozen_allocation
+    assert phi is not None
+    L = ctrl.actionability_states()[-1].v_target.shape[0]
+    assert phi.shape == (L,)
+    assert abs(float(phi.mean()) - 1.0) < 1e-6
+    assert (phi >= 0).all()
+
+
+def test_frozen_allocation_absent_when_disabled():
+    ctrl = build_guided_controller(allocation=AllocationConfig(enabled=False))
+    assert ctrl._scgr_frozen_allocation is None
+
+
+# ---------- Task 5: selection field applied at the two seams ----------
+
+
+def test_uniform_phi_equals_v_target_selection():
+    base = build_guided_controller(selection_field_mode="v_target")
+    alloc = build_guided_controller(
+        selection_field_mode="v_target_x_alloc",
+        allocation=AllocationConfig(enabled=True),
+        frozen_allocation=lambda L: np.ones(L),
+    )
+    base_st = base.actionability_states()[-1]
+    alloc_st = alloc.actionability_states()[-1]
+    # uniform Phi -> constant rescale of v_target -> identical active-window selection
+    assert alloc_st.num_active_windows == base_st.num_active_windows
+    assert np.array_equal(alloc_st.active_target_flag, base_st.active_target_flag)
+
+
+def test_alloc_seam_applies_reweight():
+    c, eps = 5.0, 0.05
+
+    def peaked(L):
+        phi = np.full(L, 0.2)
+        phi[L - 5:] = 3.0
+        return phi
+
+    alloc = build_guided_controller(
+        selection_field_mode="v_target_x_alloc",
+        allocation=AllocationConfig(enabled=True, reweight_c=c, reweight_eps=eps),
+        frozen_allocation=peaked,
+    )
+    base = build_guided_controller(selection_field_mode="v_target")
+    st = alloc.actionability_states()[-1]
+    phi = peaked(st.v_target.shape[0])
+    expected = reweight_by_allocation(st.v_target, phi, c=c, eps=eps)
+    # the seam feeds the reweighted field (not raw v_target) to selection
+    assert np.allclose(alloc._last_selection_field, expected)
+    # ...and it genuinely differs from the raw v_target arm's selection field
+    assert not np.allclose(alloc._last_selection_field, base._last_selection_field)
+
+
+def test_flat_seam_content_blind_and_reproducible():
+    a = build_guided_controller(selection_field_mode="flat")
+    b = build_guided_controller(selection_field_mode="flat")
+    # sha256-seeded by (protein_id, design_idx) -> process-stable across builds
+    assert np.array_equal(a._last_selection_field, b._last_selection_field)
+    assert np.array_equal(
+        a.actionability_states()[-1].active_target_flag,
+        b.actionability_states()[-1].active_target_flag,
+    )
+    # content-blind: the flat field is not the typed v_target
+    assert not np.allclose(
+        a._last_selection_field, a.actionability_states()[-1].v_target
+    )
+
+
+# ---------- Task 6: allocation telemetry on the actionability state ----------
+
+
+def test_actionability_telemetry_has_phi_and_selection():
+    ctrl = build_guided_controller(
+        selection_field_mode="v_target_x_alloc",
+        allocation=AllocationConfig(enabled=True),
+    )
+    st = ctrl.actionability_states()[-1]
+    assert st.phi_alloc is not None and st.phi_alloc.shape == st.v_target.shape
+    assert (
+        st.selection_field is not None
+        and st.selection_field.shape == st.v_target.shape
+    )
+    # v_target_x_alloc with a frozen Phi -> phi_alloc is the frozen mass (mean 1)
+    assert abs(float(st.phi_alloc.mean()) - 1.0) < 1e-6
+    # the recorded selection field matches the reweighted field
+    expected = reweight_by_allocation(
+        st.v_target, st.phi_alloc, c=1.0, eps=0.05
+    )
+    assert np.allclose(st.selection_field, expected)
+
+
+def test_actionability_telemetry_phi_is_ones_for_v_target_arm():
+    ctrl = build_guided_controller(selection_field_mode="v_target")
+    st = ctrl.actionability_states()[-1]
+    # v_target arm = uniform allocation control: phi_alloc is identically 1
+    assert st.phi_alloc is not None
+    assert np.allclose(st.phi_alloc, np.ones_like(st.phi_alloc))
+    assert np.allclose(st.selection_field, st.v_target)
 
 
 def test_scgr_beta_pressure_freezes_and_scales_beta():

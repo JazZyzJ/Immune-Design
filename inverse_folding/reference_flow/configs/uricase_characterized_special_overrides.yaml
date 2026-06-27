@@ -11,9 +11,10 @@
 # verified offset 0 / IF-ready == original for all three). expected_aa was read from the
 # IF-ready sequence; the loader's validate_against_sequence re-checks it before generation.
 #
-# W8X3B8 (Castellaniella defragrans) has NO UniProt active/binding-site annotation and
-# cannot be completed here — it stays `characterized_special` with its partial Q00511
-# projection (would need structural / family-profile annotation to complete).
+# C5HDG5 (binding-pocket only, no active-site feature) and W8X3B8 (no UniProt annotation)
+# were EXCLUDED from the final viable set (2026-06-25, user decision) — the conclusion uses
+# the 23 cleanly-protected characterized uricases. They are dropped via the builder's
+# `--exclude`; this override now contains only the two fully-completable PucL fusions.
 schema_version: uricase_active_site_special_overrides_v0
 entries:
   - protein_id: O32141
@@ -38,12 +39,3 @@ entries:
       - {index_0b: 370, expected_aa: R, label: Arg371, biological_role: substrate_binding,                   source: UniProt Q45697 binding site}
       - {index_0b: 419, expected_aa: Q, label: Gln420, biological_role: substrate_binding,                   source: UniProt Q45697 binding site}
       - {index_0b: 445, expected_aa: N, label: Asn446, biological_role: substrate_binding,                   source: UniProt Q45697 binding site}
-  - protein_id: C5HDG5
-    note: "Metabacillus fastidiosus (320 aa) — UniProt C5HDG5 annotates binding-pocket residues only (no active-site feature); these protect the substrate pocket but not an explicit catalytic triad."
-    hard_anchors:
-      - {index_0b: 66,  expected_aa: T, label: Thr67,  biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
-      - {index_0b: 67,  expected_aa: D, label: Asp68,  biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
-      - {index_0b: 176, expected_aa: F, label: Phe177, biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
-      - {index_0b: 193, expected_aa: R, label: Arg194, biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
-      - {index_0b: 242, expected_aa: Q, label: Gln243, biological_role: substrate_binding, source: UniProt C5HDG5 binding site}
-      - {index_0b: 268, expected_aa: N, label: Asn269, biological_role: substrate_binding, source: UniProt C5HDG5 binding site}

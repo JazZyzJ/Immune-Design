@@ -63,12 +63,18 @@ from .counterfactual import (
     compute_context_pnll_from_log_probs,
 )
 from .head_scoring import HeadScore, OnlineHeadScorer, WindowRiskRecord
+from .allocation import (
+    allocation_mass,
+    reweight_by_allocation,
+    stable_seed,
+)
 from .self_conditioned_gr import (
     SCGRProbeSample,
     SCGRRiskAggregates,
     SCGRState,
     build_probe_samples,
     compute_risk_aggregates,
+    reduce_residue_excess_over_k,
     summarize_probe_refresh,
     supra_tau_label,
     update_state_from_structural_argmax,
@@ -321,6 +327,13 @@ class UnifiedActionabilityState:
     beta_eff: float | None = None
     lambda_base: float | None = None
     lambda_eff: float | None = None
+    # Allocation layer (PLAN_PLANNER_SC_GR.md Task 6). Per-residue telemetry for
+    # H1 failure diagnosis: ``phi_alloc`` is the editability mass actually applied
+    # (identically 1 unless ``v_target_x_alloc`` with a frozen ``Phi_i``);
+    # ``selection_field`` is the mode-selected field fed to D2 selection. Both
+    # filled after active-window selection; None on static / non-typed refreshes.
+    phi_alloc: np.ndarray | None = None
+    selection_field: np.ndarray | None = None
 
 
 class ReferenceFlowController:
@@ -477,6 +490,17 @@ class ReferenceFlowController:
         self._scgr_actuation_B_sc: float | None = None
         self._scgr_B_sc_window: list[float] = []
         self._scgr_frozen_B_sc: float | None = None
+        # Allocation layer (PLAN_PLANNER_SC_GR.md Task 4). Per-design editability
+        # mass ``Phi_i``, frozen parallel to ``_scgr_frozen_B_sc`` on the first
+        # reliable refresh and held constant (no self-reinforcement). Inert unless
+        # allocation.enabled. ``_scgr_actuation_residue_excess`` holds this
+        # refresh's per-residue ``r_i``; ``_scgr_residue_window`` accumulates it
+        # until the freeze horizon. ``_last_selection_field`` caches the
+        # mode-selected selection field for telemetry (Task 5/6).
+        self._scgr_actuation_residue_excess: np.ndarray | None = None
+        self._scgr_residue_window: list[np.ndarray] = []
+        self._scgr_frozen_allocation: np.ndarray | None = None
+        self._last_selection_field: np.ndarray | None = None
 
     # ---------- public accessors for telemetry flush ----------
 
@@ -644,9 +668,18 @@ class ReferenceFlowController:
             active_window_field = {"v_target": actionability.v_target}[
                 self.config.targeting.active_window_source
             ]
+            # Allocation layer (PLAN_PLANNER_SC_GR.md Task 5): mode-select the
+            # SELECTION field — raw v_target (uniform control), v_target tilted by
+            # the frozen Phi_i, or the flat content-blind control. v_target itself
+            # is untouched, so pressure/G/beta (built from raw v_target) are
+            # unaffected; only WHERE D2 looks changes.
+            sel = self._selection_field(
+                active_window_field, self.protein_id, self.design_idx
+            )
+            self._last_selection_field = sel
             active_indices, num_actionable_pre_cap = self._select_active_windows_typed(
                 dyn_windows=dyn_score.windows,
-                v_target=active_window_field,
+                v_target=sel,
             )
         else:
             # Legacy: threshold first, then top-N by excess.
@@ -726,11 +759,14 @@ class ReferenceFlowController:
                 beta_override=self._effective_beta_override(),
                 g_GR_effective=self._current_g_GR_effective(),
                 # Stage B.1: within-block position ranking source. typed_field is
-                # the per-residue v_target in typed mode (None in static mode →
-                # legacy residue_excess fallback, bit-for-bit).
+                # the per-residue selection field in typed mode (None in static
+                # mode → legacy residue_excess fallback, bit-for-bit). Allocation
+                # layer (Task 5): this is the mode-selected ``sel`` (= raw
+                # v_target unless allocation tilts/flat replaces it), so the
+                # within-block seam matches the active-window seam.
                 within_block_source=self.config.targeting.within_block_source,
                 typed_field=(
-                    actionability.v_target if actionability is not None else None
+                    self._last_selection_field if actionability is not None else None
                 ),
             )
             # Rebuild active_blocks with D2-derived g_ESS so the refresh log /
@@ -933,6 +969,21 @@ class ReferenceFlowController:
             actionability.num_active_windows = len(active_indices)
             actionability.num_active_blocks = len(active_blocks)
             actionability.num_actionable_windows_pre_cap = int(num_actionable_pre_cap)
+            # Allocation layer (PLAN_PLANNER_SC_GR.md Task 6) telemetry. ``phi_alloc``
+            # is the mass actually applied this refresh (ones unless the field is
+            # genuinely tilted); ``selection_field`` is the mode-selected ``sel``.
+            if (
+                self.config.targeting.selection_field_mode == "v_target_x_alloc"
+                and self._scgr_frozen_allocation is not None
+            ):
+                actionability.phi_alloc = np.asarray(
+                    self._scgr_frozen_allocation, dtype=float
+                )
+            else:
+                actionability.phi_alloc = np.ones(
+                    int(context.sequence_length), dtype=float
+                )
+            actionability.selection_field = np.asarray(sel, dtype=float)
             self._latest_actionability = actionability
             self._actionability_states.append(actionability)
 
@@ -1715,6 +1766,28 @@ class ReferenceFlowController:
                 self._scgr_frozen_B_sc = _reduce_scgr_window(
                     self._scgr_B_sc_window, scfg.actuation_reduce
                 )
+        # Allocation layer (PLAN_PLANNER_SC_GR.md Task 4): freeze Phi_i parallel to
+        # B_sc — reliable-gated + freeze-once (``is None``) so it cannot
+        # self-reinforce with the steered trajectory. Same freeze horizon as B_sc
+        # (``freeze_after_reliable_refreshes``); per-residue median over the window
+        # (the array analog of B_sc's reduce — identical at the shipped window size
+        # 1). No new head calls — r_i was computed in the probe; firewall preserved.
+        if (
+            self.config.allocation.enabled
+            and reliable
+            and self._scgr_frozen_allocation is None
+            and self._scgr_actuation_residue_excess is not None
+        ):
+            self._scgr_residue_window.append(self._scgr_actuation_residue_excess)
+            if len(self._scgr_residue_window) >= int(
+                scfg.freeze_after_reliable_refreshes
+            ):
+                frozen_r = np.median(
+                    np.stack(self._scgr_residue_window, axis=0), axis=0
+                )
+                self._scgr_frozen_allocation = allocation_mass(
+                    frozen_r, half_width=self.config.allocation.smooth_half_width
+                )
         if self._scgr_frozen_B_sc is None:
             return None, float(gp.unready_g)
         B = float(self._scgr_frozen_B_sc)
@@ -1741,6 +1814,34 @@ class ReferenceFlowController:
         if not self.config.global_pressure.enabled:
             return None
         return float(self._pressure_g_GR)
+
+    def _selection_field(
+        self,
+        v_target: np.ndarray,
+        protein_id: str,
+        design_idx: int,
+    ) -> np.ndarray:
+        """Mode-selected per-residue selection field (PLAN_PLANNER_SC_GR.md Task 5).
+
+        ``v_target`` (default): the raw typed field (the H1 uniform-allocation
+        control). ``v_target_x_alloc``: reweighted by the frozen ``Phi_i`` mass
+        (falls back to baseline ``v_target`` until ``Phi_i`` is frozen). ``flat``:
+        a content-blind, process-stable pseudo-random vector (sha256-seeded by
+        protein/design, so reproducible across Della jobs). Touches the SELECTION
+        field only — pressure/G/beta keep reading raw ``v_target``.
+        """
+        mode = self.config.targeting.selection_field_mode
+        if mode == "flat":
+            rng = np.random.default_rng(stable_seed("flat", protein_id, design_idx))
+            return rng.random(int(v_target.shape[0]))
+        if mode == "v_target_x_alloc" and self._scgr_frozen_allocation is not None:
+            return reweight_by_allocation(
+                v_target,
+                self._scgr_frozen_allocation,
+                c=float(self.config.allocation.reweight_c),
+                eps=float(self.config.allocation.reweight_eps),
+            )
+        return v_target
 
     def _select_active_windows_typed(
         self,
@@ -1914,6 +2015,16 @@ class ReferenceFlowController:
         self._scgr_actuation_B_sc = self._scgr_extract_actuation_b_sc(
             refresh_metric_rows, scfg
         )
+        # Allocation layer (Task 4): this refresh's per-residue r_i (median-over-K
+        # of the allocation arm's residue_excess), used by ``_scgr_frozen_pressure``
+        # to freeze Phi_i. Computed independent of telemetry; gated on
+        # allocation.enabled so the probe stays byte-identical when allocation is
+        # off. No new head call — reuses the per_sample aggregates already scored.
+        if self.config.allocation.enabled:
+            r_i = reduce_residue_excess_over_k(
+                per_sample, arm=self.config.allocation.arm
+            )
+            self._scgr_actuation_residue_excess = r_i if r_i.size else None
         if scfg.write_probe_telemetry:
             for metric_row in refresh_metric_rows:
                 refresh_row = dict(ctx_fields)

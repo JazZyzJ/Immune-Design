@@ -1452,3 +1452,147 @@ def test_self_conditioned_gr_monitor_preset_validates():
     assert cfg.self_conditioned_gr.top_m == 16
     assert cfg.self_conditioned_gr.supra_tau_values == (11.75,)
     assert cfg.self_conditioned_gr.write_probe_telemetry is True
+
+
+# ---------------------------------------------------------------------------
+# Allocation layer (PLAN_PLANNER_SC_GR.md Task 3)
+# ---------------------------------------------------------------------------
+
+
+def _alloc_enabled_payload(**alloc_overrides) -> dict:
+    """A valid `v_target_x_alloc` stack (typed + SC-GR pressure + allocation).
+
+    Phi_i is frozen inside the SC-GR pressure path, so the treatment arm requires
+    typed targeting + global_pressure(self_conditioned_probe) + scgr beta_pressure.
+    """
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "selection_field_mode": "v_target_x_alloc",
+    }
+    payload["controller"]["global_pressure"] = {
+        "enabled": True,
+        "pressure_source": "self_conditioned_probe",
+        "scale_lambda": False,
+    }
+    payload["controller"]["self_conditioned_gr"] = {
+        "enabled": True,
+        "mode": "beta_pressure",
+        "write_residue_telemetry": True,
+    }
+    alloc = {"enabled": True}
+    alloc.update(alloc_overrides)
+    payload["controller"]["allocation"] = alloc
+    return payload
+
+
+def test_allocation_config_defaults_and_materialize():
+    cfg = materialize_controller_config(
+        _alloc_enabled_payload(reweight_c=0.5, smooth_half_width=4)
+    )
+    assert cfg.allocation.enabled is True
+    assert cfg.allocation.reweight_c == 0.5
+    assert cfg.allocation.smooth_half_width == 4
+    assert cfg.allocation.reweight_eps == 0.05  # default
+    assert cfg.allocation.arm == "fresh"  # default
+    assert cfg.targeting.selection_field_mode == "v_target_x_alloc"
+
+
+def test_v_target_x_alloc_requires_allocation_enabled():
+    payload = _alloc_enabled_payload()
+    payload["controller"]["allocation"]["enabled"] = False
+    with pytest.raises(ControllerConfigError, match="allocation.enabled"):
+        materialize_controller_config(payload)
+
+
+def test_v_target_x_alloc_requires_sc_pressure_path():
+    # typed + v_target_x_alloc + allocation.enabled + scgr enabled (monitor_only)
+    # but global_pressure OFF: Phi_i never freezes -> must fail fast.
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "selection_field_mode": "v_target_x_alloc",
+    }
+    payload["controller"]["self_conditioned_gr"] = {"enabled": True}
+    payload["controller"]["allocation"] = {"enabled": True}
+    with pytest.raises(ControllerConfigError, match="self_conditioned_probe"):
+        materialize_controller_config(payload)
+
+
+def test_allocation_enabled_requires_scgr_enabled():
+    payload = _base_enabled_payload()
+    payload["controller"]["allocation"] = {"enabled": True}  # scgr disabled
+    with pytest.raises(ControllerConfigError, match="self_conditioned_gr.enabled"):
+        materialize_controller_config(payload)
+
+
+def test_allocation_arm_must_be_a_probed_arm():
+    payload = _base_enabled_payload()
+    payload["controller"]["self_conditioned_gr"] = {
+        "enabled": True,
+        "arms": ["fresh"],
+    }
+    payload["controller"]["allocation"] = {
+        "enabled": True,
+        "arm": "self_conditioned",  # not probed
+    }
+    with pytest.raises(ControllerConfigError, match="probed"):
+        materialize_controller_config(payload)
+
+
+def test_selection_field_mode_rejects_unknown():
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {"selection_field_mode": "bogus"}
+    with pytest.raises(ControllerConfigError, match="selection_field_mode"):
+        materialize_controller_config(payload)
+
+
+def test_allocation_arm_rejects_unknown():
+    payload = _base_enabled_payload()
+    payload["controller"]["allocation"] = {"enabled": True, "arm": "bogus"}
+    with pytest.raises(ControllerConfigError, match="allocation.arm"):
+        materialize_controller_config(payload)
+
+
+def test_selection_field_mode_default_is_v_target():
+    cfg = materialize_controller_config(_base_enabled_payload())
+    assert cfg.targeting.selection_field_mode == "v_target"
+    assert cfg.allocation.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Planner v1 experiment config grid (PLAN_PLANNER_SC_GR.md Task 7)
+# ---------------------------------------------------------------------------
+
+import glob  # noqa: E402
+
+_PLANNER_GLOB = str(
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding"
+    / "reference_flow"
+    / "configs"
+    / "planner_*_aopen.yaml"
+)
+
+
+def test_planner_config_grid_is_complete():
+    paths = sorted(glob.glob(_PLANNER_GLOB))
+    # 3 selection modes x 3 g_max
+    assert len(paths) == 9, f"expected 9 planner configs, found {len(paths)}: {paths}"
+
+
+@pytest.mark.parametrize("path", sorted(glob.glob(_PLANNER_GLOB)))
+def test_planner_configs_load(path):
+    cfg = load_controller_config(path)
+    assert cfg.enabled
+    assert cfg.global_pressure.pressure_source == "self_conditioned_probe"
+    assert cfg.global_pressure.amplify is True
+    assert cfg.global_pressure.g_min == 0.5
+    assert cfg.global_pressure.g_max in (1.5, 2.0, 2.5)
+    assert cfg.targeting.selection_field_mode in (
+        "flat",
+        "v_target",
+        "v_target_x_alloc",
+    )
+    assert cfg.allocation.enabled is True
+    assert cfg.self_conditioned_gr.mode == "beta_pressure"
