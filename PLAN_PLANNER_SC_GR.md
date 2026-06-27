@@ -60,6 +60,12 @@ All arrays are shape `(L,)`. The field reuses the existing `residue_excess = exc
 
 **D5 — Budget (reused, unchanged):** `pressure_source="self_conditioned_probe"` + amplify `g_min=0.5`, `g_max ∈ {1.5, 2.0, 2.5}` swept (SC2 calibration). All three arms run at each `g_max`.
 
+**D6 — behavior cadence & remask (held constant across all arms):**
+- **`N_STEPS=100`** — a **run/CLI/SLURM** parameter (NOT in the YAML; the YAML only has `*_ttl_steps`). The SC monitor's `N_STEPS=20` was diagnostic-only ("10-step exposes only one post-start refresh"). At `t_start=0.50` / `refresh_interval=5`, 100 steps yields **~10 post-`t_start` actuation refreshes** (vs ~2–3 at 20). This matters because the global **Budget** is frozen and refresh-count-insensitive, but **Allocation is a per-refresh selection tilt** that needs many refreshes to accumulate — budget-only (SC1) works at 20 steps; allocation does not.
+- **DPLM remask (reparam) stays ON** at the base-config setting, **identical across the `flat`/`v_target`/`alloc` arms**. It is the mechanism that keeps positions editable into the reliable mid-late trajectory where the tilt is most effective; turning it off would starve late-trajectory allocation. Held constant ⇒ not a confound.
+- Remask stays **D3-`m_i`-driven**; **`Φ_i` is never fed to remask/D3** (firewall; immune-aware remask is the deferred v2 "how long editable" lever).
+- Because `N_STEPS` changes the freeze-point trajectory, the amplify calibration bands (`B_low`/`B_high`/`B_median`) must be **re-emitted at the 100-step cadence**, not inherited from the 20-step monitor (the freeze still anchors at `t_start≈0.5`, so it likely transfers — but verify, don't assume).
+
 ## 3. File structure
 
 | File | Responsibility | Change |
@@ -504,7 +510,7 @@ controller:
     g_max: <GMAX>
 ```
 
-**Calibration contract (P1-1):** `_load_global_pressure_calibration` (run_if_phase_c1.py:181-220) **requires**, when `pressure_source=self_conditioned_probe` AND `amplify=true`, a calibration JSON carrying `B_median`, `g_min`, `g_max` that **match the YAML** (`pressure_source` and `B_high>B_low` validated). So per `g_max` emit **one** amplify calibration JSON (shared by that g_max's 3 arm configs) using the SC2 emitter (LOG L0119; `sc_gr_monitor_probe.py --emit-calibration --amplify --g-min 0.5 --g-max <GMAX>` — confirm exact flags from L0119), built on SC1's frozen `refresh_step=0 / fresh / topm_lse` `B_sc` distribution. Pass it at run via `--global-pressure-calibration-json amplify_calib_gmax<GMAX>.json`.
+**Calibration contract (P1-1):** `_load_global_pressure_calibration` (run_if_phase_c1.py:181-220) **requires**, when `pressure_source=self_conditioned_probe` AND `amplify=true`, a calibration JSON carrying `B_median`, `g_min`, `g_max` that **match the YAML** (`pressure_source` and `B_high>B_low` validated). So per `g_max` emit **one** amplify calibration JSON (shared by that g_max's 3 arm configs) using the SC2 emitter (LOG L0119; `sc_gr_monitor_probe.py --emit-calibration --amplify --g-min 0.5 --g-max <GMAX>` — confirm exact flags from L0119), built on the **`N_STEPS=100`** `refresh_step=0 / fresh / topm_lse` `B_sc` distribution (re-emit at the behavior cadence per §2 D6 — do **not** inherit the 20-step monitor bands). Pass it at run via `--global-pressure-calibration-json amplify_calib_gmax<GMAX>.json`. All runs use **`N_STEPS=100`** (set in the run command / SLURM, not the YAML); remask stays at the base-config setting, identical across all 9 runs.
 
 | file | MODE | GMAX | calibration JSON |
 |---|---|---|---|
@@ -656,7 +662,7 @@ On PASS: register a RAR, then proceed to v1.1 Value layer (`P_cheap`).
 
 ## 6. Reuse, registration, hygiene
 
-- **Reuse-First Gate:** runs reuse `scripts/run_if_phase_c1.py`; eval reuses `evaluate_phase_c.py` immune+scTM; only `planner_h1_pareto.py` is new (register it). No new SLURM template — follow `scripts/submit_cnn_enhance.slurm`, `--output/--error → logs/`. Calibration JSONs via the SC2 emitter (LOG L0119).
+- **Reuse-First Gate:** runs reuse `scripts/run_if_phase_c1.py` at **`N_STEPS=100`** (behavior cadence, §2 D6) with **remask held at the base setting across all arms**; eval reuses `evaluate_phase_c.py` immune+scTM; only `planner_h1_pareto.py` is new (register it). No new SLURM template — follow `scripts/submit_cnn_enhance.slurm`, `--output/--error → logs/`. Calibration JSONs via the SC2 emitter (LOG L0119), re-emitted at the 100-step cadence.
 - **Budget layer reused, not rebuilt:** `pressure_source="self_conditioned_probe"` + amplify (SC2 code) done; this plan adds no pressure/β code. Base config = `d2_d3_full_stageC_scgr_betaonly_aopen.yaml`.
 - **Cluster paths** only via CLI; **WT/real-data** only, fail-fast.
 - **LOG.md:** one CODEMAP entry when Tasks 1–6 land (behavior-changing actuator + telemetry); experiment runs/returns need no LOG entry.
