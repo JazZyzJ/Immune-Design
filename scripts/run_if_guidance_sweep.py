@@ -318,6 +318,17 @@ def load_epitope_predictor(
     frozen = ablation_cfg["frozen_constants"]
 
     encoder, tokenizer = build_encoder(encoder_type, d_enc, encoder_cfg)
+
+    # Wave-4: auto-detect a dual-head checkpoint from its state_dict so the eval
+    # predictor reconstructs the boundary head and loads strict=True cleanly.
+    # Infer the hidden dim from the first boundary-head linear's output size.
+    import torch as _torch
+    _ck = _torch.load(checkpoint_path, map_location="cpu")
+    _sd = _ck.get("model_state_dict", _ck)
+    _enable_bh = any(k.startswith("boundary_head.") for k in _sd)
+    _bh_hidden = (int(_sd["boundary_head.net.0.weight"].shape[0])
+                  if "boundary_head.net.0.weight" in _sd else 64)
+
     model = EpitopeScorer(
         encoder=encoder,
         d_enc=d_enc,
@@ -336,6 +347,8 @@ def load_epitope_predictor(
         projection_layer_norm=bool(model_cfg.get("projection_layer_norm", True)),
         pad_left_init=str(model_cfg.get("pad_left_init", "zeros")),
         pad_right_init=str(model_cfg.get("pad_right_init", "zeros")),
+        enable_boundary_head=_enable_bh,
+        boundary_head_hidden_dim=_bh_hidden,
     )
 
     predictor = InferencePredictor.from_checkpoint(
