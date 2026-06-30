@@ -6,8 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import json
+
 from scripts.analysis.planner_h1_pareto import (
+    _frame_from_runs_json,
     compute_h1,
+    compute_pairwise_gate,
     extract_arm_mode_g_max,
     merge_run_eval,
     merge_run_eval_frames,
@@ -182,6 +186,111 @@ def test_merge_run_eval_zero_windows_is_nan():
     struct = pd.DataFrame({"protein_id": ["p0"], "design_idx": [0], "scTM": [0.9]})
     df = merge_run_eval_frames(imm, struct, arm_mode="flat", g_max=1.5)
     assert np.isnan(df.iloc[0]["immune_nmp"])
+
+
+def _three_arm_frame(treatment, *, n=40, d=4, g_max=2.0, treat_shift=-0.8, flat_shift=1.0):
+    rng = np.random.default_rng(7)
+    rows = []
+    for p in range(n):
+        base = rng.normal(0, 1)
+        for di in range(d):
+            jit = rng.normal(0, 0.2)
+            for mode, imm in [("flat", base + flat_shift + jit),
+                              ("v_target", base + jit),
+                              (treatment, base + treat_shift + jit)]:
+                rows.append(dict(protein_id=f"p{p}", design_idx=di, g_max=g_max,
+                                 arm_mode=mode, immune_nmp=imm, sctm=0.95))
+    return pd.DataFrame(rows)
+
+
+def test_compute_h1_treatment_mode_triage():
+    # §A1: the treatment arm is v_target_triage; gate pairs it vs v_target + macro.
+    df = _three_arm_frame("v_target_triage")
+    out = compute_h1(df, treatment_mode="v_target_triage")
+    cell = out["by_g_max"][0]
+    assert cell["treatment_mode"] == "v_target_triage"
+    assert cell["alloc_minus_vtarget_median"] < 0  # triage below v_target
+    assert cell["macro_pass"] is True
+    assert cell["h1_pass"] is True
+
+
+def _two_arm_frame(*, terminal_shift, n=30, d=4, terminal_sctm=0.95):
+    rng = np.random.default_rng(11)
+    rows = []
+    for p in range(n):
+        base = rng.normal(0, 1)
+        for di in range(d):
+            jit = rng.normal(0, 0.15)
+            rows.append(dict(protein_id=f"p{p}", design_idx=di,
+                             arm_mode="b1_local", immune_nmp=base + jit, sctm=0.9))
+            rows.append(dict(protein_id=f"p{p}", design_idx=di, arm_mode="b1_terminal",
+                             immune_nmp=base + terminal_shift + jit, sctm=terminal_sctm))
+    return pd.DataFrame(rows)
+
+
+def test_compute_pairwise_gate_terminal_better():
+    out = compute_pairwise_gate(
+        _two_arm_frame(terminal_shift=-0.5), treatment="b1_terminal", baseline="b1_local"
+    )
+    assert out["treatment_minus_baseline_median"] < 0
+    assert out["sctm_noninferior"] is True
+    assert out["treatment_better"] is True
+    assert out["neutral_or_better"] is True
+
+
+def test_compute_pairwise_gate_neutral_is_neutral_or_better_only():
+    out = compute_pairwise_gate(
+        _two_arm_frame(terminal_shift=0.0), treatment="b1_terminal", baseline="b1_local"
+    )
+    assert out["treatment_better"] is False  # no significant drop
+    assert out["neutral_or_better"] is True  # but not significantly worse
+
+
+def test_compute_pairwise_gate_worse_fails_both():
+    out = compute_pairwise_gate(
+        _two_arm_frame(terminal_shift=0.5), treatment="b1_terminal", baseline="b1_local"
+    )
+    assert out["treatment_better"] is False
+    assert out["neutral_or_better"] is False  # significantly worse
+
+
+def test_compute_pairwise_gate_sctm_collapse_blocks_pass():
+    out = compute_pairwise_gate(
+        _two_arm_frame(terminal_shift=-0.5, terminal_sctm=0.5),
+        treatment="b1_terminal", baseline="b1_local",
+    )
+    assert out["sctm_noninferior"] is False
+    assert out["treatment_better"] is False  # immune drop but scTM collapsed
+    assert out["neutral_or_better"] is False
+
+
+def test_pairwise_requires_explicit_arm_mode(tmp_path):
+    # under --pairwise, an entry relying on controller_config auto-derive must fail
+    # fast (b1_local/b1_terminal are indistinguishable by config fields).
+    runs = tmp_path / "runs.json"
+    runs.write_text(json.dumps([
+        {"imm_nmp_parquet": "x.parquet", "structural_parquet": "y.parquet",
+         "controller_config_json": "cfg.json"}
+    ]))
+    with pytest.raises(ValueError, match="(?i)arm_mode"):
+        _frame_from_runs_json(runs, require_explicit_arm=True)
+
+
+def test_pairwise_explicit_arm_mode_assembles(tmp_path):
+    imm = pd.DataFrame({"protein_id": ["p0"], "design_idx": [0],
+                        "n_strong_binders": [1], "n_windows_scored": [10]})
+    struct = pd.DataFrame({"protein_id": ["p0"], "design_idx": [0], "scTM": [0.9]})
+    ip, sp = tmp_path / "imm.parquet", tmp_path / "struct.parquet"
+    imm.to_parquet(ip)
+    struct.to_parquet(sp)
+    runs = tmp_path / "runs.json"
+    runs.write_text(json.dumps([
+        {"imm_nmp_parquet": str(ip), "structural_parquet": str(sp),
+         "arm_mode": "b1_terminal"}  # explicit, no g_max needed
+    ]))
+    df = _frame_from_runs_json(runs, require_explicit_arm=True)
+    assert set(df["arm_mode"]) == {"b1_terminal"}
+    assert df.iloc[0]["immune_nmp"] == pytest.approx(0.1)
 
 
 def test_extract_arm_mode_g_max_from_config():

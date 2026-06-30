@@ -17,6 +17,9 @@ class ControllerConfigError(ValueError):
 
 
 _ALLOWED_MODES = frozenset({"monitor_only", "d2_logits", "d3_revisit", "d2_d3_full"})
+# §A2 D2 candidate-score source (doc §8.4 Path A): ``local`` block-span ensemble
+# (default) vs ``terminal`` full-completion P_cheap probe.
+_ALLOWED_CANDIDATE_SCORE_SOURCES = frozenset({"local", "terminal"})
 _MODES_REQUIRING_D2 = frozenset({"d2_logits", "d2_d3_full"})
 _MODES_REQUIRING_D3 = frozenset({"d3_revisit", "d2_d3_full"})
 
@@ -66,8 +69,12 @@ _ALLOWED_SCGR_ACTUATION_REDUCE = frozenset({"median", "ema"})
 # (content-blind pseudo-random control). The allocation ``arm`` reuses the SC-GR
 # probe arms (Phi_i is derived from one arm's per-residue residue_excess).
 _ALLOWED_SELECTION_FIELD_MODES = frozenset(
-    {"v_target", "v_target_x_alloc", "flat"}
+    {"v_target", "v_target_x_alloc", "v_target_triage", "flat"}
 )
+# Selection modes that CONSUME the frozen Phi_i (and so require the SC-GR pressure
+# freeze path). ``v_target_x_alloc`` (superseded, §8.3) and ``v_target_triage``
+# (§A1 / doc §8.4 Path A) both fall back to raw v_target if Phi_i never freezes.
+_PHI_CONSUMING_SELECTION_MODES = frozenset({"v_target_x_alloc", "v_target_triage"})
 
 
 @dataclass(frozen=True)
@@ -110,6 +117,15 @@ class D2Config:
     sticky_clear_on_selected: bool = True
     sticky_clear_on_remask: bool = True
     sticky_overwrite_on_refresh: bool = True
+    # §A2 (doc §8.4 Path A / RAR 0019 P_cheap): how D2 ranks candidate tuples.
+    # ``local`` (default, byte-identical) scores the local block-span completion
+    # ensemble (ΔR_B on the merged active-block span). ``terminal`` swaps the
+    # rescore for a full-sequence terminal-completion probe (P_cheap): each
+    # shortlisted candidate is rolled out to ``candidate_terminal_K_P`` full
+    # completions (paired seeds across candidates), Ω(B)-LME risk − r_current in
+    # the SAME head-logit units as local ΔR_B (so exp(−β·ΔR) stays consistent).
+    candidate_score_source: str = "local"
+    candidate_terminal_K_P: int = 4
 
 
 @dataclass(frozen=True)
@@ -303,6 +319,12 @@ class AllocationConfig:
     smooth_half_width: int = 4
     reweight_c: float = 1.0
     reweight_eps: float = 0.05
+    # §A1 triage (doc §8.4 Path A): consumed only by selection_field_mode=
+    # 'v_target_triage'. ``eligible_quantile`` = the v_target eligibility floor
+    # (top-(1−q) by v_target are eligible); ``triage_lambda`` = the bounded Phi_i
+    # tie-break weight (v_target keeps coefficient 1 and dominates).
+    eligible_quantile: float = 0.5
+    triage_lambda: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -658,6 +680,35 @@ def _materialize_d2(payload: Any) -> D2Config:
         raise ControllerConfigError(
             f"controller.d2.sticky_ttl_steps must be >= 1 (got {sticky_ttl_steps})"
         )
+    candidate_score_source = str(
+        payload.get("candidate_score_source", "local")
+    )
+    if candidate_score_source not in _ALLOWED_CANDIDATE_SCORE_SOURCES:
+        raise ControllerConfigError(
+            "controller.d2.candidate_score_source must be one of "
+            f"{sorted(_ALLOWED_CANDIDATE_SCORE_SOURCES)} "
+            f"(got {candidate_score_source!r})"
+        )
+    candidate_terminal_K_P = int(payload.get("candidate_terminal_K_P", 4))
+    if candidate_terminal_K_P < 1:
+        raise ControllerConfigError(
+            "controller.d2.candidate_terminal_K_P must be >= 1 "
+            f"(got {candidate_terminal_K_P})"
+        )
+    # §A2: the terminal probe rescoring rides the completion-ensemble shortlist
+    # path (_process_block). With completion_ensemble_enabled=false that branch is
+    # skipped and D2 falls back to the local argmax ΔR_B — a silent degrade that
+    # would still be labelled 'terminal'. Require the ensemble path to be on.
+    if (
+        candidate_score_source == "terminal"
+        and not bool(payload.get("completion_ensemble_enabled", True))
+    ):
+        raise ControllerConfigError(
+            "controller.d2.candidate_score_source='terminal' requires "
+            "controller.d2.completion_ensemble_enabled=true (the terminal probe "
+            "rescores the ensemble shortlist; with it off the rescore is skipped "
+            "and D2 silently falls back to the local argmax ΔR_B)"
+        )
     return D2Config(
         enabled=True,
         beta=beta,
@@ -685,6 +736,8 @@ def _materialize_d2(payload: Any) -> D2Config:
         sticky_clear_on_selected=bool(payload.get("sticky_clear_on_selected", True)),
         sticky_clear_on_remask=bool(payload.get("sticky_clear_on_remask", True)),
         sticky_overwrite_on_refresh=bool(payload.get("sticky_overwrite_on_refresh", True)),
+        candidate_score_source=candidate_score_source,
+        candidate_terminal_K_P=candidate_terminal_K_P,
     )
 
 
@@ -1025,12 +1078,27 @@ def _materialize_allocation(payload: Any) -> AllocationConfig:
         raise ControllerConfigError(
             f"controller.allocation.reweight_eps must be >= 0 (got {reweight_eps})"
         )
+    eligible_quantile = float(
+        payload.get("eligible_quantile", defaults.eligible_quantile)
+    )
+    if not (0.0 <= eligible_quantile <= 1.0):
+        raise ControllerConfigError(
+            "controller.allocation.eligible_quantile must lie in [0, 1] "
+            f"(got {eligible_quantile})"
+        )
+    triage_lambda = float(payload.get("triage_lambda", defaults.triage_lambda))
+    if triage_lambda < 0.0:
+        raise ControllerConfigError(
+            f"controller.allocation.triage_lambda must be >= 0 (got {triage_lambda})"
+        )
     return AllocationConfig(
         enabled=bool(payload.get("enabled", defaults.enabled)),
         arm=arm,
         smooth_half_width=smooth_half_width,
         reweight_c=reweight_c,
         reweight_eps=reweight_eps,
+        eligible_quantile=eligible_quantile,
+        triage_lambda=triage_lambda,
     )
 
 
@@ -1524,19 +1592,20 @@ def _cross_validate_allocation(
                 "(Φ_i reduces over that arm's residue_excess; an unprobed arm "
                 "yields an empty r_i)"
             )
-    if targeting.selection_field_mode == "v_target_x_alloc":
+    mode = targeting.selection_field_mode
+    if mode in _PHI_CONSUMING_SELECTION_MODES:
         if not allocation.enabled:
             raise ControllerConfigError(
-                "controller.targeting.selection_field_mode='v_target_x_alloc' "
+                f"controller.targeting.selection_field_mode={mode!r} "
                 "requires controller.allocation.enabled=true; otherwise Φ_i never "
                 "forms and the selection field silently degrades to the raw "
-                "v_target control (the H1 treatment arm becomes its own control)"
+                "v_target control (the treatment arm becomes its own control)"
             )
         if not (
             gp.enabled and gp.pressure_source == "self_conditioned_probe"
         ):
             raise ControllerConfigError(
-                "controller.targeting.selection_field_mode='v_target_x_alloc' "
+                f"controller.targeting.selection_field_mode={mode!r} "
                 "requires controller.global_pressure.enabled=true with "
                 "pressure_source='self_conditioned_probe' (Φ_i is frozen inside the "
                 "SC-GR pressure path; without it Φ_i never freezes and the arm "

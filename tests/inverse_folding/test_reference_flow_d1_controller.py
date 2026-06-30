@@ -26,6 +26,12 @@ from inverse_folding.reference_flow.controller import (
     D1RefreshRecord,
     SamplerStepContext,
     WindowMismatchError,
+    _build_pending_d2_events,
+    _stage_a_event_defaults,
+)
+from inverse_folding.reference_flow.counterfactual import (
+    D2BlockOutcome,
+    D2RefreshOutcome,
 )
 from inverse_folding.reference_flow.actionability import (
     global_pressure_mass,
@@ -33,7 +39,10 @@ from inverse_folding.reference_flow.actionability import (
     protein_pressure_burden,
     smoothstep_pressure,
 )
-from inverse_folding.reference_flow.allocation import reweight_by_allocation
+from inverse_folding.reference_flow.allocation import (
+    reweight_by_allocation,
+    triage_field,
+)
 from inverse_folding.reference_flow.controller_config import (
     ActiveWindowsConfig,
     AllocationConfig,
@@ -1364,6 +1373,32 @@ def test_alloc_seam_applies_reweight():
     assert not np.allclose(alloc._last_selection_field, base._last_selection_field)
 
 
+def test_triage_seam_applies_triage_field():
+    eq, tl = 0.5, 0.3
+
+    def peaked(L):
+        phi = np.full(L, 0.2)
+        phi[L - 5:] = 3.0
+        return phi
+
+    ctrl = build_guided_controller(
+        selection_field_mode="v_target_triage",
+        allocation=AllocationConfig(
+            enabled=True, eligible_quantile=eq, triage_lambda=tl
+        ),
+        frozen_allocation=peaked,
+    )
+    st = ctrl.actionability_states()[-1]
+    phi = peaked(st.v_target.shape[0])
+    expected = triage_field(
+        st.v_target, phi, eligible_quantile=eq, triage_lambda=tl
+    )
+    assert np.allclose(ctrl._last_selection_field, expected)
+    # strict eligibility (doc §8.4): zero/non-positive-actionability sites NEVER
+    # score (no τ_v widening), regardless of the v_target median.
+    assert (ctrl._last_selection_field[st.v_target <= 0.0] == 0.0).all()
+
+
 def test_flat_seam_content_blind_and_reproducible():
     a = build_guided_controller(selection_field_mode="flat")
     b = build_guided_controller(selection_field_mode="flat")
@@ -1380,6 +1415,39 @@ def test_flat_seam_content_blind_and_reproducible():
 
 
 # ---------- Task 6: allocation telemetry on the actionability state ----------
+
+
+def test_stage_a_event_defaults_carry_null_candidate_score_source():
+    # D3 / monitor / legacy event rows inherit candidate_score_source=None.
+    assert _stage_a_event_defaults()["candidate_score_source"] is None
+
+
+def test_d2_event_rows_carry_candidate_score_source():
+    # §A2 (P2b): controller_events D2 rows audit local vs terminal per row.
+    block = D2BlockOutcome(
+        block_id=0, omega_indices=(0,), editable_positions=(2,),
+        K_i_per_pos={2: (10, 11)}, candidate_mode="cartesian", candidate_count=2,
+        delta_R_B=(-0.5, 0.0), Q_B=(0.5, 0.5), weights_unnormalized=(1.0, 1.0),
+        ess=2.0, ess_fraction=1.0, g_ESS_candidates=1.0, feasible=True,
+        best_delta_R_B=-0.5, mean_delta_R_B=-0.25, rho_B_effective=1.0,
+        corrected_positions=(2,), delta_logit={(2, 10): 1.0, (2, 11): -1.0},
+        skipped_reason=None, candidate_score_source="terminal",
+    )
+    L, V = 4, 12
+    rows = _build_pending_d2_events(
+        d2_outcome=D2RefreshOutcome(
+            corrected_logits=torch.zeros(L, V),
+            block_outcomes=(block,),
+            corrected_positions=frozenset({2}),
+        ),
+        completed_tokens=torch.zeros(L, dtype=torch.long),
+        structural_logits=torch.zeros(L, V),
+        corrected_logits=torch.zeros(L, V),
+        canonical_token_ids=[10, 11],
+        lambda_base=1.0, lambda_eff=1.0, refresh_step=0, step=5, t=0.6,
+        protein_id="P", design_idx=0, seed=42, applies_correction=True,
+    )
+    assert rows and all(r["candidate_score_source"] == "terminal" for r in rows)
 
 
 def test_actionability_telemetry_has_phi_and_selection():

@@ -63,3 +63,58 @@ injects `g_max` / `arm_mode` from each run's stamped controller config).
 
 Calibration JSONs are large generated artifacts — keep them out of git; emit them
 on the cluster next to the configs (or pass an absolute path).
+
+---
+
+## §A — Revised v1.1 ablations (LIVE; the 3×3 grid above is SUPERSEDED)
+
+The direct-allocation H1 (`v_target_x_alloc`) was **NOT supported** (RAR 0019 M4):
+the multiplicative `v_target·(ε+c·Φ)` reweight dragged fire onto low-`v_target`
+sites. Two independent, default-off ablations replace it (doc §8.4 Path A;
+`PLAN_PLANNER_SC_GR.md` §A). Both run at `N_STEPS=100`. Pre-registered success is
+**neutral-or-better at matched scTM** (authority ceiling, RAR 0019 M5), not a large drop.
+
+### §A1 — `v_target_triage` (WHERE layer)
+
+`r_i` (via the frozen `Φ_i`) becomes an eligibility-gated additive rank tie-break
+**within** the `v_target`-eligible set (no `τ_v` widening). **Strict eligibility:**
+eligible = top-(1−`eligible_quantile`) **among strictly-positive** actionability
+(`v_target > floor`, `floor = active_window_min_excess`); the quantile is over the
+positive values only, so a sparse `v_target` whose median is 0 can never admit
+zero-actionability sites (the §8.2.1 failure). 3 arms at `g_max=2.0`
+only (authority ceiling ⇒ no g_max sweep), cohort **pilot47**:
+`planner_flat_gmax20_aopen.yaml` + `planner_vtarget_gmax20_aopen.yaml` (exist) +
+`planner_triage_gmax20_aopen.yaml` (`selection_field_mode: v_target_triage`,
+`allocation.eligible_quantile: 0.5`, `triage_lambda: 0.3`). Reuse
+`amplify_calib_gmax20.json` (re-emit at the 100-step cadence). Gate:
+
+```bash
+python scripts/analysis/planner_h1_pareto.py \
+  --runs-json <flat+vtarget+triage runs json> --output <h1_triage.json> \
+  --arm-treatment v_target_triage \
+  --expected-n-proteins 47 --expected-n-designs 8 --expected-g-max 2.0
+```
+
+### §A2 — terminal candidate-probe `P_cheap` (VALUE layer) on B1
+
+D2 ranks shortlisted candidates by a full-sequence terminal completion instead of
+the local block-span ensemble. 2 arms on the **B1** base
+(`d2_d3_full_stageB_aopen.yaml`, `global_pressure` off, β=3.0), **high-risk cohort**
+(RAR 0013 NoD-worst-100; cohort path via CLI): `b1_local` (= the unchanged B1
+config) + `b1_terminal_aopen.yaml` (`d2.candidate_score_source: terminal`,
+`candidate_terminal_K_P: 4`; `terminal` requires `completion_ensemble_enabled=true`,
+which the B1 base already sets). `b1_local` and `b1_terminal` share
+`targeting.selection_field_mode`/`g_max`, so the `--pairwise` runs-json entries
+**must carry explicit `arm_mode`** (`b1_local` / `b1_terminal`) — config
+auto-derive cannot distinguish them. Direct two-arm gate (no Pareto):
+
+```bash
+python scripts/analysis/planner_h1_pareto.py \
+  --runs-json <b1_local+b1_terminal runs json> --output <a2_terminal.json> \
+  --pairwise --arm-treatment b1_terminal --arm-baseline b1_local \
+  --expected-n-proteins <cohort_size> --expected-n-designs 8
+```
+
+On A1/A2 outcomes: register a RAR (objective measurements only). A1≈neutral and
+A2≈neutral ⇒ confirms the authority ceiling binds → green-lights Path C (the main
+line; out of scope here).

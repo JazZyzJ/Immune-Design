@@ -67,6 +67,7 @@ from .allocation import (
     allocation_mass,
     reweight_by_allocation,
     stable_seed,
+    triage_field,
 )
 from .self_conditioned_gr import (
     SCGRProbeSample,
@@ -829,6 +830,9 @@ class ReferenceFlowController:
                     {
                         "block_id": int(block.block_id),
                         "candidate_mode": block.candidate_mode,
+                        # §A2: which candidate scorer ranked this block (local /
+                        # terminal) so refresh_log can audit the rescore source.
+                        "candidate_score_source": str(block.candidate_score_source),
                         "candidate_count": int(block.candidate_count),
                         "safe_support_sizes": {
                             str(k): int(v) for k, v in block.safe_support_sizes.items()
@@ -1841,6 +1845,18 @@ class ReferenceFlowController:
                 c=float(self.config.allocation.reweight_c),
                 eps=float(self.config.allocation.reweight_eps),
             )
+        if mode == "v_target_triage" and self._scgr_frozen_allocation is not None:
+            # §A1 (doc §8.4 Path A): r_i as a triage/tie-break WITHIN the
+            # v_target-eligible set — additive rank-space, no τ_v widening. The
+            # eligibility floor mirrors the pipeline's actionability floor
+            # (active_window_min_excess) so zero-actionability sites stay out.
+            return triage_field(
+                v_target,
+                self._scgr_frozen_allocation,
+                eligible_quantile=float(self.config.allocation.eligible_quantile),
+                triage_lambda=float(self.config.allocation.triage_lambda),
+                floor=float(self.config.targeting.active_window_min_excess),
+            )
         return v_target
 
     def _select_active_windows_typed(
@@ -2822,6 +2838,8 @@ def _build_pending_d2_events(
                     "lambda_base": lambda_base,
                     "lambda_eff": lambda_eff,
                     "g_GR_effective": block.g_GR_effective,
+                    # ---- §A2 candidate-score provenance ----
+                    "candidate_score_source": str(block.candidate_score_source),
                     # ---- pending fill markers (private) ----
                     "_push_token": int(push_token),
                 }
@@ -2870,6 +2888,9 @@ def _stage_a_event_defaults() -> dict:
         "lambda_base": None,
         "lambda_eff": None,
         "g_GR_effective": None,
+        # §A2: candidate scorer (local / terminal); set on D2 rows, None on D3 /
+        # monitor / legacy rows.
+        "candidate_score_source": None,
     }
 
 
@@ -2976,6 +2997,10 @@ def _build_sticky_d2_events(
             "lambda_base": lambda_base,
             "lambda_eff": lambda_eff,
             "g_GR_effective": getattr(block, "g_GR_effective", None),
+            # ---- §A2 candidate-score provenance (stored block outcome) ----
+            "candidate_score_source": str(
+                getattr(block, "candidate_score_source", "local")
+            ),
             # ---- private ----
             "_push_token": int(push_token),
         }

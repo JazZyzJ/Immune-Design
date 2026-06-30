@@ -1,5 +1,7 @@
 # SC-GR Position-Dependent Allocation (v1) Implementation Plan
 
+> **STATUS — direct-allocation v1 (Tasks 1–8) SUPERSEDED (2026-06-28).** The direct-allocation H1 (`r_i → Φ → v_target` reweight) was **NOT supported** (RAR 0019 M4; mechanism + authority ceiling in `doc/Self-Cond_GR.md` §8.2). Tasks 1–8 are retained as the build/run record — **do not execute as-is**. The **live plan is §A1 + §A2 appended at the end of this file** (revised `r_i` consumption + terminal-probe ablation, doc §8.4 Path A). They **reuse** the `Φ_i` field (Tasks 1–4), telemetry (Task 6), and the 3-arm harness/eval (Tasks 7–8). Path C is still under discussion (doc §8.4), not yet planned.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an inference-only **allocation layer** that reweights D2 position-*selection* by the SC-GR per-residue prospective-immune field `r_i`, and run the pre-registered H1 test that immune-driven allocation beats uniform allocation at matched scTM.
@@ -679,3 +681,116 @@ On PASS: register a RAR, then proceed to v1.1 Value layer (`P_cheap`).
 - Naming firewall: new mass `Φ_i` in `allocation.py`; nothing reuses `A_i(t)`. ✓
 - Firewall: `Φ_i` from `residue_excess` only; injected at selection only; pressure/memory untouched. ✓
 - Spec coverage: §8.3 Budget=reused, Allocation=Tasks 1–6, Value=deferred, H1=Tasks 7–8 + §5. ✓
+
+---
+
+# §A — Revised v1.1 (LIVE): `r_i` as triage + terminal-probe ablation (doc §8.4 Path A)
+
+Direct-allocation (Tasks 1–8) is falsified (§8.2). This is the live plan. **Two independent ablations**, both reusing the Tasks 1–4/6 `Φ_i`/telemetry code and the Tasks 7–8 harness/eval:
+
+- **A1 (WHERE layer):** `r_i` reorders **within** the `v_target`-eligible set, additive + capped-rank, **no widening of `τ_v`** — fixes the §8.2.1 mechanism (alloc dragged fire onto low-`v_target` sites).
+- **A2 (VALUE layer):** swap the D2 candidate score from local `ΔR_B` to a **terminal-completion probe** (`P_cheap`), on the **B1** baseline. Orthogonal to A1 (score layer vs where layer; Agent-verified separable from the β/pressure layer).
+
+**Tempered expectation (pre-registered, both):** the per-edit authority ceiling (RAR 0019 M5 / 0013: `delta_R_B`≈−0.2 flat, `ESS_candidates`≈3) bounds both. Success criterion for A1/A2 is **"recover to neutral / small positive vs the `v_target`/`local` baseline at matched scTM"**, NOT a large immune drop. A large drop would be surprising and should trigger a re-check, not celebration. The decisive lever remains Path C (doc §8.4), out of scope here.
+
+## Task A1: `v_target_triage` selection mode
+
+**Files:** `allocation.py` (+`triage_field`); `controller_config.py` (mode enum + `AllocationConfig` fields); `controller.py` (`_selection_field` branch, :1818-1844); test `tests/inverse_folding/test_reference_flow_allocation.py` + `..._d1_controller.py`. Reuses frozen `Φ_i` (Task 4).
+
+- [ ] **Step 1 — failing unit tests** (`test_reference_flow_allocation.py`):
+
+```python
+import numpy as np
+from inverse_folding.reference_flow.allocation import triage_field
+
+def test_triage_lambda0_is_v_target_order_within_eligible():
+    v = np.array([0.1, 0.9, 0.5, 0.7, 0.2])
+    s = triage_field(v, np.array([5.,5.,5.,5.,5.]), eligible_quantile=0.5, triage_lambda=0.0)
+    elig = v >= np.quantile(v, 0.5)
+    # ineligible get 0; eligible ordered exactly by v_target
+    assert (s[~elig] == 0).all()
+    e = np.where(elig)[0]
+    assert list(e[np.argsort(s[e])]) == list(e[np.argsort(v[e])])
+
+def test_triage_reorders_toward_high_phi_within_eligible():
+    v = np.array([0.8, 0.82])          # both eligible, nearly tied
+    s = triage_field(v, np.array([0.2, 1.8]), eligible_quantile=0.0, triage_lambda=0.5)
+    assert s[1] > s[0]                 # high-phi wins the tie-break
+
+def test_triage_never_selects_ineligible_over_eligible():
+    v = np.array([0.05, 0.9])          # idx0 ineligible
+    s = triage_field(v, np.array([9.0, 0.1]), eligible_quantile=0.5, triage_lambda=1.0)
+    assert s[1] > s[0]                 # huge phi at idx0 cannot lift it past eligible idx1
+```
+
+- [ ] **Step 2 — run, expect fail** (`ImportError`).
+- [ ] **Step 3 — implement** in `allocation.py`:
+
+```python
+def _norm_rank(x: np.ndarray) -> np.ndarray:
+    """Ranks in (0,1), stable ties. Empty ⇒ empty."""
+    n = x.shape[0]
+    if n == 0:
+        return x.astype(float)
+    order = np.argsort(np.argsort(x, kind="stable"), kind="stable")
+    return (order + 0.5) / n
+
+
+def triage_field(
+    v_target: np.ndarray, allocation: np.ndarray, *, eligible_quantile: float, triage_lambda: float
+) -> np.ndarray:
+    """Path-A triage (doc §8.4): within the v_target-eligible set, rank by
+    ``norm_rank(v_target) + triage_lambda * norm_rank(Φ_i)``; ineligible ⇒ 0.
+
+    v_target keeps coefficient 1 and dominates; Φ_i is a bounded (triage_lambda)
+    tie-break/nudge. Eligibility is top-(1−eligible_quantile) by v_target — it does
+    NOT widen v_target (§8.2.1): ineligible (low-v_target) positions score 0 and are
+    never selected over eligible ones, so Φ_i cannot drag fire onto low-actionability
+    sites. Φ_i ≡ 1 (or triage_lambda 0) ⇒ pure v_target order within eligible.
+    """
+    v = np.asarray(v_target, dtype=float)
+    phi = np.asarray(allocation, dtype=float)
+    L = v.shape[0]
+    if L == 0:
+        return v
+    eligible = v >= float(np.quantile(v, eligible_quantile))
+    out = np.zeros(L, dtype=float)
+    idx = np.where(eligible)[0]
+    if idx.size:
+        out[idx] = _norm_rank(v[idx]) + float(triage_lambda) * _norm_rank(phi[idx])
+    return out
+```
+
+- [ ] **Step 4 — config** (`controller_config.py`): add `"v_target_triage"` to `_SELECTION_FIELD_MODES`; add to `AllocationConfig`: `eligible_quantile: float = 0.5`, `triage_lambda: float = 0.3` (parse + print in `_materialize_allocation`). Add a config test mirroring the Task-3 pattern.
+- [ ] **Step 5 — controller branch** (`controller.py` `_selection_field`, :1818-1844), before the `return v_target` default:
+
+```python
+if mode == "v_target_triage" and self._scgr_frozen_allocation is not None:
+    return triage_field(
+        v_target, self._scgr_frozen_allocation,
+        eligible_quantile=self.config.allocation.eligible_quantile,
+        triage_lambda=self.config.allocation.triage_lambda)
+```
+
+(import `triage_field` from `allocation`.) Integration test: uniform `Φ` ⇒ triage active-window set ⊆ v_target set with identical order on the eligible top; injected peaked `Φ` reorders **within** eligible only (mirror Task-5 fixtures).
+- [ ] **Step 6 — run + suite green; commit** `feat(allocation): v_target_triage mode (eligible-gated additive capped-rank)`.
+
+## Task A2: terminal candidate-probe (`P_cheap`) ablation on B1
+
+**Files:** `counterfactual.py` (+`_score_completion_terminal`); `controller_config.py` (`D2Config.candidate_score_source` + relax the `completion_ensemble_scope` guard :635-639); `controller.py` (wire); test. Independent of A1.
+
+**Seam (Agent-verified):** candidate scoring is hardcoded local `ΔR_B` (`counterfactual.py:923-930`, on `_build_hard_completion` argmax-fill — local, not terminal). No pluggable seam exists. Add a new method paralleling `_score_completion_ensemble` (`counterfactual.py:707-799`) that fills **all** masked positions (reuse `self_conditioned_gr.build_probe_samples`) `K_P` times with **paired seeds across candidates**, head-scores, and returns Ω(B)-LME `risk − r_current` in the **same head-logit units** as local `ΔR_B` (so the resampling weight `exp(−β·ΔR)` is unit-consistent — do NOT use `G_topm_lse`).
+
+- [ ] **Step 1 — failing test** (`tests/inverse_folding/test_reference_flow_counterfactual.py`): with `candidate_score_source="terminal"`, `_process_block` ranks a hand-built candidate set where the terminal-immune-best tuple differs from the local-best, and the terminal scorer picks the terminal-best; with `="local"` (default) behaviour is byte-identical to today (regression guard).
+- [ ] **Step 2 — run, expect fail.**
+- [ ] **Step 3 — implement** `_score_completion_terminal(self, candidates_effective, context, omega, r_current, *, K_P, seed)` (~70–130 LOC): for each candidate, commit its tokens, `build_probe_samples` over all remaining masked positions (`K_P` paired completions), `_score_window_risk_matrix`, `compute_local_risk_batch(..., omega)`, mean over `K_P`, minus `r_current`. Add `D2Config.candidate_score_source: str = "local"` (validate `in {"local","terminal"}`) + `candidate_terminal_K_P: int = 4`; relax the `completion_ensemble_scope` guard so `"terminal"` is permitted. Branch in `_process_block` to call the terminal scorer when configured. Add a `D2BlockOutcome` telemetry field (`candidate_score_source`).
+- [ ] **Step 4 — run test + full suite green; commit** `feat(d2): terminal candidate-probe scorer (P_cheap), default-off`.
+
+## Task A3: configs + runs (reuse Tasks 7–8 eval)
+
+- [ ] **A1 configs** — 3 on the `scgr_betaonly` base at `g_max=2.0` only (authority ceiling ⇒ no g_max sweep): `planner_flat_gmax20_aopen.yaml` + `planner_vtarget_gmax20_aopen.yaml` (exist) + **new** `planner_triage_gmax20_aopen.yaml` (`selection_field_mode: v_target_triage`, `allocation.enabled: true`, `eligible_quantile: 0.5`, `triage_lambda: 0.3`). Cohort pilot47, `N_STEPS=100`, reuse `amplify_calib_gmax20.json`. Smoke-test loads.
+- [ ] **A2 configs** — 2 on the **B1** base (`d2_d3_full_stageB_aopen.yaml`, `global_pressure.enabled=false`, β=3.0): `b1_local` (existing B1, unchanged) + **new** `b1_terminal_aopen.yaml` (`d2.candidate_score_source: terminal`, `candidate_terminal_K_P: 4`). High-risk cohort (the RAR 0013 NoD-worst-100 set; cohort path via CLI). `N_STEPS=100`.
+- [ ] **Eval/gate** — reuse `scripts/analysis/planner_h1_pareto.py`: A1 = triage vs v_target vs flat (the gate's `alloc_minus_vtarget` slot now reads the triage arm — pass `--arm-treatment v_target_triage`, add that thin flag); A2 = `b1_terminal` vs `b1_local` paired Wilcoxon on `immune_nmp` + scTM non-inferior. Pre-registered success = **neutral-or-better at matched scTM** (not a large drop), per the tempered expectation above.
+- [ ] **Commit** `feat(configs): A1 triage + A2 terminal-probe ablation configs`.
+
+**On A1/A2 outcomes:** register a RAR (objective measurements only). If A1 recovers to neutral and A2 ≈ neutral → confirms the authority ceiling is the binding constraint and **green-lights Path C as the main line** (the only lever left). If A2 shows a real drop → the value layer has more headroom than RAR 0019 M3 implied; re-examine before C.

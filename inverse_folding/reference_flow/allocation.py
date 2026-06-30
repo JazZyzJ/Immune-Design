@@ -66,3 +66,60 @@ def stable_seed(*parts: object) -> int:
     """
     key = "|".join(str(p) for p in parts)
     return int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:8], "little")
+
+
+# ---------------------------------------------------------------------------
+# §A1 — revised r_i consumption: triage / tie-break within the eligible set
+# (PLAN_PLANNER_SC_GR.md §A1; doc/Self-Cond_GR.md §8.4 Path A)
+# ---------------------------------------------------------------------------
+
+
+def _norm_rank(x: np.ndarray) -> np.ndarray:
+    """Ranks in (0, 1), stable ties. Empty ⇒ empty."""
+    n = x.shape[0]
+    if n == 0:
+        return x.astype(float)
+    order = np.argsort(np.argsort(x, kind="stable"), kind="stable")
+    return (order + 0.5) / n
+
+
+def triage_field(
+    v_target: np.ndarray,
+    allocation: np.ndarray,
+    *,
+    eligible_quantile: float,
+    triage_lambda: float,
+    floor: float = 0.0,
+) -> np.ndarray:
+    """Path-A triage (doc §8.4): within the v_target-eligible set, rank by
+    ``norm_rank(v_target) + triage_lambda * norm_rank(Φ_i)``; ineligible ⇒ 0.
+
+    ``v_target`` keeps coefficient 1 and dominates; ``Φ_i`` is a bounded
+    (``triage_lambda``) tie-break/nudge.
+
+    **Strict eligibility (doc §8.4 — load-bearing).** Eligibility is the
+    top-(1−eligible_quantile) AMONG positions with **strictly-positive
+    actionability** ``v_target > floor`` (``floor`` = the pipeline's
+    ``active_window_min_excess``, default 0). The quantile is taken over the
+    POSITIVE values only, so a sparse ``v_target`` whose median is 0 (or any
+    non-positive site) can NEVER become eligible — this would otherwise re-admit
+    exactly the low-actionability sites whose edits did not convert (RAR 0019 M4)
+    and re-create the ``v_target·Φ`` failure (the multiplicative reweight's harm).
+    All-``v_target``-non-positive ⇒ nothing eligible ⇒ all-zero field. ``Φ_i ≡ 1``
+    (or ``triage_lambda`` 0) ⇒ pure ``v_target`` order within eligible.
+    """
+    v = np.asarray(v_target, dtype=float)
+    phi = np.asarray(allocation, dtype=float)
+    L = v.shape[0]
+    if L == 0:
+        return v
+    out = np.zeros(L, dtype=float)
+    positive = v > float(floor)
+    if not positive.any():
+        return out  # no genuinely-actionable site ⇒ select nothing (no τ_v widening)
+    thr = float(np.quantile(v[positive], eligible_quantile))
+    eligible = positive & (v >= thr)
+    idx = np.where(eligible)[0]
+    if idx.size:
+        out[idx] = _norm_rank(v[idx]) + float(triage_lambda) * _norm_rank(phi[idx])
+    return out

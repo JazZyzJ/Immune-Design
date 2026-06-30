@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 from .controller_config import D2Config
+from .self_conditioned_gr import build_probe_samples
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +597,9 @@ class D2BlockOutcome:
     beta_base: float | None = None
     beta_eff: float | None = None
     g_GR_effective: float | None = None
+    # §A2 (PLAN_PLANNER_SC_GR.md): which candidate scorer ranked this block —
+    # 'local' (block-span ensemble ΔR_B) or 'terminal' (full-completion P_cheap).
+    candidate_score_source: str = "local"
 
 
 @dataclass(frozen=True)
@@ -677,13 +681,15 @@ class D2Handler:
                 within_block_source=within_block_source,
                 typed_field=typed_field,
             )
-            # Stamp pressure provenance on every block outcome (including the
-            # skipped early-return paths) so telemetry attribution is complete.
+            # Stamp pressure provenance + the §A2 candidate-score source on every
+            # block outcome (including the skipped early-return paths) so telemetry
+            # attribution is complete.
             outcome = replace(
                 outcome,
                 beta_base=beta_base,
                 beta_eff=beta_eff,
                 g_GR_effective=g_eff,
+                candidate_score_source=str(self.config.candidate_score_source),
             )
             block_outcomes.append(outcome)
             if outcome.skipped_reason is None:
@@ -777,6 +783,95 @@ class D2Handler:
                     (
                         f"d2_b{int(block.block_id)}_c{int(cand_idx)}_e{int(ens_idx)}",
                         decode_tokens(tokens),
+                    )
+                )
+                mapping.append(int(cand_idx))
+        if not records:
+            return {}
+        window_risk_matrix = _score_window_risk_matrix(
+            scorer=scorer, protein_id=str(protein_id), records=records
+        )
+        local_risks = compute_local_risk_batch(
+            window_risks=window_risk_matrix,
+            omega_indices=omega,
+            aggregation="LME",
+        )
+        out: dict[int, list[float]] = {int(i): [] for i in candidate_indices}
+        for risk, cand_idx in zip(local_risks, mapping):
+            out[int(cand_idx)].append(float(risk - float(r_current)))
+        return {
+            int(idx): np.asarray(vals, dtype=np.float64)
+            for idx, vals in out.items()
+        }
+
+    def _score_completion_terminal(
+        self,
+        *,
+        candidates: Sequence[tuple[int, ...]],
+        candidate_indices: Sequence[int],
+        editable: Sequence[int],
+        block,
+        structural_logits: torch.Tensor,
+        x_t: torch.Tensor,
+        mask_token_id: int,
+        completed_tokens: torch.Tensor,
+        decode_tokens: Callable[[torch.Tensor], str],
+        scorer: Any,
+        canonical_token_ids: Sequence[int],
+        protein_id: str,
+        seed: int,
+        design_idx: int,
+        refresh_step: int,
+        r_current: float,
+        omega: tuple[int, ...],
+        K_P: int,
+    ) -> dict[int, np.ndarray]:
+        """§A2 terminal candidate probe (P_cheap; doc §8.4 Path A / RAR 0019).
+
+        Parallels :meth:`_score_completion_ensemble` but rolls each candidate out
+        to a **full-sequence terminal completion** (all remaining masked positions
+        filled, not just the block span) ``K_P`` times. The fill RNG key EXCLUDES
+        the candidate index, so the ``K_P`` fills are **paired across candidates**
+        (same context draws; only the committed editable tokens differ). Risk is
+        ``Ω(B)-LME(window_risks) − r_current`` in the SAME head-logit units as the
+        local ``ΔR_B`` (so the resampling weight ``exp(−β·ΔR)`` stays consistent;
+        deliberately NOT the SC-GR ``G_topm_lse`` aggregate).
+        """
+        base_x = x_t.detach().cpu().numpy().astype(np.int64)
+        struct_np = structural_logits.detach().cpu().numpy().astype(float)
+        # Paired across candidates: the fill seed depends on the block, NOT the
+        # candidate, so candidate A and B share the same K_P context completions.
+        rng_key = (
+            int(seed),
+            str(protein_id),
+            int(design_idx),
+            int(refresh_step),
+            int(block.block_id),
+        )
+        records: list[tuple[str, str]] = []
+        mapping: list[int] = []
+        for cand_idx in candidate_indices:
+            cand = candidates[int(cand_idx)]
+            x_cand = base_x.copy()
+            for pos, tok in zip(editable, cand):
+                x_cand[int(pos)] = int(tok)
+            samples = build_probe_samples(
+                x_t=x_cand,
+                structural_logits=struct_np,
+                mask_token_id=int(mask_token_id),
+                canonical_token_ids=canonical_token_ids,
+                arm="fresh",
+                ensemble_size=int(K_P),
+                struct_temperature=float(self.config.struct_temperature),
+                confidence_threshold=1.0,  # unused for the fresh arm
+                prev_state=None,
+                rng_key=rng_key,
+            )
+            for ens_idx, s in enumerate(samples):
+                records.append(
+                    (
+                        f"d2t_b{int(block.block_id)}_c{int(cand_idx)}_e{int(ens_idx)}",
+                        decode_tokens(torch.as_tensor(s.tokens, dtype=torch.long)),
                     )
                 )
                 mapping.append(int(cand_idx))
@@ -945,25 +1040,51 @@ class D2Handler:
             candidate_indices = tuple(
                 int(i) for i in np.argsort(delta_R_argmax)[:shortlist_size].tolist()
             )
-            ensemble_delta_by_idx = self._score_completion_ensemble(
-                candidates=candidates,
-                candidate_indices=candidate_indices,
-                editable=editable,
-                block=block,
-                structural_logits=structural_logits,
-                x_t=x_t,
-                mask_token_id=int(mask_token_id),
-                completed_tokens=completed_tokens,
-                decode_tokens=decode_tokens,
-                scorer=scorer,
-                canonical_token_ids=canonical_token_ids,
-                protein_id=protein_id,
-                seed=seed,
-                design_idx=design_idx,
-                refresh_step=refresh_step,
-                r_current=float(r_current),
-                omega=omega,
-            )
+            # §A2: the shortlist (top-m by local argmax ΔR) is rescored either by
+            # the local block-span ensemble (default, byte-identical) or by the
+            # terminal full-completion probe (P_cheap). Same return contract
+            # (dict[cand_idx] -> per-sample ΔR), same head-logit units.
+            if self.config.candidate_score_source == "terminal":
+                ensemble_delta_by_idx = self._score_completion_terminal(
+                    candidates=candidates,
+                    candidate_indices=candidate_indices,
+                    editable=editable,
+                    block=block,
+                    structural_logits=structural_logits,
+                    x_t=x_t,
+                    mask_token_id=int(mask_token_id),
+                    completed_tokens=completed_tokens,
+                    decode_tokens=decode_tokens,
+                    scorer=scorer,
+                    canonical_token_ids=canonical_token_ids,
+                    protein_id=protein_id,
+                    seed=seed,
+                    design_idx=design_idx,
+                    refresh_step=refresh_step,
+                    r_current=float(r_current),
+                    omega=omega,
+                    K_P=int(self.config.candidate_terminal_K_P),
+                )
+            else:
+                ensemble_delta_by_idx = self._score_completion_ensemble(
+                    candidates=candidates,
+                    candidate_indices=candidate_indices,
+                    editable=editable,
+                    block=block,
+                    structural_logits=structural_logits,
+                    x_t=x_t,
+                    mask_token_id=int(mask_token_id),
+                    completed_tokens=completed_tokens,
+                    decode_tokens=decode_tokens,
+                    scorer=scorer,
+                    canonical_token_ids=canonical_token_ids,
+                    protein_id=protein_id,
+                    seed=seed,
+                    design_idx=design_idx,
+                    refresh_step=refresh_step,
+                    r_current=float(r_current),
+                    omega=omega,
+                )
             ensemble_diag = compute_ensemble_diagnostics(
                 argmax_delta_R=delta_R_argmax,
                 ensemble_delta_R_by_candidate=ensemble_delta_by_idx,

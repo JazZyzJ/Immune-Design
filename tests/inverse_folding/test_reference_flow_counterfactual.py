@@ -8,7 +8,12 @@ import numpy as np
 import pytest
 import torch
 
+from types import SimpleNamespace
+
+from inverse_folding.reference_flow.controller import ActiveBlock
+from inverse_folding.reference_flow.controller_config import D2Config
 from inverse_folding.reference_flow.counterfactual import (
+    D2Handler,
     apply_logit_correction,
     build_candidate_support,
     build_safe_candidate_support,
@@ -564,6 +569,147 @@ def test_ensemble_diagnostics_use_mean_variance_and_sign_consistency_without_gat
 # ---------------------------------------------------------------------------
 # End-to-end: beneficial candidate increases mass on lower-risk token
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# §A2 — terminal candidate-probe (P_cheap)
+# ---------------------------------------------------------------------------
+
+
+def _decode_chr(t: torch.Tensor) -> str:
+    return "".join(chr(int(x)) for x in t.tolist())
+
+
+class _SumStub:
+    """Duck-typed scorer: each window's z = sum(ord) of the decoded sequence.
+
+    Depends on EVERY residue, so terminal (full-seq fill) and local (block-span
+    fill, argmax elsewhere) completions score differently when they disagree
+    off-block. ``n_windows`` columns so omega indexing works.
+    """
+
+    def __init__(self, n_windows: int = 1):
+        self.n_windows = n_windows
+        self.seen: list[str] = []
+
+    def score_batch_same_protein(self, *, protein_id, records):
+        scores = []
+        for _, seq in records:
+            self.seen.append(seq)
+            z = float(sum(ord(c) for c in seq))
+            scores.append(SimpleNamespace(windows=[SimpleNamespace(z=z)] * self.n_windows))
+        return SimpleNamespace(scores=scores)
+
+
+def _peaked_logits(L: int, fill_token: int, V: int = 20) -> torch.Tensor:
+    z = np.full((L, V), -50.0, dtype=np.float32)
+    z[:, fill_token] = 50.0  # canonical fill token dominates -> deterministic fill
+    return torch.from_numpy(z)
+
+
+def _terminal_handler(**d2) -> D2Handler:
+    base = dict(
+        enabled=True, beta=3.0, top_k_tokens=2, max_positions_per_block=1,
+        max_candidates_per_block=32, min_ess_fraction=0.0,
+        min_delta_R_improvement=0.0, struct_temperature=1.0,
+    )
+    base.update(d2)
+    return D2Handler(D2Config(**base))
+
+
+def test_score_completion_terminal_ranks_pairs_and_fills():
+    L, fill_tok, mask = 6, 10, 0
+    handler = _terminal_handler(candidate_score_source="terminal")
+    canonical = [10, 11, 12]
+    logits = _peaked_logits(L, fill_tok)
+    x_t = torch.zeros(L, dtype=torch.long)  # all masked
+    completed = torch.full((L,), fill_tok, dtype=torch.long)
+    stub = _SumStub()
+    out = handler._score_completion_terminal(
+        candidates=[(11,), (12,)], candidate_indices=[0, 1], editable=[2],
+        block=SimpleNamespace(block_id=0), structural_logits=logits, x_t=x_t,
+        mask_token_id=mask, completed_tokens=completed, decode_tokens=_decode_chr,
+        scorer=stub, canonical_token_ids=canonical, protein_id="P", seed=1,
+        design_idx=0, refresh_step=0, r_current=0.0, omega=(0,), K_P=3,
+    )
+    assert set(out) == {0, 1}
+    assert out[0].shape == (3,) and out[1].shape == (3,)
+    # candidate (11,) has a lower-ord editable token than (12,) -> lower terminal risk
+    assert out[0].mean() < out[1].mean()
+    # full-fill: every scored sequence has no mask char (all masked positions filled)
+    assert all(chr(mask) not in seq for seq in stub.seen)
+
+
+def test_score_completion_terminal_is_paired_across_candidates():
+    L, mask = 6, 0
+    handler = _terminal_handler(candidate_score_source="terminal")
+    canonical = [10, 11, 12]
+    logits = _struct_logits(seed=3, length=L)  # NON-peaked -> stochastic fills
+    x_t = torch.zeros(L, dtype=torch.long)
+    completed = torch.full((L,), 10, dtype=torch.long)
+    out = handler._score_completion_terminal(
+        candidates=[(11,), (11,)], candidate_indices=[0, 1], editable=[2],
+        block=SimpleNamespace(block_id=0), structural_logits=logits, x_t=x_t,
+        mask_token_id=mask, completed_tokens=completed, decode_tokens=_decode_chr,
+        scorer=_SumStub(), canonical_token_ids=canonical, protein_id="P", seed=1,
+        design_idx=0, refresh_step=0, r_current=0.0, omega=(0,), K_P=4,
+    )
+    # identical editable tokens + paired fills (rng_key excludes cand_idx) ⇒ equal
+    np.testing.assert_allclose(out[0], out[1])
+
+
+def _process_block_args(*, scorer, L=8):
+    """Build a minimal valid _process_block / correct_logits argument set.
+
+    Block [2,5): masked editable @2 + committed context @3; off-block masks @5,6,7
+    carry token 12 in completed_tokens but fill to token 10 under terminal — so
+    terminal and local completions deterministically disagree off-block.
+    """
+    fill_tok = 10
+    logits = _peaked_logits(L, fill_tok)
+    x_t = torch.full((L,), fill_tok, dtype=torch.long)
+    for p in (2, 4, 5, 6, 7):
+        x_t[p] = 0  # mask
+    completed = torch.full((L,), fill_tok, dtype=torch.long)
+    for p in (5, 6, 7):
+        completed[p] = 12  # off-block argmax differs from the terminal fill (10)
+    residue_excess = np.zeros(L, dtype=float)
+    residue_excess[2] = 5.0  # editable pick
+    block = ActiveBlock(
+        block_id=0, residue_start_0b=2, residue_end_0b=5, window_indices=(0,),
+        g_time=1.0, g_comp=1.0, g_ent=1.0, g_ESS=1.0, rho_B=1.0,
+        completion_fraction=1.0, mean_struct_entropy=0.5,
+    )
+    return dict(
+        structural_logits=logits, x_t=x_t, mask_token_id=0,
+        completed_tokens=completed, decode_tokens=_decode_chr,
+        per_pos_entropy=torch.zeros(L), struct_log_probs=torch.log_softmax(logits, dim=-1),
+        residue_excess=residue_excess, current_window_risks=[5.0],
+        scorer=scorer, canonical_token_ids=[10, 11, 12], protein_id="P",
+        seed=1, design_idx=0, refresh_step=0,
+    ), block
+
+
+def test_process_block_terminal_differs_from_local_and_is_stamped():
+    args, block = _process_block_args(scorer=_SumStub())
+    local = D2Handler(D2Config(
+        enabled=True, beta=3.0, top_k_tokens=2, max_positions_per_block=1,
+        max_candidates_per_block=32, min_ess_fraction=0.0, min_delta_R_improvement=0.0,
+        candidate_score_source="local",
+    )).correct_logits(active_blocks=[block], **args)
+    args_t, block_t = _process_block_args(scorer=_SumStub())
+    terminal = D2Handler(D2Config(
+        enabled=True, beta=3.0, top_k_tokens=2, max_positions_per_block=1,
+        max_candidates_per_block=32, min_ess_fraction=0.0, min_delta_R_improvement=0.0,
+        candidate_score_source="terminal", candidate_terminal_K_P=2,
+    )).correct_logits(active_blocks=[block_t], **args_t)
+    lb = local.block_outcomes[0]
+    tb = terminal.block_outcomes[0]
+    # the branch is stamped on every block outcome (telemetry)
+    assert lb.candidate_score_source == "local"
+    assert tb.candidate_score_source == "terminal"
+    # terminal rescoring (full-seq, off-block disagreement) changes the ranking signal
+    assert tuple(lb.delta_R_B) != tuple(tb.delta_R_B)
 
 
 def test_beneficial_candidate_shifts_mass_toward_lower_risk():
