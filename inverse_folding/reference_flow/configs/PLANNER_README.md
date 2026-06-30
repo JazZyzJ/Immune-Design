@@ -118,3 +118,47 @@ python scripts/analysis/planner_h1_pareto.py \
 On A1/A2 outcomes: register a RAR (objective measurements only). A1≈neutral and
 A2≈neutral ⇒ confirms the authority ceiling binds → green-lights Path C (the main
 line; out of scope here).
+
+---
+
+## §C0b — Path C headroom existence test (offline; gates the C rewrite)
+
+**Why (doc `Self-Cond_GR.md` §8.4 Path C, step C0b):** before any D2/sampler rewrite
+for coordinated edits, prove the headroom exists. C0a (RAR 0021) ruled out the
+structural-lock NO-GO; C0b is the decisive constructive test. **Run now** —
+offline, independent of the running A1/A2, **no controller/firewall change** — but
+it needs a **new offline script** (coder), not a config tweak.
+
+**Question:** on a high-`r_i` register, does a **coordinated** resample reduce
+terminal immune *more* than the best **single-position** safe edit, at acceptable
+structure? GO ⇒ Path C worth building; NO-GO ⇒ drop the C rewrite.
+
+**Method (new script, ~existence probe, not a full sweep):**
+1. Sample ~30–50 high-`r_i` registers (top-tercile `r_i` ≈9-residue windows) across a
+   few proteins, from existing designs (planner_pilot47 or B1 high-risk) + their
+   per-residue `r_i`.
+2. Per register, two arms holding the rest of the sequence fixed:
+   - **single-position best:** enumerate each position's structurally-safe support,
+     score terminal immune (frozen head on a full completion), keep the best
+     structure-acceptable single-token edit.
+   - **joint:** remask the whole register, draw `K` (~8) **multi-step
+     reconditioned** DPLM resamples — *true* joint: a single forward over the
+     remasked register is still a per-position marginal product (fake joint); only
+     reconditioning across partial commits yields anchor+compensation correlation —
+     score each for terminal immune (head) + a structure proxy, keep the best
+     structure-acceptable one.
+3. **Structure proxy:** cheap screen = DPLM structural log-prob of the resampled
+   register; confirm the shortlist with ESMFold scTM (cluster). "Acceptable" =
+   scTM not worse than the single-position arm by a fixed tol.
+4. Compare per register: `joint_best_immune` vs `single_best_immune` at matched/
+   acceptable structure.
+
+**Pre-registered GO (fix before results):** GO iff the joint arm beats the
+single-position arm on terminal immune by a material margin (≫ the ~0.2-nat
+single-edit ceiling) at acceptable structure, for a material fraction (≥ ~1/3) of
+registers. Report per-register `(single_best_immune, joint_best_immune,
+single_scTM, joint_scTM, joint_wins_flag)` + the fraction. Register a RAR.
+
+**Reuse:** DPLM sampler (the generator) + frozen head scorer + ESMFold (all exist);
+new code is only the register-remask + multi-step-resample driver + the scorer
+loop. Cluster compute (ESMFold on the shortlist). Paths via CLI, no hardcoding.
