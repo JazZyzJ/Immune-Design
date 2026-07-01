@@ -41,6 +41,7 @@ from inverse_folding.reference_flow.actionability import (
 )
 from inverse_folding.reference_flow.allocation import (
     reweight_by_allocation,
+    terminal_union_field,
     triage_field,
 )
 from inverse_folding.reference_flow.controller_config import (
@@ -1397,6 +1398,48 @@ def test_triage_seam_applies_triage_field():
     # strict eligibility (doc §8.4): zero/non-positive-actionability sites NEVER
     # score (no τ_v widening), regardless of the v_target median.
     assert (ctrl._last_selection_field[st.v_target <= 0.0] == 0.0).all()
+
+
+def test_terminal_union_seam_applies_terminal_union_field():
+    tq, tl = 0.9, 0.3
+
+    def peaked(L):
+        phi = np.full(L, 0.2)
+        phi[:5] = 3.0  # high Φ at the low-index head
+        return phi
+
+    ctrl = build_guided_controller(
+        selection_field_mode="v_target_terminal_union",
+        allocation=AllocationConfig(
+            enabled=True, terminal_eligible_quantile=tq, terminal_lambda=tl
+        ),
+        frozen_allocation=peaked,
+    )
+    st = ctrl.actionability_states()[-1]
+    phi = peaked(st.v_target.shape[0])
+    expected = terminal_union_field(
+        st.v_target, phi, terminal_eligible_quantile=tq, terminal_lambda=tl
+    )
+    assert np.allclose(ctrl._last_selection_field, expected)
+    # §A3 promotion: the union PROMOTES sites the A1 triage tie-break zeros out
+    # (low-v_target registers that clear the terminal gate / are locally positive).
+    triage = triage_field(
+        st.v_target, phi, eligible_quantile=tq, triage_lambda=tl
+    )
+    assert ((ctrl._last_selection_field > 0.0) & (triage == 0.0)).any()
+
+
+def test_terminal_union_prefreeze_falls_back_to_v_target():
+    ctrl = build_guided_controller(
+        selection_field_mode="v_target_terminal_union",
+        allocation=AllocationConfig(enabled=True),
+        frozen_allocation=lambda L: np.ones(L),
+    )
+    # pre-freeze: no frozen Φ_i yet -> the seam must return the raw v_target field.
+    ctrl._scgr_frozen_allocation = None
+    v = np.array([0.1, 0.9, 0.5, 0.2])
+    out = ctrl._selection_field(v, "P", 0)
+    assert np.array_equal(out, v)
 
 
 def test_flat_seam_content_blind_and_reproducible():

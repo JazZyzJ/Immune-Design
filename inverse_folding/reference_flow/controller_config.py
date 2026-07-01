@@ -69,12 +69,21 @@ _ALLOWED_SCGR_ACTUATION_REDUCE = frozenset({"median", "ema"})
 # (content-blind pseudo-random control). The allocation ``arm`` reuses the SC-GR
 # probe arms (Phi_i is derived from one arm's per-residue residue_excess).
 _ALLOWED_SELECTION_FIELD_MODES = frozenset(
-    {"v_target", "v_target_x_alloc", "v_target_triage", "flat"}
+    {
+        "v_target",
+        "v_target_x_alloc",
+        "v_target_triage",
+        "v_target_terminal_union",
+        "flat",
+    }
 )
 # Selection modes that CONSUME the frozen Phi_i (and so require the SC-GR pressure
-# freeze path). ``v_target_x_alloc`` (superseded, §8.3) and ``v_target_triage``
-# (§A1 / doc §8.4 Path A) both fall back to raw v_target if Phi_i never freezes.
-_PHI_CONSUMING_SELECTION_MODES = frozenset({"v_target_x_alloc", "v_target_triage"})
+# freeze path). ``v_target_x_alloc`` (superseded, §8.3), ``v_target_triage``
+# (§A1 / doc §8.4 Path A) and ``v_target_terminal_union`` (§A3 / doc §8.4 Fork A)
+# all fall back to raw v_target if Phi_i never freezes.
+_PHI_CONSUMING_SELECTION_MODES = frozenset(
+    {"v_target_x_alloc", "v_target_triage", "v_target_terminal_union"}
+)
 
 
 @dataclass(frozen=True)
@@ -325,6 +334,13 @@ class AllocationConfig:
     # tie-break weight (v_target keeps coefficient 1 and dominates).
     eligible_quantile: float = 0.5
     triage_lambda: float = 0.3
+    # §A3 terminal-aware active-register targeting (doc §8.4 Fork A): consumed only
+    # by selection_field_mode='v_target_terminal_union'. ``terminal_eligible_quantile``
+    # = the terminal gate (top-(1−q) by the register-smoothed Phi_i are terminal-
+    # eligible, unioned with the locally-actionable set); ``terminal_lambda`` = the
+    # bounded Phi_i rank weight in the union (v_target keeps coefficient 1).
+    terminal_eligible_quantile: float = 0.9
+    terminal_lambda: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -1091,6 +1107,22 @@ def _materialize_allocation(payload: Any) -> AllocationConfig:
         raise ControllerConfigError(
             f"controller.allocation.triage_lambda must be >= 0 (got {triage_lambda})"
         )
+    terminal_eligible_quantile = float(
+        payload.get("terminal_eligible_quantile", defaults.terminal_eligible_quantile)
+    )
+    if not (0.0 <= terminal_eligible_quantile <= 1.0):
+        raise ControllerConfigError(
+            "controller.allocation.terminal_eligible_quantile must lie in [0, 1] "
+            f"(got {terminal_eligible_quantile})"
+        )
+    terminal_lambda = float(
+        payload.get("terminal_lambda", defaults.terminal_lambda)
+    )
+    if terminal_lambda < 0.0:
+        raise ControllerConfigError(
+            "controller.allocation.terminal_lambda must be >= 0 "
+            f"(got {terminal_lambda})"
+        )
     return AllocationConfig(
         enabled=bool(payload.get("enabled", defaults.enabled)),
         arm=arm,
@@ -1099,6 +1131,8 @@ def _materialize_allocation(payload: Any) -> AllocationConfig:
         reweight_eps=reweight_eps,
         eligible_quantile=eligible_quantile,
         triage_lambda=triage_lambda,
+        terminal_eligible_quantile=terminal_eligible_quantile,
+        terminal_lambda=terminal_lambda,
     )
 
 

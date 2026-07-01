@@ -728,12 +728,22 @@ def test_triage_never_selects_ineligible_over_eligible():
 
 ```python
 def _norm_rank(x: np.ndarray) -> np.ndarray:
-    """Ranks in (0,1), stable ties. Empty ⇒ empty."""
+    """Tie-aware fractional ranks in (0,1): equal values share the MEAN of their
+    sorted positions (NOT index-broken). Empty ⇒ empty. Load-bearing: at tied /
+    zero v_target, an index-broken rank spans (0,1) and swamps the bounded Φ nudge,
+    so position (not Φ) would decide selection (review P1). Distinct values are
+    evenly spaced (== a plain argsort rank), so all-distinct callers are unaffected."""
+    x = np.asarray(x, dtype=float)
     n = x.shape[0]
     if n == 0:
         return x.astype(float)
-    order = np.argsort(np.argsort(x, kind="stable"), kind="stable")
-    return (order + 0.5) / n
+    order = np.argsort(x, kind="stable")
+    _u, inv, counts = np.unique(x[order], return_inverse=True, return_counts=True)
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    avg_pos = (starts + (counts - 1) / 2.0)[inv]
+    result = np.empty(n, dtype=float)
+    result[order] = (avg_pos + 0.5) / n
+    return result
 
 
 def triage_field(
@@ -786,11 +796,37 @@ if mode == "v_target_triage" and self._scgr_frozen_allocation is not None:
 - [ ] **Step 3 — implement** `_score_completion_terminal(self, candidates_effective, context, omega, r_current, *, K_P, seed)` (~70–130 LOC): for each candidate, commit its tokens, `build_probe_samples` over all remaining masked positions (`K_P` paired completions), `_score_window_risk_matrix`, `compute_local_risk_batch(..., omega)`, mean over `K_P`, minus `r_current`. Add `D2Config.candidate_score_source: str = "local"` (validate `in {"local","terminal"}`) + `candidate_terminal_K_P: int = 4`; relax the `completion_ensemble_scope` guard so `"terminal"` is permitted. Branch in `_process_block` to call the terminal scorer when configured. Add a `D2BlockOutcome` telemetry field (`candidate_score_source`).
 - [ ] **Step 4 — run test + full suite green; commit** `feat(d2): terminal candidate-probe scorer (P_cheap), default-off`.
 
+## Task A3-U: terminal-aware active-register targeting — `v_target_terminal_union` (WHERE layer)
+
+**Maps to doc `Self-Cond_GR.md` §8.4 "A3" (terminal-aware actionability, post-C0b Stage-2).** Status: **implemented** (LOG L0124), default-off. This section is the reviewed spec doc §8.4 required before a cluster run. (Distinct from "Task A3: configs + runs" below, which is the A1/A2/A3-U rollout/eval task.)
+
+**Files:** `allocation.py` (+`terminal_union_field`, reuses `_norm_rank`); `controller_config.py` (mode in `_ALLOWED_SELECTION_FIELD_MODES` + `_PHI_CONSUMING_SELECTION_MODES`; `AllocationConfig.terminal_eligible_quantile`/`terminal_lambda`); `controller.py` (`_selection_field` branch); config + tests. Mirrors the green A1 stack.
+
+**Motivation (C0a M4).** `v_target` misses high-`r_i` low-`v_target` registers because *local* head evidence (`b_env`) is low there, **not** because of structure — a terminal-vs-local sensing gap. A1 (`v_target_triage`) can never reach them (within-eligible tie-break; low-`v_target` ⇒ 0). A3-U is A1's **principled inverse**: it PROMOTES those registers into the active set via a **separate terminal gate**, not by lowering `τ_v`. Authority-bounded (~0.2 nats/edit; spreads capped edits, does not break the ceiling — that stays Path C / breadth).
+
+**Mechanism** (`terminal_union_field`, consumed at `_selection_field` when `selection_field_mode=v_target_terminal_union`, on the frozen `Φ_i`; floor = `active_window_min_excess`):
+
+- **Eligibility = union `local | terminal`**:
+  - `local = v_target > floor` — the same strict-positive local set A1 uses.
+  - `terminal = Φ_i ≥ quantile(Φ_i[Φ_i > 0], terminal_eligible_quantile)` — top-(1−q) **over the positive `Φ` subset only** (mirrors A1's positive-subset quantile). Two `Φ`-degeneracy guards keep the terminal set from widening onto dead sites (the falsified `v_target·Φ`, §8.2.1 / RAR 0019 M4): the positive-subset quantile defeats a **sparse** `Φ` (realistic `allocation_mass` output is mostly-zero; a full-array quantile collapses to 0 and admits everyone), the `max>min` flat guard defeats a **uniform** `Φ` (all-zero `r_i` ⇒ ones). Either ⇒ empty terminal set ⇒ admit nothing beyond local.
+- **Score over the union** `norm_rank(v_target) + terminal_lambda · norm_rank(Φ_i)`, ineligible ⇒ 0. `v_target` keeps coefficient 1; `Φ_i` is a bounded (`terminal_lambda`) additive nudge.
+- **Rank/tie semantics (load-bearing).** `_norm_rank` is **tie-aware** (average rank): equal `v_target` values share a rank, so at tied / zero `v_target` — A3-U's core promotion regime — `Φ_i` is the *real* tie-break. An index-broken rank would span (0,1) and swamp the bounded `Φ_i` term, letting position, not the terminal signal, decide (review P1).
+- **`Φ_i` = the frozen, register-smoothed allocation mass** (`_scgr_frozen_allocation`), so the terminal quantile and the downstream window-max selection unit are both register-grain. Pre-freeze (`Φ_i` None) ⇒ raw `v_target` fallback.
+
+**Firewall exception (doc §3).** A3-U **deliberately crosses** the §3 firewall (prospective `r_i` → typed targeting) that §3 otherwise forbids — the one sanctioned crossing, guarded by the **early-freeze** of `Φ_i` (frozen at the first reliable refresh inside the SC-GR pressure path, never recomputed; the same self-reinforcement guard as `B_sc`). `v_target` construction, pressure/G/β, memory, and the schedule are untouched; only the SELECTION field changes.
+
+**Config contract.** `selection_field_mode=v_target_terminal_union` ∈ `_ALLOWED_SELECTION_FIELD_MODES` **and** `_PHI_CONSUMING_SELECTION_MODES`, so `_cross_validate_allocation` fail-fasts unless `allocation.enabled` + `global_pressure.enabled` with `pressure_source=self_conditioned_probe` (else `Φ_i` never freezes and the arm silently degrades to its own `v_target` control). `AllocationConfig.terminal_eligible_quantile=0.9` (∈[0,1]) + `terminal_lambda=0.3` (≥0), parsed + range-validated + echoed via the resolved-`allocation`-dict print.
+
+**Telemetry contract.** Identical to A1: `phi_alloc` stays `ones` (A3-U uses `Φ_i` as a *rank input*, not an applied multiplicative mass); the actual selection field is captured by `selection_field`; the arm is distinguished at the **run level** by the stamped `selection_field_mode` / `arm_mode`, not per-row. No new telemetry field.
+
+**Cohort + gate.** 3 arms at `g_max=2.0` only (authority ceiling): `planner_flat_gmax20_aopen.yaml` + `planner_vtarget_gmax20_aopen.yaml` + **new** `planner_terminal_union_gmax20_aopen.yaml` (`selection_field_mode: v_target_terminal_union`, `terminal_eligible_quantile: 0.9`, `terminal_lambda: 0.3`). Cohort pilot47 × 8, `N_STEPS=100`, reuse `amplify_calib_gmax20.json`. Gate = the **3-arm `compute_h1`** (WHERE-layer like A1 — **NOT `--pairwise`**): `--arm-treatment v_target_terminal_union --expected-g-max 2.0` (terminal_union vs v_target primary + macro vs flat). Pre-registered success = **neutral-or-better at matched scTM** (authority ceiling; not a large drop). Gate-fail ⇒ discard the mode (throwaway, per exploratory scope).
+
 ## Task A3: configs + runs (reuse Tasks 7–8 eval)
 
 - [ ] **A1 configs** — 3 on the `scgr_betaonly` base at `g_max=2.0` only (authority ceiling ⇒ no g_max sweep): `planner_flat_gmax20_aopen.yaml` + `planner_vtarget_gmax20_aopen.yaml` (exist) + **new** `planner_triage_gmax20_aopen.yaml` (`selection_field_mode: v_target_triage`, `allocation.enabled: true`, `eligible_quantile: 0.5`, `triage_lambda: 0.3`). Cohort pilot47, `N_STEPS=100`, reuse `amplify_calib_gmax20.json`. Smoke-test loads.
 - [ ] **A2 configs** — 2 on the **B1** base (`d2_d3_full_stageB_aopen.yaml`, `global_pressure.enabled=false`, β=3.0): `b1_local` (existing B1, unchanged) + **new** `b1_terminal_aopen.yaml` (`d2.candidate_score_source: terminal`, `candidate_terminal_K_P: 4`). High-risk cohort (the RAR 0013 NoD-worst-100 set; cohort path via CLI). `N_STEPS=100`.
-- [ ] **Eval/gate** — reuse `scripts/analysis/planner_h1_pareto.py`: A1 = triage vs v_target vs flat (the gate's `alloc_minus_vtarget` slot now reads the triage arm — pass `--arm-treatment v_target_triage`, add that thin flag); A2 = `b1_terminal` vs `b1_local` paired Wilcoxon on `immune_nmp` + scTM non-inferior. Pre-registered success = **neutral-or-better at matched scTM** (not a large drop), per the tempered expectation above.
+- [ ] **A3-U configs** — 3 on the `scgr_betaonly` base at `g_max=2.0` only: `planner_flat_gmax20_aopen.yaml` + `planner_vtarget_gmax20_aopen.yaml` (exist) + **new** `planner_terminal_union_gmax20_aopen.yaml` (`selection_field_mode: v_target_terminal_union`, `allocation.enabled: true`, `terminal_eligible_quantile: 0.9`, `terminal_lambda: 0.3`). Cohort pilot47, `N_STEPS=100`, reuse `amplify_calib_gmax20.json`. Spec in Task A3-U above.
+- [ ] **Eval/gate** — reuse `scripts/analysis/planner_h1_pareto.py`: A1 = triage vs v_target vs flat 3-arm `compute_h1` (`--arm-treatment v_target_triage --expected-g-max 2.0`); **A3-U** = terminal_union vs v_target vs flat 3-arm `compute_h1` (`--arm-treatment v_target_terminal_union --expected-g-max 2.0`, **no `--pairwise`** — WHERE-layer, macro leg consumes flat); A2 = `b1_terminal` vs `b1_local` `--pairwise` paired Wilcoxon on `immune_nmp` + scTM non-inferior. Pre-registered success = **neutral-or-better at matched scTM** (not a large drop), per the tempered expectation above.
 - [ ] **Commit** `feat(configs): A1 triage + A2 terminal-probe ablation configs`.
 
 **On A1/A2 outcomes:** register a RAR (objective measurements only). If A1 recovers to neutral and A2 ≈ neutral → confirms the authority ceiling is the binding constraint and **green-lights Path C as the main line** (the only lever left). If A2 shows a real drop → the value layer has more headroom than RAR 0019 M3 implied; re-examine before C.

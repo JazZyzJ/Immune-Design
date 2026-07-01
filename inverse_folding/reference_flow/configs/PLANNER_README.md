@@ -115,7 +115,50 @@ python scripts/analysis/planner_h1_pareto.py \
   --expected-n-proteins <cohort_size> --expected-n-designs 8
 ```
 
-On A1/A2 outcomes: register a RAR (objective measurements only). A1≈neutral and
+### §A3 — `v_target_terminal_union` (WHERE layer)
+
+A1 triage is a WITHIN-eligible tie-break: a low-`v_target` register never
+activates. **A3 is the principled inverse of A1** — Fork A ("terminal-OR-local
+gated union", doc §8.4). Union eligibility PROMOTES high-`r_i` (high-`Φ`)
+low-`v_target` registers INTO the active set: `eligible = local | terminal`, where
+`local` = strictly-positive actionability (`v_target > floor`,
+`floor = active_window_min_excess`) and `terminal` = the register-smoothed `Φ_i`
+in the top-(1−`terminal_eligible_quantile`) **taken over the positive `Φ` subset
+only** (`quantile(Φ[Φ>0], q)`, mirroring A1 triage). Over the union the score is
+`norm_rank(v_target) + terminal_lambda · norm_rank(Φ_i)` (`v_target` keeps
+coefficient 1). C0a M4 found those registers are skipped for low *local* head
+evidence (`b_env`), not structure, so the terminal channel supplies the
+actionability evidence the local term misses. This is a **separate terminal gate,
+not a lowered `v_target` bar** (never widens `τ_v`). The terminal quantile and the
+window-max selection unit are both **register-grain** (`Φ` is the frozen,
+register-smoothed allocation mass). **Two `Φ`-degeneracy guards keep the terminal
+set from widening onto dead sites** (RAR 0019 M4 / §8.2.1): (i) the positive-subset
+quantile — the realistic `allocation_mass` output is **sparse** (mostly-zero), so a
+full-array quantile would collapse to 0 and admit every dead site (the review P1);
+(ii) the `max>min` flat guard — an all-zero `r_i` yields a **uniform** `Φ` (ones)
+with no discriminative signal. In both, the terminal set is empty ⇒ admit NOTHING
+beyond the local set.
+A3 **deliberately crosses the §3 firewall**, which is guarded by the early-freeze
+of `Φ_i`. 3 arms at `g_max=2.0` only (authority ceiling ⇒ no g_max sweep):
+`planner_flat_gmax20_aopen.yaml` + `planner_vtarget_gmax20_aopen.yaml` (exist) +
+`planner_terminal_union_gmax20_aopen.yaml` (`selection_field_mode:
+v_target_terminal_union`, `allocation.terminal_eligible_quantile: 0.9`,
+`terminal_lambda: 0.3`). Reuses the scgr_betaonly Budget layer +
+`amplify_calib_gmax20.json` (re-emit at the 100-step cadence). Gate:
+
+```bash
+python scripts/analysis/planner_h1_pareto.py \
+  --runs-json <flat+vtarget+terminal_union runs json> --output <a3_terminal_union.json> \
+  --arm-treatment v_target_terminal_union \
+  --expected-n-proteins 47 --expected-n-designs 8 --expected-g-max 2.0
+```
+
+A3 is a **3-arm WHERE-layer** experiment (like §A1, not the §A2 value layer): use the
+3-arm `compute_h1` gate (**no `--pairwise`**) so `flat` and the macro leg
+(`v_target < flat` AND `terminal_union < flat`) are consumed — `terminal_union` is
+paired against `v_target` (primary) and the macro control against `flat`.
+
+On A1/A2/A3 outcomes: register a RAR (objective measurements only). A1≈neutral and
 A2≈neutral ⇒ confirms the authority ceiling binds → green-lights Path C (the main
 line; out of scope here).
 
@@ -191,34 +234,27 @@ test breadth in the closed loop (§Breadth).
 
 ---
 
-## §Breadth-S1 — closed-loop breadth (CONFIG-only; the live experiment)
+## §Breadth-S1 — WITHDRAWN (config-only cap-widening is blocked AND moot)
 
-**Why (doc `Self-Cond_GR.md` §8.4):** C0b says the lever is wider joint-scored edits
-per block, not coordination. Test whether D2, editing more positions per block,
-realizes closed-loop immune reduction beyond B1's 4-position cap **at held scTM**.
-This is the config-only Stage 1 (no coder); Stage 2 (A3 terminal-aware
-actionability, to reach high-`r_i` low-`v_target` registers D2 skips) is a separate
-coder+PLAN task, only if Stage 1 undershoots.
+**Do not run the `max_positions_per_block` sweep.** Two reasons (2026-07-01):
 
-**Configs (copy `d2_d3_full_stageB_aopen.yaml`, change one knob):** sweep
-`controller.d2.max_positions_per_block` ∈ **{4 (=B1 baseline), 6, 8}**. Everything
-else fixed (`max_candidates_per_block` already 4096 → the wide-tuple sampled path is
-used; `min_ess_fraction` 0.0; β 3.0; `global_pressure` off). Name e.g.
-`b1_breadth_pos6_aopen.yaml`, `b1_breadth_pos8_aopen.yaml`.
+1. **Blocked.** With `candidate_mode=structure_topk`, `top_k_tokens=8`, a block's
+   candidate count is `8^P` (P = `max_positions_per_block`). `P=4` → `8^4=4096` =
+   `max_candidates_per_block` (cartesian, OK); `P=6/8` → `262k / 16.7M` ≫ 4096 →
+   the code falls to the `sampled` path, which **`raise NotImplementedError`** when
+   `completion_ensemble` is on (uniform-over-shortlist `Q` marginal is biased; it
+   fails-fast rather than emit a biased correction — `counterfactual.py:1114`). The
+   earlier "`max_candidates 4096 → sampled path is used`" note was **wrong**; pos4
+   ran only because `8^4` is exactly on the cartesian ceiling. No config (holding
+   `top_k=8`) runs `P>4`.
+2. **Moot.** **RAR 0023 M6**: the 4-cap is essentially free — 54% of winning edits
+   change ≤4 residues, and where a ≤4 candidate exists (24/35 registers) restricting
+   to ≤4 costs **median +0.000 nat** (~8% of registers pay >1 nat). The binding
+   constraint is **which register/positions D2 selects**, not positions-per-block.
 
-**Cohort:** B1 high-risk DRB1\*07:01 (RAR 0013 NoD-worst-100 / the C0b design source;
-cohort path via CLI), `N_STEPS=100`, n=8 designs/protein.
-
-**Gate (pre-registered):** paired over proteins, does `immune_nmp` (NetMHCIIpan,
-external) drop **materially and monotonically** with `max_positions` (6, 8 vs 4) at
-**scTM non-inferior** (median scTM ≥ baseline − 0.02)? Report per-protein
-`immune_nmp` + scTM per arm; **recovery is a movement diagnostic only, not a gate**
-(a recovery drop at held scTM is acceptable). Register a RAR.
-
-**Read with calibrated expectation:** the offline breadth number is inflated
-(regression + unbounded best-of-K) AND D2 applies **per-position marginal** logit
-shifts, not a best-of-K commit — so this measures whether wide *marginal biasing*
-realizes the breadth headroom. Expect substantially less than the offline −10;
-a material, monotone, scTM-safe drop = breadth is a real closed-loop lever →
-proceed to Stage 2 (A3) to also reach the registers D2 currently skips. Flat/
-scTM-breaking = the offline headroom does not survive the loop.
+→ **The live Stage 1 is §A3** (`v_target_terminal_union`): make D2 *select* the
+high-`r_i` low-`v_target` registers it skips, and `Φ`-rank the right ≤4 positions
+within them. Evaluate immune (NetMHCIIpan) + scTM; recovery is a movement diagnostic
+only. **Widening the cap** (implement full-candidate-set projection for the `sampled`
+path — a localised factorized-D2 fix) is a **deferred fallback**, only if A3 shows
+the reached registers genuinely need >4 changes (the ~8% >1-nat tail).

@@ -1585,6 +1585,81 @@ def test_v_target_triage_requires_allocation_enabled():
 
 
 # ---------------------------------------------------------------------------
+# §A3 v_target_terminal_union (terminal-aware active-register targeting)
+# ---------------------------------------------------------------------------
+
+
+def test_v_target_terminal_union_materializes_with_defaults():
+    cfg = materialize_controller_config(
+        _alloc_enabled_payload(selection_field_mode="v_target_terminal_union")
+    )
+    assert cfg.targeting.selection_field_mode == "v_target_terminal_union"
+    assert cfg.allocation.enabled is True
+    assert cfg.allocation.terminal_eligible_quantile == 0.9  # default
+    assert cfg.allocation.terminal_lambda == 0.3  # default
+
+
+def test_v_target_terminal_union_custom_knobs():
+    cfg = materialize_controller_config(
+        _alloc_enabled_payload(
+            selection_field_mode="v_target_terminal_union",
+            terminal_eligible_quantile=0.75,
+            terminal_lambda=0.6,
+        )
+    )
+    assert cfg.allocation.terminal_eligible_quantile == 0.75
+    assert cfg.allocation.terminal_lambda == 0.6
+
+
+def test_v_target_terminal_union_requires_sc_pressure_path():
+    # terminal_union rides the same Phi_i freeze path -> must fail fast if
+    # global_pressure is off (Phi_i would never freeze -> silent v_target fallback).
+    payload = _base_enabled_payload()
+    payload["controller"]["targeting"] = {
+        "mode": "typed_actionability",
+        "selection_field_mode": "v_target_terminal_union",
+    }
+    payload["controller"]["self_conditioned_gr"] = {"enabled": True}
+    payload["controller"]["allocation"] = {"enabled": True}
+    with pytest.raises(ControllerConfigError, match="self_conditioned_probe"):
+        materialize_controller_config(payload)
+
+
+def test_v_target_terminal_union_requires_allocation_enabled():
+    payload = _alloc_enabled_payload(selection_field_mode="v_target_terminal_union")
+    payload["controller"]["allocation"]["enabled"] = False
+    with pytest.raises(ControllerConfigError, match="allocation.enabled"):
+        materialize_controller_config(payload)
+
+
+def test_terminal_eligible_quantile_range_validated():
+    with pytest.raises(ControllerConfigError, match="terminal_eligible_quantile"):
+        materialize_controller_config(
+            _alloc_enabled_payload(
+                selection_field_mode="v_target_terminal_union",
+                terminal_eligible_quantile=-0.1,
+            )
+        )
+    with pytest.raises(ControllerConfigError, match="terminal_eligible_quantile"):
+        materialize_controller_config(
+            _alloc_enabled_payload(
+                selection_field_mode="v_target_terminal_union",
+                terminal_eligible_quantile=1.5,
+            )
+        )
+
+
+def test_terminal_lambda_range_validated():
+    with pytest.raises(ControllerConfigError, match="terminal_lambda"):
+        materialize_controller_config(
+            _alloc_enabled_payload(
+                selection_field_mode="v_target_terminal_union",
+                terminal_lambda=-0.5,
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
 # §A2 D2 terminal candidate-probe config (PLAN_PLANNER_SC_GR.md Task A2)
 # ---------------------------------------------------------------------------
 
@@ -1678,7 +1753,8 @@ _PLANNER_GLOB = str(
 def test_planner_config_grid_is_complete():
     paths = sorted(glob.glob(_PLANNER_GLOB))
     # 3 modes x 3 g_max (§8.3 grid, superseded) + 1 §A1 triage arm (g_max=2.0)
-    assert len(paths) == 10, f"expected 10 planner configs, found {len(paths)}: {paths}"
+    # + 1 §A3 terminal_union arm (g_max=2.0)
+    assert len(paths) == 11, f"expected 11 planner configs, found {len(paths)}: {paths}"
 
 
 @pytest.mark.parametrize("path", sorted(glob.glob(_PLANNER_GLOB)))
@@ -1694,6 +1770,7 @@ def test_planner_configs_load(path):
         "v_target",
         "v_target_x_alloc",
         "v_target_triage",
+        "v_target_terminal_union",
     )
     assert cfg.allocation.enabled is True
     assert cfg.self_conditioned_gr.mode == "beta_pressure"
@@ -1709,6 +1786,19 @@ def test_planner_triage_config_loads():
     assert cfg.allocation.enabled is True
     assert cfg.allocation.eligible_quantile == 0.5
     assert cfg.allocation.triage_lambda == 0.3
+    assert cfg.global_pressure.g_max == 2.0
+
+
+def test_planner_terminal_union_config_loads():
+    cfg = load_controller_config(
+        Path(__file__).resolve().parents[2]
+        / "inverse_folding" / "reference_flow" / "configs"
+        / "planner_terminal_union_gmax20_aopen.yaml"
+    )
+    assert cfg.targeting.selection_field_mode == "v_target_terminal_union"
+    assert cfg.allocation.enabled is True
+    assert cfg.allocation.terminal_eligible_quantile == 0.9
+    assert cfg.allocation.terminal_lambda == 0.3
     assert cfg.global_pressure.g_max == 2.0
 
 

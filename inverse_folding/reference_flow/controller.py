@@ -67,6 +67,7 @@ from .allocation import (
     allocation_mass,
     reweight_by_allocation,
     stable_seed,
+    terminal_union_field,
     triage_field,
 )
 from .self_conditioned_gr import (
@@ -1855,6 +1856,24 @@ class ReferenceFlowController:
                 self._scgr_frozen_allocation,
                 eligible_quantile=float(self.config.allocation.eligible_quantile),
                 triage_lambda=float(self.config.allocation.triage_lambda),
+                floor=float(self.config.targeting.active_window_min_excess),
+            )
+        if (
+            mode == "v_target_terminal_union"
+            and self._scgr_frozen_allocation is not None
+        ):
+            # §A3 (doc §8.4 Fork A): the INVERSE of triage — PROMOTE high-Φ
+            # low-v_target registers into the active set via a SEPARATE terminal
+            # gate on the frozen, register-smoothed Φ_i (union eligibility, no τ_v
+            # widening). Register-grain; the floor mirrors the pipeline's
+            # actionability floor (active_window_min_excess).
+            return terminal_union_field(
+                v_target,
+                self._scgr_frozen_allocation,
+                terminal_eligible_quantile=float(
+                    self.config.allocation.terminal_eligible_quantile
+                ),
+                terminal_lambda=float(self.config.allocation.terminal_lambda),
                 floor=float(self.config.targeting.active_window_min_excess),
             )
         return v_target
