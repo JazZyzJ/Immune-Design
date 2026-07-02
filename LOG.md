@@ -3568,3 +3568,28 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - `PLAN_PLANNER_SC_GR.md` §A3
   - `doc/Self-Cond_GR.md` §8.4 (Fork A); RAR 0019 (M4 mechanism), C0a M4 (terminal-vs-local sensing gap)
   - `L0123` (A1 `v_target_triage`, mirrored), `L0122` (falsified direct-allocation)
+
+### L0125 
+- timestamp: 2026-06-24T15:25:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: User requested exact-sequence dedup of the uricase case set (near-redundancy/nr-clustering intentionally NOT done), with all characterized members preserved.
+- change_summary: Exact-sequence deduped `uricases/uricase_caseset_if_ready_unified.parquet` **6740 → 6387** (−353; one row per unique `sequence`; **all 25 `characterized` force-retained**; non-char representative prefers `afdb` over `esmfold2`). No two characterized share a sequence; 16 non-char rows whose sequence matched a characterized one were dropped (char represents). Source after: 4958 AFDB + 1429 ESMFold2. Subset downstream to match: `h_maps/h_maps_uricase_DRB1_{07_01,04_01}.parquet` (6387 each, cover 100%, metas updated), `wt_generated_uricase_caseset_HLA-DRB1_07_01.parquet` facade (6387, meta updated). Wrote `uricase_caseset_if_ready_unified.manifest.json` recording the dedup. `pdbs_if_ready/` structure files left on disk (353 now-orphaned exact-dups retained). Pre-dedup 6740 copies backed up to `backups/20260624_152048_uricase_exact_dedup/`. Near-redundancy (homolog clustering) NOT applied.
+- evidence: unified 6387 rows / 6387 unique sequences / 0 duplicate `sequence` / 25 characterized; both h_maps 6387 (0 missing vs unified); facade 6387 ⊆ unified. PROGRESS Module L uricase block + `doc/Uricases_Design.md` §design count updated 6740→6387; LOG unification entries (L0103-era) left as historical.
+- impact: scope — uricase case-study set + its h_maps/facade/manifest only; main test set / pilot / fast / highrisk untouched. risk low (backup retained; structures kept; no near-redundancy removal).
+- status: done
+- refs:
+  - `doc/Uricases_Design.md`, `L0104` (uricase case-study build), `L0097` (characterized expansion)
+
+### L0126
+- timestamp: 2026-06-25T18:00:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: IF-ready resolved-backbone build applied no length-coverage filter, so the main test set held heavily-truncated structure fragments (some resolved <50% of the original, e.g. 8Q0P_E 476->235). These deviate from whole-protein redesign and collapse structurally; B1 highrisk confirmed 8Q0P_E scTM~0.31 (set p05). User decided to drop all `if_sequence_coverage < 0.8`. (Uricase set checked too: clean, coverage~1.0, no action.)
+- change_summary: Removed every `if_sequence_coverage < 0.8` protein from the v2 main test set + all canonical subsets (0701 -135 -> 2879, 0401 -186 -> 2829). Subset to match: `test_proteins_<tag>.parquet`, `if_ready/main/test_proteins_if_ready_<tag>.parquet`, `if_ready/h_maps_v2/h_maps_<htag>.parquet` (all 2879/2829, h_maps cover 100%), `test_proteins_summary_<tag>.json` recomputed (T2 0701 2864 / 0401 2814). `fast_v2` 300->286/285; `pilot_v2` 50->47(5+42)/49(5+44) -- 3 (0701: 1O51_A,1VF7_J,7TN4_A) / 1 (0401: 7Z3G_B) truncated Tier-2 dropped, pilot FASTA regenerated (not backfilled to 50). Added `--min-coverage` to `scripts/build_highrisk_demo.py` and rebuilt both 0701 highrisk sets at >=0.8 (dropped leaked 8Q0P_E/4QRF_B/5HSF_A, backfilled to 100 from next-ranked full-coverage proteins; burden unchanged, FASTAs regenerated). Pre-removal copies in `backups/20260625_175146_coverage080_removal/`.
+- evidence: post-removal all artifacts have 0 rows with coverage<0.8; `test_proteins_<tag>` set == `if_ready/main` set; h_maps 0 missing / 0 extra vs main; highrisk both 100 unique, min coverage 0.811/0.809, nmp_pct & head_pct still [0.90,1.0], 0 pdb nulls.
+- impact: scope -- main test set + fast/pilot/highrisk + h_maps. risk low (backup retained). Open: pilot not backfilled to 50; `build_if_ready_test_set.py` does not yet enforce the coverage floor.
+- status: done
+- next_action: optionally (1) backfill pilot to 50 from cleaned fast; (2) add a `--min-if-coverage` floor to `build_if_ready_test_set.py` to prevent recurrence.
+- refs:
+  - `L0115` (highrisk sets), `L0108` (pilot rebuild), `L0100` (v2 promotion)

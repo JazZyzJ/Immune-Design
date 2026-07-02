@@ -15,6 +15,7 @@ from inverse_folding.reference_flow.config import (
 )
 from inverse_folding.reference_flow.sampler import (
     PositionDependentDFMSampler,
+    ResumeState,
     SamplerBatchLane,
 )
 
@@ -389,6 +390,21 @@ def test_apply_reparam_remask_cutoff_scale_zero_remasks_nothing():
     assert r.remasked_positions == ()
 
 
+def test_enforce_fixed_tokens_restores_masked_anchor():
+    from inverse_folding.reference_flow.sampler import _enforce_fixed_tokens
+
+    x_t = torch.tensor([0, MASK_ID, 2], dtype=torch.long)
+    unmask_step_by_pos = [0, -1, 0]
+    _enforce_fixed_tokens(
+        x_t=x_t,
+        fixed_tokens={1: 3},
+        unmask_step_by_pos=unmask_step_by_pos,
+        step=5,
+    )
+    assert x_t.tolist() == [0, 3, 2]
+    assert unmask_step_by_pos == [0, 5, 0]
+
+
 def test_remask_fraction_scale_zero_keeps_enabled_path_but_remasks_nothing():
     """enabled=True keeps the post_step/remask code path live; fraction_scale=0
     must remask zero positions (the clean no-remask probe substrate)."""
@@ -442,6 +458,214 @@ def test_remask_fraction_scale_round_trips_through_yaml(tmp_path):
     assert cfg.sampler.remask.fraction_scale == 0.0
     payload = reference_flow_config_to_dict(cfg)
     assert payload["sampler"]["remask"]["fraction_scale"] == 0.0
+
+
+# ---- signal-diag P1/P2: snapshot capture + resume-from-state ----
+
+
+def _snap_cfg(*, n_steps: int = 8, seed: int = 7, remask_enabled: bool = False):
+    return ReferenceFlowConfig(
+        sampler=SamplerConfig(
+            n_steps=n_steps,
+            seed=seed,
+            temperature=1.0,
+            n_designs_per_protein=1,
+            remask=RemaskConfig(enabled=remask_enabled),
+        ),
+        schedule=ScheduleConfig(base_form="linear"),
+        amplification=AmplificationConfig(form="constant_one", h_source="h_processed"),
+        h_shuffle=HShuffleConfig(enabled=False, seed=None),
+    )
+
+
+def test_snapshot_steps_are_byte_equivalent_to_no_snapshot():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _snap_cfg(n_steps=10, remask_enabled=True)
+    h = np.zeros(8, dtype=np.float32)
+    base = sampler.sample(
+        sequence_length=8, h_values=h, denoiser=biased_denoiser, config=cfg
+    )
+    snap = sampler.sample(
+        sequence_length=8,
+        h_values=h,
+        denoiser=biased_denoiser,
+        config=cfg,
+        snapshot_steps=[3, 6],
+    )
+    # Capture must not perturb the trajectory.
+    assert torch.equal(base.tokens, snap.tokens)
+    assert base.unmask_step_by_pos == snap.unmask_step_by_pos
+    assert base.g_values == snap.g_values
+    assert base.snapshots == ()
+    assert [s.step for s in snap.snapshots] == [3, 6]
+
+
+def test_snapshot_captures_pre_controller_logits_and_partial_x_t():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _snap_cfg(n_steps=6)
+
+    class _StepResult:
+        def __init__(self, logits):
+            self.logits = logits
+            self.refresh_record = None
+
+    class _LogitMutatingController:
+        # No ``config`` attr -> paired-uncorrected branch is skipped.
+        config = None
+
+        def step(self, ctx):
+            # Drive sampling with a clearly different (mutated) logit field so a
+            # post-controller capture would be detectable.
+            mutated = ctx.logits.clone()
+            mutated[:, 0] = 9.0
+            return _StepResult(mutated)
+
+    out = sampler.sample(
+        sequence_length=5,
+        h_values=np.zeros(5, dtype=np.float32),
+        denoiser=uniform_denoiser,
+        config=cfg,
+        controller=_LogitMutatingController(),
+        snapshot_steps=[2],
+    )
+    assert len(out.snapshots) == 1
+    snap = out.snapshots[0]
+    assert snap.step == 2
+    # Captured logits are the RAW denoiser output (pre-controller), not the
+    # controller-mutated field (which set column 0 to 9.0).
+    raw = uniform_denoiser(snap.x_t, snap.t, None)
+    assert torch.equal(snap.struct_logits, raw)
+    assert not torch.equal(snap.struct_logits, raw.clone().index_fill_(1, torch.tensor([0]), 9.0))
+    # x_t is a partial completion (some masks still present at an early step).
+    assert (snap.x_t == MASK_ID).any()
+
+
+def _context_denoiser(x_t: torch.Tensor, t: float, struct) -> torch.Tensor:
+    """Near one-hot logits whose preferred token depends on committed context.
+
+    The preferred token keys off how many committed positions carry a high token
+    (2 or 3), so different ``fixed_tokens`` (A_B) values shift the preferred
+    token; the near one-hot gap makes the sampled token deterministic given the
+    preference. The unmasking SELECTION stays a function of the (paired) RNG
+    draws and the masked set only -> selection pairs, tokens diverge.
+    """
+    L = x_t.shape[0]
+    logits = torch.zeros((L, VOCAB_SIZE), dtype=torch.float32)
+    logits[:, MASK_ID] = -1e9
+    committed = x_t[x_t != MASK_ID]
+    count_hi = int(((committed == 2) | (committed == 3)).sum().item())
+    pref = count_hi % (VOCAB_SIZE - 1)
+    logits[:, pref] = 50.0
+    return logits
+
+
+def test_resume_runs_only_tail_steps_and_finishes_mask_free():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _snap_cfg(n_steps=10, remask_enabled=True)
+    h = np.zeros(8, dtype=np.float32)
+    full = sampler.sample(
+        sequence_length=8,
+        h_values=h,
+        denoiser=biased_denoiser,
+        config=cfg,
+        snapshot_steps=[4],
+    )
+    snap = full.snapshots[0]
+
+    seen_steps: list[float] = []
+
+    def counting_denoiser(x_t, t, struct):
+        seen_steps.append(round(float(t) * 10))
+        return biased_denoiser(x_t, t, struct)
+
+    resumed = sampler.sample(
+        sequence_length=8,
+        h_values=h,
+        denoiser=counting_denoiser,
+        config=cfg,
+        controller=None,
+        initial_state=ResumeState(
+            x_t=snap.x_t,
+            scores=snap.scores,
+            unmask_step_by_pos=list(snap.unmask_step_by_pos),
+            start_step=snap.step,
+        ),
+    )
+    # Only steps 4..9 ran.
+    assert seen_steps == [4, 5, 6, 7, 8, 9]
+    assert MASK_ID not in resumed.tokens.tolist()
+
+
+def test_resume_freezes_fixed_tokens_through_remask():
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _snap_cfg(n_steps=10, remask_enabled=True)
+    h = np.zeros(8, dtype=np.float32)
+    full = sampler.sample(
+        sequence_length=8, h_values=h, denoiser=biased_denoiser, config=cfg,
+        snapshot_steps=[3],
+    )
+    snap = full.snapshots[0]
+    # A_B = positions that are still masked in the snapshot.
+    masked = [i for i in range(8) if int(snap.x_t[i].item()) == MASK_ID]
+    a_b = masked[:2]
+    fixed = {a_b[0]: 1, a_b[1]: 2}
+    resumed = sampler.sample(
+        sequence_length=8, h_values=h, denoiser=biased_denoiser, config=cfg,
+        controller=None,
+        fixed_tokens=fixed,
+        initial_state=ResumeState(
+            x_t=snap.x_t, scores=snap.scores,
+            unmask_step_by_pos=list(snap.unmask_step_by_pos), start_step=snap.step,
+        ),
+    )
+    assert int(resumed.tokens[a_b[0]].item()) == 1
+    assert int(resumed.tokens[a_b[1]].item()) == 2
+    assert set(resumed.fixed_positions) == set(a_b)
+
+
+def test_resume_is_paired_across_fixed_token_values():
+    """Same seed + same snapshot, different A_B tuples -> identical unmasking
+    selection (paired CRN), different sampled tokens. Remask off so selection is
+    a pure function of the (paired) Bernoulli draws and the masked set."""
+    sampler = PositionDependentDFMSampler(mask_token_id=MASK_ID, vocab_size=VOCAB_SIZE)
+    cfg = _snap_cfg(n_steps=10, remask_enabled=False)
+    h = np.zeros(8, dtype=np.float32)
+    full = sampler.sample(
+        sequence_length=8, h_values=h, denoiser=_context_denoiser, config=cfg,
+        snapshot_steps=[3],
+    )
+    snap = full.snapshots[0]
+    masked = [i for i in range(8) if int(snap.x_t[i].item()) == MASK_ID]
+    a_b = masked[:2]
+
+    def _resume(tokvals):
+        return sampler.sample(
+            sequence_length=8, h_values=h, denoiser=_context_denoiser, config=cfg,
+            controller=None,
+            fixed_tokens={a_b[0]: tokvals[0], a_b[1]: tokvals[1]},
+            initial_state=ResumeState(
+                x_t=snap.x_t, scores=snap.scores,
+                unmask_step_by_pos=list(snap.unmask_step_by_pos), start_step=snap.step,
+            ),
+        )
+
+    out_a = _resume((0, 1))
+    out_b = _resume((2, 3))
+    # Paired selection: every non-A_B position commits at the same step.
+    non_ab = [i for i in range(8) if i not in a_b]
+    assert [out_a.unmask_step_by_pos[i] for i in non_ab] == [
+        out_b.unmask_step_by_pos[i] for i in non_ab
+    ]
+    # Different frozen context -> at least one sampled token differs.
+    assert any(
+        int(out_a.tokens[i].item()) != int(out_b.tokens[i].item()) for i in non_ab
+    )
+
+
+def test_resume_imports_resumestate_symbol():
+    from inverse_folding.reference_flow.sampler import ResumeState, SamplerSnapshot
+
+    assert ResumeState is not None and SamplerSnapshot is not None
 
 
 def test_remask_fraction_scale_out_of_range_raises():

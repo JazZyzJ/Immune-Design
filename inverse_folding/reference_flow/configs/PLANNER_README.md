@@ -24,8 +24,18 @@ contract, LOG L0119).
 
 ## 1. Emit the 3 amplify calibration JSONs (one per `g_max`, cluster step)
 
-Built on the SC1 pilot run's early-frozen `refresh_step=0 / fresh / topm_lse` `B_sc`
-distribution (matches the configs' `actuation_arm=fresh`,
+> **Prerequisite — a 100-step SC pilot run.** The band MUST be re-emitted at the
+> **`N_STEPS=100`** behavior cadence (PLAN_PLANNER_SC_GR.md §2 D6); do **not** inherit
+> the 20-step SC-monitor band. `N_STEPS` changes the freeze-point trajectory (the
+> freeze still anchors at `t_start≈0.5`, so the band likely transfers — but verify,
+> don't assume). So first run **one** SC pilot at `N_STEPS=100` on the experiment
+> cohort with the base `scgr_betaonly` controller config; its
+> `sc_gr_probe_refresh.parquet` is the `--run-dir` source below. (`refresh_step=0`
+> `B_sc` is recorded before actuation diverges, so a monitor- or pressure-arm pilot
+> records the same frozen `B_sc`; the existing 20-step runs cannot be used directly.)
+
+Built on that 100-step SC pilot's early-frozen `refresh_step=0 / fresh / topm_lse`
+`B_sc` distribution (matches the configs' `actuation_arm=fresh`,
 `actuation_aggregator=topm_lse`, `freeze_after_reliable_refreshes=1` ⇒
 `refresh_step=0`). The SC2 emitter solves the band so
 `smoothstep_pressure(B_median; band, g_min, g_max) == 1.0` at the per-design
@@ -55,7 +65,12 @@ python scripts/run_if_phase_c1.py ... \
   --global-pressure-calibration-json inverse_folding/reference_flow/configs/amplify_calib_gmax20.json
 ```
 
-Cohort: 50 pilot50r2 DRB1\*07:01 proteins, n=8 designs/protein, seed=42 (RAR 0020).
+**`N_STEPS=100`** (run/CLI/SLURM parameter, NOT in the YAML; PLAN §2 D6) — set
+identically for the calibration pilot and all 9 runs (`submit_if_phase_c.slurm`
+forwards `N_STEPS` → `--n-steps`); DPLM remask stays at the base-config setting,
+identical across all arms. Cohort: **47** DRB1\*07:01 proteins (`pilot_v2`,
+post-QC-gate subset; the old "pilot50r2"/`r2` set is superseded and discarded),
+n=8 designs/protein, seed=42. Gate with `--expected-n-proteins 47`.
 Evaluate with the existing immune (NetMHCIIpan) + scTM path, then gate with
 `scripts/analysis/planner_h1_pareto.py` (PLAN §5; the H1 CLI derives
 `immune_nmp := n_strong_binders / n_windows_scored`, renames `scTM→sctm`, and

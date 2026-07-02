@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -14,6 +14,42 @@ from .config import ReferenceFlowConfig
 from .schedule import positionwise_unmask_probabilities
 
 
+@dataclass(frozen=True)
+class SamplerSnapshot:
+    """Pre-controller (pre-D2) state captured at a chosen sampler step.
+
+    Used by the SC-GR signal-direction diagnostic (PLAN_RF_SC_GR_signal_diag.md
+    P1): ``x_t`` is the partial completion the denoiser saw at ``step``, and
+    ``struct_logits`` is the RAW denoiser output BEFORE any controller / D2
+    correction (so cheap-P reuses the same original structural logits). Capture
+    is side-effect free -- enabling it never changes the sampled trajectory.
+    """
+
+    step: int
+    t: float
+    x_t: torch.Tensor
+    struct_logits: torch.Tensor
+    scores: np.ndarray
+    unmask_step_by_pos: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class ResumeState:
+    """Mid-trajectory state to resume a completion from (signal-diag P2 oracle Y).
+
+    Continuing from a captured :class:`SamplerSnapshot`: the loop starts at
+    ``start_step`` from ``x_t`` (instead of a fully-masked init), reusing the
+    committed-token ``scores`` for remask ranking. Combine with ``fixed_tokens``
+    to freeze a block ``A_B`` and ``controller=None`` for a controller-off
+    oracle continuation to ``t=1``.
+    """
+
+    x_t: torch.Tensor
+    scores: np.ndarray
+    unmask_step_by_pos: Sequence[int]
+    start_step: int
+
+
 @dataclass
 class SamplerOutput:
     tokens: torch.Tensor
@@ -23,6 +59,9 @@ class SamplerOutput:
     # Positions held fixed by a hard-anchor constraint (uricase enzyme mode v0).
     # Distinct from ordinary residues that merely commit at step 0.
     fixed_positions: tuple[int, ...] = ()
+    # Pre-controller snapshots captured at requested steps (signal-diag P1).
+    # Empty unless ``snapshot_steps`` was passed to ``sample``.
+    snapshots: tuple[SamplerSnapshot, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -83,6 +122,23 @@ def _union_protected(
     return tuple(sorted(set(post_protected) | fixed_positions))
 
 
+def _enforce_fixed_tokens(
+    *,
+    x_t: torch.Tensor,
+    fixed_tokens: Mapping[int, int] | None,
+    unmask_step_by_pos: list[int],
+    step: int,
+) -> None:
+    """Restore permanent hard-anchor tokens after any sampling/remask mutation."""
+    if not fixed_tokens:
+        return
+    for fixed_idx, fixed_token_id in fixed_tokens.items():
+        i = int(fixed_idx)
+        x_t[i] = int(fixed_token_id)
+        if unmask_step_by_pos[i] < 0:
+            unmask_step_by_pos[i] = int(step)
+
+
 class PositionDependentDFMSampler:
     """Sampling-only position-dependent discrete flow matcher."""
 
@@ -104,6 +160,8 @@ class PositionDependentDFMSampler:
         protein_id: str = "",
         design_idx: int = 0,
         fixed_tokens: Mapping[int, int] | None = None,
+        snapshot_steps: Sequence[int] | None = None,
+        initial_state: ResumeState | None = None,
     ) -> SamplerOutput:
         if sequence_length <= 0:
             raise ValueError("sequence_length must be positive")
@@ -123,19 +181,45 @@ class PositionDependentDFMSampler:
 
         g_values = amplification_factor(h, config.amplification)
         rng = np.random.default_rng(int(config.sampler.seed))
-        x_t = torch.full((sequence_length,), self.mask_token_id, dtype=torch.long)
-        unmask_step_by_pos = [-1] * sequence_length
-        # Hard-anchor constraint (uricase enzyme mode v0): seed fixed tokens and
-        # mark them committed at step 0. They are never re-sampled (non-mask -> not
-        # in masked_positions) and are protected from remask via _union_protected.
         fixed_positions = _resolve_fixed_positions(fixed_tokens, sequence_length)
+        # Resume from a mid-trajectory snapshot (signal-diag P2) or start fresh.
+        # Default (initial_state is None) is byte-for-byte the legacy init.
+        if initial_state is not None:
+            x_t = initial_state.x_t.detach().clone().to(torch.long)
+            if x_t.shape != (sequence_length,):
+                raise ValueError(
+                    f"initial_state.x_t shape {tuple(x_t.shape)} != ({sequence_length},)"
+                )
+            unmask_step_by_pos = [int(v) for v in initial_state.unmask_step_by_pos]
+            scores = np.asarray(initial_state.scores, dtype=np.float64).copy()
+            if len(unmask_step_by_pos) != sequence_length or scores.shape != (
+                sequence_length,
+            ):
+                raise ValueError("initial_state arrays must match sequence_length")
+            start_step = int(initial_state.start_step)
+        else:
+            x_t = torch.full((sequence_length,), self.mask_token_id, dtype=torch.long)
+            unmask_step_by_pos = [-1] * sequence_length
+            # log-prob of the currently committed token at each position; -inf for
+            # positions still masked (or freshly remasked). Used by the optional
+            # reparam refinement to pick the bottom-k committed positions.
+            scores = np.full(sequence_length, -np.inf, dtype=np.float64)
+            start_step = 0
+        # Hard-anchor constraint (uricase enzyme mode v0) / frozen block A_B
+        # (signal-diag P2): seed fixed tokens and mark them committed at the
+        # start step. They are never re-sampled (non-mask -> not in
+        # masked_positions) and are protected from remask via _union_protected.
         for fixed_idx, fixed_token_id in (fixed_tokens or {}).items():
             x_t[int(fixed_idx)] = int(fixed_token_id)
-            unmask_step_by_pos[int(fixed_idx)] = 0
-        # log-prob of the currently committed token at each position; -inf for
-        # positions still masked (or freshly remasked). Used by the optional
-        # reparam refinement to pick the bottom-k committed positions.
-        scores = np.full(sequence_length, -np.inf, dtype=np.float64)
+            unmask_step_by_pos[int(fixed_idx)] = start_step
+        _enforce_fixed_tokens(
+            x_t=x_t,
+            fixed_tokens=fixed_tokens,
+            unmask_step_by_pos=unmask_step_by_pos,
+            step=start_step,
+        )
+        snapshot_step_set = {int(s) for s in (snapshot_steps or ())}
+        snapshots: list[SamplerSnapshot] = []
         trajectory_rows: list[dict[str, Any]] = []
         n_steps = int(config.sampler.n_steps)
         dt = 1.0 / float(n_steps)
@@ -143,7 +227,7 @@ class PositionDependentDFMSampler:
         remask_enabled = bool(config.sampler.remask.enabled)
         remask_fraction_scale = float(config.sampler.remask.fraction_scale)
 
-        for step in range(n_steps):
+        for step in range(start_step, n_steps):
             t = step / float(n_steps)
             logits = denoiser(x_t.clone(), t, struct)
             if logits.shape != (sequence_length, self.vocab_size):
@@ -155,6 +239,20 @@ class PositionDependentDFMSampler:
                 raise FloatingPointError(f"NaN logits encountered at step={step} t={t:.6f}")
 
             structural_logits = logits
+            # Pre-controller snapshot (signal-diag P1): capture the RAW denoiser
+            # logits + the partial completion the denoiser saw, BEFORE any
+            # controller / D2 correction mutates them. Side-effect free.
+            if step in snapshot_step_set:
+                snapshots.append(
+                    SamplerSnapshot(
+                        step=int(step),
+                        t=float(t),
+                        x_t=x_t.detach().clone(),
+                        struct_logits=structural_logits.detach().cpu().clone(),
+                        scores=scores.copy(),
+                        unmask_step_by_pos=tuple(int(v) for v in unmask_step_by_pos),
+                    )
+                )
             if controller is not None:
                 # Local import to avoid pulling controller deps when unused.
                 from .controller import PostSamplingContext, SamplerStepContext
@@ -209,6 +307,12 @@ class PositionDependentDFMSampler:
                             unmask_step_by_pos[pos] = step
                     sampled_tokens_actual = sampled_tokens.numpy().astype(
                         np.int64, copy=False
+                    )
+                    _enforce_fixed_tokens(
+                        x_t=x_t,
+                        fixed_tokens=fixed_tokens,
+                        unmask_step_by_pos=unmask_step_by_pos,
+                        step=step,
                     )
                     # PLAN §"Sampler integration" 6-7: paired uncorrected sample
                     # via an isolated RNG clone so the real RNG is unaffected.
@@ -275,6 +379,12 @@ class PositionDependentDFMSampler:
                     cutoff_scale=remask_fraction_scale,
                 )
                 remask_count = remask_result.count
+                _enforce_fixed_tokens(
+                    x_t=x_t,
+                    fixed_tokens=fixed_tokens,
+                    unmask_step_by_pos=unmask_step_by_pos,
+                    step=step,
+                )
                 # D3 remask telemetry hook (PLAN §D3-14). Skipped when the
                 # controller does not expose post_remask (keeps duck-typed
                 # stub controllers in unit tests bit-equivalent).
@@ -312,6 +422,12 @@ class PositionDependentDFMSampler:
             for pos in residual_idx:
                 if unmask_step_by_pos[pos] < 0:
                     unmask_step_by_pos[pos] = n_steps
+        _enforce_fixed_tokens(
+            x_t=x_t,
+            fixed_tokens=fixed_tokens,
+            unmask_step_by_pos=unmask_step_by_pos,
+            step=n_steps,
+        )
 
         if (x_t == self.mask_token_id).any():
             raise RuntimeError("sampler finished with mask tokens still present")
@@ -322,6 +438,7 @@ class PositionDependentDFMSampler:
             g_values=g_values.astype(np.float32, copy=False).tolist(),
             trajectory_rows=trajectory_rows,
             fixed_positions=tuple(sorted(fixed_positions)),
+            snapshots=tuple(snapshots),
         )
 
     def sample_batch(
@@ -403,6 +520,12 @@ class PositionDependentDFMSampler:
         for fixed_idx, fixed_token_id in (lane.fixed_tokens or {}).items():
             x_t[int(fixed_idx)] = int(fixed_token_id)
             unmask_step_by_pos[int(fixed_idx)] = 0
+        _enforce_fixed_tokens(
+            x_t=x_t,
+            fixed_tokens=lane.fixed_tokens,
+            unmask_step_by_pos=unmask_step_by_pos,
+            step=0,
+        )
         return _SamplerLaneState(
             lane=lane,
             g_values=g_values,
@@ -488,6 +611,12 @@ class PositionDependentDFMSampler:
                     if state.unmask_step_by_pos[pos] < 0:
                         state.unmask_step_by_pos[pos] = step
                 sampled_tokens_actual = sampled_tokens.numpy().astype(np.int64, copy=False)
+                _enforce_fixed_tokens(
+                    x_t=state.x_t,
+                    fixed_tokens=state.lane.fixed_tokens,
+                    unmask_step_by_pos=state.unmask_step_by_pos,
+                    step=step,
+                )
                 if (
                     controller is not None
                     and saved_state is not None
@@ -550,6 +679,12 @@ class PositionDependentDFMSampler:
                 cutoff_scale=state.remask_fraction_scale,
             )
             remask_count = remask_result.count
+            _enforce_fixed_tokens(
+                x_t=state.x_t,
+                fixed_tokens=state.lane.fixed_tokens,
+                unmask_step_by_pos=state.unmask_step_by_pos,
+                step=step,
+            )
             if controller is not None and remask_result.remasked_positions:
                 post_remask_fn = getattr(controller, "post_remask", None)
                 if callable(post_remask_fn):
@@ -593,6 +728,12 @@ class PositionDependentDFMSampler:
             for pos in residual_idx:
                 if state.unmask_step_by_pos[pos] < 0:
                     state.unmask_step_by_pos[pos] = n_steps
+        _enforce_fixed_tokens(
+            x_t=state.x_t,
+            fixed_tokens=state.lane.fixed_tokens,
+            unmask_step_by_pos=state.unmask_step_by_pos,
+            step=n_steps,
+        )
 
         if (state.x_t == self.mask_token_id).any():
             raise RuntimeError("sampler finished with mask tokens still present")

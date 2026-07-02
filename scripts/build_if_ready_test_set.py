@@ -95,8 +95,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--min-coverage",
         type=float,
-        default=0.0,
-        help="Minimum resolved/full sequence length ratio retained.",
+        default=0.8,
+        help="Minimum resolved/full sequence length ratio retained. Default 0.8 drops "
+             "heavily-truncated structure fragments (deviate from whole-protein redesign, "
+             "collapse structurally). Pass 0.0 to keep all resolved rows (e.g. full-length "
+             "predicted backbones).",
     )
     parser.add_argument(
         "--model-idx",

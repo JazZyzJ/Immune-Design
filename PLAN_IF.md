@@ -738,7 +738,8 @@ See `doc/Reference_Flow_Derivation.md §6`.
 |------|---------|--------|
 | `imm_head.parquet` | `protein_id, design_id, design_idx, global_risk, mean_hotspot, max_hotspot, n_hotspot_positions` | `IMMUNOGENICITY_HEAD_COLUMNS` (+ `design_idx` for join back) |
 | `imm_nmp.parquet` | `protein_id, design_id, design_idx, n_strong_binders, n_weak_binders, mean_best_rank, n_windows_scored` | `IMMUNOGENICITY_NMP_COLUMNS` |
-| `structural.parquet` | `protein_id, design_id, design_idx, sequence, scTM, pLDDT, bb_RMSD, recovery, foldability, refold_backend` | `STRUCTURAL_METRICS_COLUMNS` (+ `design_idx`, + `refold_backend`) |
+| `structural.parquet` | `protein_id, design_id, design_idx, sequence, scTM, pLDDT, bb_RMSD, scRMSD, recovery, foldability, refold_backend` | `STRUCTURAL_METRICS_COLUMNS` (+ `design_idx`, + `refold_backend`, + aggregate C-alpha self-consistency RMSD) |
+| `structural_residues.parquet` | `protein_id, design_id, design_idx, residue_idx, residue_idx_1based, ref_chain_id, ref_resseq, ref_icode, ref_aa, design_aa, sc_ca_distance, ref_ca_*, pred_ca_*, aligned_pred_ca_*, refold_backend` | Residue-level C-alpha self-consistency table; RMSD for any index set = `sqrt(mean(sc_ca_distance ** 2))` after full-trace superposition |
 | `manifest.json` | run_id, modes_run, refold_backend, allele, generated_parquet_path + sha256, test_set_parquet_path, head_ckpt_path + digest, nmp_binary_path + version_string, git_sha, timestamp, n_input_designs, n_rows_per_mode, wall_seconds_per_mode | metadata |
 | `failures.json` | per-row issues: NMP timeout, ESMFold OOM, missing PDB, invalid sequence, etc. | audit |
 | `run_config.yaml` | resolved CLI (every default materialized) | reproducibility |
@@ -751,7 +752,7 @@ See `doc/Reference_Flow_Derivation.md §6`.
 - `struct`: dispatch on `--refold-model`:
   - `esmfold` → `inverse_folding/evaluation/esmfold_runner.py::predict_structure` (existing, with `(protein_id, sequence_hash)` cache key).
   - `af3` → raise `NotImplementedError("af3 backend not yet wired; see B4 future work")`.
-  - For each generated row: refold the design sequence, run TM-align against `pdb_path` from test_set_parquet, compute `recovery` against WT `sequence` column, emit one row in `structural.parquet`. `refold_backend` column records which backend produced the row.
+  - For each generated row: refold the design sequence, run TM-align against `pdb_path` from test_set_parquet, compute `recovery` against WT `sequence` column, emit one row in `structural.parquet`. The same refold/reference pair is parsed into matched C-alpha traces, globally superimposed, and emitted as residue-indexed `structural_residues.parquet` rows for later position-specific RMSD queries. `refold_backend` column records which backend produced the row.
 - `all`: run `imm` then `struct` sequentially. Each mode independently checks for existing output and skips if present (unless `--overwrite`).
 
 **Planned File Touchpoints**

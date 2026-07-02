@@ -496,9 +496,10 @@ backbone in place, it does not seed from templates.)
 ### 7.5 Data surface (corrected)
 
 The IF design cases are in `uricase_caseset_if_ready_unified.parquet` (workflow-verified):
-**6740 rows derived from Kaiyi's curated `filtered_uricases.fasta` (6736/6740 = 99.94%),
+**6387 rows (exact-sequence deduped from 6740, −353; all 25 characterized retained) derived
+from Kaiyi's curated `filtered_uricases.fasta` (6736/6740 = 99.94% reached if-ready),
 NOT the clustered nr90 set** (44.8% overlap) — the design operates on the full, redundant
-family pool (sequence length 200/302/502), and that same universe carries the §7.3
+family pool minus exact duplicates (sequence length 200/302/502), and that same universe carries the §7.3
 conservation + immune annotations. **Backbones are predominantly AlphaFold-DB (5222 = 77%)
 + ESMFold2 (1518 = 23%)** — *not* uniformly ESMFold as earlier stated. All are computational
 predictions (no experimental backbone; 38 ESMFold2 rows fail the GT gate), so

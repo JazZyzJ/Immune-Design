@@ -30,6 +30,30 @@ STRUCTURAL_COLUMNS: FrozenSet[str] = frozenset({
     "foldability",
 })
 
+STRUCTURAL_RESIDUE_COLUMNS: FrozenSet[str] = frozenset({
+    "protein_id",
+    "design_id",
+    "design_idx",
+    "residue_idx",
+    "residue_idx_1based",
+    "ref_chain_id",
+    "ref_resseq",
+    "ref_icode",
+    "ref_aa",
+    "design_aa",
+    "sc_ca_distance",
+    "ref_ca_x",
+    "ref_ca_y",
+    "ref_ca_z",
+    "pred_ca_x",
+    "pred_ca_y",
+    "pred_ca_z",
+    "aligned_pred_ca_x",
+    "aligned_pred_ca_y",
+    "aligned_pred_ca_z",
+    "refold_backend",
+})
+
 IMMUNOGENICITY_HEAD_COLUMNS: FrozenSet[str] = frozenset({
     "protein_id",
     "design_id",

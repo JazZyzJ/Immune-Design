@@ -652,7 +652,7 @@ if __name__ == "__main__":
 
 ## 5. Pre-registered H1 gate (fixed before results)
 
-Cohort: 50 pilot50r2 DRB1\*07:01 proteins, n=8 designs/protein, seed=42 (matches RAR 0020). **Statistics are protein-level**: collapse the 8 designs to a per-protein median, then pair across the 50 proteins. Primary immune metric = **NetMHCIIpan** on final sequences (external validator, never in the loop — non-circular). Structure = **ESMFold scTM**. Frozen horizon, per `g_max ∈ {1.5, 2.0, 2.5}`.
+Cohort: **47** DRB1\*07:01 proteins (`pilot_v2`, post-QC-gate subset; the old "pilot50r2"/`r2` set is superseded and discarded), n=8 designs/protein, seed=42. **Statistics are protein-level**: collapse the 8 designs to a per-protein median, then pair across the 47 proteins. Primary immune metric = **NetMHCIIpan** on final sequences (external validator, never in the loop — non-circular). Structure = **ESMFold scTM**. Frozen horizon, per `g_max ∈ {1.5, 2.0, 2.5}`.
 
 - **H1 (primary, SC-GR contribution):** protein-median `immune_nmp(v_target_x_alloc) − immune_nmp(v_target) < 0`, paired Wilcoxon p < 0.05, **and** scTM non-inferior (`median scTM(alloc) ≥ median scTM(v_target) − 0.01`) — at ≥1 `g_max`, robustly.
 - **Macro thesis (secondary):** `immune_nmp(v_target) < immune_nmp(flat)` and `immune_nmp(v_target_x_alloc) < immune_nmp(flat)`.

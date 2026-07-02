@@ -66,11 +66,21 @@ def main() -> None:
     ap.add_argument("--diag-imm-dir", action="append", default=[],
                     help="LABEL=DIR extra baseline(s) to attach as <LABEL>_nmp/<LABEL>_head "
                          "diagnostic columns (repeatable)")
+    ap.add_argument("--min-coverage", type=float, default=0.0,
+                    help="drop candidates whose if_sequence_coverage < this before ranking "
+                         "(excludes heavily-truncated structure fragments; 0 disables)")
     args = ap.parse_args()
 
     canon_df = pd.read_parquet(args.canonical_if_ready)
     canon_df["protein_id"] = canon_df["protein_id"].astype(str)
     canon = set(canon_df["protein_id"])
+    if args.min_coverage > 0:
+        if "if_sequence_coverage" not in canon_df.columns:
+            sys.exit("FATAL: --min-coverage set but if_sequence_coverage not in canonical parquet")
+        n0 = len(canon)
+        canon = set(canon_df.loc[canon_df["if_sequence_coverage"] >= args.min_coverage, "protein_id"])
+        print(f"  coverage filter: drop if_sequence_coverage < {args.min_coverage} -> "
+              f"candidate pool {n0} -> {len(canon)}")
 
     a = _axes(Path(args.primary_imm_dir), canon).dropna()
     a["nmp_pct"] = a["nmp"].rank(pct=True)

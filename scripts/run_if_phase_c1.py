@@ -2156,6 +2156,7 @@ def main(argv: list[str] | None = None) -> int:
                         controller=d1_controller,
                         protein_id=protein_id,
                         design_idx=int(design_idx),
+                        fixed_tokens=per_protein_constraints.get(protein_id, {}),
                     )
                     _record_design_success(
                         entry=entry,

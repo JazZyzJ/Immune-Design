@@ -24,6 +24,45 @@ from scripts.evaluate_phase_c import (
 )
 
 
+_AA3 = {
+    "A": "ALA",
+    "C": "CYS",
+    "D": "ASP",
+    "E": "GLU",
+    "F": "PHE",
+    "G": "GLY",
+    "H": "HIS",
+    "I": "ILE",
+    "K": "LYS",
+    "L": "LEU",
+    "M": "MET",
+    "N": "ASN",
+    "P": "PRO",
+    "Q": "GLN",
+    "R": "ARG",
+    "S": "SER",
+    "T": "THR",
+    "V": "VAL",
+    "W": "TRP",
+    "Y": "TYR",
+}
+
+
+def _write_ca_pdb(path: Path, sequence: str, offset: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> None:
+    lines = []
+    dx, dy, dz = offset
+    for idx, aa in enumerate(sequence, start=1):
+        x = (idx - 1) * 1.6 + dx
+        y = ((idx - 1) % 2) * 0.7 + dy
+        z = ((idx - 1) % 3) * 0.4 + dz
+        lines.append(
+            f"ATOM  {idx:5d}  CA  {_AA3[aa]:>3} A{idx:4d}    "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00 50.00           C\n"
+        )
+    lines.append("END\n")
+    path.write_text("".join(lines))
+
+
 class _FakePredictor:
     def predict_protein(self, sequence: str):
         hotspot = [float(idx) for idx, _ in enumerate(sequence, start=1)]
@@ -83,7 +122,7 @@ def _test_lookup_fixture(tmp_path: Path) -> dict[str, dict]:
         "p3": "GGGGGG",
     }.items():
         pdb_path = tmp_path / f"{protein_id}.pdb"
-        pdb_path.write_text("HEADER\n")
+        _write_ca_pdb(pdb_path, sequence)
         lookup[protein_id] = {
             "protein_id": protein_id,
             "sequence": sequence,
@@ -137,16 +176,21 @@ def test_evaluate_structural_rows_emits_expected_schema(tmp_path: Path, monkeypa
     generated = _generated_fixture()
     test_lookup = _test_lookup_fixture(tmp_path)
 
+    def _fake_refold(sequence, protein_id, design_id, backend, cache_dir=None, model=None):
+        pdb_path = tmp_path / f"{protein_id}_{design_id}.pdb"
+        _write_ca_pdb(pdb_path, sequence, offset=(10.0, -2.0, 5.0))
+        return {
+            "pdb_path": str(pdb_path),
+            "pLDDT": 88.0,
+        }
+
     monkeypatch.setattr(
         "scripts.evaluate_phase_c.load_refold_model",
         lambda backend, device="cuda": object(),
     )
     monkeypatch.setattr(
         "scripts.evaluate_phase_c.refold",
-        lambda sequence, protein_id, design_id, backend, cache_dir=None, model=None: {
-            "pdb_path": str(tmp_path / f"{protein_id}_{design_id}.pdb"),
-            "pLDDT": 88.0,
-        },
+        _fake_refold,
     )
     monkeypatch.setattr(
         "inverse_folding.evaluation.tmalign.run_tmalign",
@@ -160,7 +204,7 @@ def test_evaluate_structural_rows_emits_expected_schema(tmp_path: Path, monkeypa
         lambda entry, pdb_root: Path(pdb_root) / str(entry["pdb_path"]),
     )
 
-    df, failures = evaluate_structural_rows(
+    df, failures, residues_df = evaluate_structural_rows(
         generated,
         test_lookup,
         pdb_root=tmp_path,
@@ -169,12 +213,37 @@ def test_evaluate_structural_rows_emits_expected_schema(tmp_path: Path, monkeypa
         tmalign_bin="TMalign",
         esmfold_cache_dir=str(tmp_path / ".cache"),
         progress_every=0,
+        return_residue_metrics=True,
     )
     assert failures == []
     assert len(df) == 6
-    assert set(["protein_id", "design_id", "design_idx", "sequence", "scTM", "pLDDT", "bb_RMSD", "recovery", "foldability", "refold_backend"]).issubset(df.columns)
+    assert set(["protein_id", "design_id", "design_idx", "sequence", "scTM", "pLDDT", "bb_RMSD", "scRMSD", "recovery", "foldability", "refold_backend"]).issubset(df.columns)
     assert (df["refold_backend"] == "esmfold").all()
     assert df.loc[(df["protein_id"] == "p1") & (df["design_idx"] == 1), "recovery"].iloc[0] == pytest.approx(0.75)
+    assert df["scRMSD"].max() < 1e-5
+    assert len(residues_df) == sum(len(seq) for seq in generated["sequence"])
+    assert set(
+        [
+            "protein_id",
+            "design_id",
+            "design_idx",
+            "residue_idx",
+            "residue_idx_1based",
+            "ref_aa",
+            "design_aa",
+            "sc_ca_distance",
+            "aligned_pred_ca_x",
+        ]
+    ).issubset(residues_df.columns)
+    p1_mut = residues_df[
+        (residues_df["protein_id"] == "p1")
+        & (residues_df["design_idx"] == 1)
+        & (residues_df["residue_idx"] == 3)
+    ].iloc[0]
+    assert p1_mut["residue_idx_1based"] == 4
+    assert p1_mut["ref_aa"] == "A"
+    assert p1_mut["design_aa"] == "T"
+    assert residues_df["sc_ca_distance"].max() < 1e-5
 
 
 def test_af3_refold_backend_raises():

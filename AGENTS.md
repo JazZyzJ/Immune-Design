@@ -37,6 +37,7 @@ Thinker with critical and logical reasoning should act as a pragmatic technical 
 - **Planning 更新**：涉及规划变更时使用 `superpowers:writing-plans` skill。（通常我会给coder完整的PLAN文件，coder审阅后即可执行，如果没有PLAN只有proposal，说明该项内容较简单无需补充PLAN）
 - 所有集群路径通过 CLI 参数传入，**永远不要在 Python 模块中硬编码集群路径**。
 - WT baseline 必须使用真实数据，缺失时 fail-fast，**不允许 placeholder 值**。
+- agent进行实验前明确目标后看`doc/SCRIPTS.md`中的文件，通常执行实验的agent可以找到直接使用的脚本，同时建议使用slurm，有需要的时候改外部传输参数而不是直接拿裸的py脚本
 - 修改前先读代码，理解现有逻辑再改。
 - Markdown 文档中的行间公式必须使用独立行的双美元符号包裹：`$$` 单独一行，公式单独一行，闭合 `$$` 单独一行，同时前后留空行；行内公式保持 `$...$`。
 - **LOG.md 记录边界**：LOG.md 只记录**实质性实现变更**——改变行为或产物的 data/代码/config/pipeline 改动，每条按 `LOG.md` 模板。**不记录**：实验/job 提交、结果回传（`mhc-if-local`）、RAR records、sanity/诊断分析、小 bug 修复、探索性尝试、纯文档/注释微调。边界不清时默认**不记**，保持 LOG 精简。
@@ -66,17 +67,12 @@ Use buckets `RF/`, `EpitopeHead/`, `IFStandalone/`, `TestSets/`; RF runs use `RF
 For RAR / analysis artifacts under `Results/Analysis/`, keep large generated data out of git and sync through the stable Della archive path `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/rar_analysis_archive/current/Results/Analysis/`.
 Use local aliases `rar-update-dry` / `rar-update` for Mac -> Della sync, and Della aliases `rar-return-dry` / `rar-return` for Della -> Mac sync via `mhc-if-local`.
 Do not create timestamped routine RAR archive directories; rsync to the stable path so only new or changed files transfer. RAR sync/return does not require LOG.md modification.
-Group AlphaFold 3 is at `/scratch/gpfs/KAIYIJIANG/tools/alphafold3`; usage docs are in `docs/README.md` under that root.
 
 ## 4. Plan & Progress Files
 
-- **核心任务驱动文件**: 当前未指定；以用户当次指定和下列计划文件为准。
-- **当前执行计划**: `PLAN_IF.md` (Inverse Folding v1, Module K->L->M->N)
-- **数据选择计划**: `PLAN_DATA_SEL.md` (absorbs Module L from PLAN_IF)
-- **Epitope head 计划**: `PLAN.md`
-- **逆折叠模型理论基础**: `doc/Reference_Flow_Derivation.md`
+- **计划**: `PLAN_X.md`
 - **实质性变更**同步到 `LOG.md`（append-only, 结构化 schema；记录边界见 §2 LOG.md 记录边界）
-- 科学架构文档: `doc/Inverse_Folding_v1.md`, `doc/Immune_Design_Architecture_v2.md`
+
 
 ### PROGRESS.md 治理规则
 
@@ -99,11 +95,3 @@ Group AlphaFold 3 is at `/scratch/gpfs/KAIYIJIANG/tools/alphafold3`; usage docs 
 - **Registration Gate**: Every new script must be registered in `doc/SCRIPTS.md` under the correct module section; unregistered scripts make the task incomplete.
 - For script or SLURM work, also read `scripts/CLAUDE.md`; do not create a duplicate `scripts/AGENTS.md` unless the user explicitly asks.
 
-## 6. Key Architecture Decisions (Frozen)
-
-- **Base model**: DPLM v1 (ESM-2 650M) + GVP adapter, checkpoint `airkingbd/dplm_650m`
-- **训练**: 只训练 adapter，backbone 和 GVP encoder 冻结
-- **核心贡献方向**: Position-dependent reference flow - 免疫原性风险景观塑造生成动力学
-- **评估**: NetMHCIIpan 是独立外部验证器，不能做 guidance signal（防止循环论证）
-- **Level 2 guidance**: risk-weighted candidate resampling，不是 weighted-logit averaging
-- **DPLM 已 vendor 化**: `inverse_folding/dplm/` 作为自有代码，`.git` 已删除

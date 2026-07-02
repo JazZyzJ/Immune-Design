@@ -28,6 +28,7 @@ from inverse_folding.evaluation.schema import (
     IMMUNOGENICITY_HEAD_COLUMNS,
     IMMUNOGENICITY_NMP_COLUMNS,
     STRUCTURAL_COLUMNS,
+    STRUCTURAL_RESIDUE_COLUMNS,
     validate_dataframe,
 )
 from inverse_folding.evaluation.refold import load_refold_model, refold
@@ -126,13 +127,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--nmp-batch-size must be positive")
     if args.nmp_workers <= 0:
         parser.error("--nmp-workers must be positive")
-    if args.nmp_mode == "original":
-        # Naive baseline: one protein × all lengths per subprocess, no parallelism.
-        # Matches benchmark_iedb_test.py's --nmp-mode original semantics so that
-        # Phase C aggregates are directly comparable to the IEDB benchmark.
-        args.nmp_batch_size = 1
-        args.nmp_max_lengths_per_call = 14
-        args.nmp_workers = 1
+    args.nmp_batch_size, args.nmp_max_lengths_per_call, args.nmp_workers = (
+        resolve_nmp_runtime_params(args)
+    )
     args.device = _resolve_device(args.device)
     return args
 
@@ -163,6 +160,20 @@ def _resolve_device(requested: str) -> str:
         flush=True,
     )
     return "cpu"
+
+
+def resolve_nmp_runtime_params(args: argparse.Namespace) -> tuple[int, int, int]:
+    """Return effective NetMHCIIpan batch/length/worker parameters."""
+
+    if args.nmp_mode == "original":
+        # Naive baseline: one protein x all lengths per subprocess, no parallelism.
+        # Matches benchmark_iedb_test.py's original semantics.
+        return 1, 14, 1
+    return (
+        int(args.nmp_batch_size),
+        int(args.nmp_max_lengths_per_call),
+        int(args.nmp_workers),
+    )
 
 
 def build_run_id(args: argparse.Namespace) -> str:
@@ -276,7 +287,12 @@ def evaluate_immunogenicity_rows(
     hotspot_threshold: float = 0.5,
     full: bool = False,
     run_nmp: bool = True,
+    return_full_tables: bool = False,
 ) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    list[dict[str, Any]],
+] | tuple[
     pd.DataFrame,
     pd.DataFrame,
     list[dict[str, Any]],
@@ -425,7 +441,9 @@ def evaluate_immunogenicity_rows(
     nmp_df = pd.DataFrame(nmp_rows)
     residues_df = pd.DataFrame(residue_rows)
     peptides_df = pd.DataFrame(peptide_rows)
-    return head_df, nmp_df, failures, residues_df, peptides_df
+    if return_full_tables:
+        return head_df, nmp_df, failures, residues_df, peptides_df
+    return head_df, nmp_df, failures
 
 
 def evaluate_structural_rows(
@@ -438,11 +456,18 @@ def evaluate_structural_rows(
     tmalign_bin: str,
     esmfold_cache_dir: str | None = None,
     progress_every: int = 25,
-) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    return_residue_metrics: bool = False,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]] | tuple[
+    pd.DataFrame,
+    list[dict[str, Any]],
+    pd.DataFrame,
+]:
     from inverse_folding.evaluation.tmalign import run_tmalign
+    from inverse_folding.evaluation.sc_rmsd import compute_ca_self_consistency
     from inverse_folding.reference_flow.runtime import resolve_structure_path
 
     rows: list[dict[str, Any]] = []
+    residue_rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
 
     model = None
@@ -531,6 +556,28 @@ def evaluate_structural_rows(
             bb_rmsd = float("nan")
             foldability = False
 
+        sc_rmsd = float("nan")
+        try:
+            sc_rmsd, per_residue_rows = compute_ca_self_consistency(
+                pred_pdb=str(pred["pdb_path"]),
+                ref_pdb=str(ref_path),
+                protein_id=str(row.protein_id),
+                design_id=design_id,
+                design_idx=int(row.design_idx),
+                design_sequence=sequence,
+                ref_sequence=str(test_row["sequence"]),
+                refold_backend=refold_backend,
+            )
+            residue_rows.extend(per_residue_rows)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(
+                _failure_row(
+                    row,
+                    stage="struct_residue",
+                    reason=f"{type(exc).__name__}:{exc}",
+                )
+            )
+
         rows.append(
             {
                 "protein_id": str(row.protein_id),
@@ -540,6 +587,7 @@ def evaluate_structural_rows(
                 "scTM": sc_tm,
                 "pLDDT": float(pred["pLDDT"]),
                 "bb_RMSD": bb_rmsd,
+                "scRMSD": sc_rmsd,
                 "recovery": recovery,
                 "foldability": foldability,
                 "refold_backend": refold_backend,
@@ -556,7 +604,14 @@ def evaluate_structural_rows(
                 started=started,
             )
 
-    return pd.DataFrame(rows), failures
+    structural_df = pd.DataFrame(rows)
+    structural_residue_df = pd.DataFrame(
+        residue_rows,
+        columns=sorted(STRUCTURAL_RESIDUE_COLUMNS),
+    )
+    if return_residue_metrics:
+        return structural_df, failures, structural_residue_df
+    return structural_df, failures
 
 
 def compute_recovery(sequence: str, wt_sequence: str) -> float:
@@ -646,9 +701,9 @@ def build_manifest(
         "nmp_binary_path": str(Path(args.netmhciipan_bin).resolve()) if args.netmhciipan_bin else None,
         "nmp_version_string": probe_nmp_version(args.netmhciipan_bin) if args.netmhciipan_bin else None,
         "nmp_mode": getattr(args, "nmp_mode", None),
-        "nmp_batch_size": int(args.nmp_batch_size),
-        "nmp_max_lengths_per_call": int(args.nmp_max_lengths_per_call),
-        "nmp_workers": int(args.nmp_workers),
+        "nmp_batch_size": int(getattr(args, "nmp_batch_size", 8)),
+        "nmp_max_lengths_per_call": int(getattr(args, "nmp_max_lengths_per_call", 4)),
+        "nmp_workers": int(getattr(args, "nmp_workers", 1)),
         "git_sha": git_sha(PROJECT_ROOT),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "n_input_designs": int(len(generated_df)),
@@ -695,6 +750,7 @@ def output_paths(run_dir: str | Path) -> dict[str, Path]:
         "imm_head_residues": run_dir / "imm_head_residues.parquet",
         "imm_nmp_peptides": run_dir / "imm_nmp_peptides.parquet",
         "structural": run_dir / "structural.parquet",
+        "structural_residues": run_dir / "structural_residues.parquet",
         "manifest": run_dir / "manifest.json",
         "failures": run_dir / "failures.json",
         "run_config": run_dir / "run_config.yaml",
@@ -708,7 +764,7 @@ def mode_outputs_exist(
     if mode == "imm":
         required = [paths["imm_head"]] if no_nmp else [paths["imm_head"], paths["imm_nmp"]]
     elif mode == "struct":
-        required = [paths["structural"]]
+        required = [paths["structural"], paths["structural_residues"]]
     else:
         raise ValueError(mode)
     existing = [path for path in required if path.exists()]
@@ -868,6 +924,7 @@ def run_mode_imm(
         hotspot_threshold=args.hotspot_threshold,
         full=bool(getattr(args, "imm_full", False)),
         run_nmp=not no_nmp,
+        return_full_tables=True,
     )
     failed_keys = {
         (row["protein_id"], int(row["design_idx"]))
@@ -908,7 +965,7 @@ def run_mode_struct(
     paths: dict[str, Path],
 ) -> tuple[int, float, list[dict[str, Any]]]:
     started = time.time()
-    df, failures = evaluate_structural_rows(
+    df, failures, residue_df = evaluate_structural_rows(
         generated_df,
         test_lookup,
         pdb_root=args.pdb_root,
@@ -917,19 +974,25 @@ def run_mode_struct(
         tmalign_bin=args.tmalign_bin,
         esmfold_cache_dir=args.esmfold_cache_dir,
         progress_every=args.progress_every,
+        return_residue_metrics=True,
     )
     failed_keys = {
         (row["protein_id"], int(row["design_idx"]))
         for row in failures
-        if row["stage"] == "struct"
+        if row["stage"] in {"struct", "struct_residue"}
     }
     if len(failed_keys) / float(max(len(generated_df), 1)) > args.fail_pct_threshold:
         partial_dir = paths["partial_dir"]
         write_partial_dataframe(partial_dir / "structural.parquet", df)
+        write_partial_dataframe(partial_dir / "structural_residues.parquet", residue_df)
         raise RuntimeError("struct mode exceeded fail-pct-threshold")
 
     validate_dataframe(df, STRUCTURAL_COLUMNS)
+    if residue_df.empty:
+        raise RuntimeError("struct mode produced empty structural_residues.parquet")
+    validate_dataframe(residue_df, STRUCTURAL_RESIDUE_COLUMNS)
     df.to_parquet(paths["structural"], index=False)
+    residue_df.to_parquet(paths["structural_residues"], index=False)
     return len(df), time.time() - started, failures
 
 
@@ -945,7 +1008,7 @@ def _log_evaluation_distributions(wandb_run: Any, paths: dict[str, Path]) -> Non
     hist_targets: dict[str, tuple[Path, list[str]]] = {
         "imm_head": (paths["imm_head"], ["global_risk", "mean_hotspot", "max_hotspot", "n_hotspot_positions"]),
         "imm_nmp": (paths["imm_nmp"], ["n_strong_binders", "n_weak_binders", "mean_best_rank", "n_windows_scored"]),
-        "structural": (paths["structural"], ["scTM", "pLDDT", "bb_RMSD", "recovery"]),
+        "structural": (paths["structural"], ["scTM", "pLDDT", "bb_RMSD", "scRMSD", "recovery"]),
     }
 
     payload: dict[str, Any] = {}

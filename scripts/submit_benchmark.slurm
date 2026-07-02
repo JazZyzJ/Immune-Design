@@ -259,8 +259,12 @@ elif [ "${MODE}" = "phase_c" ]; then
         TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_04_01.parquet}"
         PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0401}"
     else
-        echo "ERROR: TEST_SET_PARQUET/PDB_ROOT defaults only defined for 0701/0401; set them explicitly" >&2
-        exit 2
+        # Any other allele (e.g. HLA-DRB1*15:01): no built-in default, but honor
+        # explicit env-provided paths instead of unconditionally failing.
+        if [ -z "${TEST_SET_PARQUET:-}" ] || [ -z "${PDB_ROOT:-}" ]; then
+            echo "ERROR: no TEST_SET_PARQUET/PDB_ROOT default for ALLELE=${ALLELE}; set both explicitly" >&2
+            exit 2
+        fi
     fi
 
     GENERATED_PARQUET="${GENERATED_PARQUET:-}"
