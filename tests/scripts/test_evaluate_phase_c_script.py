@@ -246,11 +246,15 @@ def test_evaluate_structural_rows_emits_expected_schema(tmp_path: Path, monkeypa
     assert residues_df["sc_ca_distance"].max() < 1e-5
 
 
-def test_af3_refold_backend_raises():
+def test_af3_refold_backend_is_cache_read():
+    # af3 is now a cache-read backend (official DeepMind AlphaFold3); with no cache_dir
+    # it fails fast with a clear, non-OOM error (not NotImplementedError).
     from inverse_folding.evaluation.refold import refold
 
-    with pytest.raises(NotImplementedError, match="af3 backend"):
-        refold("AAAA", "p1", "design_0000", backend="af3")
+    with pytest.raises(RuntimeError) as exc:
+        refold("AAAA", "p1", "design_0000", backend="af3", cache_dir=None)
+    assert "cache_dir" in str(exc.value)
+    assert "out of memory" not in str(exc.value).lower()
 
 
 def test_build_manifest_populates_digests(tmp_path: Path):

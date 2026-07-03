@@ -47,6 +47,16 @@ conda activate esmfold2
 export HF_HOME=/scratch/gpfs/KAIYIJIANG/zijie/model_cache/hf
 export HF_HUB_OFFLINE=1                       # weights pre-cached; no compute-node internet needed
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"   # for repo imports in --from-parquet/--cache-layout mode
+
+# ── Refold-cache precompute mode (optional) ───────────────────────────────
+# FROM_PARQUET: fold the UNIQUE (protein_id, sequence) pairs of a generated parquet
+#   (header id = cache_key) instead of --fasta.
+# CACHE_LAYOUT: also normalize each fold into the shared refold cache
+#   (<CACHE_LAYOUT>/<cache_key>.pdb + .plddt, 0-100) consumed by
+#   evaluate_phase_c.py --refold-model esmfold2.
+FROM_PARQUET="${FROM_PARQUET:-}"
+CACHE_LAYOUT="${CACHE_LAYOUT:-}"
 
 # ── Diagnostics ───────────────────────────────────────────────────────────
 echo "============================================================"
@@ -65,8 +75,28 @@ echo "  Timestamp    : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "============================================================"
 
 # ── Fold this shard ───────────────────────────────────────────────────────
+# --from-parquet needs pyarrow (immune-design env), which the esmfold2 env lacks:
+# emit the fold FASTA (header id = cache_key) in an immune-design subshell first,
+# then fold that FASTA in the esmfold2 env (parent shell).
+if [ -n "${FROM_PARQUET}" ]; then
+    FASTA="${OUT_DIR}/_fold_input.fasta"
+    (
+        module purge
+        module load anaconda3/2025.12
+        conda activate immune-design
+        export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+        python "${PROJECT_ROOT}/scripts/predict_esmfold2_gt.py" \
+            --from-parquet "${FROM_PARQUET}" --emit-fold-fasta "${FASTA}" --out-dir "${OUT_DIR}"
+    )
+fi
+
+INPUT_ARGS=(--fasta "${FASTA}")
+if [ -n "${CACHE_LAYOUT}" ]; then
+    INPUT_ARGS+=(--cache-layout "${CACHE_LAYOUT}")
+fi
+
 python "${PROJECT_ROOT}/scripts/predict_esmfold2_gt.py" \
-    --fasta "${FASTA}" \
+    "${INPUT_ARGS[@]}" \
     --out-dir "${OUT_DIR}" \
     --num-shards "${NUM_SHARDS}" \
     --shard-idx "${SLURM_ARRAY_TASK_ID}" \

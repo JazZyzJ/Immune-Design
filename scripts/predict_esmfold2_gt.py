@@ -51,9 +51,79 @@ def cif_to_pdb(cif_text):
     return sio.getvalue()
 
 
+def _ensure_repo_on_path():
+    import sys
+
+    repo = Path(__file__).resolve().parents[1]
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+
+
+def build_fold_records_from_parquet(parquet_path):
+    """Fold list for the shared refold cache from a generated parquet.
+
+    Returns ``[(header_id, sequence), ...]`` over UNIQUE ``(protein_id, sequence)``
+    pairs, with ``header_id = cache_key(protein_id, sequence)`` so the ESMFold2
+    on-disk id already equals the shared refold cache key (no key drift).
+    """
+    import pandas as pd
+
+    _ensure_repo_on_path()
+    from inverse_folding.evaluation.esmfold_runner import cache_key
+
+    df = pd.read_parquet(parquet_path)
+    for col in ("protein_id", "sequence"):
+        if col not in df.columns:
+            raise SystemExit(f"FATAL: '{col}' not in {parquet_path}")
+    seen, recs = set(), []
+    for pid, seq in zip(df["protein_id"].astype(str), df["sequence"].astype(str)):
+        pair = (pid, seq)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        recs.append((cache_key(pid, seq), seq))
+    return recs
+
+
+def cache_layout_from_manifest(manifest_path, mmcif_dir, cache_dir, native_scale="0-1"):
+    """Normalize every folded mmCIF in a manifest into the shared refold cache.
+
+    Writes ``<cache_dir>/<id>.pdb`` (single chain) + ``<id>.plddt`` (0-100) for each
+    manifest row, where ``id`` is the cache key and ``file`` locates the mmCIF.
+    Resume-safe: processes ALL manifest rows (not just this run's freshly folded
+    ones). Returns the number of cache entries written.
+    """
+    _ensure_repo_on_path()
+    from inverse_folding.evaluation.refold_normalize import normalize_to_cache
+
+    n = 0
+    for line in Path(manifest_path).read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        cif_path = str(Path(mmcif_dir) / f"{row['file']}.cif")
+        normalize_to_cache(
+            cache_dir, str(row["id"]), cif_path=cif_path,
+            mean_plddt=float(row["mean_plddt"]), native_scale=native_scale,
+        )
+        n += 1
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--fasta", required=True, help="Input FASTA (to_fold.fasta).")
+    ap.add_argument("--fasta", default=None, help="Input FASTA (to_fold.fasta). One of --fasta/--from-parquet.")
+    ap.add_argument("--from-parquet", default=None,
+                    help="Build the fold list from a generated parquet (unique protein_id,sequence; "
+                         "header id = cache_key) instead of --fasta.")
+    ap.add_argument("--cache-layout", default=None,
+                    help="After folding, also normalize each mmCIF into <DIR>/<cache_key>.pdb + .plddt "
+                         "(0-100) for the shared refold cache (evaluate_phase_c --refold-model esmfold2).")
+    ap.add_argument("--emit-fold-fasta", default=None,
+                    help="Build the fold FASTA (header id = cache_key) from --from-parquet and EXIT "
+                         "without folding. Run this in immune-design (needs pyarrow); the esmfold2 "
+                         "fold step then reads only the emitted FASTA (no parquet).")
     ap.add_argument("--out-dir", required=True, help="Output root (mmcif/, pdb/, gt_manifest.jsonl).")
     ap.add_argument("--plddt-min", type=float, default=0.90,
                     help="Min mean pLDDT. ESMFold2 pLDDT is 0-1 scale; 0.90 == AF 'very high'.")
@@ -78,6 +148,26 @@ def main():
     else:
         manifest_path = out / "gt_manifest.jsonl"
 
+    # Build the fold list BEFORE importing esm/torch. --from-parquet needs pyarrow,
+    # which lives in immune-design, NOT the esmfold2 env; --emit-fold-fasta writes the
+    # FASTA and returns here, so the parquet read runs in immune-design and the actual
+    # fold reads only that FASTA in the esmfold2 env.
+    if args.from_parquet:
+        recs = build_fold_records_from_parquet(args.from_parquet)
+    elif args.fasta:
+        recs = read_fasta(args.fasta)
+    else:
+        raise SystemExit("FATAL: provide --fasta or --from-parquet")
+
+    if args.emit_fold_fasta:
+        fasta_out = Path(args.emit_fold_fasta)
+        fasta_out.parent.mkdir(parents=True, exist_ok=True)
+        with open(fasta_out, "w") as fh:
+            for pid, seq in recs:
+                fh.write(f">{pid}\n{seq}\n")
+        print(f"[emit-fasta] {len(recs)} records -> {fasta_out}", flush=True)
+        return
+
     import torch
     from esm.models.esmfold2 import (
         ESMFold2InputBuilder,
@@ -90,7 +180,6 @@ def main():
     model = ESMFold2Model.from_pretrained("biohub/ESMFold2").to(args.device).eval()
     builder = ESMFold2InputBuilder()
 
-    recs = read_fasta(args.fasta)
     if args.num_shards > 1:
         recs = recs[args.shard_idx :: args.num_shards]  # round-robin; balances length
     if args.limit:
@@ -166,6 +255,12 @@ def main():
             )
 
     print("[done]", flush=True)
+
+    if args.cache_layout:
+        n_cache = cache_layout_from_manifest(
+            str(manifest_path), str(out / "mmcif"), args.cache_layout
+        )
+        print(f"[cache-layout] wrote {n_cache} entries -> {args.cache_layout}", flush=True)
 
 
 if __name__ == "__main__":

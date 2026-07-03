@@ -108,9 +108,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--pdb-root", default=None)
-    parser.add_argument("--refold-model", choices=("esmfold", "af3"), default="esmfold")
+    parser.add_argument(
+        "--refold-model",
+        choices=("esmfold", "esmfold2", "protenix", "af3"),
+        default="esmfold",
+        help="structure-prediction backend for scTM. 'esmfold' folds in-process; "
+        "'esmfold2'/'protenix' are cache-read (a separate SLURM precompute populates "
+        "--refold-cache-dir); 'af3' is an unwired stub.",
+    )
     parser.add_argument("--tmalign-bin", default="TMalign")
-    parser.add_argument("--esmfold-cache-dir", default=None)
+    # Generic refold cache dir; --esmfold-cache-dir kept as a deprecated alias
+    # (both write the same destination so all backends share one cache namespace).
+    parser.add_argument("--refold-cache-dir", dest="esmfold_cache_dir", default=None)
+    parser.add_argument("--esmfold-cache-dir", dest="esmfold_cache_dir")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--tag", default=None)
 
