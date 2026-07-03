@@ -1,5 +1,5 @@
 schema_version: uricase_active_site_v0
-description: "Per-protein active-site hard anchors projected from Q00511 (8-anchor set, identity-required) onto 6387 deduped uricase IF-ready sequences. Source: PLAN_URICASE_ENZYME_MODE.md / doc/Uricases_Design.md\
+description: "Per-protein active-site hard anchors projected from Q00511 (8-anchor set, identity-required) onto 6388 deduped uricase IF-ready sequences. Source: PLAN_URICASE_ENZYME_MODE.md / doc/Uricases_Design.md\
   \ \xA77-9; scripts/build_uricase_active_site_manifest.py."
 entries:
 - protein_id: A0A010QV98
@@ -74511,3 +74511,16 @@ entries:
   - {index_0b: 263, expected_aa: H, label: His257, source: 'proj:Q00511[256]'}
   monitored_shell:
   - {index_0b: 234, expected_aa: V, label: Val228, enforcement: monitored_posthoc, rationale: 'proj:Q00511[227]'}
+- protein_id: Pegloticase
+  sequence_md5: a0807c9abf9c982a45a69c6d8ece2057
+  hard_anchors:
+  - {index_0b: 16, expected_aa: K, label: Lys11, source: 'proj:Q00511[10]'}
+  - {index_0b: 61, expected_aa: T, label: Thr58, source: 'proj:Q00511[57]'}
+  - {index_0b: 62, expected_aa: D, label: Asp59, source: 'proj:Q00511[58]'}
+  - {index_0b: 163, expected_aa: F, label: Phe160, source: 'proj:Q00511[159]'}
+  - {index_0b: 180, expected_aa: R, label: Arg177, source: 'proj:Q00511[176]'}
+  - {index_0b: 229, expected_aa: Q, label: Gln229, source: 'proj:Q00511[228]'}
+  - {index_0b: 255, expected_aa: N, label: Asn255, source: 'proj:Q00511[254]'}
+  - {index_0b: 257, expected_aa: H, label: His257, source: 'proj:Q00511[256]'}
+  monitored_shell:
+  - {index_0b: 228, expected_aa: V, label: Val228, enforcement: monitored_posthoc, rationale: 'proj:Q00511[227]'}
