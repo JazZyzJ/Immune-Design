@@ -57,12 +57,23 @@ echo "============================================================"
 
 # ── Select the inference input dir ─────────────────────────────────────────
 if [ "${USE_MSA}" = "true" ]; then
-    INFER_INPUT="${DATA_DIR}"
-    if [ ! -d "${DATA_DIR}" ] || [ -z "$(ls -A "${DATA_DIR}"/*_data.json 2>/dev/null)" ]; then
-        echo "FATAL: full-MSA requested but no *_data.json under ${DATA_DIR}." >&2
+    # Stage A (--mode data) writes the MSA'd input as <DATA_DIR>/<name>/<name>_data.json
+    # (nested per fold). AF3 inference --input_dir globs top-level *.json, so gather the
+    # nested data JSONs into a flat dir via symlinks.
+    INFER_INPUT="${AF3_OUT}/_infer_input/shard${SHARD_IDX}of${N_SHARDS}"
+    mkdir -p "${INFER_INPUT}"
+    n_data=0
+    for f in "${DATA_DIR}"/*/*_data.json; do
+        [ -f "${f}" ] || continue
+        ln -sf "${f}" "${INFER_INPUT}/$(basename "${f}")"
+        n_data=$((n_data + 1))
+    done
+    if [ "${n_data}" -eq 0 ]; then
+        echo "FATAL: full-MSA requested but no <name>/*_data.json under ${DATA_DIR}." >&2
         echo "       Run stage A first: sbatch scripts/submit_af3_data.slurm." >&2
         exit 2
     fi
+    echo "  gathered ${n_data} data JSON(s) -> ${INFER_INPUT}"
 else
     # no-MSA: build empty-MSA JSONs here (immune-design)
     module purge

@@ -78,9 +78,24 @@ GENERATED_COLUMNS = ["protein_id", "design_idx", "sequence", "seed", "wall_secon
 # Sharded input loading (glob + concat; falls back to a flat file)
 # --------------------------------------------------------------------------- #
 def _load_sharded(root: Path, subdir: str, filename: str) -> pd.DataFrame:
-    """Concat ``root/subdir/*shard*/filename`` across shards; fall back to flat files."""
+    """Load a clean refinement input flexibly (the caller hands whatever is tidiest).
+
+    Accepts, in priority order:
+      1. ``root`` is a parquet FILE            -> read it directly (a merged/clean parquet);
+      2. ``root/<subdir>/*shard*/filename``    -> return-package layout;
+      3. ``root/*shard*/filename``             -> shard dirs directly under root (no wrapper);
+      4. flat ``root/<subdir>/filename`` or ``root/filename``.
+    Shards are concatenated. The ``generation``/``eval_immune`` wrapper is therefore
+    optional, so a pre-organized input works without staging a return-package tree.
+    """
     root = Path(root)
-    paths = sorted(glob.glob(str(root / subdir / "*shard*" / filename)))
+    if root.is_file():
+        return pd.read_parquet(root)
+    paths: list[str] = []
+    for pattern in (root / subdir / "*shard*" / filename, root / "*shard*" / filename):
+        paths = sorted(glob.glob(str(pattern)))
+        if paths:
+            break
     if not paths:
         for flat in (root / subdir / filename, root / filename):
             if flat.exists():
@@ -88,10 +103,27 @@ def _load_sharded(root: Path, subdir: str, filename: str) -> pd.DataFrame:
                 break
     if not paths:
         raise FileNotFoundError(
-            f"no {filename} found under {root/subdir}/*shard*/ or as a flat file"
+            f"no {filename} found under {root} (tried '{subdir}/*shard*/', '*shard*/', "
+            "a flat file, or a direct parquet path)"
         )
-    frames = [pd.read_parquet(p) for p in paths]
-    return pd.concat(frames, ignore_index=True)
+    return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+
+
+def _canonical_allele(allele: str) -> str:
+    """Normalize an allele to the canonical NetMHCIIpan form ``HLA-DRB1*07:01``.
+
+    ``StandaloneRunner.score_batch`` normalizes ``*``->``_`` and drops ``:``; a run-dir
+    filesystem tag like ``HLA-DRB1_07_01`` would mis-normalize to an INVALID
+    ``DRB1_07_01``. The ``*``/``:`` form maps to a valid ``DRB1_0701``. Already-canonical
+    input (contains ``*`` or ``:``) passes through unchanged.
+    """
+    a = allele.strip()
+    if "*" in a or ":" in a:
+        return a
+    parts = a.split("_")  # 'HLA-DRB1_07_01' -> ['HLA-DRB1', '07', '01'] (gene, field1, field2)
+    if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+        return f"{parts[0]}*{parts[1]}:{parts[2]}"
+    return a
 
 
 # --------------------------------------------------------------------------- #
@@ -141,10 +173,15 @@ def make_propose_fn(oracles: Oracles, protein_id: str, anchors: set, *, max_pair
 # --------------------------------------------------------------------------- #
 def _select_seeds(generated: pd.DataFrame, imm_head: pd.DataFrame, protein_id: str,
                   n_seeds: int) -> list[dict]:
-    """Top-``n_seeds`` designs for a protein by ascending global_risk (best de-immunized)."""
+    """Top-``n_seeds`` designs for a protein by ascending global_risk (best de-immunized).
+
+    When ``imm_head is None`` (a clean seq-only input with no global_risk), fall back to
+    the provided designs in stable ``design_idx`` order — refine what the caller handed."""
     g = generated[generated["protein_id"].astype(str) == protein_id]
     if g.empty:
         return []
+    if imm_head is None:
+        return g.sort_values("design_idx").head(n_seeds).to_dict("records")
     risk = imm_head[imm_head["protein_id"].astype(str) == protein_id][
         ["design_idx", "global_risk"]
     ]
@@ -274,7 +311,8 @@ def run_refinement(args, oracles: Oracles) -> int:
             "--head-high-topk (head-high editable augmentation) is a v0 deferral; pass 0 "
             "(editable = pockets minus anchors)")
     generated = _load_sharded(Path(args.run_dir), "generation", "generated.parquet")
-    imm_head = _load_sharded(Path(args.eval_immune_dir), ".", "imm_head.parquet")
+    imm_head = (_load_sharded(Path(args.eval_immune_dir), ".", "imm_head.parquet")
+                if args.eval_immune_dir else None)
     manifest = load_constraint_manifest(args.constraint_manifest) if args.constraint_manifest else None
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -460,8 +498,12 @@ def build_oracles(args) -> Oracles:
 # --------------------------------------------------------------------------- #
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="RF refinement (targeted epitope elimination)")
-    p.add_argument("--run-dir", required=True, help="run dir holding generation/*shard*/generated.parquet")
-    p.add_argument("--eval-immune-dir", required=True, help="dir holding */imm_head.parquet (global_risk)")
+    p.add_argument("--run-dir", required=True,
+                   help="a clean generated.parquet (file), a dir holding it, or "
+                        "generation/*shard*/generated.parquet")
+    p.add_argument("--eval-immune-dir", default=None,
+                   help="optional dir holding */imm_head.parquet (global_risk seed selection); "
+                        "omit to refine every provided design")
     p.add_argument("--test-set-parquet", default=None, help="test-set parquet (rows for resolve_structure_path)")
     p.add_argument("--constraint-manifest", default=None, help="active-site hard-anchor manifest (optional)")
     p.add_argument("--allele", required=True)
@@ -507,6 +549,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_arg_parser().parse_args(argv)
+    args.allele = _canonical_allele(args.allele)  # tolerate the 'HLA-DRB1_07_01' run-dir tag
     if args.print_config:
         print("[refine] config: " + json.dumps(vars(args), sort_keys=True, default=str), flush=True)
     oracles = build_oracles(args)

@@ -12,7 +12,14 @@ import pandas as pd
 import pytest
 
 from inverse_folding.reference_flow.refine import StructureMetrics
-from scripts.refine_rf_designs import Oracles, build_arg_parser, build_oracles, run_refinement
+from scripts.refine_rf_designs import (
+    Oracles,
+    _canonical_allele,
+    _load_sharded,
+    build_arg_parser,
+    build_oracles,
+    run_refinement,
+)
 
 
 def _fake_oracles() -> Oracles:
@@ -142,3 +149,52 @@ def test_build_oracles_fail_fast_on_missing_heavy_inputs():
     ])
     with pytest.raises(ValueError, match=r"build_oracles requires"):
         build_oracles(args)
+
+
+def test_canonical_allele_normalizes_underscore_tag():
+    # NMP score_batch normalizes '*'->'_' and drops ':'. The run-dir filesystem tag
+    # 'HLA-DRB1_07_01' would mis-normalize to an INVALID 'DRB1_07_01'; the driver must
+    # canonicalize it to 'HLA-DRB1*07:01' (-> valid 'DRB1_0701'). Already-canonical passes through.
+    assert _canonical_allele("HLA-DRB1_07_01") == "HLA-DRB1*07:01"
+    assert _canonical_allele("HLA-DRB1_04_01") == "HLA-DRB1*04:01"
+    assert _canonical_allele("HLA-DRB1*07:01") == "HLA-DRB1*07:01"
+
+
+def test_load_sharded_accepts_direct_file_and_bare_shards(tmp_path):
+    df = pd.DataFrame([{"protein_id": "A", "design_idx": 0, "sequence": "AA"}])
+    # (a) --run-dir pointing directly at a single clean parquet FILE
+    f = tmp_path / "clean.parquet"
+    df.to_parquet(f)
+    assert len(_load_sharded(f, "generation", "generated.parquet")) == 1
+    # (b) bare '*shard*/' dirs directly under root (NO 'generation/' wrapper)
+    d = tmp_path / "run"
+    (d / "x_shard00of02_ailab").mkdir(parents=True)
+    (d / "x_shard01of02_ailab").mkdir()
+    df.to_parquet(d / "x_shard00of02_ailab" / "generated.parquet")
+    df.to_parquet(d / "x_shard01of02_ailab" / "generated.parquet")
+    assert len(_load_sharded(d, "generation", "generated.parquet")) == 2
+    # (c) flat merged parquet directly inside the dir
+    d2 = tmp_path / "merged"
+    d2.mkdir()
+    df.to_parquet(d2 / "generated.parquet")
+    assert len(_load_sharded(d2, "generation", "generated.parquet")) == 1
+
+
+def test_refine_without_eval_immune_refines_provided_designs(tmp_path):
+    # User hands a clean generated.parquet (already-chosen seqs to refine); no imm_head /
+    # global_risk. --eval-immune-dir is optional -> refine every provided design.
+    gen = tmp_path / "clean.parquet"
+    pd.DataFrame([
+        {"protein_id": "A", "design_idx": 0, "sequence": "A" * 30, "seed": 42, "wall_seconds": 1.0},
+    ]).to_parquet(gen)
+    out_dir = tmp_path / "out"
+    args = build_arg_parser().parse_args([
+        "--run-dir", str(gen), "--allele", "HLA-DRB1*07:01",
+        "--proteins", "all", "--seeds-per-protein", "1", "--mode", "refine",
+        "--beam-width", "4", "--max-rounds", "5", "--out-dir", str(out_dir),
+    ])
+    assert run_refinement(args, _fake_oracles()) == 0
+    rich = pd.read_parquet(out_dir / "refined" / "refined_designs.parquet")
+    a = rich[rich["protein_id"] == "A"].iloc[0]
+    assert a["core_count_before"] == 1
+    assert a["core_count_after"] == 0

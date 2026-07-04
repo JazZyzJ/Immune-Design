@@ -36,8 +36,13 @@ elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
     ALLELE_TAG="DRB1_04_01"
     PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0401"
     H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps_v2/h_maps_DRB1_04_01.parquet"
+elif [[ "${ALLELE}" == "HLA-DRB1*15:01" ]]; then
+    ALLELE_FILE_TAG="HLA-DRB1_15_01"
+    ALLELE_TAG="DRB1_15_01"
+    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/1501"
+    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps_v2/h_maps_DRB1_15_01.parquet"
 else
-    echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
+    echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01, HLA-DRB1*04:01, or HLA-DRB1*15:01" >&2
     exit 2
 fi
 

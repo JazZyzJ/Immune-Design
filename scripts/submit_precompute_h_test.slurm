@@ -38,8 +38,12 @@ elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_04_01"
     ALLELE_TAG="DRB1_04_01"
     EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0401_seed42/runs/LC1/seed_42/best.pt}"
+elif [[ "${ALLELE}" == "HLA-DRB1*15:01" ]]; then
+    ALLELE_FILE_TAG="HLA-DRB1_15_01"
+    ALLELE_TAG="DRB1_15_01"
+    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb1501_seed42/runs/LC1/seed_42/best.pt}"
 else
-    echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
+    echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01, HLA-DRB1*04:01, or HLA-DRB1*15:01" >&2
     exit 2
 fi
     

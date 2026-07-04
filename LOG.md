@@ -3630,3 +3630,15 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN_RF_REFINE.md` (Tasks R1–R9)
   - `L0120` (enzyme-mode constraints reused for anchor freezing)
+
+### L0128
+- timestamp: 2026-07-03T16:10:00-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: User committed Pegloticase into the uricase manifest (`1efc7ef`, manifest + projection-audit only) and asked to run it fully through the dataset pipeline with an **AF3-predicted structure** added to the PDB collection (also the first real AF3 test). RF not to be run.
+- change_summary: Materialized **Pegloticase** (recombinant pig-baboon chimeric therapeutic uricase / Krystexxa; 298 aa; P16164 variant 98.7% id; md5 `a0807c9...`, verified == committed manifest). Structure = **official DeepMind AF3 v3.0.3 full-MSA** prediction via the new two-stage refold pipeline (local-DB, no external server: `submit_af3_data.slurm` CPU MSA ~16 min on 4 cores + `submit_af3_refold.slurm` GPU inference 43 s; pLDDT **0.947**, pTM **0.94**) -> cleaned single-chain `pdbs_if_ready/Pegloticase.pdb` (`structure_source=af3`, first AF3-sourced structure). Appended as the **LAST row** of `uricase_caseset_if_ready_unified.parquet` (6387->**6388**; characterized 25->**26**; coverage 1.0; identity IF-ready mapping). Added to `Uricases_RF/` (design_viable 5491->**5492**; labeled caseset 6388). `h_maps_uricase_DRB1_{07_01,04_01}` computed standalone (npoff heads) and **concatenated** (6387->**6388** each; global_risk 0701 -4.61 / 0401 -9.53). Backups retained; original rows untouched.
+- evidence: unified 6388, Pegloticase last, md5 == committed manifest `a0807c9`; manifest `validate_against_sequence(Pegloticase)` PASS (8/8 anchors); Uricases_RF design_viable 5492 / 24 characterized; h_maps 6388 both alleles with **0 missing / 0 md5-mismatch** vs unified; AF3 structure 298 CA single-chain, predicted seq == input. First end-to-end AF3 full-MSA production run on this cluster (local-DB MSA clean + fast: ~17 min/protein total).
+- impact: scope -- uricase case set + `Uricases_RF/` + uricase h_maps + `pdbs_if_ready/`. Pegloticase now RF-ready (test_set + h_maps + structure + constraint manifest all aligned); **RF not run** (per user). risk low (backups retained; manifest already committed + validated). Open: `wt_generated` facade + uricase immune still on pre-Pegloticase 6387 (re-run if case-study immune needs Pegloticase).
+- status: done
+- refs:
+  - commit `1efc7ef` (manifest add), `L0127` (refold backends incl. AF3 wiring), `L0125` (uricase exact-dedup)
