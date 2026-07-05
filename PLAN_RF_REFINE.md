@@ -68,10 +68,15 @@ OUTPUT → refold + `structure_gate` it now: pass → shortlist + beam, **fail �
 (never stack on a broken backbone); (iii) branch-waste is bounded by a cheap, refold-free
 `max_path_mutations` cap (a count-0 solution needing many edits is structurally doomed anyway).
 
-**Effect ceiling before cost.** v0 first establishes the mode ceiling with **NMP on ALL
-proposed candidates** (`topB = None`), head COMPUTED but NOT gating. Head-pruning to a small
-`topB` is a later cost mode validated against the ceiling. The ceiling run's data (every
-candidate carries a head rank + an NMP outcome) IS the E0 dataset.
+**Effect ceiling before cost — but pure NMP-all is infeasible on multi-core seeds.** The pure
+ceiling (`topB=None`, NMP every candidate) exploded in practice (H2ETE7 round 1: pool 2208 →
+60 min NMP + 80 min refold → walltime kill): the pool is `beam_width × block enumeration`, and
+single mutations kill cores readily so most candidates drop the count. v0 therefore runs
+**head-pruned from the start** (`topB≈64`) with a per-round **`refold_cap≈16`**; the NMP-all
+ceiling probe (E0) is kept only on a few EASY (few-core) seeds where it is affordable, to
+calibrate what the prune/cap cost. head proxy = target-window risk, so top-B surfaces
+count-droppers by construction (the load-bearing E0 measurement). The structural fix that
+removes the explosion (not just caps it) is block-decomposition — §12.
 
 **Block-structured enumeration is the primary proposer.** Search unit = connected-component
 hotspot **block** (overlapping strong windows), not a single core. Per block: exhaustive
@@ -626,9 +631,10 @@ python scripts/evaluate_phase_c.py --generated <out>/refined/evaluator_ready.par
 | `active_site_RMSD_max` | `None` (advisory v0) | `active_site_RMSD` := `active_site_spatial_shell6A_ca_rmsd` — function-critical (global scTM diverges from it: 66/1532 designs are global-ok/active-site-shifted). Monomer-partial for uricase (tetramer-interface active site); scTM stays the reliable global floor; anchors already frozen (mismatch 0/1532). |
 | `scRMSD_max` | `None` | global backbone-RMSD ceiling (more local-sensitive than scTM); optional. |
 | `max_path_mutations` | 8 | cheap refold-free cap bounding branch-waste on stacked edits. |
+| `refold_cap` | 16 / round | max count-dropping candidates refolded per round (top by count↓, then edits↓). **Essential:** single mutations kill cores readily (H2ETE7: 2003/2208 candidates dropped count) so unbounded refold explodes (80 min GPU); the cap bounds ESMFold AND is exactly the lean ranked shortlist wanted. |
 | `allow_structure_unknown` | `False` | v0 refolds+gates ONLY count-dropping (output) candidates; margin-progress states enter the beam with no refold. |
-| `topB` | `None` (NMP-all, ceiling) | cost mode uses an E0-informed small topB. |
-| `beam_width` | 8 | structure-valid working states carried between rounds. |
+| `topB` | **64** for refine (`None` only for a small ceiling probe) | head-prunes the pool before NMP. NMP-all (`None`) proved infeasible on multi-core seeds (H2ETE7 r1: pool 2208 → 60 min NMP → walltime kill). head proxy = target-window risk, so top-B surfaces count-droppers by construction; 32–64 is safe when droppers are abundant. |
+| `beam_width` | 4 | working states carried between rounds; larger multiplies the pool (`beam × per-state enumeration`) — the second explosion factor. |
 | `max_rounds` / `patience` | 20 / 3 | stop on count 0, budget, or stalled (count,margin). |
 | `max_pairs` / `max_points` | 200 / 2 | singles+pairs primary; triples only for stuck blocks. |
 | `head_high_topk` | 0 (v0) | extra in-span high-head positions for a core's editable set; **v0 deferral** — non-zero fail-fasts, editable = pockets − anchors (needs per-residue head, not wired). |
@@ -728,3 +734,30 @@ within budget) collapses or NMP-calls-per-eliminated-core explodes. (3) ONE stru
 is reused at admission (seed headroom `scTM₀ − floor > δ`, δ ≈ expected edits × per-edit scTM
 cost) and as the per-candidate output gate. (4) The structure headroom δ and the immune band are
 themselves calibrated from round-1 telemetry.
+
+---
+
+## 12. Deferred v0.1: block-decomposition search (removes the explosion at the root)
+
+The `refold_cap` / `topB` / `beam_width` caps (§7) make the beam search *feasible* but only
+*cap* the `beam × pool × rounds` explosion. The principled fix exploits hotspot-block
+independence — the same factorization that grounds §1 tractability:
+
+- Blocks are connected components of overlapping strong windows → **non-overlapping in
+  sequence** → editing block A cannot change block B's windows.
+- Empirically (H2ETE7: 2003/2208 candidates dropped the count) **single mutations kill cores
+  readily** (matches depth≠difficulty, §11 note 0).
+
+So instead of a beam over rounds:
+1. Extract cores → `hotspot_blocks`.
+2. **Per block, independently:** enumerate singles (+ pairs/triples only if singles fail),
+   NMP-score, pick the edit(s) that eliminate that block's core(s) without creating a new one.
+3. **Compose:** union the per-block killer edits → one (or a few) candidate(s) that address all
+   blocks at once; NMP the composed candidate to catch cross-block surprises.
+4. **Refold only the few composed candidates**; structure-gate → shortlist.
+
+Cost drops from `O(beam × pool × rounds)` to `O(Σ block-editable)` NMP + `O(few)` refold. It also
+makes the hard-seed limit explicit: the ceiling is the **maximal subset of block-edits whose
+union stays within the structure budget** (`max_path_mutations` / scTM floor) — how many blocks
+can be killed before the fold breaks, not a search-budget limit. Implement after the capped beam
+validates the method on E1.
