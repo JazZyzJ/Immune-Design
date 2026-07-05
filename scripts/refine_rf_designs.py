@@ -263,7 +263,7 @@ def _run_refine_seed(oracles, protein_id, seed_seq, orig_design_idx, seed_val, a
         scRMSD_max=args.scRMSD_max, active_site_RMSD_max=args.active_site_RMSD_max,
         topB=args.topB, beam_width=args.beam_width, max_rounds=args.max_rounds,
         patience=args.patience, max_path_mutations=args.max_path_mutations,
-        allow_structure_unknown=args.allow_structure_unknown,
+        refold_cap=args.refold_cap, allow_structure_unknown=args.allow_structure_unknown,
     )
     rich = []
     if res.shortlist:
@@ -382,7 +382,7 @@ def run_refinement(args, oracles: Oracles) -> int:
     print(
         f"[refine] mode={args.mode} proteins={len(proteins)} seeds={n_seeds} "
         f"source={'seed-table' if args.seed_table else 'run-dir'} topB={args.topB} "
-        f"beam={args.beam_width} strong_rank={args.strong_rank} margin_band={args.margin_band} "
+        f"beam={args.beam_width} refold_cap={args.refold_cap} strong_rank={args.strong_rank} margin_band={args.margin_band} "
         f"scTM_eps={args.scTM_eps} max_pairs={args.max_pairs} "
         f"max_path_mutations={args.max_path_mutations}",
         flush=True,
@@ -602,12 +602,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--scRMSD-max", dest="scRMSD_max", type=float, default=None)
     p.add_argument("--active-site-RMSD-max", dest="active_site_RMSD_max", type=float, default=None)
     p.add_argument("--topB", type=int, default=None)
-    p.add_argument("--beam-width", type=int, default=8)
+    p.add_argument("--beam-width", type=int, default=4)
     p.add_argument("--max-rounds", type=int, default=20)
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--max-pairs", type=int, default=200)
     p.add_argument("--max-path-mutations", type=int, default=8,
                    help="cheap refold-free cap on total edits per search path (branch-waste bound)")
+    p.add_argument("--refold-cap", dest="refold_cap", type=int, default=16,
+                   help="max count-dropping candidates refolded per round; bounds ESMFold cost "
+                        "and yields the lean ranked shortlist (pass a large value to disable)")
     p.add_argument("--head-high-topk", type=int, default=0,
                    help="head-high editable augmentation (v0 deferral: must be 0)")
     p.add_argument("--allow-structure-unknown", action="store_true")
