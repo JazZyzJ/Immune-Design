@@ -205,13 +205,18 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
                     target_window_idx_fn=None, strong_rank=0.02, margin_band=0.10,
                     scTM_eps=0.05, scRMSD_max=None, active_site_RMSD_max=None,
                     topB=None, beam_width=8, max_rounds=20, patience=3,
-                    allow_structure_unknown=False):
+                    max_path_mutations=8, allow_structure_unknown=False):
     """Beam search that eliminates NMP epitope cores. ``nmp_fn`` is BATCHED:
     ``(protein_id, list[seq]) -> list[list[dict]]`` (one NMP row-list per input
     sequence). Each round scores its whole ``chosen`` candidate set in ONE ``nmp_fn``
     call so NetMHCIIpan model-load is amortized across the batch (PLAN_RF_REFINE NMP
-    acceleration decision). ``head_fn`` is likewise batched ``(pid, seqs) -> [K, W]``;
-    ``struct_fn`` stays per-sequence (only improving candidates are refolded)."""
+    acceleration decision). ``head_fn`` is likewise batched ``(pid, seqs) -> [K, W]``.
+
+    Structure is gated on OUTPUTS, not every step (PLAN §1): a candidate that drops the
+    distinct-core count below the seed is a potential output → refold + ``structure_gate``
+    now (pass → shortlist + beam, fail → excluded from both); a margin-progress state
+    (count not below the seed) enters the beam with NO refold. ``max_path_mutations``
+    is a cheap refold-free cap bounding branch-waste on stacked edits."""
     import numpy as np
 
     def nmp_states(seqs):
@@ -253,24 +258,28 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
         for (st, c), state in zip(chosen_pairs, chosen_states):
             improving = (state["count"] < st["count"]
                          or (state["count"] == st["count"] and state["margin"] < st["margin"]))
-            if not improving:
-                continue                                        # no help -> never refold, never beam
-            metrics = struct_fn(protein_id, c.seq); n_refold += 1
-            passed, reason = structure_gate(seed_metrics, metrics, scTM_eps=scTM_eps,
-                                            scRMSD_max=scRMSD_max,
-                                            active_site_RMSD_max=active_site_RMSD_max)
-            metrics = replace(metrics, passed=passed, reason=reason)
-            if not (passed or allow_structure_unknown):
-                continue                                        # structure fail -> excluded from beam
-            state["structure"] = metrics
-            beam_admits.append(state)
-            if accept_refinement(seed_core_count=seed_count, cand_core_count=state["count"],
-                                 structure_passed=passed):
+            n_mut = sum(a != b for a, b in zip(c.seq, seed_seq))
+            if not improving or n_mut > max_path_mutations:
+                continue                                        # no help / too many edits -> drop
+            if state["count"] < seed_count:
+                # Potential OUTPUT -> refold + gate NOW. Pass -> shortlist + beam; fail -> drop.
+                metrics = struct_fn(protein_id, c.seq); n_refold += 1
+                passed, reason = structure_gate(seed_metrics, metrics, scTM_eps=scTM_eps,
+                                                scRMSD_max=scRMSD_max,
+                                                active_site_RMSD_max=active_site_RMSD_max)
+                metrics = replace(metrics, passed=passed, reason=reason)
+                if not (passed or allow_structure_unknown):
+                    continue                                    # structure-failed output -> no beam
+                state["structure"] = metrics
+                beam_admits.append(state)
                 shortlist.append({"seq": c.seq, "core_count": state["count"], "scTM": metrics.scTM,
                                   "pLDDT": metrics.pLDDT, "scRMSD": metrics.scRMSD,
                                   "active_site_RMSD": metrics.active_site_RMSD, "muts": c.desc})
                 if state["count"] < best["count"]:
                     best = {"seq": c.seq, "count": state["count"], "structure": metrics}
+            else:
+                # Margin-progress only (count not below the seed) -> beam, NO refold.
+                beam_admits.append(state)
         beam = sorted(beam + beam_admits, key=lambda s: (s["count"], s["margin"]))[:beam_width]
         key = (beam[0]["count"], beam[0]["margin"])
         trace.append({"round": rnd, "n_candidates": len(pool), "n_nmp": n_nmp, "n_refold": n_refold,

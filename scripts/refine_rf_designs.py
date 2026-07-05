@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 import sys
 from collections import namedtuple
 from pathlib import Path
@@ -261,7 +262,8 @@ def _run_refine_seed(oracles, protein_id, seed_seq, orig_design_idx, seed_val, a
         strong_rank=args.strong_rank, margin_band=args.margin_band, scTM_eps=args.scTM_eps,
         scRMSD_max=args.scRMSD_max, active_site_RMSD_max=args.active_site_RMSD_max,
         topB=args.topB, beam_width=args.beam_width, max_rounds=args.max_rounds,
-        patience=args.patience, allow_structure_unknown=args.allow_structure_unknown,
+        patience=args.patience, max_path_mutations=args.max_path_mutations,
+        allow_structure_unknown=args.allow_structure_unknown,
     )
     rich = []
     if res.shortlist:
@@ -301,6 +303,68 @@ def _resolve_proteins(args, generated: pd.DataFrame) -> list[str]:
     return sorted(generated["protein_id"].astype(str).unique())
 
 
+def _seed_design_idx(row, running: int) -> int:
+    """Provenance design_idx for a seed-table row: explicit design_idx, else canonical
+    design_NNNN, else a running per-protein index."""
+    if "design_idx" in row and pd.notna(row["design_idx"]):
+        return int(row["design_idx"])
+    match = re.match(r"^design_(\d+)$", str(row.get("design_id", "")))
+    return int(match.group(1)) if match else running
+
+
+def _seeds_from_table(seed_table: str, proteins_arg: str) -> dict[str, list[dict]]:
+    """Seeds from a self-contained protein_id/design_id/sequence parquet (bypasses
+    --run-dir best-of-N selection; refines every listed row)."""
+    df = pd.read_parquet(seed_table)
+    for col in ("protein_id", "sequence"):
+        if col not in df.columns:
+            raise ValueError(f"--seed-table missing required column {col!r}")
+    if proteins_arg and proteins_arg != "all":
+        want = {p.strip() for p in proteins_arg.split(",")}
+        df = df[df["protein_id"].astype(str).isin(want)]
+    seeds_by_protein: dict[str, list[dict]] = {}
+    has_seed = "seed" in df.columns
+    for _, row in df.iterrows():
+        pid = str(row["protein_id"])
+        lst = seeds_by_protein.setdefault(pid, [])
+        lst.append({
+            "sequence": str(row["sequence"]),
+            "design_idx": _seed_design_idx(row, len(lst)),
+            "seed": int(row["seed"]) if has_seed and pd.notna(row.get("seed")) else -1,
+        })
+    return seeds_by_protein
+
+
+def _all_seeds(generated: pd.DataFrame, protein_id: str) -> list[dict]:
+    """Every design for a protein — used when --eval-immune-dir is omitted (no best-of-N)."""
+    g = generated[generated["protein_id"].astype(str) == protein_id]
+    has_seed = "seed" in g.columns
+    return [
+        {"sequence": str(r["sequence"]), "design_idx": int(r["design_idx"]),
+         "seed": int(r["seed"]) if has_seed and pd.notna(r.get("seed")) else -1}
+        for _, r in g.iterrows()
+    ]
+
+
+def _gather_seeds(args) -> tuple[dict[str, list[dict]], list[str]]:
+    """Resolve per-protein seed lists from --seed-table, or --run-dir (with optional
+    --eval-immune-dir best-of-N; omit it to refine every design)."""
+    if args.seed_table:
+        seeds_by_protein = _seeds_from_table(args.seed_table, args.proteins)
+    else:
+        if not args.run_dir:
+            raise ValueError("provide either --seed-table or --run-dir")
+        generated = _load_sharded(Path(args.run_dir), "generation", "generated.parquet")
+        imm_head = (_load_sharded(Path(args.eval_immune_dir), ".", "imm_head.parquet")
+                    if args.eval_immune_dir else None)
+        seeds_by_protein = {
+            pid: (_select_seeds(generated, imm_head, pid, args.seeds_per_protein)
+                  if imm_head is not None else _all_seeds(generated, pid))
+            for pid in _resolve_proteins(args, generated)
+        }
+    return seeds_by_protein, sorted(seeds_by_protein)
+
+
 def run_refinement(args, oracles: Oracles) -> int:
     # v0 deferrals: fail-fast rather than silently ignoring a non-default switch.
     if args.target_source != "nmp":
@@ -310,24 +374,24 @@ def run_refinement(args, oracles: Oracles) -> int:
         raise NotImplementedError(
             "--head-high-topk (head-high editable augmentation) is a v0 deferral; pass 0 "
             "(editable = pockets minus anchors)")
-    generated = _load_sharded(Path(args.run_dir), "generation", "generated.parquet")
-    imm_head = (_load_sharded(Path(args.eval_immune_dir), ".", "imm_head.parquet")
-                if args.eval_immune_dir else None)
     manifest = load_constraint_manifest(args.constraint_manifest) if args.constraint_manifest else None
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    proteins = _resolve_proteins(args, generated)
+    seeds_by_protein, proteins = _gather_seeds(args)
+    n_seeds = sum(len(v) for v in seeds_by_protein.values())
     print(
-        f"[refine] mode={args.mode} proteins={len(proteins)} seeds/protein={args.seeds_per_protein} "
-        f"topB={args.topB} beam={args.beam_width} strong_rank={args.strong_rank} "
-        f"margin_band={args.margin_band} scTM_eps={args.scTM_eps} max_pairs={args.max_pairs}",
+        f"[refine] mode={args.mode} proteins={len(proteins)} seeds={n_seeds} "
+        f"source={'seed-table' if args.seed_table else 'run-dir'} topB={args.topB} "
+        f"beam={args.beam_width} strong_rank={args.strong_rank} margin_band={args.margin_band} "
+        f"scTM_eps={args.scTM_eps} max_pairs={args.max_pairs} "
+        f"max_path_mutations={args.max_path_mutations}",
         flush=True,
     )
 
     if args.mode == "ceiling":
         rows = []
         for pid in proteins:
-            for seed in _select_seeds(generated, imm_head, pid, args.seeds_per_protein):
+            for seed in seeds_by_protein[pid]:
                 anchors = _anchors_for(manifest, pid, str(seed["sequence"]))
                 rows.extend(_run_ceiling_seed(
                     oracles, pid, str(seed["sequence"]), seed["design_idx"], anchors, args))
@@ -341,7 +405,7 @@ def run_refinement(args, oracles: Oracles) -> int:
     rich_rows, trace_rows, eval_rows = [], [], []
     per_protein_idx: dict[str, int] = {}
     for pid in proteins:
-        for seed in _select_seeds(generated, imm_head, pid, args.seeds_per_protein):
+        for seed in seeds_by_protein[pid]:
             anchors = _anchors_for(manifest, pid, str(seed["sequence"]))
             rich, trace, seed_val = _run_refine_seed(
                 oracles, pid, str(seed["sequence"]), seed["design_idx"],
@@ -498,12 +562,15 @@ def build_oracles(args) -> Oracles:
 # --------------------------------------------------------------------------- #
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="RF refinement (targeted epitope elimination)")
-    p.add_argument("--run-dir", required=True,
+    p.add_argument("--run-dir", default=None,
                    help="a clean generated.parquet (file), a dir holding it, or "
-                        "generation/*shard*/generated.parquet")
+                        "generation/*shard*/generated.parquet (alternative to --seed-table)")
     p.add_argument("--eval-immune-dir", default=None,
-                   help="optional dir holding */imm_head.parquet (global_risk seed selection); "
-                        "omit to refine every provided design")
+                   help="optional dir holding */imm_head.parquet (global_risk best-of-N seed "
+                        "selection); omit to refine EVERY design in --run-dir")
+    p.add_argument("--seed-table", default=None,
+                   help="self-contained protein_id/design_id/sequence parquet; bypasses "
+                        "--run-dir selection and refines every listed seed")
     p.add_argument("--test-set-parquet", default=None, help="test-set parquet (rows for resolve_structure_path)")
     p.add_argument("--constraint-manifest", default=None, help="active-site hard-anchor manifest (optional)")
     p.add_argument("--allele", required=True)
@@ -539,6 +606,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-rounds", type=int, default=20)
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--max-pairs", type=int, default=200)
+    p.add_argument("--max-path-mutations", type=int, default=8,
+                   help="cheap refold-free cap on total edits per search path (branch-waste bound)")
     p.add_argument("--head-high-topk", type=int, default=0,
                    help="head-high editable augmentation (v0 deferral: must be 0)")
     p.add_argument("--allow-structure-unknown", action="store_true")

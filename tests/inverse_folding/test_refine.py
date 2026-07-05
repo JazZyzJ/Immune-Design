@@ -173,6 +173,58 @@ def test_soft_beam_enables_two_step_elimination():
     assert res.best_core_count == 0 and res.n_accepts >= 1
 
 
+def test_margin_progress_states_enter_beam_without_refold():
+    # New v0 policy (PLAN §1 "structure gated on outputs"): a 1-edit margin-progress state
+    # (count stays 1) enters the beam WITHOUT a refold; only the count-dropping 2-edit
+    # output is refolded. struct_fn records every sequence it is asked to fold.
+    seq = "A" * 30
+    folded = []
+    def nmut(s):
+        return sum(1 for p in (10, 13) if s[p] != "A")
+    def nmp(pid, seqs):
+        def one(s):
+            rank = {0: 0.001, 1: 0.015}.get(nmut(s), 0.05)
+            return [] if rank >= 0.02 else [
+                {"pos": 10, "pep_length": 9, "peptide": s[10:19], "core": s[10:19], "rank_EL": rank}]
+        return [one(s) for s in seqs]
+    def head(pid, seqs):
+        return np.array([[-nmut(s)] for s in seqs])
+    def struct(pid, s):
+        folded.append(s)
+        return _OK
+    res = refine_sequence("P", seq, propose_fn=_propose_singles, head_fn=head, nmp_fn=nmp,
+                          struct_fn=struct, anchors=set(), topB=None, beam_width=4,
+                          max_rounds=6, patience=3, scTM_eps=0.05,
+                          target_window_idx_fn=lambda cores: [0])
+    assert res.best_core_count == 0
+    # Only the seed and count-dropping (>=2-edit) candidates are refolded — never a
+    # 1-edit margin-only intermediate.
+    assert all(nmut(s) >= 2 for s in folded if s != seq)
+
+
+def test_max_path_mutations_caps_deep_paths():
+    # Reaching count 0 needs 2 edits (pos 10 & 13); with max_path_mutations=1 the 2-edit
+    # output is dropped before refold, so no elimination is accepted.
+    seq = "A" * 30
+    def nmut(s):
+        return sum(1 for p in (10, 13) if s[p] != "A")
+    def nmp(pid, seqs):
+        def one(s):
+            rank = {0: 0.001, 1: 0.015}.get(nmut(s), 0.05)
+            return [] if rank >= 0.02 else [
+                {"pos": 10, "pep_length": 9, "peptide": s[10:19], "core": s[10:19], "rank_EL": rank}]
+        return [one(s) for s in seqs]
+    def head(pid, seqs):
+        return np.array([[-nmut(s)] for s in seqs])
+    def struct(pid, s):
+        return _OK
+    res = refine_sequence("P", seq, propose_fn=_propose_singles, head_fn=head, nmp_fn=nmp,
+                          struct_fn=struct, anchors=set(), topB=None, beam_width=4,
+                          max_rounds=6, patience=3, scTM_eps=0.05, max_path_mutations=1,
+                          target_window_idx_fn=lambda cores: [0])
+    assert res.best_core_count == 1 and res.n_accepts == 0
+
+
 def test_structure_floor_blocks_fold_breaking_elimination_and_beam():
     seq = "A" * 30
     def nmp(pid, seqs):

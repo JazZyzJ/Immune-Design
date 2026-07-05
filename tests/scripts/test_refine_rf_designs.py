@@ -121,12 +121,35 @@ def test_ceiling_smoke_writes_candidate_table(tmp_path):
     assert bool(cand["eliminates"].any())   # editing pos 10 drops the core -> eliminates
 
 
+def test_refine_from_seed_table(tmp_path):
+    # --seed-table bypasses --run-dir best-of-N selection: refine the listed seeds directly.
+    seed_table = tmp_path / "seeds.parquet"
+    pd.DataFrame([
+        {"protein_id": "A", "design_id": "design_0000", "sequence": "A" * 30, "seed": 42},
+    ]).to_parquet(seed_table)
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "schema_version: uricase_active_site_v0\ndescription: smoke\nentries:\n"
+        "  - protein_id: A\n    hard_anchors:\n      - {index_0b: 0, expected_aa: A, label: a0}\n"
+    )
+    out_dir = tmp_path / "out"
+    args = build_arg_parser().parse_args([
+        "--seed-table", str(seed_table), "--constraint-manifest", str(manifest),
+        "--allele", "HLA-DRB1_07_01", "--mode", "refine", "--beam-width", "4",
+        "--max-rounds", "5", "--out-dir", str(out_dir),
+    ])
+    assert run_refinement(args, _fake_oracles()) == 0
+    rich = pd.read_parquet(out_dir / "refined" / "refined_designs.parquet")
+    a = rich[rich["protein_id"] == "A"].iloc[0]
+    assert a["core_count_after"] == 0   # killable core eliminated, seed sourced from the table
+
+
 def test_refine_help_lists_key_flags():
-    # --test-set-parquet + --esmfold-cache-dir + --netmhciipan-bin must exist (R4 review fixes).
+    # R4 review fixes + PLAN update: the new seed-table / max-path-mutations knobs must exist.
     parser = build_arg_parser()
     dests = {a.dest for a in parser._actions}
     assert {"test_set_parquet", "esmfold_cache_dir", "netmhciipan_bin", "constraint_manifest",
-            "mode", "nmp_batch_size", "topB"} <= dests
+            "mode", "nmp_batch_size", "topB", "seed_table", "max_path_mutations"} <= dests
 
 
 def test_deferred_switches_fail_fast():

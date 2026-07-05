@@ -58,11 +58,15 @@ can push a core 0.2%→1.8% without crossing 2%). The search carries a **beam** 
 — a continuous NMP surrogate rewarding progress toward the 2% threshold, read for free off
 the candidates already sent to NMP.
 
-**The beam holds only structure-valid states.** Because v0 prioritises effect over cost,
-EVERY candidate that improves NMP (count↓, or count= & margin↓) is refolded and structure-
-gated **before it may enter the beam**; only states that pass the gate (or are explicitly
-`allow_structure_unknown`) are carried forward. This prevents later mutations from being
-stacked on an already-broken backbone.
+**Structure is gated on outputs, not on every search step.** Mutations are not monotonically
+fold-degrading (n64 data: 66/1532 designs are global-ok-but-active-site-shifted; scRMSD has a
+heavy tail but many edits are neutral/positive), so structure must NOT prune the immune search
+mid-flight (it would kill candidates a later edit heals, and waste refolds). v0 policy:
+(i) the beam advances on immune `(count, margin)` only — **margin-progress states enter the
+beam with NO refold**; (ii) a candidate that **drops the distinct-core count** is a potential
+OUTPUT → refold + `structure_gate` it now: pass → shortlist + beam, **fail → excluded from both**
+(never stack on a broken backbone); (iii) branch-waste is bounded by a cheap, refold-free
+`max_path_mutations` cap (a count-0 solution needing many edits is structurally doomed anyway).
 
 **Effect ceiling before cost.** v0 first establishes the mode ceiling with **NMP on ALL
 proposed candidates** (`topB = None`), head COMPUTED but NOT gating. Head-pruning to a small
@@ -167,12 +171,15 @@ repeat up to max_rounds, stop if best.count == 0:
     beam_admits = []
     for c in chosen:
         st_c = NMP-evaluate(c)                           # cores, count, rank_margin_mass
-        if st_c improves its parent (count↓, or count= & margin↓):
-            m_c = StructFn(c); passed,reason = structure_gate(seed_metrics, m_c)   # refold EVERY improving cand
-            if passed or allow_structure_unknown:        # ONLY structure-valid states enter the beam
-                beam_admits += st_c(structure=m_c)
-                if st_c.count < seed_count and passed:    # hard accept -> output shortlist
-                    shortlist += {c, st_c.count, m_c}; best = min(best, by count)
+        if not improves-parent(count↓ or count= & margin↓) or hamming(c,seed) > max_path_mutations:
+            continue
+        if st_c.count < seed_count:                       # potential OUTPUT -> refold + gate NOW
+            m_c = StructFn(c); passed = structure_gate(seed_metrics, m_c)
+            if not (passed or allow_structure_unknown):   # structure-failed output -> drop (no beam)
+                continue
+            shortlist += {c, st_c.count, m_c}; best = min(best, by count); beam_admits += st_c
+        else:                                             # margin-progress only -> beam, NO refold
+            beam_admits += st_c
     beam = top-beam_width( beam ∪ beam_admits , key=(count asc, rank_margin_mass asc) )
     stop if beam-best (count, margin) has not improved for `patience` rounds
 return RefineResult(best, shortlist ranked by count asc, trace, diverged = best.count==seed_count)
@@ -357,16 +364,20 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
                     target_window_idx_fn=None, strong_rank=0.02, margin_band=0.10,
                     scTM_eps=0.05, scRMSD_max=None, active_site_RMSD_max=None,
                     topB=None, beam_width=8, max_rounds=20, patience=3,
-                    allow_structure_unknown=False):
+                    max_path_mutations=8, allow_structure_unknown=False):
     import numpy as np
 
-    def nmp_state(seq):
-        cores = extract_target_cores(nmp_fn(protein_id, seq), anchors=anchors, strong_rank=strong_rank)
-        margin = rank_margin_mass([c.best_rank for c in cores], strong_rank=strong_rank,
-                                  margin_band=margin_band)
-        return {"seq": seq, "cores": cores, "count": len(cores), "margin": margin}
+    def nmp_states(seqs):   # BATCHED: one nmp_fn call for the whole list (§2 confirmed)
+        results = nmp_fn(protein_id, list(seqs))
+        states = []
+        for seq, rows in zip(seqs, results):
+            cores = extract_target_cores(rows, anchors=anchors, strong_rank=strong_rank)
+            margin = rank_margin_mass([c.best_rank for c in cores], strong_rank=strong_rank,
+                                      margin_band=margin_band)
+            states.append({"seq": seq, "cores": cores, "count": len(cores), "margin": margin})
+        return states
 
-    seed = nmp_state(seed_seq)
+    seed = nmp_states([seed_seq])[0]
     seed_metrics = struct_fn(protein_id, seed_seq)
     seed["structure"] = seed_metrics
     seed_count, seed_margin = seed["count"], seed["margin"]
@@ -388,30 +399,32 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
             proxy[i] = row[tw].max() if tw else row.max()
         chosen = np.argsort(proxy) if topB is None else np.argsort(proxy)[:topB]
 
-        beam_admits, n_nmp, n_refold = [], 0, 0
-        for k in chosen:
-            st, c = pool[int(k)]
-            state = nmp_state(c.seq); n_nmp += 1
+        chosen_pairs = [pool[int(k)] for k in chosen]
+        chosen_states = nmp_states([c.seq for _, c in chosen_pairs])   # one batched NMP call/round
+        beam_admits, n_nmp, n_refold = [], len(chosen_pairs), 0
+        for (st, c), state in zip(chosen_pairs, chosen_states):
+            n_mut = sum(a != b for a, b in zip(c.seq, seed_seq))
             improving = (state["count"] < st["count"]
                          or (state["count"] == st["count"] and state["margin"] < st["margin"]))
-            if not improving:
-                continue                                        # no help -> never refold, never beam
-            metrics = struct_fn(protein_id, c.seq); n_refold += 1
-            passed, reason = structure_gate(seed_metrics, metrics, scTM_eps=scTM_eps,
-                                            scRMSD_max=scRMSD_max,
-                                            active_site_RMSD_max=active_site_RMSD_max)
-            metrics = replace(metrics, passed=passed, reason=reason)
-            if not (passed or allow_structure_unknown):
-                continue                                        # structure fail -> excluded from beam
-            state["structure"] = metrics
-            beam_admits.append(state)
-            if accept_refinement(seed_core_count=seed_count, cand_core_count=state["count"],
-                                 structure_passed=passed):
+            if not improving or n_mut > max_path_mutations:
+                continue                                        # no help / too many edits -> drop
+            if state["count"] < seed_count:                     # potential OUTPUT -> refold + gate NOW
+                metrics = struct_fn(protein_id, c.seq); n_refold += 1
+                passed, reason = structure_gate(seed_metrics, metrics, scTM_eps=scTM_eps,
+                                                scRMSD_max=scRMSD_max,
+                                                active_site_RMSD_max=active_site_RMSD_max)
+                if not (passed or allow_structure_unknown):
+                    continue                                    # structure-failed output -> excluded from beam
+                metrics = replace(metrics, passed=passed, reason=reason)
+                state["structure"] = metrics
+                beam_admits.append(state)
                 shortlist.append({"seq": c.seq, "core_count": state["count"], "scTM": metrics.scTM,
                                   "pLDDT": metrics.pLDDT, "scRMSD": metrics.scRMSD,
                                   "active_site_RMSD": metrics.active_site_RMSD, "muts": c.desc})
                 if state["count"] < best["count"]:
                     best = {"seq": c.seq, "count": state["count"], "structure": metrics}
+            else:                                               # margin-progress only -> beam, NO refold
+                beam_admits.append(state)
         beam = sorted(beam + beam_admits, key=lambda s: (s["count"], s["margin"]))[:beam_width]
         key = (beam[0]["count"], beam[0]["margin"])
         trace.append({"round": rnd, "n_candidates": len(pool), "n_nmp": n_nmp, "n_refold": n_refold,
@@ -448,7 +461,10 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
 
   **(a) argparse** (echo all via `--print-config`, hyperparam-print rule): `--run-dir`
   (`generated.parquet`), `--eval-immune-dir` (`imm_head.parquet` for best-of-N selection by
-  `global_risk`; `imm_nmp_peptides.parquet` to seed targets), `--constraint-manifest`,
+  `global_risk`; `imm_nmp_peptides.parquet` to seed targets) OR `--seed-table` (a self-contained
+  `protein_id/design_id/sequence` parquet — e.g. the `refine_seed_selection_0701/refine_seeds_0701.parquet`
+  produced for E1 — which bypasses `--run-dir` selection and refines the listed seeds directly),
+  `--constraint-manifest`,
   `--allele`, `--proteins` (comma list or `all`), `--seeds-per-protein`, `--mode
   {ceiling,refine}`, `--target-source {nmp,head}`; head args mirroring `run_if_phase_c1.py`
   (`--head-checkpoint --head-config-dir --head-variant-id --head-device --head-allele-idx
@@ -537,7 +553,12 @@ python scripts/refine_rf_designs.py --mode ceiling \
 
 - [ ] Run. - [ ] RAR (`tools/rar.py new/commit`): retrieval metrics (Recall@topB for hard+soft
   "good", TopB hit rate, NMP-calls-per-eliminated-core, head false-negative rate) + per-seed
-  ceiling (min reachable count via single+pair moves). Objective record, no verdicts; tables to `data/`.
+  ceiling (min reachable count via single+pair moves). **Difficulty-axis test:** per residual
+  core, record single-mutation-killability (does any enumerated single move push it ≥ 2%) vs its
+  depth (`rank_EL`), register degeneracy (# overlapping strong frames in its block), and
+  attackability (leverage pocket mutable) — to test whether depth predicts difficulty (prior:
+  it does not / anti-correlates) and to pick the real admission difficulty axis. Objective record,
+  no verdicts; tables to `data/`.
 
 ### E1 — full refinement, char23/0701, re-evaluation
 
@@ -545,6 +566,15 @@ python scripts/refine_rf_designs.py --mode ceiling \
 count** than the seed at `scTM ≥ scTM₀ − ε`; report how many proteins reach **count 0**.
 Success (figure-worthy): ≥ 1 protein to 0 and a positive median count reduction vs the seed;
 Q00511 (3 cores) is the primary smoke target.
+
+**Validation seeds & method bake-off:** use `--seed-table
+Results/RF/Uricase/refine_seed_selection_0701/refine_seeds_0701.parquet` — 123 difficulty-
+stratified, structurally-valid (`global_ok_active_site_ok`, anchors preserved) seeds over 22
+char24 proteins incl. **Pegloticase** (the FDA uricase drug); slice `methodcmp_core` (58 seeds)
+for the method comparison, `difficulty_tier` (T0–T4) for the inflection curve. Compare (goal 2,
+effect-first): block singles+pairs vs +triples (`--max-points`) vs +MC supplement; Mode-1
+(`--target-source nmp`) vs Mode-2 (`head`); run the ceiling (`topB=None`) on `methodcmp_core`
+first, then extend the winner to the full belly.
 
 - [ ] **Smoke — Q00511:** `--mode refine --proteins Q00511 --seeds-per-protein 1
   --topB <E0-informed or omit for NMP-all> --beam-width 8 --max-rounds 20 --patience 3
@@ -593,8 +623,10 @@ python scripts/evaluate_phase_c.py --generated <out>/refined/evaluator_ready.par
 | distinct-core identity | `core_start` | per RAR 0024; adjacent-register merge deferred. |
 | `margin_band` | 0.10 | `rank_margin_mass` counts cores with `rank_EL < 10%`. |
 | `scTM_eps` | 0.05 | floor vs seed scTM₀; recalibrate on the Q00511 smoke. |
-| `scRMSD_max` / `active_site_RMSD_max` | `None` | structure-gate ceilings; wire when the metrics are populated. |
-| `allow_structure_unknown` | `False` | v0 requires a structure pass to enter the beam. |
+| `active_site_RMSD_max` | `None` (advisory v0) | `active_site_RMSD` := `active_site_spatial_shell6A_ca_rmsd` — function-critical (global scTM diverges from it: 66/1532 designs are global-ok/active-site-shifted). Monomer-partial for uricase (tetramer-interface active site); scTM stays the reliable global floor; anchors already frozen (mismatch 0/1532). |
+| `scRMSD_max` | `None` | global backbone-RMSD ceiling (more local-sensitive than scTM); optional. |
+| `max_path_mutations` | 8 | cheap refold-free cap bounding branch-waste on stacked edits. |
+| `allow_structure_unknown` | `False` | v0 refolds+gates ONLY count-dropping (output) candidates; margin-progress states enter the beam with no refold. |
 | `topB` | `None` (NMP-all, ceiling) | cost mode uses an E0-informed small topB. |
 | `beam_width` | 8 | structure-valid working states carried between rounds. |
 | `max_rounds` / `patience` | 20 / 3 | stop on count 0, budget, or stalled (count,margin). |
@@ -649,3 +681,50 @@ jointly-coherent multi-position edits.
 - Run requirements + SLURM-via-existing-pattern stated, none authored: §6. ✓
 - Type consistency: `EpitopeCore`/`Candidate`/`StructureMetrics`/`RefineResult`/`HeadFn`/`NmpFn`/
   `StructFn` used identically across R1–R4. ✓
+
+---
+
+## 11. Unified Architecture (target; DEFERRED — gen and refine are separate today)
+
+A starting point for the eventual single pipeline. NOT implemented in v0 (this PLAN owns only
+the standalone refiner); recorded so the admission/routing is designed before the pieces merge.
+
+```
+generate best-of-N (RF, WT-firewalled)
+  │
+  ├─ post-gen admission  (ONE NMP call on the selected design):
+  │     raw NMP → any strong binder?  NO  → count 0 → DONE (no refinement)   [count-0 needs no de-inflate]
+  │                                   YES → de-inflate to distinct cores, then compute:
+  │            admission metric = ( attackable de-inflated block count , register degeneracy )   [NOT depth-weighted]
+  │            seed structure    = { scTM , active_site_spatial_shell6A RMSD }
+  │
+  ├─ seed re-selection (admission drives selection, not the reverse):
+  │     among the N, prefer the design MINIMISING the admission metric.
+  │     RAR 0024: head-selected ≠ NMP-best — re-selecting by NMP pulls designs into the band.
+  │
+  ├─ route:
+  │     count 0                                        → DONE
+  │     in tractable band & scTM headroom & attackable → REFINE  (this PLAN)
+  │     out of band & design worse than WT             → WT-FALLBACK: seed = WT, refine WT
+  │                                                       (firewall-sanctioned "rescue"; label provenance
+  │                                                        distinctly; EMPIRICALLY DORMANT on uricase
+  │                                                        char24/0701 = 0/24 designs worse than WT)
+  │     out of band & design better than WT            → accept design as-is (partial) / more sampling
+  │     seed structure too weak (scTM below floor+δ)   → reject / re-sample
+  │
+  └─ refine → NMP-gated shortlist → (later phase) blood-immunogenicity validation of Head-beats-NMP
+```
+
+Notes: (0) **Difficulty is register-degeneracy + attackability, NOT depth.** MHC-II binding is
+anchor-dominated and nonlinear, so a deep (very-strong) binder often falls to a single anchor
+mutation; rank-depth weakly ANTI-predicts removal difficulty. `rank_margin_mass` is only a
+search-progress surrogate (beam gradient in multi-step cases), never the admission difficulty
+metric. E0 measures single-mutation-killability vs (depth, degeneracy, attackability) to fix the
+real difficulty axis. (1) admission uses **NMP** (one call/design, accurate) — Head is the
+inner-loop ranker, not the admission oracle. (2) The bars are **per-allele** and read off the
+first round's
+(difficulty → outcome/cost) curve (E0/E1), never hardcoded — the immune bar sits where P(reach 0
+within budget) collapses or NMP-calls-per-eliminated-core explodes. (3) ONE structure threshold
+is reused at admission (seed headroom `scTM₀ − floor > δ`, δ ≈ expected edits × per-edit scTM
+cost) and as the per-candidate output gate. (4) The structure headroom δ and the immune band are
+themselves calibrated from round-1 telemetry.
