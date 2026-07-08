@@ -264,6 +264,8 @@ def _run_refine_seed(oracles, protein_id, seed_seq, orig_design_idx, seed_val, a
         topB=args.topB, beam_width=args.beam_width, max_rounds=args.max_rounds,
         patience=args.patience, max_path_mutations=args.max_path_mutations,
         refold_cap=args.refold_cap, allow_structure_unknown=args.allow_structure_unknown,
+        incremental_nmp=args.incremental_nmp, nmp_context_margin=args.nmp_context_margin,
+        log_fn=(lambda m: print(m, flush=True)),
     )
     rich = []
     if res.shortlist:
@@ -312,9 +314,11 @@ def _seed_design_idx(row, running: int) -> int:
     return int(match.group(1)) if match else running
 
 
-def _seeds_from_table(seed_table: str, proteins_arg: str) -> dict[str, list[dict]]:
+def _seeds_from_table(seed_table: str, proteins_arg: str,
+                      cost_col: str | None = None) -> dict[str, list[dict]]:
     """Seeds from a self-contained protein_id/design_id/sequence parquet (bypasses
-    --run-dir best-of-N selection; refines every listed row)."""
+    --run-dir best-of-N selection; refines every listed row). When ``cost_col`` is a
+    present column, each seed carries ``_cost`` for difficulty-balanced array sharding."""
     df = pd.read_parquet(seed_table)
     for col in ("protein_id", "sequence"):
         if col not in df.columns:
@@ -322,6 +326,7 @@ def _seeds_from_table(seed_table: str, proteins_arg: str) -> dict[str, list[dict
     if proteins_arg and proteins_arg != "all":
         want = {p.strip() for p in proteins_arg.split(",")}
         df = df[df["protein_id"].astype(str).isin(want)]
+    has_cost = bool(cost_col) and cost_col in df.columns
     seeds_by_protein: dict[str, list[dict]] = {}
     has_seed = "seed" in df.columns
     for _, row in df.iterrows():
@@ -331,8 +336,32 @@ def _seeds_from_table(seed_table: str, proteins_arg: str) -> dict[str, list[dict
             "sequence": str(row["sequence"]),
             "design_idx": _seed_design_idx(row, len(lst)),
             "seed": int(row["seed"]) if has_seed and pd.notna(row.get("seed")) else -1,
+            "_cost": float(row[cost_col]) if has_cost and pd.notna(row.get(cost_col)) else None,
         })
     return seeds_by_protein
+
+
+def _shard_seeds(seeds_by_protein: dict[str, list[dict]], n_shards: int, shard_idx: int,
+                 shard_by: str) -> dict[str, list[dict]]:
+    """Partition the flattened seed list across array tasks (deterministic — every task
+    recomputes the identical partition). ``balanced`` = LPT bin-pack by each seed's
+    ``_cost`` (falls back to stride if any cost is missing); ``stride`` = round-robin."""
+    flat = [(pid, s) for pid in sorted(seeds_by_protein) for s in seeds_by_protein[pid]]
+    if shard_by == "balanced" and flat and all(s.get("_cost") is not None for _, s in flat):
+        order = sorted(range(len(flat)), key=lambda i: -float(flat[i][1]["_cost"]))
+        load = [0.0] * n_shards
+        assign: dict[int, int] = {}
+        for i in order:
+            j = min(range(n_shards), key=lambda s: load[s])
+            load[j] += max(float(flat[i][1]["_cost"]), 1.0)
+            assign[i] = j
+        keep = [flat[i] for i in range(len(flat)) if assign[i] == shard_idx]
+    else:
+        keep = [flat[i] for i in range(len(flat)) if i % n_shards == shard_idx]
+    out: dict[str, list[dict]] = {}
+    for pid, s in keep:
+        out.setdefault(pid, []).append(s)
+    return out
 
 
 def _all_seeds(generated: pd.DataFrame, protein_id: str) -> list[dict]:
@@ -350,7 +379,7 @@ def _gather_seeds(args) -> tuple[dict[str, list[dict]], list[str]]:
     """Resolve per-protein seed lists from --seed-table, or --run-dir (with optional
     --eval-immune-dir best-of-N; omit it to refine every design)."""
     if args.seed_table:
-        seeds_by_protein = _seeds_from_table(args.seed_table, args.proteins)
+        seeds_by_protein = _seeds_from_table(args.seed_table, args.proteins, args.shard_cost_col)
     else:
         if not args.run_dir:
             raise ValueError("provide either --seed-table or --run-dir")
@@ -362,6 +391,9 @@ def _gather_seeds(args) -> tuple[dict[str, list[dict]], list[str]]:
                   if imm_head is not None else _all_seeds(generated, pid))
             for pid in _resolve_proteins(args, generated)
         }
+    if args.n_shards > 1:
+        seeds_by_protein = _shard_seeds(seeds_by_protein, args.n_shards, args.shard_idx,
+                                        args.shard_by)
     return seeds_by_protein, sorted(seeds_by_protein)
 
 
@@ -402,8 +434,12 @@ def run_refinement(args, oracles: Oracles) -> int:
         return 0
 
     # refine mode
+    refined_dir = out_dir / "refined"
+    refined_dir.mkdir(exist_ok=True)
+    _write_config(refined_dir / "refine_config.json", args)
     rich_rows, trace_rows, eval_rows = [], [], []
     per_protein_idx: dict[str, int] = {}
+    n_done = 0
     for pid in proteins:
         for seed in seeds_by_protein[pid]:
             anchors = _anchors_for(manifest, pid, str(seed["sequence"]))
@@ -420,14 +456,14 @@ def run_refinement(args, oracles: Oracles) -> int:
                     "seed": int(seed_val), "wall_seconds": 0.0,
                 })
             trace_rows.extend(trace)
+            n_done += 1
+            # Incremental, ATOMIC flush after every seed: a walltime/GPU-idle kill keeps all
+            # completed seeds' designs (the driver otherwise only wrote at the very end).
+            _flush_refine_outputs(refined_dir, rich_rows, eval_rows, trace_rows)
+            print(f"[refine] seed {n_done} done ({pid}) -> {len(rich_rows)} designs so far",
+                  flush=True)
 
-    (out_dir / "refined").mkdir(exist_ok=True)
-    rich_df = pd.DataFrame(rich_rows).drop(columns=["orig_design_idx"], errors="ignore")
-    rich_df.to_parquet(out_dir / "refined" / "refined_designs.parquet", index=False)
-    pd.DataFrame(eval_rows, columns=GENERATED_COLUMNS).to_parquet(
-        out_dir / "refined" / "evaluator_ready.parquet", index=False)
-    pd.DataFrame(trace_rows).to_parquet(out_dir / "refined" / "refine_trace.parquet", index=False)
-    _write_config(out_dir / "refined" / "refine_config.json", args)
+    rich_df = _flush_refine_outputs(refined_dir, rich_rows, eval_rows, trace_rows)
     n0 = int((rich_df["core_count_after"] == 0).sum()) if len(rich_df) else 0
     print(
         f"[refine] refine: {len(rich_rows)} refined rows ({n0} reached count 0) "
@@ -440,6 +476,137 @@ def run_refinement(args, oracles: Oracles) -> int:
 def _write_config(path: Path, args) -> None:
     with open(path, "w") as f:
         json.dump(vars(args), f, indent=2, sort_keys=True, default=str)
+
+
+def _atomic_write(refined_dir: Path, df: pd.DataFrame, name: str) -> None:
+    """Write ``df`` to ``refined_dir/name`` via a temp file + atomic rename, so a walltime /
+    GPU-idle kill mid-write never leaves a half-written parquet."""
+    tmp = refined_dir / (name + ".tmp")
+    df.to_parquet(tmp, index=False)
+    tmp.replace(refined_dir / name)
+
+
+def _flush_refine_outputs(refined_dir: Path, rich_rows, eval_rows, trace_rows) -> pd.DataFrame:
+    """Atomically (re)write the cumulative refine outputs so a mid-run kill/timeout keeps
+    every completed seed's designs (write to a temp then rename). Returns the rich DataFrame."""
+    rich_df = pd.DataFrame(rich_rows).drop(columns=["orig_design_idx"], errors="ignore")
+    _atomic_write(refined_dir, rich_df, "refined_designs.parquet")
+    _atomic_write(refined_dir, pd.DataFrame(eval_rows, columns=GENERATED_COLUMNS), "evaluator_ready.parquet")
+    _atomic_write(refined_dir, pd.DataFrame(trace_rows), "refine_trace.parquet")
+    return rich_df
+
+
+def _free_gpu() -> None:
+    """Drop pending refs + free the CUDA caching allocator (called between the driver's
+    oracle models and the eval-side ESMFold so only one ESMFold is resident at a time)."""
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _write_final_metrics_status(refined_dir: Path, *, ok: bool, error: str | None = None,
+                                n_designs: int | None = None, n_failures: int | None = None) -> None:
+    """Completeness marker written as the LAST step of the metrics pass (ok=True) or by main()'s
+    guard on failure (ok=False). Consumers gate a full metric set on ok=true."""
+    status = {"ok": ok}
+    if error is not None:
+        status["error"] = error
+    if n_designs is not None:
+        status["n_designs"] = n_designs
+    if n_failures is not None:
+        status["n_failures"] = n_failures
+    with open(refined_dir / "final_metrics_status.json", "w") as f:
+        json.dump(status, f, indent=2, default=str)
+
+
+def _run_final_metrics(args) -> None:
+    """Emit the full evaluate_phase_c metric tables for EVERY final refined design by
+    REUSING evaluate_phase_c's own row builders (zero schema drift), reading the just-written
+    ``refined/evaluator_ready.parquet``. Runs once after the refine loop.
+
+    The search keeps only scalar metrics (core_count, scTM) and discards the raw per-window
+    NMP rows, per-residue head hotspots, and per-residue CA superposition; this pass
+    re-derives and persists them. Every final sequence was ESMFold-refolded during search,
+    so ``refold`` is a cache hit here (keyed on (protein_id, sequence)) and structure is cheap.
+
+    Writes (evaluate basenames, atomic): imm_head.parquet, imm_nmp.parquet, structural.parquet,
+    structural_residues.parquet (+ imm_head_residues / imm_nmp_peptides under --imm-full).
+    NOTE: imm_nmp.n_strong_binders (rank_EL% < strong_binder_threshold, per-window) is a
+    DIFFERENT quantity from the search objective core_count_after (distinct 9-mer cores).
+    """
+    refined_dir = Path(args.out_dir) / "refined"
+    gen_parquet = refined_dir / "evaluator_ready.parquet"
+    if not gen_parquet.exists():
+        print(f"[refine] final-metrics: {gen_parquet} missing -- skipping", flush=True)
+        return
+
+    from scripts.evaluate_phase_c import (
+        load_generated_designs, load_test_lookup,
+        build_head_predictor, build_nmp_runner,
+        evaluate_immunogenicity_rows, evaluate_structural_rows,
+    )
+
+    gdf = load_generated_designs(gen_parquet)
+    if len(gdf) == 0:
+        print("[refine] final-metrics: 0 designs -- skipping", flush=True)
+        return
+    _test_df, test_lookup = load_test_lookup(args.test_set_parquet)
+    print(
+        f"[refine] final-metrics: {len(gdf)} designs -> imm_head/imm_nmp/structural/"
+        f"structural_residues (imm_full={args.imm_full})",
+        flush=True,
+    )
+
+    # --- immunogenicity: head (global_risk/hotspots) + NMP (n_strong_binders, ...) ---
+    predictor = build_head_predictor(
+        checkpoint_path=args.head_checkpoint, config_dir=args.head_config_dir,
+        variant_id=args.head_variant_id, device=args.head_device)
+    nmp_runner = build_nmp_runner(
+        binary_path=args.netmhciipan_bin, batch_size=args.nmp_batch_size,
+        n_workers=args.nmp_workers, timeout=args.nmp_timeout,
+        max_lengths_per_call=args.nmp_max_lengths_per_call)
+    head_df, nmp_df, imm_fail, imm_res_df, imm_pep_df = evaluate_immunogenicity_rows(
+        gdf, predictor=predictor, nmp_runner=nmp_runner, allele=args.allele,
+        strong_binder_threshold=args.strong_binder_threshold,
+        nmp_batch_size=args.nmp_batch_size, hotspot_threshold=args.hotspot_threshold,
+        full=args.imm_full, run_nmp=True, return_full_tables=True)
+    del predictor, nmp_runner
+    _free_gpu()  # release the head predictor before evaluate_structural_rows loads ESMFold
+
+    # Persist the immunogenicity tables NOW — the NMP re-score is the CPU-costly part of this
+    # pass, and a later structural failure must not discard already-completed work.
+    _atomic_write(refined_dir, head_df, "imm_head.parquet")
+    _atomic_write(refined_dir, nmp_df, "imm_nmp.parquet")
+    if args.imm_full:
+        _atomic_write(refined_dir, imm_res_df, "imm_head_residues.parquet")
+        _atomic_write(refined_dir, imm_pep_df, "imm_nmp_peptides.parquet")
+
+    # --- structure: scTM/pLDDT/bb_RMSD/scRMSD/recovery/foldability + per-residue Kabsch RMSD ---
+    structural_df, struct_fail, struct_res_df = evaluate_structural_rows(
+        gdf, test_lookup, pdb_root=args.pdb_root, refold_backend="esmfold",
+        device=args.head_device, tmalign_bin="TMalign",
+        esmfold_cache_dir=args.esmfold_cache_dir, return_residue_metrics=True)
+    _atomic_write(refined_dir, structural_df, "structural.parquet")
+    _atomic_write(refined_dir, struct_res_df, "structural_residues.parquet")
+
+    # surface per-design failures (do not silently drop them)
+    failures = list(imm_fail) + list(struct_fail)
+    if failures:
+        with open(refined_dir / "final_metrics_failures.json", "w") as f:
+            json.dump(failures, f, indent=2, default=str)
+    # completeness marker (LAST write): consumers gate a full set on ok=true
+    _write_final_metrics_status(refined_dir, ok=True, n_designs=len(gdf), n_failures=len(failures))
+    print(
+        f"[refine] final-metrics done: imm_head={len(head_df)} imm_nmp={len(nmp_df)} "
+        f"structural={len(structural_df)} structural_residues={len(struct_res_df)} "
+        f"failures={len(failures)} -> {refined_dir}",
+        flush=True,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -485,10 +652,21 @@ def build_oracles(args) -> Oracles:
         window_k_max=int(inf_sec.get("max_k", 25)),
     )
 
+    head_chunk = max(1, int(args.head_chunk))
+
     def head_fn(pid, seqs):
-        compact = scorer.score_window_risk_batch_same_protein(
-            protein_id=pid, records=[(str(i), s) for i, s in enumerate(seqs)])
-        return np.asarray(compact.window_risks)
+        # Chunk the encoder forward: a beam-multiplied pool (beam_width x per-state candidates,
+        # ~8k on hard seeds) in one forward_batched allocates >60 GiB and OOMs the H200. The
+        # window template is length-invariant across a protein's candidates, so per-chunk
+        # window_risks [chunk, W] concatenate along axis 0 exactly like a single call.
+        seqs = list(seqs)
+        rows = []
+        for i in range(0, len(seqs), head_chunk):
+            chunk = seqs[i:i + head_chunk]
+            compact = scorer.score_window_risk_batch_same_protein(
+                protein_id=pid, records=[(str(j), s) for j, s in enumerate(chunk)])
+            rows.append(np.asarray(compact.window_risks))
+        return rows[0] if len(rows) == 1 else np.concatenate(rows, axis=0)
 
     def window_coords_fn(seq):
         # Per-sequence window template (length-dependent) — a fixed template would
@@ -586,6 +764,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--head-device", default="cuda")
     p.add_argument("--head-allele-idx", type=int, default=0)
     p.add_argument("--head-window-batch-size", type=int, default=None)
+    p.add_argument("--head-chunk", type=int, default=512,
+                   help="max candidate seqs per head encoder forward (bounds GPU mem; the "
+                        "beam-multiplied pool OOMs the untiled forward on hard seeds)")
     # nmp (mirror evaluate_phase_c.py accelerated knobs)
     p.add_argument("--netmhciipan-bin", default=None, help="path to the NetMHCIIpan binary")
     p.add_argument("--nmp-batch-size", type=int, default=8)
@@ -595,6 +776,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # structure
     p.add_argument("--pdb-root", default=None)
     p.add_argument("--esmfold-cache-dir", default=None)
+    # incremental NMP splice (EXACT for per-window NMP; the primary NMP-volume cut)
+    p.add_argument("--incremental-nmp", dest="incremental_nmp", action="store_true", default=True,
+                   help="score only each candidate's mutated sub-sequence + splice vs the seed (exact, default on)")
+    p.add_argument("--no-incremental-nmp", dest="incremental_nmp", action="store_false",
+                   help="disable the splice; score every candidate over its full length")
+    p.add_argument("--nmp-context-margin", type=int, default=30,
+                   help="sub-sequence half-window for the splice (>= NMP context radius; 30 covers 25-mer+context)")
+    # seed job-array sharding (SLURM --array over seeds; each task refines its shard)
+    p.add_argument("--n-shards", type=int, default=1)
+    p.add_argument("--shard-idx", type=int, default=0, help="this task's shard (SLURM_ARRAY_TASK_ID)")
+    p.add_argument("--shard-by", choices=("balanced", "stride"), default="balanced",
+                   help="balanced = LPT bin-pack by --shard-cost-col; stride = round-robin")
+    p.add_argument("--shard-cost-col", default="nmp_n_strong_binders",
+                   help="seed-table column used as the difficulty weight for balanced sharding")
     # search knobs (§7)
     p.add_argument("--strong-rank", type=float, default=0.02)
     p.add_argument("--margin-band", type=float, default=0.10)
@@ -602,7 +797,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--scRMSD-max", dest="scRMSD_max", type=float, default=None)
     p.add_argument("--active-site-RMSD-max", dest="active_site_RMSD_max", type=float, default=None)
     p.add_argument("--topB", type=int, default=None)
-    p.add_argument("--beam-width", type=int, default=4)
+    p.add_argument("--beam-width", type=int, default=8,
+                   help="working states between rounds; head-ranks the pool (cheap), topB caps NMP")
     p.add_argument("--max-rounds", type=int, default=20)
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--max-pairs", type=int, default=200)
@@ -614,6 +810,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--head-high-topk", type=int, default=0,
                    help="head-high editable augmentation (v0 deferral: must be 0)")
     p.add_argument("--allow-structure-unknown", action="store_true")
+    # full-metrics emission: after refinement, reuse evaluate_phase_c's row builders on the
+    # final designs to persist the metrics the search discards (per-window NMP aggregates,
+    # head hotspots, per-residue Kabsch CA RMSD). Refolds are ESMFold cache hits.
+    p.add_argument("--emit-eval-metrics", dest="emit_eval_metrics", action="store_true", default=True,
+                   help="emit evaluate_phase_c-schema metric tables (imm_head/imm_nmp/structural/"
+                        "structural_residues) for every final design (default on)")
+    p.add_argument("--no-eval-metrics", dest="emit_eval_metrics", action="store_false",
+                   help="skip the post-refine full-metrics emission")
+    p.add_argument("--strong-binder-threshold", dest="strong_binder_threshold", type=float, default=2.0,
+                   help="imm_nmp strong-binder rank_EL%% cutoff (evaluate_phase_c default 2.0; distinct "
+                        "from --strong-rank, the search's FRACTION distinct-core threshold)")
+    p.add_argument("--hotspot-threshold", dest="hotspot_threshold", type=float, default=0.5,
+                   help="imm_head n_hotspot_positions cutoff (evaluate_phase_c default 0.5)")
+    p.add_argument("--imm-full", dest="imm_full", action="store_true", default=False,
+                   help="also emit imm_head_residues + imm_nmp_peptides (evaluate_phase_c --imm-full)")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--print-config", action="store_true")
     return p
@@ -625,7 +836,24 @@ def main(argv=None) -> int:
     if args.print_config:
         print("[refine] config: " + json.dumps(vars(args), sort_keys=True, default=str), flush=True)
     oracles = build_oracles(args)
-    return run_refinement(args, oracles)
+    rc = run_refinement(args, oracles)
+    if rc == 0 and args.mode == "refine" and args.emit_eval_metrics:
+        del oracles          # free the driver's ESMFold/head before the eval pass reloads ESMFold
+        _free_gpu()
+        # Best-effort: the refinement outputs are already flushed and are the expensive,
+        # protected artifact. An eval-pass failure (poison-pill length mismatch, CUDA OOM on
+        # model reload, NMP hiccup) must NOT fail the job or lose refinement — the metrics are
+        # cheap and independently re-runnable via evaluate_phase_c on refined/evaluator_ready.parquet.
+        try:
+            _run_final_metrics(args)
+        except Exception:
+            import traceback
+            print("[refine] final-metrics FAILED (refinement outputs intact; re-run eval on "
+                  "refined/evaluator_ready.parquet):", flush=True)
+            traceback.print_exc()
+            _write_final_metrics_status(Path(args.out_dir) / "refined", ok=False,
+                                        error=traceback.format_exc())
+    return rc
 
 
 if __name__ == "__main__":

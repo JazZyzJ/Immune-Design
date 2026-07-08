@@ -3642,3 +3642,28 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - status: done
 - refs:
   - commit `1efc7ef` (manifest add), `L0127` (refold backends incl. AF3 wiring), `L0125` (uricase exact-dedup)
+
+### L0129
+- timestamp: 2026-07-07T20:32:47-04:00
+- type: FEATURE
+- module: RF
+- trigger: DPLM native full-v2 n=8 baseline was found to be effectively deterministic because the C0 native path hardcoded `sampling_strategy="argmax"` despite recording distinct seeds and `temperature=1.0`.
+- change_summary: Exposed DPLM native `sampling_strategy` as a C0 CLI/slurm parameter and preserved historical `argmax` as the default; `gumbel_argmax` can now be selected for stochastic native multi-design sampling.
+- rationale: The C0 native baseline needs an explicit stochastic sampling mode when `n_designs_per_protein > 1`; keeping `argmax` as the default avoids silently changing old deterministic baselines or IF-IMP reuse of the shared runtime helpers.
+- artifacts:
+  - `inverse_folding/reference_flow/runtime.py`
+  - `scripts/run_if_phase_c0.py`
+  - `scripts/submit_if_phase_c.slurm`
+  - `doc/SCRIPTS.md`
+- evidence: |
+    `/home/zc1519/.conda/envs/immune-design/bin/python -m py_compile scripts/run_if_phase_c0.py inverse_folding/reference_flow/runtime.py` passed.
+    `/home/zc1519/.conda/envs/immune-design/bin/python scripts/run_if_phase_c0.py --help` shows `--sampling-strategy {argmax,gumbel_argmax}`.
+    Slurm smoke `10804754` used `NATIVE_SAMPLING_STRATEGY=gumbel_argmax` on 1 protein × 4 designs and completed with 4/4 unique generated sequences.
+- impact:
+  - scope: C0 native DPLM generation only when the new option is set; default C0 and shared runtime callers remain `argmax`.
+  - risk: low
+  - confidence: 0.9
+- status: done
+- next_action: Let full-v2 stochastic native job `10804882` complete and inspect `generation_diversity_check.json` from dependent check job `10805102`.
+- refs:
+  - `doc/SCRIPTS.md` Phase C C0 driver and launcher entries

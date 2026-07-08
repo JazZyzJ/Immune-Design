@@ -14,8 +14,10 @@ import pytest
 from inverse_folding.reference_flow.refine import StructureMetrics
 from scripts.refine_rf_designs import (
     Oracles,
+    _atomic_write,
     _canonical_allele,
     _load_sharded,
+    _run_final_metrics,
     build_arg_parser,
     build_oracles,
     run_refinement,
@@ -221,3 +223,60 @@ def test_refine_without_eval_immune_refines_provided_designs(tmp_path):
     a = rich[rich["protein_id"] == "A"].iloc[0]
     assert a["core_count_before"] == 1
     assert a["core_count_after"] == 0
+
+
+def test_shard_seeds_balanced_and_stride_partition_disjointly():
+    from scripts.refine_rf_designs import _shard_seeds
+
+    seeds = {
+        "A": [{"sequence": "x", "design_idx": 0, "seed": -1, "_cost": 60.0},
+              {"sequence": "y", "design_idx": 1, "seed": -1, "_cost": 5.0}],
+        "B": [{"sequence": "z", "design_idx": 0, "seed": -1, "_cost": 30.0},
+              {"sequence": "w", "design_idx": 1, "seed": -1, "_cost": 30.0}],
+    }
+    n = 2
+    for mode in ("balanced", "stride"):
+        parts = [_shard_seeds(seeds, n, i, mode) for i in range(n)]
+        allseqs = sorted(s["sequence"] for p in parts for lst in p.values() for s in lst)
+        assert allseqs == ["w", "x", "y", "z"]                 # every seed once, no drop/dup
+        assert _shard_seeds(seeds, n, 0, mode) == parts[0]     # deterministic partition
+
+
+def test_incremental_nmp_default_on_and_toggle():
+    base = ["--seed-table", "t", "--allele", "A", "--out-dir", "o"]
+    assert build_arg_parser().parse_args(base).incremental_nmp is True
+    assert build_arg_parser().parse_args(base + ["--no-incremental-nmp"]).incremental_nmp is False
+    a = build_arg_parser().parse_args(base + ["--n-shards", "24", "--shard-idx", "7"])
+    assert a.n_shards == 24 and a.shard_idx == 7 and a.shard_by == "balanced"
+
+
+def test_eval_metrics_flags_defaults_and_toggle():
+    base = ["--seed-table", "t", "--allele", "A", "--out-dir", "o"]
+    a = build_arg_parser().parse_args(base)
+    assert a.emit_eval_metrics is True          # full-metrics emission on by default
+    assert a.strong_binder_threshold == 2.0     # evaluate_phase_c default (percent rank_EL)
+    assert a.hotspot_threshold == 0.5
+    assert a.imm_full is False
+    b = build_arg_parser().parse_args(
+        base + ["--no-eval-metrics", "--imm-full",
+                "--strong-binder-threshold", "1.0", "--hotspot-threshold", "0.6"])
+    assert b.emit_eval_metrics is False and b.imm_full is True
+    assert b.strong_binder_threshold == 1.0 and b.hotspot_threshold == 0.6
+
+
+def test_run_final_metrics_skips_when_no_evaluator_ready(tmp_path, capsys):
+    # No refined/evaluator_ready.parquet -> graceful skip (no crash, no output files, no heavy import).
+    args = build_arg_parser().parse_args(
+        ["--seed-table", "t", "--allele", "A", "--out-dir", str(tmp_path)])
+    _run_final_metrics(args)
+    assert "skipping" in capsys.readouterr().out
+    assert not list(tmp_path.rglob("imm_head.parquet"))
+    assert not list(tmp_path.rglob("structural.parquet"))
+
+
+def test_atomic_write_roundtrips(tmp_path):
+    df = pd.DataFrame({"protein_id": ["A", "B"], "design_idx": [0, 1], "scTM": [0.9, 0.8]})
+    _atomic_write(tmp_path, df, "structural.parquet")
+    back = pd.read_parquet(tmp_path / "structural.parquet")
+    pd.testing.assert_frame_equal(back, df)
+    assert not (tmp_path / "structural.parquet.tmp").exists()   # temp cleaned by atomic rename

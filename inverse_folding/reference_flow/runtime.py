@@ -339,6 +339,7 @@ def generate_native_sequences_batched(
     max_iter: int,
     temperature: float,
     seed: int,
+    sampling_strategy: str = "argmax",
     logit_processor: Any = None,
 ) -> list[str]:
     """Batched B>1 version of ``generate_native_sequence``.
@@ -369,7 +370,7 @@ def generate_native_sequences_batched(
     generate_kwargs: dict[str, Any] = dict(
         batch=batch,
         max_iter=max_iter,
-        sampling_strategy="argmax",
+        sampling_strategy=sampling_strategy,
         temperature=temperature,
         use_draft_seq=bool(task.hparams.generator.use_draft_seq),
     )
@@ -406,6 +407,7 @@ def generate_native_sequence(
     max_iter: int,
     temperature: float,
     seed: int,
+    sampling_strategy: str = "argmax",
     logit_processor: Any = None,
 ) -> str:
     _seed_all(seed)
@@ -419,7 +421,7 @@ def generate_native_sequence(
     generate_kwargs: dict[str, Any] = dict(
         batch=batch,
         max_iter=max_iter,
-        sampling_strategy="argmax",
+        sampling_strategy=sampling_strategy,
         temperature=temperature,
         use_draft_seq=bool(task.hparams.generator.use_draft_seq),
     )

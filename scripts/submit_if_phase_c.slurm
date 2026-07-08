@@ -58,6 +58,8 @@ SEED="${SEED:-42}"
 # read from the YAML config's sampler.n_steps (also 100) for fair comparison.
 MAX_ITER="${MAX_ITER:-100}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
+NATIVE_SAMPLING_STRATEGY="${NATIVE_SAMPLING_STRATEGY:-argmax}"
+NATIVE_BATCH_SIZE="${NATIVE_BATCH_SIZE:-1}"
 
 H_MAPS_PARQUET="${H_MAPS_PARQUET:-${H_MAPS_DEFAULT}}"
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/inverse_folding/reference_flow/configs/c1_null.yaml}"
@@ -161,6 +163,8 @@ case "${MODE}" in
         echo "  Seed            : ${SEED}"
         echo "  Max iter        : ${MAX_ITER}"
         echo "  Temperature     : ${TEMPERATURE}"
+        echo "  Sampling strat  : ${NATIVE_SAMPLING_STRATEGY}"
+        echo "  Batch size      : ${NATIVE_BATCH_SIZE}"
         python -u "${PROJECT_ROOT}/scripts/run_if_phase_c0.py" \
             --checkpoint "${CHECKPOINT}" \
             --test-set-parquet "${TEST_SET_PARQUET}" \
@@ -171,7 +175,9 @@ case "${MODE}" in
             --seed "${SEED}" \
             --max-iter "${MAX_ITER}" \
             --temperature "${TEMPERATURE}" \
+            --sampling-strategy "${NATIVE_SAMPLING_STRATEGY}" \
             --device "${DEVICE}" \
+            --batch-size "${NATIVE_BATCH_SIZE}" \
             --flag-name "${FLAG}" \
             "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;

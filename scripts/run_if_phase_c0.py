@@ -34,6 +34,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-iter", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--sampling-strategy",
+        choices=("argmax", "gumbel_argmax"),
+        default="argmax",
+        help=(
+            "Token selection strategy passed to DPLM native generate(). "
+            "argmax preserves the historical deterministic C0 baseline; "
+            "gumbel_argmax enables stochastic multi-design sampling."
+        ),
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--batch-size",
@@ -391,6 +401,7 @@ def _build_generator(
     device: str,
     max_iter: int,
     temperature: float,
+    sampling_strategy: str,
 ) -> Callable[[pd.Series, int, int], dict[str, Any]]:
     from inverse_folding.reference_flow.runtime import (
         generate_native_sequence,
@@ -409,6 +420,7 @@ def _build_generator(
             prepared=prepared,
             max_iter=max_iter,
             temperature=temperature,
+            sampling_strategy=sampling_strategy,
             seed=design_seed,
         )
         return {
@@ -426,6 +438,7 @@ def _build_batched_generator(
     device: str,
     max_iter: int,
     temperature: float,
+    sampling_strategy: str,
 ) -> Callable[
     [list[pd.Series], list[int], int, int], dict[str, Any]
 ]:
@@ -471,6 +484,7 @@ def _build_batched_generator(
                     prepared=prepared,
                     max_iter=max_iter,
                     temperature=temperature,
+                    sampling_strategy=sampling_strategy,
                     seed=design_seed,
                 )
                 sequences[idx] = seq
@@ -521,6 +535,7 @@ def _build_batched_generator(
                     sequence_lengths=seq_lengths,
                     max_iter=max_iter,
                     temperature=temperature,
+                    sampling_strategy=sampling_strategy,
                     seed=design_seed,
                 )
                 for row_i, original_idx in enumerate(kept_indices):
@@ -561,6 +576,7 @@ def print_resolved_hyperparams(args: argparse.Namespace, *, run_dir: Path, n_ent
         "seed": args.seed,
         "max_iter": args.max_iter,
         "temperature": args.temperature,
+        "sampling_strategy": args.sampling_strategy,
         "device": args.device,
         "batch_size": args.batch_size,
         "progress_every": args.progress_every,
@@ -619,6 +635,7 @@ def main(argv: list[str] | None = None) -> int:
             "seed": args.seed,
             "max_iter": args.max_iter,
             "temperature": args.temperature,
+            "sampling_strategy": args.sampling_strategy,
             "device": args.device,
             "run_dir": str(run_dir),
         },
@@ -633,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             max_iter=args.max_iter,
             temperature=args.temperature,
+            sampling_strategy=args.sampling_strategy,
         )
         rows, failures = generate_rows_for_entries_batched(
             entries,
@@ -650,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             max_iter=args.max_iter,
             temperature=args.temperature,
+            sampling_strategy=args.sampling_strategy,
         )
         rows, failures = generate_rows_for_entries(
             entries,
@@ -671,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
         "sampler": {
             "max_iter": args.max_iter,
             "temperature": args.temperature,
+            "sampling_strategy": args.sampling_strategy,
             "n_designs_per_protein": args.n_designs_per_protein,
             "seed": args.seed,
             "batch_size": int(args.batch_size),

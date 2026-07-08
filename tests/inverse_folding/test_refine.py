@@ -225,6 +225,70 @@ def test_max_path_mutations_caps_deep_paths():
     assert res.best_core_count == 1 and res.n_accepts == 0
 
 
+def test_incremental_nmp_splice_matches_full_scoring():
+    # A per-window NMP that scores each peptide purely by its substring content
+    # (position-INDEPENDENT, like real NetMHCIIpan's fixed-background %Rank). The
+    # sub-sequence splice must reproduce a full re-score exactly for point mutations.
+    LENGTHS = (9, 12, 15)
+
+    def _full_rows(seq):
+        rows = []
+        for L in LENGTHS:
+            for pos in range(0, len(seq) - L + 1):
+                pep = seq[pos:pos + L]
+                rows.append({"pos": pos, "pep_length": L, "peptide": pep,
+                             "core": pep[:9], "rank_EL": 0.001 if "W" in pep else 0.5})
+        return rows
+
+    def nmp(pid, seqs):
+        return [_full_rows(s) for s in seqs]
+
+    seed = "ACDEFGHIK" * 14                       # 126 aa, no 'W'
+    single = seed[:63] + "W" + seed[64:]          # one edit at position 63 (far from termini)
+    pair = single[:30] + "W" + single[31:]        # a second edit at 30 (span 33 <= 61 budget)
+
+    def _norm(rows):
+        return sorted((r["pos"], r["pep_length"], r["peptide"], r["core"], r["rank_EL"])
+                      for r in rows)
+
+    seed_rows = nmp("P", [seed])[0]
+    spliced = refine._incremental_nmp_rows("P", seed, seed_rows, [single, pair, seed], nmp,
+                                           margin=30)
+    assert _norm(spliced[0]) == _norm(nmp("P", [single])[0])   # splice reproduces full
+    assert _norm(spliced[1]) == _norm(nmp("P", [pair])[0])     # multi-edit within budget
+    assert spliced[2] is seed_rows                             # unchanged seq reuses the cache
+
+
+def test_incremental_refine_equals_full_refine():
+    # End-to-end: incremental_nmp=True must give the SAME best_core_count / n_accepts as the
+    # full path under a position-independent per-window NMP.
+    def _rows(seq):
+        rows = []
+        for pos in range(0, len(seq) - 9 + 1):
+            pep = seq[pos:pos + 9]
+            rows.append({"pos": pos, "pep_length": 9, "peptide": pep, "core": pep,
+                         "rank_EL": 0.001 if "W" in pep else 0.5})
+        return rows
+
+    def nmp(pid, seqs):
+        return [_rows(s) for s in seqs]
+
+    def head(pid, seqs):
+        return np.array([[0.0] for _ in seqs])
+
+    def struct(pid, s):
+        return _OK
+
+    seed = "ACDEFGHIK" * 8 + "W" + "ACDEFGHIK" * 5    # one strong hotspot (the 'W' windows)
+    kw = dict(propose_fn=_propose_singles, head_fn=head, nmp_fn=nmp, struct_fn=struct,
+              anchors=set(), topB=None, beam_width=4, max_rounds=5, scTM_eps=0.05,
+              target_window_idx_fn=lambda cores: [0])
+    full = refine_sequence("P", seed, incremental_nmp=False, **kw)
+    inc = refine_sequence("P", seed, incremental_nmp=True, **kw)
+    assert full.best_core_count == inc.best_core_count
+    assert full.n_accepts == inc.n_accepts
+
+
 def test_structure_floor_blocks_fold_breaking_elimination_and_beam():
     seq = "A" * 30
     def nmp(pid, seqs):
