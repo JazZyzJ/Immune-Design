@@ -28,19 +28,16 @@ DEVICE="${DEVICE:-cuda}"
 
 if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_07_01"
-    ALLELE_TAG="DRB1_07_01"
-    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0701"
-    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps_v2/h_maps_DRB1_07_01.parquet"
+    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/HLA-DRB1_07_01"
+    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps_v2/h_maps_HLA-DRB1_07_01.parquet"
 elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_04_01"
-    ALLELE_TAG="DRB1_04_01"
-    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0401"
-    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps_v2/h_maps_DRB1_04_01.parquet"
+    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/HLA-DRB1_04_01"
+    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps_v2/h_maps_HLA-DRB1_04_01.parquet"
 elif [[ "${ALLELE}" == "HLA-DRB1*15:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_15_01"
-    ALLELE_TAG="DRB1_15_01"
-    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/1501"
-    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps_v2/h_maps_DRB1_15_01.parquet"
+    PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/HLA-DRB1_15_01"
+    H_MAPS_DEFAULT="${WORK_DIR}/if_test_set/if_ready/h_maps_v2/h_maps_HLA-DRB1_15_01.parquet"
 else
     echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01, HLA-DRB1*04:01, or HLA-DRB1*15:01" >&2
     exit 2
@@ -61,7 +58,12 @@ TEMPERATURE="${TEMPERATURE:-1.0}"
 NATIVE_SAMPLING_STRATEGY="${NATIVE_SAMPLING_STRATEGY:-argmax}"
 NATIVE_BATCH_SIZE="${NATIVE_BATCH_SIZE:-1}"
 
-H_MAPS_PARQUET="${H_MAPS_PARQUET:-${H_MAPS_DEFAULT}}"
+# h-map parquet is optional (run_if_phase_c1.py --h-maps-parquet is optional):
+# leave H_MAPS_PARQUET unset to use the allele default; set it explicitly EMPTY
+# (H_MAPS_PARQUET= sbatch ...) to run without an h-map (constant_one /
+# controller-only arms, where g(h)=1 and h is inert). The `-` (not `:-`) keeps an
+# explicit empty value instead of falling back to the default.
+H_MAPS_PARQUET="${H_MAPS_PARQUET-${H_MAPS_DEFAULT}}"
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/inverse_folding/reference_flow/configs/c1_null.yaml}"
 FAIL_PCT_THRESHOLD="${FAIL_PCT_THRESHOLD:-0.05}"
 SAVE_TRAJECTORIES="${SAVE_TRAJECTORIES:-0}"
@@ -182,7 +184,7 @@ case "${MODE}" in
             "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;
     reference_flow)
-        echo "  h_maps parquet  : ${H_MAPS_PARQUET}"
+        echo "  h_maps parquet  : ${H_MAPS_PARQUET:-<none: h absent, g(h)=1>}"
         echo "  Config          : ${CONFIG_PATH}"
         echo "  Config stem     : $(basename "${CONFIG_PATH}" .yaml)"
         echo "  Fail threshold  : ${FAIL_PCT_THRESHOLD}"
@@ -253,11 +255,18 @@ case "${MODE}" in
             EXTRA_FLAGS+=(--constraint-manifest "${CONSTRAINT_MANIFEST}")
         fi
 
+        # Pass --h-maps-parquet only when H_MAPS_PARQUET is non-empty; an empty
+        # value means "no h-map" and the flag is omitted entirely.
+        H_MAPS_FLAG=()
+        if [[ -n "${H_MAPS_PARQUET}" ]]; then
+            H_MAPS_FLAG=(--h-maps-parquet "${H_MAPS_PARQUET}")
+        fi
+
         python -u "${PROJECT_ROOT}/scripts/run_if_phase_c1.py" \
             --checkpoint "${CHECKPOINT}" \
             --test-set-parquet "${TEST_SET_PARQUET}" \
             --pdb-root "${PDB_ROOT}" \
-            --h-maps-parquet "${H_MAPS_PARQUET}" \
+            "${H_MAPS_FLAG[@]+"${H_MAPS_FLAG[@]}"}" \
             --allele "${ALLELE}" \
             --config "${CONFIG_PATH}" \
             --output-root "${OUTPUT_ROOT}" \

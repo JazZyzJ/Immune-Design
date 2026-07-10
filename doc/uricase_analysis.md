@@ -255,7 +255,7 @@ Repo (figures, synced from cluster for paper):
 - `figures/F2_supplementary/tier1_structural_cn_<allele_tag>.pdf`
 - `figures/F2_supplementary/tier1_structural_forest_<metric>_<allele_tag>.pdf` (per-protein forest plots)
 
-`<allele_tag>` is the allele file-safe form, e.g. `DRB1_07_01`.
+`<allele_tag>` is the allele file-safe form, e.g. `HLA-DRB1_07_01`.
 
 ---
 

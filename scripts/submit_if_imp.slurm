@@ -38,16 +38,14 @@ CHECKPOINT="${CHECKPOINT:-${RUN_DIR}/dplm_v1_adapter/seed42_20260319_094244/chec
 # Allele-dependent test-set + PDB root (PROGRESS.md §IF Test Set)
 if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_07_01"
-    ALLELE_SHORT="0701"
 elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_04_01"
-    ALLELE_SHORT="0401"
 else
     echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
     exit 2
 fi
 TEST_SET_PARQUET="${TEST_SET_PARQUET:-${WORK_DIR}/if_test_set/if_ready/fast/fast_v2_${ALLELE_FILE_TAG}.parquet}"
-PDB_ROOT="${PDB_ROOT:-${WORK_DIR}/if_test_set/pdbs_if_ready/${ALLELE_SHORT}}"
+PDB_ROOT="${PDB_ROOT:-${WORK_DIR}/if_test_set/pdbs_if_ready/${ALLELE_FILE_TAG}}"
 
 # CATH 4.3 split (PROGRESS.md §Cluster — `work/immune-design/cath_4.3/`)
 CATH_ROOT="${CATH_ROOT:-${WORK_DIR}/cath_4.3}"

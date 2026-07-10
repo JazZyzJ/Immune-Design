@@ -254,10 +254,10 @@ elif [ "${MODE}" = "phase_c" ]; then
     NMP_OFF="${NMP_OFF:-0}"   # 1 = imm head-only (skip NetMHCIIpan); affects imm/all modes
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
         TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
-        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0701}"
+        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/HLA-DRB1_07_01}"
     elif [ "${ALLELE}" = "HLA-DRB1*04:01" ]; then
         TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_04_01.parquet}"
-        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0401}"
+        PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/HLA-DRB1_04_01}"
     else
         # Any other allele (e.g. HLA-DRB1*15:01): no built-in default, but honor
         # explicit env-provided paths instead of unconditionally failing.

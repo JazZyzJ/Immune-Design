@@ -66,6 +66,13 @@ from scripts.run_if_phase_c0 import _fmt_hms, _length_buckets, write_phase_c_out
 # downstream analyzers can dispatch on schema lineage without re-running.
 CONTROLLER_SURFACE_VERSION = 3
 
+# Amplification forms whose g(h) actually reads h. constant_one ignores h (see
+# amplification.amplification_factor), so a run may omit --h-maps-parquet for it
+# (and for controller-only arms, which use constant_one). The forms below fail
+# fast at load when no h-map is supplied so a run never silently amplifies
+# against a zero h. Mirrors config.py's amplification.form enum.
+H_CONSUMING_AMPLIFICATION_FORMS = frozenset({"linear_clamp", "sigmoid", "power"})
+
 STAGE_A_EVENT_COLUMNS = [
     "sticky_age_steps",
     "sticky_created_step",
@@ -1238,7 +1245,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--test-set-parquet", required=True)
     parser.add_argument("--pdb-root", required=True)
-    parser.add_argument("--h-maps-parquet", required=True)
+    parser.add_argument(
+        "--h-maps-parquet",
+        default=None,
+        help=(
+            "Per-protein h-map parquet. Optional: when omitted, h is treated as "
+            "absent and g(h) is computed from a zero h. REQUIRED for amplification "
+            "forms that consume h (linear_clamp / sigmoid / power); constant_one "
+            "and controller-only arms may run without it."
+        ),
+    )
     parser.add_argument("--allele", required=True)
     parser.add_argument("--config", required=True, help="Reference-flow YAML config.")
     parser.add_argument("--output-root", required=True)
@@ -1345,7 +1361,7 @@ def print_resolved_hyperparams(
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "test_set_parquet": str(Path(args.test_set_parquet).resolve()),
         "pdb_root": str(Path(args.pdb_root).resolve()),
-        "h_maps_parquet": str(Path(args.h_maps_parquet).resolve()),
+        "h_maps_parquet": (str(Path(args.h_maps_parquet).resolve()) if args.h_maps_parquet else None),
         "h_corpus_stats": str(Path(args.h_corpus_stats).resolve()) if args.h_corpus_stats else None,
         "allele": args.allele,
         "config": str(Path(args.config).resolve()),
@@ -1376,8 +1392,8 @@ def _build_run_id(args: argparse.Namespace) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     config_stem = Path(args.config).stem
     # strip a redundant leading "c1_" from the config name so the run_id stays
-    # single-prefixed (e.g. "c1_null.yaml" → "c1_null_DRB1_07_01_<stamp>",
-    # not "c1_c1_null_DRB1_07_01_<stamp>")
+    # single-prefixed (e.g. "c1_null.yaml" → "c1_null_HLA-DRB1_07_01_<stamp>",
+    # not "c1_c1_null_HLA-DRB1_07_01_<stamp>")
     if config_stem.startswith("c1_"):
         config_stem = config_stem[len("c1_"):]
     return f"c1_{config_stem}_{safe_allele_tag(args.allele)}_{args.flag_name}_{stamp}"
@@ -1650,11 +1666,29 @@ def main(argv: list[str] | None = None) -> int:
     config_dict = reference_flow_config_to_dict(config)
 
     entries = load_test_entries(args.test_set_parquet)
-    h_maps_df, h_maps_meta = load_h_maps(args.h_maps_parquet)
-    assert_h_maps_align_with_test_set(entries=entries, h_maps_df=h_maps_df)
-    h_map_rows = {str(row["protein_id"]): row for _, row in h_maps_df.iterrows()}
+    h_maps_enabled = args.h_maps_parquet is not None
+    h_maps_meta: dict[str, Any] | None = None
+    h_map_rows: dict[str, Any] = {}
+    if h_maps_enabled:
+        h_maps_df, h_maps_meta = load_h_maps(args.h_maps_parquet)
+        assert_h_maps_align_with_test_set(entries=entries, h_maps_df=h_maps_df)
+        h_map_rows = {str(row["protein_id"]): row for _, row in h_maps_df.iterrows()}
+    else:
+        # No h-map supplied: h is absent. Only h-agnostic amplification
+        # (constant_one) and controller-only arms may proceed; h-consuming forms
+        # fail fast so a run never silently amplifies against a zero h.
+        if config.amplification.form in H_CONSUMING_AMPLIFICATION_FORMS:
+            raise ValueError(
+                f"amplification.form={config.amplification.form!r} consumes h but "
+                "--h-maps-parquet was not supplied; provide an h-map parquet or use "
+                "amplification.form=constant_one"
+            )
     corpus_stats = _load_corpus_stats(args.h_corpus_stats)
-    if config.amplification.h_source == "h_normalized_corpus" and corpus_stats is None:
+    if (
+        h_maps_enabled
+        and config.amplification.h_source == "h_normalized_corpus"
+        and corpus_stats is None
+    ):
         raise ValueError("--h-corpus-stats is required when config amplification.h_source = h_normalized_corpus")
 
     print_resolved_hyperparams(
@@ -1680,7 +1714,7 @@ def main(argv: list[str] | None = None) -> int:
             "allele": args.allele,
             "checkpoint": str(Path(args.checkpoint).resolve()),
             "config_path": str(Path(args.config).resolve()),
-            "h_maps_parquet": str(Path(args.h_maps_parquet).resolve()),
+            "h_maps_parquet": (str(Path(args.h_maps_parquet).resolve()) if args.h_maps_parquet else None),
             "n_input_proteins": int(len(entries)),
             "device": args.device,
             "batch_size": int(args.batch_size),
@@ -1867,7 +1901,7 @@ def main(argv: list[str] | None = None) -> int:
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "checkpoint_digest": checkpoint_digest(args.checkpoint),
         "test_set_parquet": str(Path(args.test_set_parquet).resolve()),
-        "h_maps_parquet": str(Path(args.h_maps_parquet).resolve()),
+        "h_maps_parquet": (str(Path(args.h_maps_parquet).resolve()) if args.h_maps_parquet else None),
         "config": config_dict,
     }
     rows_by_key: dict[tuple[str, int], dict[str, Any]] = {}
@@ -2212,16 +2246,20 @@ def main(argv: list[str] | None = None) -> int:
         h_values_by_protein: dict[str, Any] = {}
         for _, entry in entries.iterrows():
             protein_id = str(entry["protein_id"])
-            h_row = h_map_rows.get(protein_id)
-            if h_row is None:
-                failures.append({"protein_id": protein_id, "reason": "missing_h_map"})
-                continue
             sequence_length = int(entry["sequence_length"])
-            h_values = _select_h_values(
-                h_row,
-                h_source=config.amplification.h_source,
-                corpus_stats=corpus_stats,
-            )
+            if h_maps_enabled:
+                h_row = h_map_rows.get(protein_id)
+                if h_row is None:
+                    failures.append({"protein_id": protein_id, "reason": "missing_h_map"})
+                    continue
+                h_values = _select_h_values(
+                    h_row,
+                    h_source=config.amplification.h_source,
+                    corpus_stats=corpus_stats,
+                )
+            else:
+                # Absent h: zero vector so amplification_factor(constant_one) => g==1.
+                h_values = np.zeros(sequence_length, dtype=np.float32)
             if len(h_values) != sequence_length:
                 print(
                     f"ERROR: h length mismatch for protein_id={protein_id}: "
@@ -2379,23 +2417,26 @@ def main(argv: list[str] | None = None) -> int:
     else:
         for entry_idx, (_, entry) in enumerate(entries.iterrows(), start=1):
             protein_id = str(entry["protein_id"])
-            h_row = h_map_rows.get(protein_id)
-            if h_row is None:
-                failures.append({"protein_id": protein_id, "reason": "missing_h_map"})
-                if _should_abort_failures(
-                    failures,
-                    n_total_designs=total_designs,
-                    threshold=args.fail_pct_threshold,
-                ):
-                    break
-                continue
-
             sequence_length = int(entry["sequence_length"])
-            h_values = _select_h_values(
-                h_row,
-                h_source=config.amplification.h_source,
-                corpus_stats=corpus_stats,
-            )
+            if h_maps_enabled:
+                h_row = h_map_rows.get(protein_id)
+                if h_row is None:
+                    failures.append({"protein_id": protein_id, "reason": "missing_h_map"})
+                    if _should_abort_failures(
+                        failures,
+                        n_total_designs=total_designs,
+                        threshold=args.fail_pct_threshold,
+                    ):
+                        break
+                    continue
+                h_values = _select_h_values(
+                    h_row,
+                    h_source=config.amplification.h_source,
+                    corpus_stats=corpus_stats,
+                )
+            else:
+                # Absent h: zero vector so amplification_factor(constant_one) => g==1.
+                h_values = np.zeros(sequence_length, dtype=np.float32)
             if len(h_values) != sequence_length:
                 print(
                     f"ERROR: h length mismatch for protein_id={protein_id}: "
@@ -2490,7 +2531,7 @@ def main(argv: list[str] | None = None) -> int:
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "test_set_parquet": str(Path(args.test_set_parquet).resolve()),
         "pdb_root": str(Path(args.pdb_root).resolve()),
-        "h_maps_parquet": str(Path(args.h_maps_parquet).resolve()),
+        "h_maps_parquet": (str(Path(args.h_maps_parquet).resolve()) if args.h_maps_parquet else None),
         "h_corpus_stats": str(Path(args.h_corpus_stats).resolve()) if args.h_corpus_stats else None,
         "allele": args.allele,
         "device": args.device,
@@ -2505,8 +2546,8 @@ def main(argv: list[str] | None = None) -> int:
         "timestamp": utc_timestamp(),
         "allele": args.allele,
         "batch_size": int(args.batch_size),
-        "h_maps_source_path": str(Path(args.h_maps_parquet).resolve()),
-        "h_maps_source_run_id": h_maps_meta["run_id"],
+        "h_maps_source_path": (str(Path(args.h_maps_parquet).resolve()) if args.h_maps_parquet else None),
+        "h_maps_source_run_id": (h_maps_meta["run_id"] if h_maps_meta is not None else None),
         "h_source": config.amplification.h_source,
         "schedule_form": config.schedule.base_form,
         "amplification": config_dict["amplification"],

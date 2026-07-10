@@ -562,11 +562,11 @@
   - 0401: `run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt`
 - Inference config preset: `epitope_head/configs/inference.yaml` — locked at `center_method=median`, `clamp=none`, `min_k=12`, `max_k=25`, `chunking.enabled=true` (context_len=1022, stride=512, margin=32, stitch_mode=per_residue_stitch, enable_reliability=true).
 
-**Outputs** (per allele: one parquet + one sidecar JSON)
-- `work/immune-design/if_test_set/h_maps/h_maps_DRB1_07_01.parquet`
-- `work/immune-design/if_test_set/h_maps/h_maps_DRB1_07_01.meta.json`
-- `work/immune-design/if_test_set/h_maps/h_maps_DRB1_04_01.parquet`
-- `work/immune-design/if_test_set/h_maps/h_maps_DRB1_04_01.meta.json`
+**Outputs** (per allele: one parquet + one sidecar JSON) — canonical location `if_ready/h_maps_v2/` (the old flat `if_test_set/h_maps/` is archived under `if_ready/_ARCHIVED/h_maps_flat_preV2/` as of 2026-07-09)
+- `work/immune-design/if_test_set/if_ready/h_maps_v2/h_maps_HLA-DRB1_07_01.parquet`
+- `work/immune-design/if_test_set/if_ready/h_maps_v2/h_maps_HLA-DRB1_07_01.meta.json`
+- `work/immune-design/if_test_set/if_ready/h_maps_v2/h_maps_HLA-DRB1_04_01.parquet`
+- `work/immune-design/if_test_set/if_ready/h_maps_v2/h_maps_HLA-DRB1_04_01.meta.json`
 
 **Parquet schema (wide, one row per protein)**
 
@@ -649,8 +649,8 @@ wall_clock_seconds          # float
 - Inference config: same as B2.
 
 **Outputs**
-- `work/immune-design/cath_4.3/h_maps/h_maps_cath_DRB1_07_01.parquet` (+ `.meta.json`)
-- `work/immune-design/cath_4.3/h_maps/h_maps_cath_DRB1_04_01.parquet` (+ `.meta.json`)
+- `work/immune-design/cath_4.3/h_maps/h_maps_cath_HLA-DRB1_07_01.parquet` (+ `.meta.json`)
+- `work/immune-design/cath_4.3/h_maps/h_maps_cath_HLA-DRB1_04_01.parquet` (+ `.meta.json`)
 
 **Parquet schema**: identical to B2 (`protein_id` column holds the CATH chain id).
 

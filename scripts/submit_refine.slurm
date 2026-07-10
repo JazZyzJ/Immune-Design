@@ -143,6 +143,11 @@ EVAL_METRICS_FLAG=(--emit-eval-metrics)
 IMM_FULL_FLAG=()
 [ "${IMM_FULL}" = "1" ] && IMM_FULL_FLAG=(--imm-full)
 
+# Active-site manifest is optional: pass CONSTRAINT_MANIFEST=none to disable (no active site,
+# e.g. non-enzyme highrisk inpaint runs) — the flag is then omitted and all positions are editable.
+CONSTRAINT_FLAG=(--constraint-manifest "${CONSTRAINT_MANIFEST}")
+[ "${CONSTRAINT_MANIFEST}" = "none" ] && CONSTRAINT_FLAG=()
+
 echo "============================================================"
 echo "RF Refinement"
 echo "  Job ID        : ${SLURM_JOB_ID:-<none>}"
@@ -171,7 +176,7 @@ srun python "${PROJECT_ROOT}/scripts/refine_rf_designs.py" \
     --proteins "${PROTEINS}" \
     --allele "${ALLELE}" \
     --target-source "${TARGET_SOURCE}" \
-    --constraint-manifest "${CONSTRAINT_MANIFEST}" \
+    "${CONSTRAINT_FLAG[@]}" \
     --test-set-parquet "${TEST_SET_PARQUET}" \
     --pdb-root "${PDB_ROOT}" \
     --head-checkpoint "${HEAD_CHECKPOINT}" \

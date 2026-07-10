@@ -172,8 +172,8 @@ return x
 - Modify: `doc/SCRIPTS.md` (register under Phase C)
 
 **CLI contract**
-- Required: `--checkpoint`, `--test-set-parquet`, `--pdb-root`, `--h-maps-parquet`, `--allele`, `--config <yaml>`, `--output-root`.
-- Optional: `--h-corpus-stats <B3 sidecar json>` (required iff `h_source == h_normalized_corpus`), `--n-designs-per-protein` / `--seed` / `--n-steps` (override matching config fields if present), `--device cuda|cpu` (default cuda), `--save-trajectories` (default false), `--fail-pct-threshold` (default 0.05), `--resume-from <run_id>`.
+- Required: `--checkpoint`, `--test-set-parquet`, `--pdb-root`, `--allele`, `--config <yaml>`, `--output-root`.
+- Optional: `--h-maps-parquet` (now optional; only required when `amplification.form` ∈ {`linear_clamp`, `sigmoid`, `power`}), `--h-corpus-stats <B3 sidecar json>` (required iff `h_source == h_normalized_corpus`), `--n-designs-per-protein` / `--seed` / `--n-steps` (override matching config fields if present), `--device cuda|cpu` (default cuda), `--save-trajectories` (default false), `--fail-pct-threshold` (default 0.05), `--resume-from <run_id>`.
 - Echo every resolved hyperparameter to stdout at start (per `feedback_print_hyperparams`).
 
 **SLURM**

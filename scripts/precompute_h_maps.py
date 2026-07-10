@@ -655,10 +655,18 @@ def git_commit() -> str:
 
 
 def allele_tag(allele: str) -> str:
-    tag = allele
-    if tag.startswith("HLA-"):
-        tag = tag[4:]
-    return tag.replace("*", "_").replace(":", "_").replace("/", "_")
+    """File-safe allele tag, unified to the ``HLA-DRB1_07_01`` form.
+
+    Delegates to reference_flow.runtime.safe_allele_tag (preserves ``-``/``.``),
+    prepending a missing ``HLA-`` prefix so both ``HLA-DRB1*07:01`` and
+    ``DRB1*07:01`` normalise to ``HLA-DRB1_07_01``.
+    """
+    from inverse_folding.reference_flow.runtime import safe_allele_tag
+
+    a = allele.strip()
+    if not a.upper().startswith("HLA-"):
+        a = "HLA-" + a
+    return safe_allele_tag(a)
 
 
 if __name__ == "__main__":

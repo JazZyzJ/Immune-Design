@@ -1936,7 +1936,7 @@ PY
 
 #### C.1 Experiment Arm
 
-Run against the same 50-protein input parquet, same seed, same design count, same Aopen operating point. Use the normal `run_if_phase_c1.py` required inputs (`--checkpoint`, `--test-set-parquet`, `--pdb-root`, `--h-maps-parquet`, `--allele`, `--config`, `--output-root`) or the existing `submit_if_phase_c.slurm` wrapper. The C-specific additions are:
+Run against the same 50-protein input parquet, same seed, same design count, same Aopen operating point. Use the normal `run_if_phase_c1.py` required inputs (`--checkpoint`, `--test-set-parquet`, `--pdb-root`, `--allele`, `--config`, `--output-root`; `--h-maps-parquet` is now optional and only required when `amplification.form` ∈ {`linear_clamp`, `sigmoid`, `power`}) or the existing `submit_if_phase_c.slurm` wrapper. The C-specific additions are:
 
 ```bash
 python scripts/run_if_phase_c1.py [standard Phase C1 args] \

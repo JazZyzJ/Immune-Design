@@ -89,13 +89,11 @@ case "${MODE}" in
         ALLELE="${ALLELE:-HLA-DRB1*07:01}"
         if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
             ALLELE_FILE_TAG="HLA-DRB1_07_01"
-            ALLELE_TAG="DRB1_07_01"
-            PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0701"
+            PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/HLA-DRB1_07_01"
             TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_07_01.parquet"
         elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
             ALLELE_FILE_TAG="HLA-DRB1_04_01"
-            ALLELE_TAG="DRB1_04_01"
-            PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/0401"
+            PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/HLA-DRB1_04_01"
             TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_04_01.parquet"
         else
             echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
@@ -104,7 +102,7 @@ case "${MODE}" in
 
         INPUT_PDB_FOLDER="${INPUT_PDB_FOLDER:-${PDB_ROOT_DEFAULT}}"
         TEST_SET_PARQUET="${TEST_SET_PARQUET:-${TEST_SET_PARQUET_DEFAULT}}"
-        OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/baselines/proteinmpnn/${ALLELE_TAG}}"
+        OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/baselines/proteinmpnn/${ALLELE_FILE_TAG}}"
         mkdir -p "${OUTPUT_DIR}"
 
         # ProteinMPNN knobs

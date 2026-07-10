@@ -170,7 +170,13 @@ def _log(message: str) -> None:
 
 
 def _allele_tag(allele: str) -> str:
-    return "".join(c if (c.isalnum() or c in "-.") else "_" for c in allele)
+    """File-safe allele tag, unified to the ``HLA-DRB1_07_01`` form."""
+    from inverse_folding.reference_flow.runtime import safe_allele_tag
+
+    a = allele.strip()
+    if not a.upper().startswith("HLA-"):
+        a = "HLA-" + a
+    return safe_allele_tag(a)
 
 
 def _remaining_sequences(sequences: dict, existing_results: dict,

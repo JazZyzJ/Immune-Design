@@ -13,7 +13,7 @@ Usage:
     python scripts/analysis/tier1_structural_analysis.py \\
         --tier1-candidates /path/to/tier1_candidates.json \\
         --pdb-dir          /path/to/if_test_set/pdbs \\
-        --output-dir       /path/to/work/immune-design/tier1_structural_analysis/DRB1_07_01 \\
+        --output-dir       /path/to/work/immune-design/tier1_structural_analysis/HLA-DRB1_07_01 \\
         --allele           "DRB1*07:01" \\
         --figures-dir      /path/to/repo/figures/F2_supplementary
 """
@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -84,8 +83,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def allele_tag(allele: str) -> str:
-    """Turn 'DRB1*07:01' into 'DRB1_07_01' for file-safe naming."""
-    return re.sub(r"[^A-Za-z0-9]+", "_", allele).strip("_")
+    """Turn 'DRB1*07:01' or 'HLA-DRB1*07:01' into 'HLA-DRB1_07_01' for file-safe naming."""
+    from inverse_folding.reference_flow.runtime import safe_allele_tag
+
+    a = allele.strip()
+    if not a.upper().startswith("HLA-"):
+        a = "HLA-" + a
+    return safe_allele_tag(a)
 
 
 def log_hyperparams(args: argparse.Namespace) -> None:

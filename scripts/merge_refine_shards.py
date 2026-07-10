@@ -17,7 +17,12 @@ Outputs (under ``<run>/merged/``):
     metrics on design_uid.
   * ``best_count0_per_seed.{parquet,fasta}`` — the best distinct-core==0 variant per input seed
     (min true edit distance, then max scTM), i.e. the definitive de-immunized design set.
-  * ``merge_summary.json`` — reach-0 stats + table row counts + any shard/eval gaps.
+  * ``top{K}_per_seed.{parquet,fasta}`` (``--top-k K``) — the K lowest-core-count variants per
+    input seed (does NOT require reaching 0); the deliverable when 0 is not guaranteed reachable.
+  * ``master.parquet`` optionally gains ``dplm_native_scTM`` + ``delta_scTM`` = scTM - the
+    per-protein DPLM-native baseline (``--dplm-native-structural``), for judging fold quality
+    RELATIVE to a DPLM base that may fold poorly in absolute terms.
+  * ``merge_summary.json`` — reach-0 stats + top-K stats + table row counts + any shard/eval gaps.
 """
 from __future__ import annotations
 
@@ -78,6 +83,14 @@ def main() -> None:
     ap.add_argument("--run-dir", required=True,
                     help="the array run dir holding shardKKofNN/ subdirs")
     ap.add_argument("--out-dir", default=None, help="default: <run-dir>/merged")
+    ap.add_argument("--top-k", type=int, default=1,
+                    help="select the top-K refined variants per input seed by lowest "
+                         "core_count_after (ties: fewest true_muts, then highest scTM) -> "
+                         "top{K}_per_seed.{parquet,fasta}; use K>1 when 0 is not guaranteed reachable")
+    ap.add_argument("--dplm-native-structural", default=None,
+                    help="DPLM-native structural.parquet; adds dplm_native_scTM (per-protein median scTM) "
+                         "and delta_scTM = scTM - dplm_native_scTM to master (fold quality RELATIVE to the "
+                         "DPLM base, for proteins whose base model folds poorly in absolute terms)")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -146,6 +159,15 @@ def main() -> None:
         _hamming(str(o), str(r))
         for o, r in zip(master["sequence_original"], master["sequence_refined"])
     ]
+    # optional: fold quality RELATIVE to the DPLM base (some proteins fold poorly in absolute
+    # terms, so the meaningful signal is scTM - dplm_native_scTM, not absolute scTM)
+    if args.dplm_native_structural:
+        dn = pd.read_parquet(args.dplm_native_structural)
+        base = dn.groupby(dn["protein_id"].astype(str))["scTM"].median()
+        master["dplm_native_scTM"] = master["protein_id"].astype(str).map(base)
+        if "scTM" in master.columns:
+            master["delta_scTM"] = master["scTM"] - master["dplm_native_scTM"]
+        summary["dplm_native_structural"] = str(args.dplm_native_structural)
     master.to_parquet(out_dir / "master.parquet", index=False)
     summary["tables"]["master"] = {"rows": int(len(master))}
 
@@ -164,6 +186,23 @@ def main() -> None:
             for r in best.itertuples(index=False):
                 f.write(f">{r.protein_id}_{r.design_uid}_muts{int(r.true_muts)}"
                         f"_scTM{getattr(r, 'scTM', float('nan')):.3f}\n{r.sequence_refined}\n")
+
+    # top-K refined variants per input seed by lowest core count (does NOT require reaching 0;
+    # the deliverable when 0 is not guaranteed — the K best de-immunized designs per protein)
+    if args.top_k and args.top_k >= 1:
+        sort_cols = ["core_count_after", "true_muts"] + (["scTM"] if "scTM" in master.columns else [])
+        asc = [True, True] + ([False] if "scTM" in master.columns else [])
+        topk = (master.sort_values(sort_cols, ascending=asc)
+                      .groupby("sequence_original", as_index=False).head(args.top_k))
+        topk.to_parquet(out_dir / f"top{args.top_k}_per_seed.parquet", index=False)
+        with open(out_dir / f"top{args.top_k}_per_seed.fasta", "w") as f:
+            for r in topk.itertuples(index=False):
+                f.write(f">{r.protein_id}_{r.design_uid}_core{int(r.core_count_after)}"
+                        f"_muts{int(r.true_muts)}_scTM{getattr(r, 'scTM', float('nan')):.3f}"
+                        f"\n{r.sequence_refined}\n")
+        summary["topk"] = {"k": int(args.top_k), "rows": int(len(topk)),
+                           "proteins": int(topk["protein_id"].nunique()),
+                           "core_after_median": float(topk["core_count_after"].median())}
 
     summary["reach0"] = {
         "seeds": int(n_seeds),
