@@ -41,10 +41,20 @@ DPLM_ROOT="${DPLM_ROOT:-${PROJECT_ROOT}/inverse_folding/dplm}"
 C24_INPUTS="${C24_INPUTS:-${BASE}/work/RF/Uricases_RF/characterized24_inputs/20260703T201539Z}"
 LOG_DIR="${LOG_DIR:-${BASE}/logs/refine}"
 
-MODE="${MODE:-refine}"                       # refine | ceiling
+MODE="${MODE:-refine}"                       # refine | ceiling | fusion
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
 PROTEINS="${PROTEINS:-all}"
 TARGET_SOURCE="${TARGET_SOURCE:-nmp}"
+
+# MODE=fusion (Head-only RF-Refine Fusion) reads complete RF designs and runs the edit-and-repair
+# loop; it does NOT use NetMHCIIpan. The static #SBATCH --cpus-per-task=8 is NMP-sized — a fusion
+# run needs fewer cores, so submit with e.g. `MODE=fusion sbatch --cpus-per-task=2 ...`.
+FUSION_CONFIG="${FUSION_CONFIG:-${PROJECT_ROOT}/inverse_folding/reference_flow/configs/rf_refine_fusion_smoke.yaml}"
+RUN_DIR="${RUN_DIR:-}"                        # directory holding the generated designs parquet
+# H3 (rf_reopen / edit-repair) needs the DPLM sampler: pass BOTH to enable the repair arm.
+# Leave empty for the explicit-only S0 arm (the driver only requires them when repair/reopen on).
+BASE_IF_CHECKPOINT="${BASE_IF_CHECKPOINT:-}"  # base inverse-folding checkpoint for the repair sampler
+RF_SAMPLER_CONFIG="${RF_SAMPLER_CONFIG:-}"    # reference-flow sampler YAML (temperature/remask base)
 
 # Seeds: a --seed-table parquet (protein_id/design_id/sequence). Default = the full
 # difficulty-stratified 0701 validation table; override SEED_TABLE for the smoke.
@@ -169,6 +179,34 @@ echo "  Out dir       : ${OUT_DIR}"
 echo "  ESMFold cache : ${ESMFOLD_CACHE_DIR}"
 echo "  Eval metrics  : emit=${EMIT_EVAL_METRICS} strong=${STRONG_BINDER_THRESHOLD} hotspot=${HOTSPOT_THRESHOLD} imm_full=${IMM_FULL}"
 echo "============================================================"
+
+if [ "${MODE}" = "fusion" ]; then
+    # Head-only Fusion driver — NO --netmhciipan-bin / --nmp-* / --seed-table.
+    # repair/reopen (H3) sampler flags: only forwarded when both are set (explicit-only S0 omits them).
+    REPAIR_FLAGS=()
+    if [ -n "${BASE_IF_CHECKPOINT}" ]; then REPAIR_FLAGS+=(--base-if-checkpoint "${BASE_IF_CHECKPOINT}"); fi
+    if [ -n "${RF_SAMPLER_CONFIG}" ]; then REPAIR_FLAGS+=(--rf-sampler-config "${RF_SAMPLER_CONFIG}"); fi
+    srun python "${PROJECT_ROOT}/scripts/run_rf_refine_fusion.py" \
+        --fusion-config "${FUSION_CONFIG}" \
+        --run-dir "${RUN_DIR}" \
+        --proteins ${PROTEINS} \
+        --allele "${ALLELE}" \
+        "${CONSTRAINT_FLAG[@]}" \
+        --test-set-parquet "${TEST_SET_PARQUET}" \
+        --pdb-root "${PDB_ROOT}" \
+        --head-checkpoint "${HEAD_CHECKPOINT}" \
+        --head-config-dir "${HEAD_CONFIG_DIR}" \
+        --head-variant-id "${HEAD_VARIANT_ID}" \
+        --head-device cuda \
+        --head-allele-idx "${HEAD_ALLELE_IDX}" \
+        --head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}" \
+        --esmfold-cache-dir "${ESMFOLD_CACHE_DIR}" \
+        "${REPAIR_FLAGS[@]}" \
+        --out-dir "${OUT_DIR}" \
+        --print-config
+    echo "[fusion] done → ${OUT_DIR}"
+    exit 0
+fi
 
 srun python "${PROJECT_ROOT}/scripts/refine_rf_designs.py" \
     --mode "${MODE}" \

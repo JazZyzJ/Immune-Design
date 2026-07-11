@@ -285,3 +285,64 @@ def test_prepare_backbone_batch_all_bad_returns_none_batch(monkeypatch):
     assert kept == []
     assert len(failures) == 2
     assert {f["entry"]["protein_id"] for f in failures} == {"a", "b"}
+
+
+# --------------------------------------------------------------------------- #
+# F6: tri-state use_draft_seq_override on the encoder context builders
+# --------------------------------------------------------------------------- #
+import pytest as _pytest  # noqa: E402
+
+from inverse_folding.reference_flow import runtime as _rt  # noqa: E402
+
+
+def _draft_task_and_recorder(config_use_draft_seq):
+    recorded = {}
+
+    def forward_encoder(batch, use_draft_seq):
+        recorded["use_draft_seq"] = use_draft_seq
+        return {"feats": torch.zeros(1)}
+
+    def inject_noise(tokens, coord_mask, noise):
+        assert noise == "full_mask"
+        return tokens.clone(), coord_mask.clone()
+
+    task = SimpleNamespace(
+        hparams=SimpleNamespace(generator=SimpleNamespace(use_draft_seq=config_use_draft_seq)),
+        alphabet=SimpleNamespace(padding_idx=0, cls_idx=1, eos_idx=2),
+        model=SimpleNamespace(forward_encoder=forward_encoder),
+        inject_noise=inject_noise,
+    )
+    return task, recorded
+
+
+def _draft_prepared():
+    tokens = torch.tensor([[3, 4, 5, 6, 7]])  # residue tokens (no special 0/1/2)
+    coord_mask = torch.ones(1, 5, dtype=torch.bool)
+    return SimpleNamespace(batch={"tokens": tokens, "coord_mask": coord_mask})
+
+
+@_pytest.mark.parametrize("cfg,override,expected", [
+    (True, None, True),    # legacy: config drives (byte-equivalent to before)
+    (False, None, False),  # legacy
+    (True, False, False),  # Fusion forces backbone-only regardless of checkpoint config
+    (False, True, True),   # override can also force it on
+])
+def test_use_draft_seq_override_tristate(cfg, override, expected):
+    task, rec = _draft_task_and_recorder(cfg)
+    _rt.build_dplm_denoiser_context(task=task, prepared=_draft_prepared(),
+                                    use_draft_seq_override=override)
+    assert rec["use_draft_seq"] == expected
+
+
+def test_use_draft_seq_override_omitted_is_byte_equivalent_to_legacy():
+    for cfg in (True, False):
+        task, rec = _draft_task_and_recorder(cfg)
+        _rt.build_dplm_denoiser_context(task=task, prepared=_draft_prepared())  # no kwarg
+        assert rec["use_draft_seq"] == cfg
+
+
+def test_batched_builder_forces_backbone_only_when_overridden():
+    task, rec = _draft_task_and_recorder(config_use_draft_seq=True)
+    batch = {"tokens": torch.tensor([[3, 4, 5, 6, 7]]), "coord_mask": torch.ones(1, 5, dtype=torch.bool)}
+    _rt.build_batched_dplm_denoiser_context(task=task, batch=batch, use_draft_seq_override=False)
+    assert rec["use_draft_seq"] is False

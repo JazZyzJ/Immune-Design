@@ -1,0 +1,62 @@
+# RF-Refine Fusion — conservative engineering SMOKE preset (PLAN_RF_REFINE_FUSION.md §2).
+#
+# This is an ENGINEERING preset for wiring/smoke runs, NOT a scientific default. The structure
+# thresholds and Head margins below are explicit placeholders to be CALIBRATED from S-smoke
+# telemetry under the §1.8 walltime bound (§6); they are not sourced values. Runtime immune
+# signal is Head-only (NMP has no role). All values are printed at startup and hashed into the
+# run manifest. Cluster paths arrive via CLI, never here.
+fusion:
+  enabled: true
+  seed: 20260711
+  population_size: 4          # calibration gate (small for smoke)
+  n_rounds: 3                 # calibration gate
+
+  handoff:
+    mode: terminal_population # v0: complete RF designs are the initial particles
+
+  targeting:
+    mode: head_max_window     # v0 frozen: highest-raw-risk Head window
+    registers_per_parent: 1
+    halo_radius: 4            # calibration gate
+
+  objective:
+    head_field: global_risk   # whole-sequence Head drives selection
+    min_head_improvement: 0.05           # ε_H — calibration gate (greedy + beam margin)
+    max_offtarget_window_increase: 0.10  # N_H hard gate — calibration gate
+
+  moves:
+    explicit:
+      enabled: true
+      max_edit_order: 2                    # singles + distinct-position pairs (sourced: refiner §7)
+      max_raw_candidates_per_parent: 200   # caps PAIRS only; all singles are always emitted
+      pair_seed_budget: 32                 # calibration gate
+    rf_reopen:
+      enabled: false                       # off in the P1 core smoke (needs the DPLM repair_fn)
+      children_per_parent: 0
+    repair:
+      enabled: false                       # off in the P1 core smoke (H3 arm enables it)
+      repair_shortlist_per_parent: 4
+      children_per_edit: 1
+      sampler_steps: 8
+      local_remask: false
+
+  structure:
+    backend: esmfold
+    surrogate_mode: none                   # v0: no cheap surrogate (neutral factor)
+    scTM_min: 0.85                         # calibration gate (engineering placeholder)
+    active_site_RMSD_max: 2.0              # active_site_spatial_shell6A_ca_rmsd ceiling (calibration gate)
+    active_site_shell_radius: 6.0
+    scRMSD_max: null                       # optional (TMalign rmsd) — telemetry only here
+    cache_dir: structure_cache             # provenance only; the driver uses --esmfold-cache-dir
+    max_refolds_per_parent: 8              # jointly calibrated with N / n_rounds vs the §1.8 bound
+
+  selection:
+    mode: greedy                           # v0 P1 core; beam / fk are the H6 ablation arms
+    beta_start: 1.0                        # FK schedule (calibration gate; unused by greedy)
+    beta_end: 4.0
+    resample_method: multinomial
+
+  telemetry:
+    candidate_detail: true
+    window_detail: false
+    trajectory_detail: true

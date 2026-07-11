@@ -438,10 +438,21 @@ def generate_native_sequence(
     return decode_residue_tokens(task, output_tokens[0, residue_mask[0]].cpu())
 
 
+def _resolve_use_draft_seq(task: Any, override: bool | None) -> bool:
+    """Tri-state resolver: ``None`` falls back to the checkpoint config (byte-identical to the
+    legacy callers); ``True``/``False`` force the value. Fusion passes ``False`` to guarantee a
+    backbone-only encoder context (no structure-derived draft ``init_pred``) regardless of the
+    checkpoint's ``generator.use_draft_seq``."""
+    if override is None:
+        return bool(task.hparams.generator.use_draft_seq)
+    return bool(override)
+
+
 def build_dplm_denoiser_context(
     *,
     task: Any,
     prepared: PreparedBackbone,
+    use_draft_seq_override: bool | None = None,
 ) -> DPLMDenoiserContext:
     batch = clone_batch(prepared.batch)
     tokens = batch["tokens"]
@@ -451,7 +462,7 @@ def build_dplm_denoiser_context(
     batch["prev_token_mask"] = prev_token_mask
     encoder_out = task.model.forward_encoder(
         batch,
-        use_draft_seq=bool(task.hparams.generator.use_draft_seq),
+        use_draft_seq=_resolve_use_draft_seq(task, use_draft_seq_override),
     )
     special_sym_mask = (
         tokens.eq(task.alphabet.padding_idx)
@@ -475,6 +486,7 @@ def build_batched_dplm_denoiser_context(
     task: Any,
     batch: dict[str, Any],
     sequence_lengths: list[int] | tuple[int, ...] | None = None,
+    use_draft_seq_override: bool | None = None,
 ) -> BatchedDPLMDenoiserContext:
     """Build one frozen DPLM encoder context for a batch of RF lanes."""
 
@@ -486,7 +498,7 @@ def build_batched_dplm_denoiser_context(
     batch["prev_token_mask"] = prev_token_mask
     encoder_out = task.model.forward_encoder(
         batch,
-        use_draft_seq=bool(task.hparams.generator.use_draft_seq),
+        use_draft_seq=_resolve_use_draft_seq(task, use_draft_seq_override),
     )
     special_sym_mask = (
         tokens.eq(task.alphabet.padding_idx)
