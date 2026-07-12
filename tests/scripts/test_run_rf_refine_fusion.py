@@ -160,6 +160,9 @@ def test_arg_parser_has_fusion_surfaces_and_no_nmp():
     parser = drv.build_arg_parser()
     opts = {a.option_strings[0] for a in parser._actions if a.option_strings}
     assert {"--fusion-config", "--run-dir", "--out-dir", "--allele", "--print-config"} <= opts
+    # the H3 repair-arm flags forwarded by submit_refine.slurm MODE=fusion must exist here (P1-2
+    # SLURM<->driver contract): a rename that desyncs the launcher would fail this.
+    assert {"--base-if-checkpoint", "--rf-sampler-config"} <= opts
     assert not any("nmp" in o.lower() or "netmhc" in o.lower() for o in opts)  # Head-only driver
 
 

@@ -635,12 +635,22 @@ Required CLI surfaces:
 - optional constraint manifest;
 - output directory, protein filter, device, resume, and `--print-config`.
 
-Implement per-protein atomic checkpointing and deterministic resume. A resumed protein starts
-from its persisted round/population/elite/RNG lineage state, not by replaying already charged
-oracle calls.
+Implement per-protein atomic checkpointing and deterministic resume. The resume identity binds
+the full input set (Fusion config hash + Head/manifest/base-IF/sampler/window-range signature +
+per-protein seed digest), so any changed input re-runs rather than reusing a stale checkpoint.
+
+> **v0 scope (deferred, LOG L0134):** resume granularity is **per-protein**, not round-boundary.
+> A resumed protein re-runs from round 1 (it does not restart from a persisted mid-run
+> round/population/elite/RNG state). This is acceptable for v0 smokes (n_rounds ≤ 3). Operational
+> caveat for the H3/repair arm: DPLM `sampler.sample()` repair outputs are **not** disk-cached
+> (only the ESMFold refold of the resulting sequence is cached by sequence MD5), so an interrupted
+> repair-enabled protein re-charges its serial repair GPU calls on restart under the §1.8 walltime
+> bound. Round-boundary checkpointing (persisted round/population/elite/RNG lineage state + a
+> repair-output cache) is a follow-up, not part of the v0 delivery.
 
 **Gate F8:** fake-oracle two-protein CLI smoke writes every required artifact and resumes
-without duplicate lineage rows.
+without duplicate lineage rows; changing an input (seed/Head/manifest) re-runs rather than
+reusing a stale checkpoint.
 
 ### Task F9: Artifact contract
 
