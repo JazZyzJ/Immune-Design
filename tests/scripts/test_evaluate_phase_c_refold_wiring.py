@@ -26,6 +26,12 @@ _BASE_ARGV = [
 ]
 
 
+def test_structural_defaults_promote_esmfold2_v2():
+    args = parse_args(_BASE_ARGV)
+    assert args.refold_model == "esmfold2"
+    assert args.structural_metrics_v2 is True
+
+
 @pytest.mark.parametrize("backend", ["esmfold", "esmfold2", "protenix"])
 def test_parse_args_accepts_refold_backends(backend):
     args = parse_args(_BASE_ARGV + ["--refold-model", backend])
@@ -35,6 +41,15 @@ def test_parse_args_accepts_refold_backends(backend):
 def test_refold_cache_dir_aliases_esmfold_cache_dir():
     args = parse_args(_BASE_ARGV + ["--refold-cache-dir", "/tmp/rc"])
     assert args.esmfold_cache_dir == "/tmp/rc"
+
+
+def test_parse_args_accepts_standalone_structural_v2_inputs():
+    args = parse_args(
+        _BASE_ARGV
+        + ["--structural-metrics-v2", "--constraint-manifest", "anchors.yaml"]
+    )
+    assert args.structural_metrics_v2 is True
+    assert args.constraint_manifest == "anchors.yaml"
 
 
 # ── end-to-end cache-read through evaluate_structural_rows ──────────────────

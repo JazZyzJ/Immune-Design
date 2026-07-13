@@ -15,12 +15,24 @@ set -euo pipefail
 # ── Parameters (override via environment) ────────────────────────────────
 # Example: ALLELE="HLA-DRB1*04:01" EPITOPE_CKPT="/.../drb0401/best.pt" sbatch scripts/submit_benchmark.slurm
 INPUT_FASTA="${INPUT_FASTA:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/uricases/filtered_uricases-diverse.fasta}"
-EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/ablation/cnn_enhance_v2/runs/LC1/seed_42/best.pt}"
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
 NMP_WORKERS="${NMP_WORKERS:-8}"
 NMP_BATCH_SIZE="${NMP_BATCH_SIZE:-8}"
 VARIANT_ID="${VARIANT_ID:-LC1}"
 DEVICE="${DEVICE:-cuda}"
+
+if [[ -z "${EPITOPE_CKPT:-}" ]]; then
+    if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt"
+    elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold0/runs/LC1/seed_42/best.pt"
+    elif [[ "${ALLELE}" == "HLA-DRB1*15:01" ]]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb1501_seed42/runs/LC1/seed_42/best.pt"
+    else
+        echo "ERROR: EPITOPE_CKPT not set and no a1res03 default exists for ALLELE=${ALLELE}" >&2
+        exit 2
+    fi
+fi
 
 # ── Paths ────────────────────────────────────────────────────────────────���
 PROJECT_ROOT="/home/zc1519/src/Immune-Design"

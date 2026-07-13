@@ -39,11 +39,14 @@ def read_fasta(path):
 
 def cif_to_pdb(cif_text):
     """Best-effort mmCIF -> PDB via biotite (installed as an esm dependency)."""
+    import numpy as np
     import biotite.structure.io.pdb as pdb
     import biotite.structure.io.pdbx as pdbx
 
     cif = pdbx.CIFFile.read(io.StringIO(cif_text))
-    arr = pdbx.get_structure(cif, model=1)
+    arr = pdbx.get_structure(cif, model=1, extra_fields=["b_factor"])
+    if "b_factor" in arr.get_annotation_categories() and not np.isfinite(arr.b_factor).all():
+        arr.del_annotation("b_factor")
     pf = pdb.PDBFile()
     pdb.set_structure(pf, arr)
     sio = io.StringIO()

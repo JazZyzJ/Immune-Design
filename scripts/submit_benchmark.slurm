@@ -51,6 +51,7 @@ export PS1
 #               (imm_nmp_peptides.parquet) long tables alongside the
 #               aggregated imm_head/imm_nmp parquets. Default off
 #               preserves prior Phase C behavior.
+#               Structural output is canonical v2; CONSTRAINT_MANIFEST supplies anchors.
 MODE="${MODE:-iedb}"
 
 # ── Shared parameters (override via env) ─────────────────────────────────
@@ -69,9 +70,11 @@ ALLELE_TAG="$(echo "${ALLELE}" | tr -c '[:alnum:]' '_' | sed 's/_*$//')"
 
 if [ -z "${EPITOPE_CKPT:-}" ]; then
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
-        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0701_seed42/runs/LC1/seed_42/best.pt"
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt"
     elif [ "${ALLELE}" = "HLA-DRB1*04:01" ]; then
-        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold0/runs/LC1/seed_42/best.pt"
+    elif [ "${ALLELE}" = "HLA-DRB1*15:01" ]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb1501_seed42/runs/LC1/seed_42/best.pt"
     else
         echo "ERROR: EPITOPE_CKPT not set and no default is defined for ALLELE=${ALLELE}" >&2
         exit 2
@@ -238,7 +241,7 @@ elif [ "${MODE}" = "iedb" ]; then
 
 elif [ "${MODE}" = "phase_c" ]; then
     EVAL_MODE="${EVAL_MODE:-all}"
-    REFOLD_MODEL="${REFOLD_MODEL:-esmfold}"
+    REFOLD_MODEL="${REFOLD_MODEL:-esmfold2}"
     FAIL_PCT_THRESHOLD="${FAIL_PCT_THRESHOLD:-0.05}"
     PROGRESS_EVERY="${PROGRESS_EVERY:-25}"
     OVERWRITE="${OVERWRITE:-0}"
@@ -252,6 +255,7 @@ elif [ "${MODE}" = "phase_c" ]; then
     TAG="${TAG:-}"
     IMM_FULL="${IMM_FULL:-0}"
     NMP_OFF="${NMP_OFF:-0}"   # 1 = imm head-only (skip NetMHCIIpan); affects imm/all modes
+    CONSTRAINT_MANIFEST="${CONSTRAINT_MANIFEST:-}"
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then
         TEST_SET_PARQUET="${TEST_SET_PARQUET:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_07_01.parquet}"
         PDB_ROOT="${PDB_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/HLA-DRB1_07_01}"
@@ -292,7 +296,14 @@ elif [ "${MODE}" = "phase_c" ]; then
     fi
 
     PHASE_C_OUTPUT_ROOT="${PHASE_C_OUTPUT_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/if_phase_c}"
-    ESMFOLD_CACHE_DIR="${ESMFOLD_CACHE_DIR:-${PHASE_C_OUTPUT_ROOT}/.cache/esmfold/${ALLELE_TAG}}"
+    REFOLD_CACHE_DIR="${REFOLD_CACHE_DIR:-${ESMFOLD_CACHE_DIR:-${PHASE_C_OUTPUT_ROOT}/.cache/esmfold2/${ALLELE_TAG}}}"
+
+    if { [ "${EVAL_MODE}" = "struct" ] || [ "${EVAL_MODE}" = "all" ]; } \
+       && { [ "${REFOLD_MODEL}" = "esmfold2" ] || [ "${REFOLD_MODEL}" = "protenix" ] || [ "${REFOLD_MODEL}" = "af3" ]; } \
+       && [ ! -d "${REFOLD_CACHE_DIR}" ]; then
+        echo "ERROR: cache-read backend ${REFOLD_MODEL} requires precomputed REFOLD_CACHE_DIR=${REFOLD_CACHE_DIR}" >&2
+        exit 2
+    fi
 
     echo "  Eval mode         : ${EVAL_MODE}"
     echo "  Generated parquet : ${GENERATED_PARQUET}"
@@ -300,7 +311,7 @@ elif [ "${MODE}" = "phase_c" ]; then
     echo "  PDB root          : ${PDB_ROOT}"
     echo "  Refold model      : ${REFOLD_MODEL}"
     echo "  Phase-C output    : ${PHASE_C_OUTPUT_ROOT}"
-    echo "  ESMFold cache     : ${ESMFOLD_CACHE_DIR}"
+    echo "  Refold cache      : ${REFOLD_CACHE_DIR}"
     echo "  NMP_MODE          : ${NMP_MODE_ARG}"
     if [ "${NMP_MODE_ARG}" = "accelerated" ]; then
         echo "  NMP workers       : ${NMP_WORKERS}"
@@ -313,6 +324,8 @@ elif [ "${MODE}" = "phase_c" ]; then
     echo "  Strong threshold  : ${STRONG_BINDER_THRESHOLD}%"
     echo "  IMM_FULL          : ${IMM_FULL} (1 = also emit per-residue + per-peptide long tables)"
     echo "  NMP_OFF           : ${NMP_OFF} (1 = imm head-only, skip NetMHCIIpan)"
+    echo "  Structure schema  : v2 canonical (global C-alpha + side-chain)"
+    echo "  Constraint manifest: ${CONSTRAINT_MANIFEST:-none}"
 
     EXTRA_ARGS=()
     if [ "${IMM_FULL}" = "1" ]; then
@@ -320,6 +333,9 @@ elif [ "${MODE}" = "phase_c" ]; then
     fi
     if [ "${NMP_OFF}" = "1" ]; then
         EXTRA_ARGS+=(--no-nmp)
+    fi
+    if [ -n "${CONSTRAINT_MANIFEST}" ]; then
+        EXTRA_ARGS+=(--constraint-manifest "${CONSTRAINT_MANIFEST}")
     fi
     if [ -n "${RUN_ID:-}" ]; then
         EXTRA_ARGS+=(--run-id "${RUN_ID}")
@@ -358,7 +374,7 @@ elif [ "${MODE}" = "phase_c" ]; then
         --pdb-root "${PDB_ROOT}" \
         --refold-model "${REFOLD_MODEL}" \
         --tmalign-bin "${TMALIGN_BIN}" \
-        --esmfold-cache-dir "${ESMFOLD_CACHE_DIR}" \
+        --refold-cache-dir "${REFOLD_CACHE_DIR}" \
         --device "${DEVICE}" \
         --progress-every "${PROGRESS_EVERY}" \
         --fail-pct-threshold "${FAIL_PCT_THRESHOLD}" \

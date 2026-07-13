@@ -1,4 +1,4 @@
-"""Active-site shell RMSD producer (§1.4) — pure geometry over precomputed traces.
+"""Legacy active-site C-alpha shell RMSD producer — compatibility mode only.
 
 ``active_site_spatial_shell6A_ca_rmsd`` = ``sqrt(mean(sc_ca_distance^2))`` over the 6 Å spatial
 shell (residues whose reference Cα is within ``radius`` of any anchor Cα), where the per-residue

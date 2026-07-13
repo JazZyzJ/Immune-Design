@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+import scripts.refine_rf_designs as refine_driver
 
 from inverse_folding.reference_flow.refine import StructureMetrics
 from scripts.refine_rf_designs import (
@@ -151,7 +152,9 @@ def test_refine_help_lists_key_flags():
     parser = build_arg_parser()
     dests = {a.dest for a in parser._actions}
     assert {"test_set_parquet", "esmfold_cache_dir", "netmhciipan_bin", "constraint_manifest",
-            "mode", "nmp_batch_size", "topB", "seed_table", "max_path_mutations"} <= dests
+            "mode", "nmp_batch_size", "topB", "seed_table", "max_path_mutations",
+            "refinement_structure_metrics", "max_anchor_sidechain_RMSD_max",
+            "structural_metrics_v2"} <= dests
 
 
 def test_deferred_switches_fail_fast():
@@ -173,6 +176,29 @@ def test_build_oracles_fail_fast_on_missing_heavy_inputs():
         "--run-dir", "x", "--eval-immune-dir", "y", "--allele", "A", "--out-dir", "z",
     ])
     with pytest.raises(ValueError, match=r"build_oracles requires"):
+        build_oracles(args)
+
+
+def test_build_oracles_validates_sidechain_gate_before_heavy_imports():
+    base = [
+        "--run-dir", "x", "--allele", "A", "--out-dir", "z",
+        "--esmfold-cache-dir", "cache", "--test-set-parquet", "test.parquet",
+        "--pdb-root", "pdb", "--head-checkpoint", "head.pt",
+        "--head-config-dir", "configs", "--netmhciipan-bin", "nmp",
+    ]
+    args = build_arg_parser().parse_args(
+        base + ["--max-anchor-sidechain-RMSD-max", "1.5"]
+    )
+    with pytest.raises(ValueError, match="requires --refinement-structure-metrics sidechain"):
+        build_oracles(args)
+
+    args = build_arg_parser().parse_args(
+        base + [
+            "--refinement-structure-metrics", "sidechain",
+            "--max-anchor-sidechain-RMSD-max", "1.5",
+        ]
+    )
+    with pytest.raises(ValueError, match="requires --constraint-manifest"):
         build_oracles(args)
 
 
@@ -257,11 +283,89 @@ def test_eval_metrics_flags_defaults_and_toggle():
     assert a.strong_binder_threshold == 2.0     # evaluate_phase_c default (percent rank_EL)
     assert a.hotspot_threshold == 0.5
     assert a.imm_full is False
+    assert a.structural_metrics_v2 is True
+    assert a.refinement_structure_metrics == ""
     b = build_arg_parser().parse_args(
         base + ["--no-eval-metrics", "--imm-full",
-                "--strong-binder-threshold", "1.0", "--hotspot-threshold", "0.6"])
+                "--strong-binder-threshold", "1.0", "--hotspot-threshold", "0.6",
+                "--structural-metrics-v2", "--refinement-structure-metrics",
+                "global_ca_rmsd,sidechain", "--max-anchor-sidechain-RMSD-max", "1.5"])
     assert b.emit_eval_metrics is False and b.imm_full is True
     assert b.strong_binder_threshold == 1.0 and b.hotspot_threshold == 0.6
+    assert b.structural_metrics_v2 is True
+    assert b.refinement_structure_metrics == "global_ca_rmsd,sidechain"
+    assert b.max_anchor_sidechain_RMSD_max == 1.5
+
+
+def test_run_final_metrics_writes_v2_to_canonical_paths(tmp_path, monkeypatch):
+    from scripts import evaluate_phase_c as evaluator
+
+    refined_dir = tmp_path / "refined"
+    refined_dir.mkdir()
+    pd.DataFrame([
+        {"protein_id": "P1", "design_idx": 0, "sequence": "AAAA", "seed": 0,
+         "wall_seconds": 0.0},
+    ]).to_parquet(refined_dir / "evaluator_ready.parquet")
+    generated = pd.DataFrame([
+        {"protein_id": "P1", "design_id": "design_0000", "design_idx": 0,
+         "sequence": "AAAA"},
+    ])
+    monkeypatch.setattr(evaluator, "load_generated_designs", lambda path: generated)
+    monkeypatch.setattr(
+        evaluator,
+        "load_test_lookup",
+        lambda path: (pd.DataFrame(), {"P1": {"sequence": "AAAA", "sequence_length": 4}}),
+    )
+    monkeypatch.setattr(evaluator, "build_head_predictor", lambda **kwargs: object())
+    monkeypatch.setattr(evaluator, "build_nmp_runner", lambda **kwargs: object())
+    monkeypatch.setattr(
+        evaluator,
+        "evaluate_immunogenicity_rows",
+        lambda *args, **kwargs: (
+            pd.DataFrame([{"protein_id": "P1", "design_id": "design_0000"}]),
+            pd.DataFrame([{"protein_id": "P1", "design_id": "design_0000"}]),
+            [],
+            pd.DataFrame(),
+            pd.DataFrame(),
+        ),
+    )
+    monkeypatch.setattr(evaluator, "_load_anchor_indices_by_protein", lambda *args: {"P1": {1}})
+    call = {}
+
+    def fake_structural(*args, **kwargs):
+        call.update(kwargs)
+        return (
+            pd.DataFrame([{
+                "protein_id": "P1", "design_id": "design_0000", "design_idx": 0,
+                "sequence": "AAAA", "scTM": 0.9, "global_ca_RMSD": 0.7,
+                "pLDDT": 91.0, "active_site_sidechain_RMSD": 0.8,
+            }]),
+            [],
+            pd.DataFrame([{
+                "protein_id": "P1", "design_id": "design_0000", "design_idx": 0,
+                "residue_idx": 1, "sidechain_RMSD": 0.8,
+            }]),
+        )
+
+    monkeypatch.setattr(evaluator, "evaluate_structural_rows", fake_structural)
+    monkeypatch.setattr(refine_driver, "_free_gpu", lambda: None)
+    args = build_arg_parser().parse_args([
+        "--seed-table", "unused", "--allele", "A", "--out-dir", str(tmp_path),
+        "--test-set-parquet", "test.parquet", "--pdb-root", "pdb",
+        "--head-checkpoint", "head.pt", "--head-config-dir", "configs",
+        "--netmhciipan-bin", "nmp", "--esmfold-cache-dir", "cache",
+    ])
+
+    _run_final_metrics(args)
+
+    assert call["return_v2_metrics"] is True
+    assert call["legacy_metrics"] is False
+    structural = pd.read_parquet(refined_dir / "structural.parquet")
+    assert "global_ca_RMSD" in structural and "bb_RMSD" not in structural
+    assert (refined_dir / "structural_residues.parquet").exists()
+    assert not (refined_dir / "structural_v2.parquet").exists()
+    status = pd.read_json(refined_dir / "final_metrics_status.json", typ="series")
+    assert status["structural_metrics_version"] == "v2"
 
 
 def test_run_final_metrics_skips_when_no_evaluator_ready(tmp_path, capsys):

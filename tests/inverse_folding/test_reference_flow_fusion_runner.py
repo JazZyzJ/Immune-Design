@@ -81,7 +81,8 @@ def _prop(parent, seq, edited=(20,)):
         halo_start_0b=20, halo_end_0b=29, proposal_seed=1)
 
 
-def _cfg(*, max_refolds=8, scTM_min=0.85, active_site_max=2.0, offtarget_max=0.5,
+def _cfg(*, max_refolds=8, scTM_min=0.85, active_site_max=2.0,
+         active_site_metric="legacy_ca_shell", max_anchor_sidechain_max=None, offtarget_max=0.5,
          min_head_improvement=0.05, mode="greedy", n_rounds=1, population_size=1,
          explicit_enabled=True, rf_reopen_enabled=False,
          repair_enabled=False, repair_shortlist=2, children_per_edit=1, window_detail=False):
@@ -98,7 +99,9 @@ def _cfg(*, max_refolds=8, scTM_min=0.85, active_site_max=2.0, offtarget_max=0.5
                              "children_per_edit": children_per_edit, "sampler_steps": 8,
                              "local_remask": False}},
         "structure": {"backend": "esmfold", "surrogate_mode": "none", "scTM_min": scTM_min,
+                      "active_site_metric": active_site_metric,
                       "active_site_RMSD_max": active_site_max, "active_site_shell_radius": 6.0,
+                      "max_anchor_sidechain_RMSD_max": max_anchor_sidechain_max,
                       "scRMSD_max": None, "cache_dir": "/tmp/c", "max_refolds_per_parent": max_refolds},
         "selection": {"mode": mode, "beta_start": 1.0, "beta_end": 2.0, "resample_method": "multinomial"},
         "telemetry": {"candidate_detail": True, "window_detail": window_detail,
@@ -417,6 +420,39 @@ def test_nan_active_site_rmsd_fails_closed_when_anchored():
     m = SimpleNamespace(scTM=0.99, active_site_RMSD=float("nan"), scRMSD=None, passed=True)
     ok, _reason = orc.structure_feasible(m, cfg, has_active_site=True)
     assert ok is False
+
+
+def test_sidechain_active_site_gate_uses_complete_max_anchor_metric():
+    cfg = _cfg(
+        active_site_metric="sidechain_max_anchor",
+        active_site_max=None,
+        max_anchor_sidechain_max=1.5,
+    )
+    good = SimpleNamespace(
+        scTM=0.99,
+        max_anchor_sidechain_RMSD=1.2,
+        active_site_complete=True,
+        scRMSD=None,
+    )
+    assert orc.structure_feasible(good, cfg, has_active_site=True) == (True, "ok")
+
+    incomplete = SimpleNamespace(
+        scTM=0.99,
+        max_anchor_sidechain_RMSD=1.2,
+        active_site_complete=False,
+        scRMSD=None,
+    )
+    ok, reason = orc.structure_feasible(incomplete, cfg, has_active_site=True)
+    assert ok is False and "incomplete" in reason
+
+    high = SimpleNamespace(
+        scTM=0.99,
+        max_anchor_sidechain_RMSD=1.8,
+        active_site_complete=True,
+        scRMSD=None,
+    )
+    ok, reason = orc.structure_feasible(high, cfg, has_active_site=True)
+    assert ok is False and "max_anchor_sidechain_RMSD" in reason
 
 
 # =========================================================================== #

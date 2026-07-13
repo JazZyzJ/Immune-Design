@@ -19,7 +19,7 @@ class EvalSchemaError(Exception):
 
 # ── Frozen column sets (PLAN_IF.md §L0) ─────────────────────────────────────
 
-STRUCTURAL_COLUMNS: FrozenSet[str] = frozenset({
+LEGACY_STRUCTURAL_COLUMNS: FrozenSet[str] = frozenset({
     "protein_id",
     "design_id",
     "sequence",
@@ -30,7 +30,7 @@ STRUCTURAL_COLUMNS: FrozenSet[str] = frozenset({
     "foldability",
 })
 
-STRUCTURAL_RESIDUE_COLUMNS: FrozenSet[str] = frozenset({
+LEGACY_STRUCTURAL_RESIDUE_COLUMNS: FrozenSet[str] = frozenset({
     "protein_id",
     "design_id",
     "design_idx",
@@ -53,6 +53,61 @@ STRUCTURAL_RESIDUE_COLUMNS: FrozenSet[str] = frozenset({
     "aligned_pred_ca_z",
     "refold_backend",
 })
+
+STRUCTURAL_V2_COLUMNS: FrozenSet[str] = frozenset({
+    "protein_id",
+    "design_id",
+    "design_idx",
+    "sequence",
+    "scTM",
+    "global_ca_RMSD",
+    "pLDDT",
+    "reference_pLDDT",
+    "predicted_active_site_mean_pLDDT",
+    "predicted_active_site_min_pLDDT",
+    "reference_active_site_mean_pLDDT",
+    "reference_active_site_min_pLDDT",
+    "active_site_sidechain_RMSD",
+    "max_anchor_sidechain_RMSD",
+    "max_anchor_atom_distance",
+    "active_site_sidechain_atom_count",
+    "anchor_count",
+    "matched_anchor_count",
+    "active_site_complete",
+    "recovery",
+    "foldability",
+    "refold_backend",
+})
+
+STRUCTURAL_V2_RESIDUE_COLUMNS: FrozenSet[str] = frozenset({
+    "protein_id",
+    "design_id",
+    "design_idx",
+    "residue_idx",
+    "residue_idx_1based",
+    "ref_chain_id",
+    "ref_resseq",
+    "ref_icode",
+    "ref_aa",
+    "design_aa",
+    "is_anchor",
+    "match_status",
+    "symmetry_swap_applied",
+    "reference_sidechain_atom_count",
+    "predicted_sidechain_atom_count",
+    "sidechain_atom_count",
+    "sidechain_sq_error_sum",
+    "sidechain_RMSD",
+    "sidechain_max_atom_distance",
+    "predicted_pLDDT",
+    "reference_pLDDT",
+    "refold_backend",
+})
+
+# v2 is the canonical structural benchmark contract. Legacy names remain
+# available only for explicit compatibility callers during migration.
+STRUCTURAL_COLUMNS: FrozenSet[str] = STRUCTURAL_V2_COLUMNS
+STRUCTURAL_RESIDUE_COLUMNS: FrozenSet[str] = STRUCTURAL_V2_RESIDUE_COLUMNS
 
 IMMUNOGENICITY_HEAD_COLUMNS: FrozenSet[str] = frozenset({
     "protein_id",

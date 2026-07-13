@@ -76,9 +76,37 @@ def test_valid_config_loads_and_exposes_fields():
     assert cfg.selection.beta[-1] == pytest.approx(4.0)
 
 
+def test_esmfold2_live_structure_backend_is_supported():
+    m = _smoke()
+    m["fusion"]["structure"]["backend"] = "esmfold2_live"
+    assert fc.load_fusion_config(m).structure.backend == "esmfold2_live"
+
+
 def test_active_site_gate_optional_none_when_absent():
     cfg = fc.load_fusion_config(_without("structure.active_site_RMSD_max"))
     assert cfg.structure.active_site_RMSD_max is None  # no fabricated numeric default
+
+
+def test_sidechain_active_site_mode_requires_its_own_threshold():
+    m = _smoke()
+    st = m["fusion"]["structure"]
+    st["active_site_metric"] = "sidechain_max_anchor"
+    st["active_site_RMSD_max"] = None
+    st["max_anchor_sidechain_RMSD_max"] = 1.5
+    cfg = fc.load_fusion_config(m)
+    assert cfg.structure.active_site_metric == "sidechain_max_anchor"
+    assert cfg.structure.max_anchor_sidechain_RMSD_max == pytest.approx(1.5)
+
+    del st["max_anchor_sidechain_RMSD_max"]
+    with pytest.raises(fc.FusionConfigError, match="max_anchor_sidechain_RMSD_max"):
+        fc.load_fusion_config(m)
+
+
+def test_unknown_active_site_metric_is_rejected():
+    m = _smoke()
+    m["fusion"]["structure"]["active_site_metric"] = "common_atom_rmsd"
+    with pytest.raises(fc.FusionConfigError, match="active_site_metric"):
+        fc.load_fusion_config(m)
 
 
 # --------------------------------------------------------------------------- #
@@ -281,6 +309,8 @@ def test_importing_fusion_config_does_not_load_torch():
 @pytest.mark.parametrize("field,value", [
     ("active_site_RMSD_max", float("nan")),
     ("active_site_RMSD_max", float("inf")),
+    ("max_anchor_sidechain_RMSD_max", float("nan")),
+    ("max_anchor_sidechain_RMSD_max", -1.0),
     ("scRMSD_max", float("nan")),
     ("scRMSD_max", -1.0),
     ("active_site_shell_radius", float("nan")),

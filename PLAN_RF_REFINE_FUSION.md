@@ -195,28 +195,24 @@ The definitive gate is absolute to the target backbone:
 
 - `scTM >= structure.scTM_min` (required config; no placeholder/default in the loader) —
   `scTM = run_tmalign(pred, ref)["tm_score"]`;
-- `active_site_shell_RMSD <= structure.active_site_RMSD_max` — **hard-gated whenever the protein
-  carries an active-site constraint** (`hard_anchor_indices` non-empty). This is the
-  function-critical `active_site_spatial_shell6A_ca_rmsd` (`PLAN_RF_REFINE.md:630`; global scTM
-  diverges from it — 66/1532 designs are global-ok but active-site-shifted), computed as
-  `sqrt(mean(sc_ca_distance^2))` over the **6.0 Å spatial shell** (residues whose reference Cα is
-  within `structure.active_site_shell_radius` of any anchor Cα), where per-residue
-  `sc_ca_distance` comes from a **single global full-trace Kabsch superposition** via
-  `inverse_folding.evaluation.sc_rmsd.compute_ca_self_consistency` (NOT a local re-superposition
-  on the shell — the global-vs-local gap is why scTM and this metric diverge). Shell membership
-  is a **new** helper (no local producer): compute it once per protein from the reference PDB +
-  `hard_anchor_indices`, then cache the index set. Requires `len(pred) == len(ref) == len(seq)`
-  (holds for same-length inverse folding);
+- `max_anchor_sidechain_RMSD <= structure.max_anchor_sidechain_RMSD_max` when
+  `structure.active_site_metric: sidechain_max_anchor` — **hard-gated whenever the protein
+  carries hard anchors**. Predicted coordinates receive one global full-trace C-alpha Kabsch
+  transform, then every anchor is compared through its exact all-heavy-side-chain atom set.
+  ASP/GLU/PHE/TYR naming symmetry is resolved by minimum squared error. The gate uses the worst
+  per-anchor RMSD, while pooled active-site RMSD and worst atom displacement remain telemetry.
+  Identity mismatch, missing atoms, an unsupported/no-side-chain anchor, non-finite values, or
+  incomplete anchor coverage fails closed; there is no common-atom fallback or local active-site
+  realignment. `legacy_ca_shell` remains an explicit compatibility mode for historical configs;
 - optional `scRMSD <= structure.scRMSD_max` when configured — `scRMSD := run_tmalign["rmsd"]`
   (TMalign aligned-subset RMSD); telemetry / optional ceiling, distinct from the full-trace
   Kabsch `sc_rmsd`;
 - a metric that is **configured and applicable but cannot be computed** (e.g. length mismatch for
   the active-site gate on an anchored protein, or a non-finite `scTM`/RMSD) fails closed, never
-  silent pass. For a protein with **no** active-site constraint the shell gate is legitimately N/A
-  and skipped cleanly (not a failure). `has_active_site` is **derived from `anchors`** (single
-  source of truth, never a separate flag), and the runner/handoff **fail-fast** if an anchored
-  protein is run without a configured `active_site_RMSD_max` (otherwise the gate would silently
-  skip). scTM / active-site / scRMSD comparisons treat `None`/`NaN`/`inf` as gate failures.
+  silent pass. For a protein with **no** active-site constraint the active-site gate is N/A and
+  skipped cleanly. `has_active_site` is derived from `anchors`; the runner/handoff fail-fast if
+  an anchored protein lacks the ceiling matching its selected metric. All configured structure
+  comparisons treat `None`/`NaN`/`inf` as failures.
 
 Evaluation is two-tier:
 
@@ -352,11 +348,10 @@ sequence fraction so population collapse is visible.
 The binding constraint is structure evaluation, not Head or (absent) NMP. Sourced unit costs:
 
 - one ancestry-eligible child costs one definitive structure eval = one ESMFold forward + one
-  TMalign vs the target backbone + (for anchored proteins) one full-trace Kabsch `sc_rmsd` pass
-  that **reuses the same predicted PDB** (no extra ESMFold forward), `(protein_id, sequence)`-cached
-  [audit of `evaluation/refold.py`, `evaluation/tmalign.py`, `evaluation/sc_rmsd.py`; refiner
-  `PLAN_RF_REFINE.md` §2]. The ESMFold forward dominates; TMalign + Kabsch are cheap CPU. The 6 Å
-  shell membership is precomputed once per protein, not per child.
+  TMalign vs the target backbone + one global C-alpha alignment and anchor side-chain comparison
+  that **reuse the same predicted PDB** (no extra ESMFold forward), `(protein_id, sequence)`-cached.
+  The ESMFold forward dominates; parsing/alignment is cheap CPU, and the full-atom reference
+  context is parsed once per protein.
 - Head is cheap and batched: one `score_batch_same_protein` call per protein per evaluation
   stage covers the whole dedup pool [audit of `head_scoring.py`].
 - empirical anchor: the standalone refiner measured ~2003 refolds → ~80 min GPU on H2ETE7,
@@ -400,8 +395,8 @@ No numeric default in this PLAN is invented (`AGENTS.md` §2). Each v0 parameter
 `population_size N`, `n_rounds`, `beta_0` / `beta` schedule, `min_head_improvement`,
 `max_offtarget_window_increase`, absolute `structure.scTM_min` (the refiner's *relative*
 `seed − 0.05` gate does NOT transfer to an absolute floor, so it carries no value here),
-`structure.active_site_RMSD_max` (the function-critical `active_site_spatial_shell6A_ca_rmsd`
-ceiling; no default — fixed from smoke telemetry on the anchored cohort),
+`structure.max_anchor_sidechain_RMSD_max` (the strict active-site side-chain ceiling; no default
+when `active_site_metric: sidechain_max_anchor`, fixed from smoke telemetry on the anchored cohort),
 `targeting.halo_radius`, `max_raw_candidates_per_parent`, `pair_seed_budget`,
 `moves.repair.repair_shortlist_per_parent`, and the repair sampler step count.
 
@@ -419,7 +414,7 @@ the run manifest. `max_refolds_per_parent` is jointly calibrated with `N` / `n_r
 | `moves.explicit` | enabled, `max_edit_order: 2`, `max_raw_candidates_per_parent`, `pair_seed_budget` | edit order 1 or 2; positive budget |
 | `moves.rf_reopen` | enabled, children per parent | at least one move family enabled |
 | `moves.repair` | enabled, `repair_shortlist_per_parent`, children per edit, sampler steps, local remask flag | shortlist/budgets non-negative |
-| `structure` | backend, `surrogate_mode: none`, **required** `scTM_min`, `active_site_RMSD_max` + `active_site_shell_radius: 6.0` (hard-gated when anchors present; calibration-gate ceiling, no default), optional `scRMSD_max` (TMalign rmsd, distinct from the Kabsch shell metric), cache dir, `max_refolds_per_parent` | no missing required path/threshold; no placeholder values; reject unimplemented surrogate modes; shell gate N/A (skipped) for no-anchor proteins, fail-closed on length mismatch |
+| `structure` | backend (`esmfold2_live` current; `esmfold` compatibility), `surrogate_mode: none`, required `scTM_min`, `active_site_metric: sidechain_max_anchor`, required `max_anchor_sidechain_RMSD_max`, optional legacy CA-shell fields, optional `scRMSD_max`, cache dir, `max_refolds_per_parent` | reject unknown modes or missing selected threshold; active-site gate N/A for no-anchor proteins; exact atom correspondence and non-finite metrics fail closed |
 | `selection` | `mode: greedy|beam|fk`, beta schedule, `resample_method: multinomial` | beta length `n_rounds+1` or valid linear endpoints |
 | `telemetry` | candidate detail, window detail, trajectory detail flags | defaults keep candidate + lineage evidence |
 
@@ -511,10 +506,9 @@ selection remains deterministic.
 - [ ] Test that every ancestry-eligible child has `structure_evaluated=True` and passes the
   absolute gate.
 - [ ] Test unavailable configured RMSD metrics fail closed.
-- [ ] Test the active-site shell gate: on an anchored protein a child whose
-  `active_site_spatial_shell6A_ca_rmsd` exceeds `active_site_RMSD_max` is infeasible even when
-  scTM passes; on a no-anchor protein the shell gate is skipped cleanly (N/A, not a failure); a
-  length-mismatch on an anchored protein fails closed.
+- [ ] Test the side-chain active-site gate: on an anchored protein a child whose
+  `max_anchor_sidechain_RMSD` exceeds its ceiling is infeasible even when scTM passes; incomplete
+  anchor atom correspondence fails closed; on a no-anchor protein the gate is N/A.
 - [ ] Test cache provenance mismatch forces recomputation/failure, never silent reuse.
 - [ ] Ensure null parents retain their existing definitive evaluation.
 
@@ -617,13 +611,21 @@ Reuse (import paths verified against current code):
 
 Do not import or instantiate NetMHCIIpan / `StandaloneRunner`.
 
-The real `struct_fn` must, in addition to the refiner's refold+TMalign (`scTM`, `scRMSD`),
-produce the active-site shell metric when the protein has anchors: precompute the 6 Å shell
-index set once per protein (new helper: reference-PDB Cα within `active_site_shell_radius` of any
-`hard_anchor_indices` Cα), then per child call
-`inverse_folding.evaluation.sc_rmsd.compute_ca_self_consistency(pred_pdb, ref_pdb, …)` reusing the
-already-refolded predicted PDB and aggregate `sqrt(mean(sc_ca_distance^2))` over that shell into
-`StructureMetrics.active_site_RMSD` (§1.4). For no-anchor proteins leave it `None` (gate N/A).
+The real `struct_fn` must, in addition to refold+TMalign scTM, use the lightweight
+`inverse_folding.evaluation.structural_metrics_v2` API in side-chain mode. Cache one
+`ReferenceContext` per protein and request only `global_ca_rmsd`, `plddt`, and `sidechain`; never
+request residue rows in the search loop. Populate distinct `StructureMetrics` fields
+(`global_ca_RMSD`, `active_site_sidechain_RMSD`, `max_anchor_sidechain_RMSD`,
+`max_anchor_atom_distance`, `active_site_complete`) rather than reusing legacy
+`active_site_RMSD`. The standalone benchmark evaluator remains responsible for the complete
+summary and residue-indexable artifacts.
+
+For `structure.backend: esmfold2_live`, start one persistent
+`inverse_folding.evaluation.esmfold2_live.ESMFold2LiveClient`. The worker uses the active
+`immune-design` Python executable and imports its torch before overlaying Biohub's `esm` and
+`transformers` packages from an explicit `--esmfold2-site-packages` path. The overlay must stay
+inside the worker because Biohub and fair-esm share the top-level `esm` namespace. Reuse the
+worker across all candidates and normalize each output to the shared PDB/pLDDT cache.
 
 Required CLI surfaces:
 
@@ -631,7 +633,7 @@ Required CLI surfaces:
 - base IF checkpoint and RF sampler config used by repair;
 - Fusion config;
 - Head checkpoint/config/variant/allele/device/batch size;
-- ESMFold/TMalign cache and executable settings;
+- refold cache, ESMFold2 package/model/sampling settings, and TMalign settings;
 - optional constraint manifest;
 - output directory, protein filter, device, resume, and `--print-config`.
 
@@ -763,7 +765,8 @@ python scripts/run_rf_refine_fusion.py \
   --run-dir Results/RF/Uricase/uricase_characterized23_a1res03_b1open_n16__20260630T041450Z/HLA-DRB1_07_01 \
   --proteins Q00511 --allele HLA-DRB1_07_01 \
   --head-checkpoint <manifest> --head-config-dir <manifest> --head-allele-idx <manifest> --head-device cuda \
-  --pdb-root <uricase reference backbones, refiner §5> --esmfold-cache-dir <cache> --test-set-parquet <…> \
+  --pdb-root <uricase reference backbones, refiner §5> --refold-cache-dir <cache> --test-set-parquet <…> \
+  --esmfold2-site-packages <Biohub env site-packages> --esmfold2-model biohub/ESMFold2 \
   --out-dir Results/RF/Uricase/fusion_smoke_s0_0701 --print-config
 ```
 

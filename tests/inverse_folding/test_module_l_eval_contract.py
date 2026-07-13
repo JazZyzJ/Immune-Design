@@ -33,12 +33,26 @@ class TestMetricSchema:
         row = {
             "protein_id": "test_001",
             "design_id": "d_001",
+            "design_idx": 0,
             "sequence": "ACDEF",
             "scTM": 0.85,
             "pLDDT": 78.5,
-            "bb_RMSD": 1.2,
+            "reference_pLDDT": 92.0,
+            "global_ca_RMSD": 1.2,
+            "predicted_active_site_mean_pLDDT": 80.0,
+            "predicted_active_site_min_pLDDT": 75.0,
+            "reference_active_site_mean_pLDDT": 94.0,
+            "reference_active_site_min_pLDDT": 90.0,
+            "active_site_sidechain_RMSD": 0.8,
+            "max_anchor_sidechain_RMSD": 1.1,
+            "max_anchor_atom_distance": 1.8,
+            "active_site_sidechain_atom_count": 12,
+            "anchor_count": 3,
+            "matched_anchor_count": 3,
+            "active_site_complete": True,
             "recovery": 0.65,
             "foldability": True,
+            "refold_backend": "esmfold2",
         }
         row.update(overrides)
         return row

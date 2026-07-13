@@ -104,18 +104,19 @@
 - **Diagnostic / demonstration subsets (allele-specific, subsets of canonical if_ready):**
   - **pilot** `if_ready/pilot/pilot_v2_<tag>.parquet` — **0701 47 (5 anchors + 42 T2) / 0401 49 (5 + 44)** after the coverage≥0.8 removal (was 50; 3/1 truncated T2 dropped, not backfilled). 5 Tier 1 band-aligned anchors + Tier 2 in mid-load band [p40,p75] of coverage (0701 [0.33,0.56], 0401 [0.39,0.64]). High-freq RF iteration. `build_pilot_v2.py`.
   - **fast** `if_ready/fast/fast_v2_<tag>.parquet` — **0701 286 / 0401 285** (was 300; truncated removed). 15 Tier 1 + Tier 2 uniform across coverage. Global sanity. Carries a `coverage_fraction` column.
-  - **highrisk (0701 only so far)** `if_ready/highrisk/` — top-100 by `min(nmp_pct, head_pct)` (NMP strong-window burden AND epitope-head global_risk both high; `if_sequence_coverage ≥ 0.8`; `build_highrisk_demo.py`).
+  - **highrisk (0701 + 0401 done; 1501 pending)** `if_ready/highrisk/` — top-100 by `min(nmp_pct, head_pct)` (NMP strong-window burden AND epitope-head global_risk both high; `if_sequence_coverage ≥ 0.8`; `build_highrisk_demo.py`).
     - **`highrisk_nod_v1_HLA-DRB1_07_01`** (CURRENT, 2026-07-09) — **primary = NoD full-pool baseline** (RF's own DFM kernel with guidance OFF, `c1_null`; **2879 proteins × 8 diverse designs**, temp 1.0, seed 42; a1res03 fold0 head). Kernel-consistent baseline for the RF-validation/iteration highrisk set (NoD = same DFM sampler as every guided C1/C2/C3/D arm). sel_nmp 0.030–0.082 / sel_head 1.66–4.60; `pmpnn_nmp/head` diagnostic + sorted FASTA. NoD gen `run/inverse_folding/baselines/nod_full_v1/`, imm `run/benchmark/if_phase_c/nod_full_v1/`.
+    - **`highrisk_nod_v1_HLA-DRB1_04_01`** (CURRENT, 2026-07-10) — same NoD full-pool recipe on 0401 (**2829 proteins × 8 diverse designs**, a1res03 0401 fold0 head; gen 16 ailab shards, imm 192 cpu/qos=short shards ~110 min). 100 proteins, sel_nmp 0.046–0.114 / sel_head 0.42–4.6. **0401 test set now complete** (main + fast + pilot + highrisk).
     - **`highrisk_dplm_iter_v1_*` — STALE** (see sibling `.STALE.md`): selected on the DPLM-native **argmax** C0 baseline (all 8 designs identical → degenerate median-over-8; also a different sampler than the DFM RF arms). Superseded by `nod_v1`; **overlap 29/100** (71 picks changed). Do not use.
     - `highrisk_pmpnn_demo_v1_<tag>` (primary=ProteinMPNN → demonstration / beat the reported baseline) — **unaffected** (ProteinMPNN sampling is diverse); still valid. Each row carries cross-baseline `nmp`/`head` diagnostics.
-    - **Deferred**: struct eval on the selected 100×8 (downstream do-no-harm); RAR 0013 (B1 vs DPLM-native, regression-to-mean-inflated −4.37) needs a regression-free recompute vs NoD (expect shrink toward the ≈−0.58 aggregate); 0401/1501 NoD baselines not yet run.
+    - **Status (2026-07-10)**: 0701 + 0401 NoD baselines + highrisk done; NoD 0701 full struct eval done (scTM median 0.938, ≥0.5 90%). **B1-vs-NoD regression-aware analysis done**: after correcting for highrisk being a NoD-extreme set, B1 shows a *modest genuine* head de-immunization (raw head Δ −0.66/−1.37 is largely regression-inflated; guidance residual ≈ −0.07…−0.44) and **essentially no NetMHCIIpan benefit over regression**, structure preserved for ~80%. A clean de-immunization claim needs a non-NoD-selected eval set. 1501 baseline pending.
 - **Uricase case study (standalone, not in main test set).** Files under `uricases/`:
   - `uricase_caseset_if_ready_unified.parquet` — **6388** (6387 exact-deduped + **Pegloticase** appended as the last row 2026-07-03; **all 26 `characterized` retained**; near-redundancy intentionally NOT removed). Source: 4958 AFDB + 1429 ESMFold2 + **1 AF3** (Pegloticase). Dedup recorded in `uricase_caseset_if_ready_unified.manifest.json`.
   - **Pegloticase** (recombinant pig–baboon chimeric therapeutic uricase / Krystexxa; 298 aa, P16164 variant 98.7% id): structure from **AF3 full-MSA** prediction (local-DB, pLDDT 0.947 / pTM 0.94; `pdbs_if_ready/Pegloticase.pdb`, `structure_source=af3`, coverage 1.0). Projects cleanly (8/8 Q00511 anchors, triad-complete, `viability=projected`, `design_viable=True`); `validate_against_sequence` passes vs the committed manifest.
   - `pdbs_if_ready/` — structure files retained on disk (6740: 5222 `.cif` + 1518 `.pdb`; 353 orphaned exact-dups kept) + `Pegloticase.pdb` (AF3); `h_maps/h_maps_uricase_HLA-DRB1_{07_01,04_01}.parquet` — **6388** each (Pegloticase concatenated; 0 missing / 0 md5-mismatch vs unified), covers 100%, npoff; `wt_generated_uricase_caseset_HLA-DRB1_07_01.parquet` facade — 6387 (pre-Pegloticase).
   - Enzyme-mode RF manifest `inverse_folding/reference_flow/configs/uricase_q00511_active_site_perprotein_v0.yaml` covers **24/26 characterized** proteins with validated hard anchors (incl. Pegloticase); `C5HDG5` and `W8X3B8` are intentionally excluded by `uricase_characterized_special_overrides.yaml`. Q00511 B1 highrisk-open inpainting smoke passed on A100 (`run/inverse_folding/phase_d/uricase_smoke/HLA-DRB1_07_01/uricase_q00511_b1_aopen_inpaint_smoke_seed42_gpu80_r4_20260630T013544Z`): 8/8 anchors preserved, 158 non-anchor edits.
   - **`Uricases_RF/`** (design_viable subset) — **5492** design_viable = 5489 Q00511-triad-projected + 2 own-annotated PucL fusions (O32141/Q45697) + Pegloticase; 24/26 characterized in-set (894 gated + C5HDG5/W8X3B8 excluded). Deterministically derived from the 6388 unified set (triad gate {10,57,256}). Holds `uricase_rf_designviable_if_ready.parquet` (IF-ready + viability labels), `.fasta`, `uricase_caseset_if_ready_dedup_labeled.parquet` (6388 labeled), `manifest.json`. RF-ready: structure / h_maps(0701+0401) / constraint-manifest all cover 5492/5492 (0 missing, 0 md5 mismatch). Original `uricases/` unchanged.
-  - **WT immune baseline — a1res03 heads, 3 alleles** (`run/benchmark/wt_v2/HLA-DRB1_{07_01,04_01,15_01}/wt_uricase_a1res03_<tag>_imm_full/`, **6388 each** — Pegloticase concatenated 2026-07-03: head global_risk/NMP strong_frac by allele 0701 −8.95/0.012 (pct 5/24), 0401 −9.25/0.020 (18/53), 1501 −8.72/0.008 (52/67); low-immune, strongly allele-dependent). Heads: 0701 = a1res03 cv5 fold0 best.pt (NMP reused from prior 6387 DRB1\*07:01 run — head-independent); 0401 = a1res03 epoch_34; 1501 = a1res03 best.pt. NMP strong_frac median **0701 0.021 / 0401 0.019 / 1501 0.005** (uricases far less 1501-immunogenic); a1res03-head↔NMP Spearman **0.70 / 0.38 / 0.46**; 1501 head healthy (left-skewed, std 2.58). Immune landscape strongly allele-dependent (e.g. Q9RV70 0701 pct 2 ↔ 1501 pct 93).
+  - **WT immune baseline — a1res03 heads, 3 alleles** — the uricase design baseline (WT uricase sequences scored; what the uricase-RF designs are compared against). **Cluster** `run/benchmark/wt_v2/HLA-DRB1_{07_01,04_01,15_01}/wt_uricase_a1res03_HLA-DRB1_<tag>_imm_full/` (`imm_head`/`imm_nmp` + `_residues`/`_peptides` long tables; 0401/1501 also keep 48 per-allele shards). **Local (Mac)** `mhc-if-local:/Users/jerry/Project/MHC-IF/Results/IFStandalone/uricase_a1res03_immune/HLA-DRB1_{07_01,04_01,15_01}/` (imm-only; the uricase WT structures are the input PDBs, no separate struct baseline). **6388 each** — Pegloticase concatenated 2026-07-03: head global_risk/NMP strong_frac by allele 0701 −8.95/0.012 (pct 5/24), 0401 −9.25/0.020 (18/53), 1501 −8.72/0.008 (52/67); low-immune, strongly allele-dependent). Heads: 0701 = a1res03 cv5 fold0 best.pt (NMP reused from prior 6387 DRB1\*07:01 run — head-independent); 0401 = a1res03 epoch_34; 1501 = a1res03 best.pt. NMP strong_frac median **0701 0.021 / 0401 0.019 / 1501 0.005** (uricases far less 1501-immunogenic); a1res03-head↔NMP Spearman **0.70 / 0.38 / 0.46**; 1501 head healthy (left-skewed, std 2.58). Immune landscape strongly allele-dependent (e.g. Q9RV70 0701 pct 2 ↔ 1501 pct 93).
   - `missing_structure_list.{csv,fasta}` — uricases still without structure.
   - Phase C: `TEST_SET_PARQUET=uricases/uricase_caseset_if_ready_unified.parquet`, `H_MAPS_PARQUET=uricases/h_maps/h_maps_uricase_<tag>.parquet`, `PDB_ROOT=uricases/pdbs_if_ready`.
   - Caveat: ESMFold-predicted backbones as scTM refold targets = self-consistency, not true GT.
@@ -263,14 +264,24 @@
 
 > Evaluation pipeline reference: `doc/Reference_Flow_Derivation.md §6` for hypothesis framing; Module L §L0 for metric schema. Δrisk and Δn_strong are computed against WT (the input test protein), not against C0. One row per `run_id`; append rows as sweeps grow.
 
-**C0 baseline** (DPLM native sampler on frozen Module K checkpoint)
+**NoD baseline** (RF-no-guidance DFM sampler `c1_null`, temp 1.0 / seed 42 / n8) — **the current unguided baseline; SUPERSEDES the deleted DPLM-native C0** (argmax-degenerate `dplm_native_full_v2` removed from cluster + Mac, L0130/L0131). Status: 0701 = gen + imm + **struct** all done; 0401 = gen + imm done (struct not run); 1501 pending.
 
-| allele | run_id | n_proteins | n_designs | scTM mean | scTM median | % scTM > 0.5 | % scTM > 0.8 | recovery mean | pLDDT mean | head Δrisk vs WT | NMP Δn_strong vs WT | mean mutation_count |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| HLA-DRB1*07:01 | c0_HLA-DRB1_07_01_dplm_native_full_v2_n8_t1p0_seed42_merged_shards6_20260619T015646Z | 3014 | 8 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| HLA-DRB1*04:01 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+**Cluster locations** (base `/scratch/gpfs/KAIYIJIANG/zijie/`):
 
-Operational native generation note (2026-06-18): HLA-DRB1*07:01 full-v2 DPLM native baseline generation is merged and validated. Final output: `/scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/baselines/dplm_native_full_v2_merged/HLA-DRB1_07_01/c0_HLA-DRB1_07_01_dplm_native_full_v2_n8_t1p0_seed42_merged_shards6_20260619T015646Z/generated.parquet` with 24,112 rows = 3,014 proteins × 8 designs, no duplicate `(protein_id, design_idx)` rows, and FASTA header count 24,112. The old failed/cancelled run dirs, six-shard intermediate output, split input shards, and failed/cancelled shard logs were cleaned after validation. Metrics remain TBD until evaluation.
+| allele | stage | path |
+|---|---|---|
+| 0701 | generation (23032 = 2879×8) | `run/inverse_folding/baselines/nod_full_v1/HLA-DRB1_07_01/nod_full_v1_n8_t1p0_seed42_merged/generated.parquet` |
+| 0701 | eval_immune (a1res03) | `run/benchmark/if_phase_c/nod_full_v1/HLA-DRB1_07_01/nod_full_v1_HLA-DRB1_07_01_imm/{imm_head,imm_nmp}.parquet` |
+| 0701 | eval_structure (esmfold) | `run/benchmark/if_phase_c/nod_full_v1/HLA-DRB1_07_01/nod_full_v1_HLA-DRB1_07_01_struct/{structural,structural_residues}.parquet` |
+| 0401 | generation (22632 = 2829×8) | `run/inverse_folding/baselines/nod_full_v1/HLA-DRB1_04_01/HLA-DRB1_04_01/nod_full_v1_n8_t1p0_seed42_merged/generated.parquet` |
+| 0401 | eval_immune (a1res03) | `run/benchmark/if_phase_c/nod_full_v1/HLA-DRB1_04_01/nod_full_v1_HLA-DRB1_04_01_imm/{imm_head,imm_nmp}.parquet` |
+
+**Local (Mac)** `mhc-if-local:/Users/jerry/Project/MHC-IF/Results/` — 0701 returned to `RF/HLA-DRB1_07_01/nod_full_v1_n8_t1p0_seed42__20260709T215523Z/{generation,eval_immune,eval_structure,meta}/` (this dir REPLACES the deleted `dplm_native_full_v2_{n8_seed42,imm_full}__*`).
+
+| allele | n×d | scTM mean/median (>=0.5 / >=0.7) | head global_risk median | NMP strong_frac median |
+|---|---|---|---|---|
+| HLA-DRB1*07:01 | 2879×8 | **0.854 / 0.938** (90.0% / 84.8%) | 2.56 | 0.036 |
+| HLA-DRB1*04:01 | 2829×8 | struct not run | 0.99 | 0.059 |
 
 **C1 sampling-only** (position-dependent DFM; one row per `run_id`; record the full resolved config fields so future-you can trace what was run)
 
@@ -309,6 +320,35 @@ Operational native generation note (2026-06-18): HLA-DRB1*07:01 full-v2 DPLM nat
 - `g_max_cap` triggered (protein_id, max g_i): TBD
 
 ---
+
+## Backup Collection — wet-lab targets (NEW, 2026-07-13)
+
+4 experimentalist-supplied proteins redesigned by **B1Aopen inpainting** (RF stage-B1,
+amplification=`constant_one`, controller `d2_d3_full_stageB_aopen_beta5p0.yaml` hash 2c39f229;
+original `run_if_phase_c1.py`, NOT refine/fusion) with active-site hard anchors frozen. Structures =
+**AlphaFold3 v3.0.3 full-MSA monomer** from WT seq (crystals unusable — chromophore fused to CRO/CH6;
+AF3 validated vs crystal EGFP 0.29Å / mCherry 0.44Å Cα). Manifest (committed):
+`inverse_folding/reference_flow/configs/backup_active_site_v0.yaml` (EGFP 8 / mCherry 9 / PrASNase 7 /
+NanoLuc 8 anchors). Collection (Della): `work/immune-design/if_test_set/backup/` (AF3 structures
+`pdbs_if_ready/`, `backup_caseset_if_ready.parquet`).
+
+- **4-protein B1Aopen 0401** (256 designs each, a1res03 0401 cv5-fold0 head): all 7168 anchors preserved.
+  **PrASNase** = clean win (NMP 0.0075→0.0021 −73%, esmfold2 scTM 0.99, active-site 0.26Å).
+  **FP EGFP/mCherry** — ESMFold2 scTM 0.4 was an ARTIFACT (ESMFold2 can't fold FP β-barrels; WT-EGFP
+  self-consistency only 0.64). **AF3 refold (WT-MSA transplant): EGFP 0.973 / mCherry 0.962, 100%≥0.7** →
+  FPs fold + active sites preserved (mean-anchor sc-RMSD 1.1–1.3Å). Immune: EGFP NMP flat, mCherry regressed.
+- **PrASNase 3-allele** (256/allele, expanded 7 anchors incl catalytic T15/T94/D95): structure perfect
+  all alleles (scTM 0.988, 7-anchor sc-RMSD 0.42–0.44Å). Immune allele-dependent — **0401 −73% (243/256
+  viable), 1501 −18% (170), 0701 +132% regressed (40)**.
+- **Method finding**: B1Aopen de-immunizes cleanly only when WT has real immune burden + is an enzyme;
+  on already-low-immune WT (mCherry, NanoLuc, PrASNase-0701) NMP regresses (head always drops, NMP only
+  improves with burden). Screen WT immunogenicity before designing.
+- **Known bug (workaround applied, code unfixed)**: af3 refold normalizer writes `.plddt` sidecar as
+  all-atom mean but `evaluate_phase_c` v2 check expects CA/per-residue mean → af3 struct-eval fails closed
+  (`read_mean_plddt_af3` / `_validate_v2_prediction_plddt`). Worked around by rewriting cache sidecars to
+  CA-mean; proper fix belongs in the normalizer or check tolerance.
+- **Return (Mac)**: `mhc-if-local:/Users/jerry/Project/MHC-IF/Results/RF/backup/backup_20260713/`
+  (collection + per-run gen/imm/struct + WT baselines + `RESULTS_SUMMARY.md`).
 
 ## Data Inventory
 

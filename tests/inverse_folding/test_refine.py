@@ -126,6 +126,55 @@ def test_structure_gate_enforces_scTM_floor():
     assert ok is True and bad is False and "scTM" in reason
 
 
+def test_structure_gate_sidechain_max_is_fail_closed():
+    seed = StructureMetrics(scTM=0.90, pLDDT=90.0)
+    good = StructureMetrics(
+        scTM=0.90,
+        pLDDT=88.0,
+        max_anchor_sidechain_RMSD=1.2,
+        active_site_complete=True,
+    )
+    bad = StructureMetrics(
+        scTM=0.90,
+        pLDDT=88.0,
+        max_anchor_sidechain_RMSD=1.8,
+        active_site_complete=True,
+    )
+    missing = StructureMetrics(scTM=0.90, pLDDT=88.0)
+
+    assert structure_gate(
+        seed,
+        good,
+        scTM_eps=0.05,
+        max_anchor_sidechain_RMSD_max=1.5,
+    ) == (True, "ok")
+    passed, reason = structure_gate(
+        seed,
+        bad,
+        scTM_eps=0.05,
+        max_anchor_sidechain_RMSD_max=1.5,
+    )
+    assert passed is False and "max_anchor_sidechain_RMSD" in reason
+    passed, reason = structure_gate(
+        seed,
+        missing,
+        scTM_eps=0.05,
+        max_anchor_sidechain_RMSD_max=1.5,
+    )
+    assert passed is False and "unavailable" in reason
+
+
+def test_legacy_active_site_gate_missing_value_is_fail_closed():
+    seed = StructureMetrics(scTM=0.90, pLDDT=90.0)
+    passed, reason = structure_gate(
+        seed,
+        StructureMetrics(scTM=0.90, pLDDT=88.0),
+        scTM_eps=0.05,
+        active_site_RMSD_max=2.0,
+    )
+    assert passed is False and "unavailable" in reason
+
+
 def test_accept_requires_count_drop_and_structure_pass():
     assert accept_refinement(seed_core_count=3, cand_core_count=2, structure_passed=True) is True
     assert accept_refinement(seed_core_count=3, cand_core_count=3, structure_passed=True) is False

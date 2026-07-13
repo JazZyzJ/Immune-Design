@@ -41,13 +41,15 @@ fusion:
       local_remask: false
 
   structure:
-    backend: esmfold
+    backend: esmfold2_live
     surrogate_mode: none                   # v0: no cheap surrogate (neutral factor)
     scTM_min: 0.85                         # calibration gate (engineering placeholder)
-    active_site_RMSD_max: 2.0              # active_site_spatial_shell6A_ca_rmsd ceiling (calibration gate)
-    active_site_shell_radius: 6.0
+    active_site_metric: sidechain_max_anchor
+    max_anchor_sidechain_RMSD_max: 2.0      # worst full-side-chain anchor RMSD (calibration gate)
+    active_site_RMSD_max: null              # legacy C-alpha shell mode only
+    active_site_shell_radius: 6.0           # legacy C-alpha shell mode only
     scRMSD_max: null                       # optional (TMalign rmsd) — telemetry only here
-    cache_dir: structure_cache             # provenance only; the driver uses --esmfold-cache-dir
+    cache_dir: structure_cache             # provenance only; the driver uses --refold-cache-dir
     max_refolds_per_parent: 8              # jointly calibrated with N / n_rounds vs the §1.8 bound
 
   selection:

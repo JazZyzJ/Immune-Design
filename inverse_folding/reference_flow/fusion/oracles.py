@@ -5,7 +5,7 @@ Real Head/structure wiring lives in the driver (F8); this module is torch-free a
 only the contracts + the deterministic feasibility logic that the evaluator (F4) consumes.
 
 - ``head_fn(protein_id, sequences) -> list[HeadScore]`` (parallel to input; caller dedups)
-- ``struct_fn(protein_id, sequence) -> StructureMetrics`` (ESMFold refold + TMalign + shell RMSD)
+- ``struct_fn(protein_id, sequence) -> StructureMetrics`` (ESMFold refold + selected geometry)
 """
 from __future__ import annotations
 
@@ -62,9 +62,9 @@ class StructureCache:
 def structure_feasible(metrics, config: "FusionConfig", *, has_active_site: bool) -> tuple[bool, str]:
     """Absolute target-backbone gate (§1.4). NOT the refiner's seed-relative gate.
 
-    scTM floor is always enforced. The active-site shell gate is enforced only when the
-    protein carries anchors AND ``active_site_RMSD_max`` is configured — and then a missing
-    value fails closed (never a silent pass). A no-anchor protein skips the shell gate (N/A).
+    scTM floor is always enforced. An anchored protein uses exactly the configured
+    active-site metric: the legacy C-alpha shell or the all-heavy-side-chain maximum across
+    anchors. Missing/incomplete values fail closed. A no-anchor protein skips this gate (N/A).
     """
     st = config.structure
     scTM = getattr(metrics, "scTM", None)
@@ -73,13 +73,35 @@ def structure_feasible(metrics, config: "FusionConfig", *, has_active_site: bool
     if float(scTM) < st.scTM_min:
         return False, f"scTM {scTM} < scTM_min {st.scTM_min}"
     if has_active_site:
-        if st.active_site_RMSD_max is None:  # anchored protein MUST have a configured ceiling
-            return False, "anchored protein but active_site_RMSD_max not configured (fail closed)"
-        asr = getattr(metrics, "active_site_RMSD", None)
-        if not _finite(asr):
-            return False, f"active_site_RMSD unavailable/not finite on anchored protein: {asr}"
-        if float(asr) > st.active_site_RMSD_max:
-            return False, f"active_site_RMSD {asr} > {st.active_site_RMSD_max}"
+        if st.active_site_metric == "legacy_ca_shell":
+            if st.active_site_RMSD_max is None:
+                return False, (
+                    "anchored protein but active_site_RMSD_max not configured (fail closed)"
+                )
+            asr = getattr(metrics, "active_site_RMSD", None)
+            if not _finite(asr):
+                return False, (
+                    "active_site_RMSD unavailable/not finite on anchored protein: "
+                    f"{asr}"
+                )
+            if float(asr) > st.active_site_RMSD_max:
+                return False, f"active_site_RMSD {asr} > {st.active_site_RMSD_max}"
+        elif st.active_site_metric == "sidechain_max_anchor":
+            if getattr(metrics, "active_site_complete", None) is not True:
+                return False, "side-chain active-site metrics incomplete"
+            sidechain_rmsd = getattr(metrics, "max_anchor_sidechain_RMSD", None)
+            if not _finite(sidechain_rmsd):
+                return False, (
+                    "max_anchor_sidechain_RMSD unavailable/not finite on anchored protein: "
+                    f"{sidechain_rmsd}"
+                )
+            if float(sidechain_rmsd) > st.max_anchor_sidechain_RMSD_max:
+                return False, (
+                    f"max_anchor_sidechain_RMSD {sidechain_rmsd} > "
+                    f"{st.max_anchor_sidechain_RMSD_max}"
+                )
+        else:  # config loader prevents this; retain a fail-closed runtime boundary.
+            return False, f"unknown active_site_metric: {st.active_site_metric}"
     if st.scRMSD_max is not None:
         scr = getattr(metrics, "scRMSD", None)
         if not _finite(scr):

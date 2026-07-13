@@ -8,7 +8,7 @@ Usage:
     python scripts/prescreen_uricases.py \
         --input-fasta data/filtered_uricases.fasta \
         --cath-train-fasta work/immune-design/cath_4.3/chain_set.jsonl \
-        --epitope-ckpt run/epitope_head/LC1_lite_aug/best.pt \
+        --epitope-ckpt run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt \
         --netmhciipan-bin /path/to/netMHCIIpan \
         --output-dir outputs/if/test_set/uricase_prescreen/ \
         [--allele HLA-DRB1*07:01] \

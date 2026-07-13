@@ -7,8 +7,8 @@ with per-protein atomic checkpointing and deterministic resume. Runtime immune s
 Head-only — NetMHCIIpan / StandaloneRunner are never imported (§0.3(1)).
 
 The orchestration (`run_fusion`) + artifact writers are oracle-agnostic and unit-tested with
-fake oracles. `build_oracles` wires the real Head / ESMFold+TMalign+shell-RMSD / DPLM-repair
-oracles (torch; interfaces verified against source — the end-to-end run is pending
+fake oracles. `build_oracles` wires the real Head / configured refold backend + TMalign +
+selected geometry / DPLM-repair oracles (torch; interfaces verified against source — the end-to-end run is pending
 cluster validation, S0-S2, not yet executed).
 """
 from __future__ import annotations
@@ -33,17 +33,31 @@ from inverse_folding.reference_flow.fusion.config import load_fusion_config  # n
 _CANDIDATE_COLS = ["protein_id", "parent_particle_id", "proposal_id", "move_family", "sequence",
                    "sequence_md5", "edited_positions", "target_start_0b", "target_end_0b",
                    "halo_start_0b", "halo_end_0b", "head_global_risk", "local_target_delta",
-                   "new_hotspot_max", "new_hotspot_mass", "new_hotspot_count", "scTM",
-                   "active_site_RMSD", "scRMSD", "structure_evaluated", "feasible", "reason",
+                   "new_hotspot_max", "new_hotspot_mass", "new_hotspot_count", "scTM", "pLDDT",
+                   "global_ca_RMSD", "active_site_RMSD", "active_site_sidechain_RMSD",
+                   "max_anchor_sidechain_RMSD", "max_anchor_atom_distance",
+                   "active_site_complete", "active_site_min_pLDDT", "scRMSD",
+                   "structure_evaluated", "feasible", "reason",
                    "ancestry_eligible", "selection_count", "aligned_windows"]
 _PARTICLE_COLS = ["protein_id", "round_idx", "slot_idx", "particle_id", "parent_particle_id",
                   "source_proposal_id", "sequence", "sequence_md5", "weight", "head_global_risk",
-                  "scTM", "active_site_RMSD", "feasible", "is_elite"]
+                  "scTM", "pLDDT", "global_ca_RMSD", "active_site_RMSD",
+                  "active_site_sidechain_RMSD", "max_anchor_sidechain_RMSD",
+                  "max_anchor_atom_distance", "active_site_complete", "active_site_min_pLDDT",
+                  "feasible", "is_elite"]
 _LINEAGE_COLS = ["protein_id", "parent_particle_id", "child_particle_id", "round_idx",
                  "proposal_id", "selector", "multiplicity"]
 _ELITE_COLS = ["protein_id", "initial_sequence", "initial_head_global_risk", "initial_scTM",
-               "initial_active_site_RMSD", "final_sequence", "final_head_global_risk", "final_scTM",
-               "final_active_site_RMSD", "improvement", "n_rounds", "elite_particle_id",
+               "initial_pLDDT", "initial_global_ca_RMSD", "initial_active_site_RMSD",
+               "initial_active_site_sidechain_RMSD", "initial_max_anchor_sidechain_RMSD",
+               "initial_max_anchor_atom_distance", "initial_active_site_complete",
+               "initial_active_site_min_pLDDT",
+               "final_sequence", "final_head_global_risk", "final_scTM", "final_pLDDT",
+               "final_global_ca_RMSD", "final_active_site_RMSD",
+               "final_active_site_sidechain_RMSD", "final_max_anchor_sidechain_RMSD",
+               "final_max_anchor_atom_distance", "final_active_site_complete",
+               "final_active_site_min_pLDDT",
+               "improvement", "n_rounds", "elite_particle_id",
                "source_parent_particle_id", "source_proposal_id"]
 _FAILURE_COLS = ["protein_id", "reason", "message", "last_completed_round"]
 
@@ -72,7 +86,14 @@ def candidate_rows(result, selection_counts=None):
             "head_global_risk": e.head_global_risk, "local_target_delta": e.local_target_delta,
             "new_hotspot_max": e.new_hotspot_max, "new_hotspot_mass": e.new_hotspot_mass,
             "new_hotspot_count": e.new_hotspot_count,
-            "scTM": _sm(e.structure, "scTM"), "active_site_RMSD": _sm(e.structure, "active_site_RMSD"),
+            "scTM": _sm(e.structure, "scTM"), "pLDDT": _sm(e.structure, "pLDDT"),
+            "global_ca_RMSD": _sm(e.structure, "global_ca_RMSD"),
+            "active_site_RMSD": _sm(e.structure, "active_site_RMSD"),
+            "active_site_sidechain_RMSD": _sm(e.structure, "active_site_sidechain_RMSD"),
+            "max_anchor_sidechain_RMSD": _sm(e.structure, "max_anchor_sidechain_RMSD"),
+            "max_anchor_atom_distance": _sm(e.structure, "max_anchor_atom_distance"),
+            "active_site_complete": _sm(e.structure, "active_site_complete"),
+            "active_site_min_pLDDT": _sm(e.structure, "active_site_min_pLDDT"),
             "scRMSD": _sm(e.structure, "scRMSD"),
             "structure_evaluated": e.structure_evaluated, "feasible": e.feasible, "reason": e.reason,
             "ancestry_eligible": e.feasible,
@@ -93,7 +114,14 @@ def particle_rows(result):
                 "source_proposal_id": p.source_proposal_id, "sequence": p.sequence,
                 "sequence_md5": p.sequence_md5, "weight": p.weight,
                 "head_global_risk": p.head_global_risk,
-                "scTM": _sm(p.structure, "scTM"), "active_site_RMSD": _sm(p.structure, "active_site_RMSD"),
+                "scTM": _sm(p.structure, "scTM"), "pLDDT": _sm(p.structure, "pLDDT"),
+                "global_ca_RMSD": _sm(p.structure, "global_ca_RMSD"),
+                "active_site_RMSD": _sm(p.structure, "active_site_RMSD"),
+                "active_site_sidechain_RMSD": _sm(p.structure, "active_site_sidechain_RMSD"),
+                "max_anchor_sidechain_RMSD": _sm(p.structure, "max_anchor_sidechain_RMSD"),
+                "max_anchor_atom_distance": _sm(p.structure, "max_anchor_atom_distance"),
+                "active_site_complete": _sm(p.structure, "active_site_complete"),
+                "active_site_min_pLDDT": _sm(p.structure, "active_site_min_pLDDT"),
                 "feasible": p.feasible, "is_elite": p.sequence_md5 == elite_md5,
             })
     return rows
@@ -117,10 +145,24 @@ def elite_row(result):
     return {"protein_id": result.protein_id,
             "initial_sequence": init.sequence, "initial_head_global_risk": init.head_global_risk,
             "initial_scTM": _sm(init.structure, "scTM"),
+            "initial_pLDDT": _sm(init.structure, "pLDDT"),
+            "initial_global_ca_RMSD": _sm(init.structure, "global_ca_RMSD"),
             "initial_active_site_RMSD": _sm(init.structure, "active_site_RMSD"),
+            "initial_active_site_sidechain_RMSD": _sm(init.structure, "active_site_sidechain_RMSD"),
+            "initial_max_anchor_sidechain_RMSD": _sm(init.structure, "max_anchor_sidechain_RMSD"),
+            "initial_max_anchor_atom_distance": _sm(init.structure, "max_anchor_atom_distance"),
+            "initial_active_site_complete": _sm(init.structure, "active_site_complete"),
+            "initial_active_site_min_pLDDT": _sm(init.structure, "active_site_min_pLDDT"),
             "final_sequence": e.sequence, "final_head_global_risk": e.head_global_risk,
             "final_scTM": _sm(e.structure, "scTM"),
+            "final_pLDDT": _sm(e.structure, "pLDDT"),
+            "final_global_ca_RMSD": _sm(e.structure, "global_ca_RMSD"),
             "final_active_site_RMSD": _sm(e.structure, "active_site_RMSD"),
+            "final_active_site_sidechain_RMSD": _sm(e.structure, "active_site_sidechain_RMSD"),
+            "final_max_anchor_sidechain_RMSD": _sm(e.structure, "max_anchor_sidechain_RMSD"),
+            "final_max_anchor_atom_distance": _sm(e.structure, "max_anchor_atom_distance"),
+            "final_active_site_complete": _sm(e.structure, "active_site_complete"),
+            "final_active_site_min_pLDDT": _sm(e.structure, "active_site_min_pLDDT"),
             "improvement": init.head_global_risk - e.head_global_risk, "n_rounds": len(result.rounds),
             # provenance: the elite id is the distinct ARCHIVE scheme; trace via source parent/proposal
             "elite_particle_id": e.particle_id, "source_parent_particle_id": e.parent_particle_id,
@@ -192,6 +234,13 @@ def _input_signature(args) -> str:
         _path_fingerprint(getattr(args, "rf_sampler_config", None)),
         _path_fingerprint(getattr(args, "test_set_parquet", None)),
         str(getattr(args, "pdb_root", "")),
+        str(getattr(args, "_refold_backend", "")),
+        _path_fingerprint(getattr(args, "esmfold2_site_packages", None)),
+        str(getattr(args, "esmfold2_model", "")),
+        str(getattr(args, "esmfold2_num_loops", "")),
+        str(getattr(args, "esmfold2_num_sampling_steps", "")),
+        str(getattr(args, "esmfold2_num_diffusion_samples", "")),
+        str(getattr(args, "esmfold2_seed", "")),
     ]
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
@@ -212,7 +261,19 @@ def _provenance(args) -> dict:
         "rf_sampler_config": _path_fingerprint(getattr(args, "rf_sampler_config", None)),
         "test_set_parquet": _path_fingerprint(getattr(args, "test_set_parquet", None)),
         "pdb_root": str(getattr(args, "pdb_root", "")),
-        "esmfold_backend": "esmfold",
+        "refold_backend": str(getattr(args, "_refold_backend", "esmfold")),
+        "refold_cache_dir": str(getattr(args, "refold_cache_dir", "")),
+        "esmfold2_site_packages": _path_fingerprint(
+            getattr(args, "esmfold2_site_packages", None)
+        ),
+        "esmfold2_model": str(getattr(args, "esmfold2_model", "")),
+        "esmfold2_num_loops": getattr(args, "esmfold2_num_loops", None),
+        "esmfold2_num_sampling_steps": getattr(args, "esmfold2_num_sampling_steps", None),
+        "esmfold2_num_diffusion_samples": getattr(
+            args, "esmfold2_num_diffusion_samples", None
+        ),
+        "esmfold2_seed": getattr(args, "esmfold2_seed", None),
+        "refold_runtime": getattr(args, "_refold_runtime", None),
     }
 
 
@@ -342,17 +403,13 @@ def _require(path, what):
 
 def build_oracles(args, config):
     """Wire the real Head / structure / DPLM-repair oracles. NetMHCIIpan is never imported."""
-    import numpy as np
-
     from inverse_folding.evaluation.refold import load_refold_model, refold
     from inverse_folding.evaluation.tmalign import run_tmalign
     from inverse_folding.reference_flow.constraints import load_constraint_manifest
-    from inverse_folding.reference_flow.fusion import structure_metrics as sm
     from inverse_folding.reference_flow.runtime import resolve_structure_path
-    from inverse_folding.evaluation.sc_rmsd import compute_ca_self_consistency, parse_ca_trace
 
     _require(args.head_checkpoint, "--head-checkpoint")
-    _require(args.esmfold_cache_dir, "--esmfold-cache-dir")
+    _require(args.refold_cache_dir, "--refold-cache-dir")
     _require(args.test_set_parquet, "--test-set-parquet")
     _require(args.pdb_root, "--pdb-root")
 
@@ -365,39 +422,140 @@ def build_oracles(args, config):
         batch = scorer.score_batch_same_protein(protein_id=protein_id, records=records)
         return list(batch.scores)
 
-    # Structure: ESMFold refold + TMalign(scTM, scRMSD) + active-site shell RMSD.
-    model = load_refold_model("esmfold", device=args.head_device)
+    # Structure: TMalign provides scTM; active-site geometry is selected explicitly by config.
+    backend = config.structure.backend
+    backend_options = {}
+    if backend == "esmfold2_live":
+        backend_options = {
+            "site_packages": _require(
+                args.esmfold2_site_packages, "--esmfold2-site-packages"
+            ),
+            "model_name": args.esmfold2_model,
+            "num_loops": args.esmfold2_num_loops,
+            "num_sampling_steps": args.esmfold2_num_sampling_steps,
+            "num_diffusion_samples": args.esmfold2_num_diffusion_samples,
+            "seed": args.esmfold2_seed,
+        }
+    model = load_refold_model(backend, device=args.head_device, **backend_options)
+    args._refold_backend = backend
+    args._refold_runtime = getattr(model, "metadata", None)
     test_df = pd.read_parquet(args.test_set_parquet)
     test_lookup = {str(r["protein_id"]): r for _, r in test_df.iterrows()}
     manifest = load_constraint_manifest(args.constraint_manifest) if args.constraint_manifest else None
-    shell_cache: dict = {}
+    ref_path_cache: dict[str, Path] = {}
 
-    def _shell_indices(pid, ref_pdb, anchor_idx):
-        if pid not in shell_cache:
-            ca = parse_ca_trace(ref_pdb)                       # list[CaResidue], .coord is (3,) ndarray
-            coords = np.vstack([res.coord for res in ca]).astype(float)
-            shell_cache[pid] = sm.shell_indices_from_ca(
-                coords, anchor_idx, config.structure.active_site_shell_radius)
-        return shell_cache[pid]
+    def _reference_path(pid: str) -> Path:
+        if pid not in test_lookup:
+            raise KeyError(f"protein {pid!r} is absent from --test-set-parquet")
+        if pid not in ref_path_cache:
+            ref_path_cache[pid] = Path(resolve_structure_path(test_lookup[pid], args.pdb_root))
+        return ref_path_cache[pid]
+
+    shell_indices_fn = None
+    compute_ca_self_consistency_fn = None
+    reference_context_fn = None
+    evaluate_prediction_fn = None
+    v2_metric_names = None
+    if config.structure.active_site_metric == "legacy_ca_shell":
+        import numpy as np
+
+        from inverse_folding.evaluation.sc_rmsd import (
+            compute_ca_self_consistency as compute_ca_self_consistency_fn,
+            parse_ca_trace,
+        )
+        from inverse_folding.reference_flow.fusion import structure_metrics as sm
+
+        shell_cache: dict[str, frozenset[int]] = {}
+
+        def shell_indices_fn(pid, ref_pdb, anchor_idx):
+            if pid not in shell_cache:
+                ca = parse_ca_trace(ref_pdb)
+                coords = np.vstack([res.coord for res in ca]).astype(float)
+                shell_cache[pid] = sm.shell_indices_from_ca(
+                    coords,
+                    anchor_idx,
+                    config.structure.active_site_shell_radius,
+                )
+            return shell_cache[pid]
+    else:
+        from inverse_folding.evaluation.structural_metrics_v2 import (
+            METRIC_GLOBAL_CA_RMSD,
+            METRIC_PLDDT,
+            METRIC_SIDECHAIN,
+            evaluate_prediction as evaluate_prediction_fn,
+            prepare_reference_context,
+        )
+
+        reference_context_cache: dict[str, object] = {}
+        v2_metric_names = {
+            METRIC_GLOBAL_CA_RMSD,
+            METRIC_PLDDT,
+            METRIC_SIDECHAIN,
+        }
+
+        def reference_context_fn(pid: str):
+            if pid not in reference_context_cache:
+                ref_sequence = str(test_lookup[pid]["sequence"])
+                if manifest is not None and manifest.has_protein(pid):
+                    manifest.constraint_for_protein(pid).validate_against_sequence(ref_sequence)
+                reference_context_cache[pid] = prepare_reference_context(
+                    _reference_path(pid),
+                    ref_sequence=ref_sequence,
+                    anchor_indices=_anchor_indices(manifest, pid),
+                )
+            return reference_context_cache[pid]
 
     from inverse_folding.reference_flow.refine import StructureMetrics
 
     def struct_fn(protein_id, sequence):
-        pred = refold(sequence, protein_id, "fusion", backend="esmfold",
-                      cache_dir=args.esmfold_cache_dir, model=model)
-        ref = resolve_structure_path(test_lookup[protein_id], args.pdb_root)
+        pred = refold(sequence, protein_id, "fusion", backend=backend,
+                      cache_dir=args.refold_cache_dir, model=model)
+        ref = _reference_path(protein_id)
         tm = run_tmalign(pred_pdb=str(pred["pdb_path"]), ref_pdb=str(ref), cache_dir=None)
         asr = None
+        v2 = None
         anchor_idx = _anchor_indices(manifest, protein_id)
-        if anchor_idx:
-            shell = _shell_indices(protein_id, str(ref), anchor_idx)
-            _scr, per_res = compute_ca_self_consistency(
-                pred_pdb=str(pred["pdb_path"]), ref_pdb=str(ref), protein_id=protein_id,
-                design_id="fusion", design_idx=0, design_sequence=sequence,
-                ref_sequence=str(test_lookup[protein_id]["sequence"]), refold_backend="esmfold")
-            asr = sm.shell_rmsd_from_rows(per_res, shell)
-        return StructureMetrics(scTM=float(tm["tm_score"]), pLDDT=float(pred["pLDDT"]),
-                                scRMSD=float(tm["rmsd"]), active_site_RMSD=asr)
+        if config.structure.active_site_metric == "legacy_ca_shell":
+            if anchor_idx:
+                shell = shell_indices_fn(protein_id, str(ref), anchor_idx)
+                _scr, per_res = compute_ca_self_consistency_fn(
+                    pred_pdb=str(pred["pdb_path"]), ref_pdb=str(ref), protein_id=protein_id,
+                    design_id="fusion", design_idx=0, design_sequence=sequence,
+                    ref_sequence=str(test_lookup[protein_id]["sequence"]),
+                    refold_backend=backend)
+                asr = sm.shell_rmsd_from_rows(per_res, shell)
+        else:
+            v2 = evaluate_prediction_fn(
+                reference_context_fn(protein_id),
+                str(pred["pdb_path"]),
+                design_sequence=sequence,
+                metrics=v2_metric_names,
+            )
+        plddt = (
+            v2.predicted_global_plddt
+            if v2 is not None and v2.predicted_global_plddt is not None
+            else float(pred["pLDDT"])
+        )
+        return StructureMetrics(
+            scTM=float(tm["tm_score"]),
+            pLDDT=float(plddt),
+            scRMSD=float(tm["rmsd"]),
+            active_site_RMSD=asr,
+            global_ca_RMSD=None if v2 is None else v2.global_ca_rmsd,
+            active_site_sidechain_RMSD=(
+                None if v2 is None else v2.active_site_sidechain_rmsd
+            ),
+            max_anchor_sidechain_RMSD=(
+                None if v2 is None else v2.max_anchor_sidechain_rmsd
+            ),
+            max_anchor_atom_distance=(
+                None if v2 is None else v2.max_anchor_atom_distance
+            ),
+            active_site_complete=None if v2 is None else v2.active_site_complete,
+            active_site_min_pLDDT=(
+                None if v2 is None else v2.predicted_active_site_min_plddt
+            ),
+        )
 
     from inverse_folding.reference_flow.fusion.oracles import FusionOracles
     return FusionOracles(head_fn=head_fn, struct_fn=struct_fn), manifest
@@ -504,7 +662,23 @@ def build_arg_parser():
     p.add_argument("--allele", required=True)
     p.add_argument("--test-set-parquet", default=None)
     p.add_argument("--pdb-root", default=None)
-    p.add_argument("--esmfold-cache-dir", default=None)
+    p.add_argument(
+        "--refold-cache-dir",
+        "--esmfold-cache-dir",
+        dest="refold_cache_dir",
+        default=None,
+        help="shared structure cache; --esmfold-cache-dir is a deprecated alias",
+    )
+    p.add_argument(
+        "--esmfold2-site-packages",
+        default=None,
+        help="Biohub esm/transformers site-packages overlay for backend=esmfold2_live",
+    )
+    p.add_argument("--esmfold2-model", default="biohub/ESMFold2")
+    p.add_argument("--esmfold2-num-loops", type=int, default=3)
+    p.add_argument("--esmfold2-num-sampling-steps", type=int, default=50)
+    p.add_argument("--esmfold2-num-diffusion-samples", type=int, default=1)
+    p.add_argument("--esmfold2-seed", type=int, default=0)
     p.add_argument("--constraint-manifest", default=None)
     # required only when rf_reopen / edit-repair is enabled (the H3 arm)
     p.add_argument("--base-if-checkpoint", default=None, help="base IF checkpoint for the DPLM repair sampler")

@@ -7,6 +7,7 @@ callables, so this module is unit-testable without them.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from typing import Iterable
 
@@ -151,7 +152,13 @@ class StructureMetrics:
     scTM: float
     pLDDT: float
     scRMSD: float | None = None            # populated when wired; None in v0
-    active_site_RMSD: float | None = None  # populated when the active-site gate is wired
+    active_site_RMSD: float | None = None  # legacy C-alpha active-site compatibility field
+    global_ca_RMSD: float | None = None
+    active_site_sidechain_RMSD: float | None = None
+    max_anchor_sidechain_RMSD: float | None = None
+    max_anchor_atom_distance: float | None = None
+    active_site_complete: bool | None = None
+    active_site_min_pLDDT: float | None = None
     passed: bool = True                    # set by structure_gate, relative to the seed
     reason: str = ""
 
@@ -165,17 +172,39 @@ def rank_margin_mass(core_ranks, *, strong_rank: float = 0.02, margin_band: floa
 
 def structure_gate(seed: "StructureMetrics", cand: "StructureMetrics", *, scTM_eps: float,
                    scRMSD_max: float | None = None,
-                   active_site_RMSD_max: float | None = None) -> tuple[bool, str]:
-    """Verdict for a candidate fold vs the seed design. v0 enforces the scTM floor
-    (scTM ≥ seed.scTM − scTM_eps); the scRMSD / active-site-RMSD ceilings activate only when
-    their thresholds are passed (None in v0). Returns (passed, reason)."""
+                   active_site_RMSD_max: float | None = None,
+                   max_anchor_sidechain_RMSD_max: float | None = None) -> tuple[bool, str]:
+    """Verdict for a candidate fold vs the seed design.
+
+    The side-chain maximum is the current active-site contract. Legacy ceilings remain in
+    this pure API for old callers, but every configured value is now fail-closed.
+    """
     if cand.scTM < seed.scTM - scTM_eps:
         return False, f"scTM {cand.scTM:.3f} < {seed.scTM - scTM_eps:.3f}"
-    if scRMSD_max is not None and cand.scRMSD is not None and cand.scRMSD > scRMSD_max:
-        return False, f"scRMSD {cand.scRMSD:.2f} > {scRMSD_max}"
-    if (active_site_RMSD_max is not None and cand.active_site_RMSD is not None
-            and cand.active_site_RMSD > active_site_RMSD_max):
-        return False, f"active_site_RMSD {cand.active_site_RMSD:.2f} > {active_site_RMSD_max}"
+    if scRMSD_max is not None:
+        if cand.scRMSD is None or not math.isfinite(float(cand.scRMSD)):
+            return False, f"scRMSD unavailable/not finite: {cand.scRMSD}"
+        if cand.scRMSD > scRMSD_max:
+            return False, f"scRMSD {cand.scRMSD:.2f} > {scRMSD_max}"
+    if active_site_RMSD_max is not None:
+        if cand.active_site_RMSD is None or not math.isfinite(float(cand.active_site_RMSD)):
+            return False, f"active_site_RMSD unavailable/not finite: {cand.active_site_RMSD}"
+        if cand.active_site_RMSD > active_site_RMSD_max:
+            return False, f"active_site_RMSD {cand.active_site_RMSD:.2f} > {active_site_RMSD_max}"
+    if max_anchor_sidechain_RMSD_max is not None:
+        if cand.active_site_complete is not True:
+            return False, (
+                "max_anchor_sidechain_RMSD unavailable: side-chain active-site metrics "
+                "incomplete"
+            )
+        value = cand.max_anchor_sidechain_RMSD
+        if value is None or not math.isfinite(float(value)):
+            return False, f"max_anchor_sidechain_RMSD unavailable/not finite: {value}"
+        if value > max_anchor_sidechain_RMSD_max:
+            return False, (
+                f"max_anchor_sidechain_RMSD {value:.2f} > "
+                f"{max_anchor_sidechain_RMSD_max}"
+            )
     return True, "ok"
 
 
@@ -197,7 +226,7 @@ class RefineResult:
     best_structure: "StructureMetrics"
     n_accepts: int
     diverged: bool
-    shortlist: list = field(default_factory=list)    # dicts: seq, core_count, scTM, pLDDT, scRMSD, active_site_RMSD, muts
+    shortlist: list = field(default_factory=list)    # per-output immune + selected structure metrics
     trace: list = field(default_factory=list)
 
 
@@ -286,6 +315,7 @@ def _incremental_nmp_rows(protein_id, seed_seq, seed_rows, cand_seqs, nmp_fn, *,
 def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct_fn, anchors,
                     target_window_idx_fn=None, strong_rank=0.02, margin_band=0.10,
                     scTM_eps=0.05, scRMSD_max=None, active_site_RMSD_max=None,
+                    max_anchor_sidechain_RMSD_max=None,
                     topB=None, beam_width=8, max_rounds=20, patience=3,
                     max_path_mutations=8, refold_cap=16, allow_structure_unknown=False,
                     incremental_nmp=False, nmp_context_margin=30, log_fn=None):
@@ -392,7 +422,10 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
             metrics = struct_fn(protein_id, c.seq); n_refold += 1
             passed, reason = structure_gate(seed_metrics, metrics, scTM_eps=scTM_eps,
                                             scRMSD_max=scRMSD_max,
-                                            active_site_RMSD_max=active_site_RMSD_max)
+                                            active_site_RMSD_max=active_site_RMSD_max,
+                                            max_anchor_sidechain_RMSD_max=(
+                                                max_anchor_sidechain_RMSD_max
+                                            ))
             t_refold += time.time() - tr
             metrics = replace(metrics, passed=passed, reason=reason)
             if not (passed or allow_structure_unknown):
@@ -401,7 +434,14 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
             beam_admits.append(state)
             shortlist.append({"seq": c.seq, "core_count": state["count"], "scTM": metrics.scTM,
                               "pLDDT": metrics.pLDDT, "scRMSD": metrics.scRMSD,
-                              "active_site_RMSD": metrics.active_site_RMSD, "muts": c.desc})
+                              "active_site_RMSD": metrics.active_site_RMSD,
+                              "global_ca_RMSD": metrics.global_ca_RMSD,
+                              "active_site_sidechain_RMSD": metrics.active_site_sidechain_RMSD,
+                              "max_anchor_sidechain_RMSD": metrics.max_anchor_sidechain_RMSD,
+                              "max_anchor_atom_distance": metrics.max_anchor_atom_distance,
+                              "active_site_complete": metrics.active_site_complete,
+                              "active_site_min_pLDDT": metrics.active_site_min_pLDDT,
+                              "muts": c.desc})
             if state["count"] < best["count"]:
                 best = {"seq": c.seq, "count": state["count"], "structure": metrics}
         beam = sorted(beam + beam_admits, key=lambda s: (s["count"], s["margin"]))[:beam_width]

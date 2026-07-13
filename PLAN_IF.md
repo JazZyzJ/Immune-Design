@@ -259,7 +259,7 @@
 - Prevent metric drift or hidden dataset leakage before curation starts.
 
 **Actions**
-1. Freeze required structural metrics: `scTM`, `pLDDT`, `bb_RMSD`, `recovery`, `foldability`.
+1. Freeze required structural metrics: `scTM`, one global full-trace `global_ca_RMSD`, predicted/reference pLDDT, exact all-heavy-side-chain active-site geometry/completeness, `recovery`, and `foldability`.
 2. Freeze required sequence metrics: `diversity`, `mutation_count`.
 3. Freeze required immunogenicity metrics:
    - epitope-head global risk and hotspot summaries
@@ -727,7 +727,7 @@ See `doc/Reference_Flow_Derivation.md §6`.
 - Run-control: `--output-root`, `--run-id` (auto-generated if omitted), `--overwrite`, `--progress-every` (default 25), `--fail-pct-threshold` (default 0.05).
 
 **Run ID convention**
-- Auto-generated form: `eval_<modes>_<refold>_<allele_tag>_<UTC stamp>` — e.g. `eval_all_esmfold_DRB1_07_01_20260424T080000Z`.
+- Auto-generated form: `eval_<modes>_<refold>_<allele_tag>_<UTC stamp>` — e.g. `eval_all_esmfold2_DRB1_07_01_20260424T080000Z`.
 - Naming is self-identifying so runs against different generation sources / different refold backends do not collide silently. `--run-id` overrides; non-empty `run_dir` refused unless `--overwrite`.
 
 **Outputs** (all schema-aligned to `inverse_folding/evaluation/schema.py`)
@@ -738,8 +738,8 @@ See `doc/Reference_Flow_Derivation.md §6`.
 |------|---------|--------|
 | `imm_head.parquet` | `protein_id, design_id, design_idx, global_risk, mean_hotspot, max_hotspot, n_hotspot_positions` | `IMMUNOGENICITY_HEAD_COLUMNS` (+ `design_idx` for join back) |
 | `imm_nmp.parquet` | `protein_id, design_id, design_idx, n_strong_binders, n_weak_binders, mean_best_rank, n_windows_scored` | `IMMUNOGENICITY_NMP_COLUMNS` |
-| `structural.parquet` | `protein_id, design_id, design_idx, sequence, scTM, pLDDT, bb_RMSD, scRMSD, recovery, foldability, refold_backend` | `STRUCTURAL_METRICS_COLUMNS` (+ `design_idx`, + `refold_backend`, + aggregate C-alpha self-consistency RMSD) |
-| `structural_residues.parquet` | `protein_id, design_id, design_idx, residue_idx, residue_idx_1based, ref_chain_id, ref_resseq, ref_icode, ref_aa, design_aa, sc_ca_distance, ref_ca_*, pred_ca_*, aligned_pred_ca_*, refold_backend` | Residue-level C-alpha self-consistency table; RMSD for any index set = `sqrt(mean(sc_ca_distance ** 2))` after full-trace superposition |
+| `structural.parquet` | identity keys + sequence, scTM, one global C-alpha RMSD, predicted/reference global and active-site pLDDT, active-site side-chain aggregates/completeness, recovery, foldability, backend | Canonical `STRUCTURAL_COLUMNS` (v2); defaults to ESMFold2 cache-read predictions |
+| `structural_residues.parquet` | identity/index keys + exact side-chain atom counts, squared-error sum, per-residue side-chain RMSD/max distance, pLDDT, match/completeness status | Canonical `STRUCTURAL_RESIDUE_COLUMNS` (v2); arbitrary index-set RMSD = `sqrt(sum(sidechain_sq_error_sum) / sum(sidechain_atom_count))`, fail closed on non-exact correspondence |
 | `manifest.json` | run_id, modes_run, refold_backend, allele, generated_parquet_path + sha256, test_set_parquet_path, head_ckpt_path + digest, nmp_binary_path + version_string, git_sha, timestamp, n_input_designs, n_rows_per_mode, wall_seconds_per_mode | metadata |
 | `failures.json` | per-row issues: NMP timeout, ESMFold OOM, missing PDB, invalid sequence, etc. | audit |
 | `run_config.yaml` | resolved CLI (every default materialized) | reproducibility |
@@ -753,6 +753,7 @@ See `doc/Reference_Flow_Derivation.md §6`.
   - `esmfold` → `inverse_folding/evaluation/esmfold_runner.py::predict_structure` (existing, with `(protein_id, sequence_hash)` cache key).
   - `af3` → raise `NotImplementedError("af3 backend not yet wired; see B4 future work")`.
   - For each generated row: refold the design sequence, run TM-align against `pdb_path` from test_set_parquet, compute `recovery` against WT `sequence` column, emit one row in `structural.parquet`. The same refold/reference pair is parsed into matched C-alpha traces, globally superimposed, and emitted as residue-indexed `structural_residues.parquet` rows for later position-specific RMSD queries. `refold_backend` column records which backend produced the row.
+  - With `--structural-metrics-v2`, reuse the same refold and TM-align result to emit the complete standalone v2 summary/residue pair. A constraint manifest supplies 0-based hard-anchor indices. Side-chain metrics use one global C-alpha superposition, exact all-heavy-atom sets, and AlphaFold/OpenFold residue symmetry handling; they never locally realign the active site or compare a mutable residue through a common-atom subset.
 - `all`: run `imm` then `struct` sequentially. Each mode independently checks for existing output and skips if present (unless `--overwrite`).
 
 **Planned File Touchpoints**

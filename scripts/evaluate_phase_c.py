@@ -27,11 +27,14 @@ from inverse_folding.evaluation.immunogenicity import NMP_PEP_LENGTHS
 from inverse_folding.evaluation.schema import (
     IMMUNOGENICITY_HEAD_COLUMNS,
     IMMUNOGENICITY_NMP_COLUMNS,
+    LEGACY_STRUCTURAL_RESIDUE_COLUMNS,
     STRUCTURAL_COLUMNS,
     STRUCTURAL_RESIDUE_COLUMNS,
+    STRUCTURAL_V2_COLUMNS,
+    STRUCTURAL_V2_RESIDUE_COLUMNS,
     validate_dataframe,
 )
-from inverse_folding.evaluation.refold import load_refold_model, refold
+from inverse_folding.evaluation.refold import CACHE_READ_BACKENDS, load_refold_model, refold
 from scripts.run_if_phase_c0 import _fmt_hms
 
 
@@ -109,12 +112,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--pdb-root", default=None)
     parser.add_argument(
+        "--structural-metrics-v2",
+        action="store_true",
+        default=True,
+        help=(
+            "Deprecated compatibility flag: structural v2 is now always the canonical "
+            "struct/all output."
+        ),
+    )
+    parser.add_argument(
+        "--constraint-manifest",
+        default=None,
+        help=(
+            "Optional hard-anchor manifest used by structural v2 active-site metrics. "
+            "Without it, v2 still emits complete global and per-residue metrics with "
+            "active-site aggregate fields marked not applicable."
+        ),
+    )
+    parser.add_argument(
         "--refold-model",
         choices=("esmfold", "esmfold2", "protenix", "af3"),
-        default="esmfold",
-        help="structure-prediction backend for scTM. 'esmfold' folds in-process; "
+        default="esmfold2",
+        help="structure-prediction backend for canonical v2 metrics. 'esmfold' folds in-process; "
         "'esmfold2'/'protenix' are cache-read (a separate SLURM precompute populates "
-        "--refold-cache-dir); 'af3' is an unwired stub.",
+        "--refold-cache-dir); 'af3' is also cache-read.",
     )
     parser.add_argument("--tmalign-bin", default="TMalign")
     # Generic refold cache dir; --esmfold-cache-dir kept as a deprecated alias
@@ -467,17 +488,32 @@ def evaluate_structural_rows(
     esmfold_cache_dir: str | None = None,
     progress_every: int = 25,
     return_residue_metrics: bool = False,
-) -> tuple[pd.DataFrame, list[dict[str, Any]]] | tuple[
-    pd.DataFrame,
-    list[dict[str, Any]],
-    pd.DataFrame,
-]:
+    return_v2_metrics: bool = False,
+    legacy_metrics: bool = True,
+    anchor_indices_by_protein: dict[str, set[int] | tuple[int, ...]] | None = None,
+) -> Any:
     from inverse_folding.evaluation.tmalign import run_tmalign
-    from inverse_folding.evaluation.sc_rmsd import compute_ca_self_consistency
     from inverse_folding.reference_flow.runtime import resolve_structure_path
+
+    if not legacy_metrics and not return_v2_metrics:
+        raise ValueError("legacy_metrics=False requires return_v2_metrics=True")
+    if legacy_metrics:
+        from inverse_folding.evaluation.sc_rmsd import compute_ca_self_consistency
+
+    if return_v2_metrics:
+        from inverse_folding.evaluation.structural_metrics_v2 import (
+            ALL_METRICS,
+            build_benchmark_residue_rows,
+            build_benchmark_summary_row,
+            evaluate_prediction,
+            prepare_reference_context,
+        )
 
     rows: list[dict[str, Any]] = []
     residue_rows: list[dict[str, Any]] = []
+    v2_rows: list[dict[str, Any]] = []
+    v2_residue_rows: list[dict[str, Any]] = []
+    v2_reference_contexts: dict[str, Any] = {}
     failures: list[dict[str, Any]] = []
 
     model = None
@@ -513,12 +549,35 @@ def evaluate_structural_rows(
             failures.append(_failure_row(row, stage="struct", reason="missing_pdb"))
             continue
 
+        protein_id = str(row.protein_id)
+        v2_context = None
+        if return_v2_metrics:
+            try:
+                v2_context = v2_reference_contexts.get(protein_id)
+                if v2_context is None:
+                    anchors = (anchor_indices_by_protein or {}).get(protein_id, ())
+                    v2_context = prepare_reference_context(
+                        ref_path,
+                        ref_sequence=str(test_row["sequence"]),
+                        anchor_indices=anchors,
+                    )
+                    v2_reference_contexts[protein_id] = v2_context
+            except Exception as exc:  # noqa: BLE001
+                failures.append(
+                    _failure_row(
+                        row,
+                        stage="struct_v2",
+                        reason=f"reference_context_failed:{type(exc).__name__}:{exc}",
+                    )
+                )
+                continue
+
         design_id = str(row.design_id)
         pred = None
         try:
             pred = refold(
                 sequence=sequence,
-                protein_id=str(row.protein_id),
+                protein_id=protein_id,
                 design_id=design_id,
                 backend=refold_backend,
                 cache_dir=esmfold_cache_dir,
@@ -567,49 +626,95 @@ def evaluate_structural_rows(
             foldability = False
 
         sc_rmsd = float("nan")
-        try:
-            sc_rmsd, per_residue_rows = compute_ca_self_consistency(
-                pred_pdb=str(pred["pdb_path"]),
-                ref_pdb=str(ref_path),
-                protein_id=str(row.protein_id),
-                design_id=design_id,
-                design_idx=int(row.design_idx),
-                design_sequence=sequence,
-                ref_sequence=str(test_row["sequence"]),
-                refold_backend=refold_backend,
-            )
-            residue_rows.extend(per_residue_rows)
-        except Exception as exc:  # noqa: BLE001
-            failures.append(
-                _failure_row(
-                    row,
-                    stage="struct_residue",
-                    reason=f"{type(exc).__name__}:{exc}",
+        if legacy_metrics:
+            try:
+                sc_rmsd, per_residue_rows = compute_ca_self_consistency(
+                    pred_pdb=str(pred["pdb_path"]),
+                    ref_pdb=str(ref_path),
+                    protein_id=str(row.protein_id),
+                    design_id=design_id,
+                    design_idx=int(row.design_idx),
+                    design_sequence=sequence,
+                    ref_sequence=str(test_row["sequence"]),
+                    refold_backend=refold_backend,
                 )
-            )
+                residue_rows.extend(per_residue_rows)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(
+                    _failure_row(
+                        row,
+                        stage="struct_residue",
+                        reason=f"{type(exc).__name__}:{exc}",
+                    )
+                )
 
-        rows.append(
-            {
-                "protein_id": str(row.protein_id),
-                "design_id": design_id,
-                "design_idx": int(row.design_idx),
-                "sequence": sequence,
-                "scTM": sc_tm,
-                "pLDDT": float(pred["pLDDT"]),
-                "bb_RMSD": bb_rmsd,
-                "scRMSD": sc_rmsd,
-                "recovery": recovery,
-                "foldability": foldability,
-                "refold_backend": refold_backend,
-            }
-        )
+        if return_v2_metrics:
+            try:
+                v2_result = evaluate_prediction(
+                    v2_context,
+                    str(pred["pdb_path"]),
+                    design_sequence=sequence,
+                    metrics=ALL_METRICS,
+                )
+                _validate_v2_prediction_plddt(
+                    v2_result.predicted_global_plddt,
+                    pred.get("pLDDT"),
+                    backend=refold_backend,
+                )
+                v2_rows.append(
+                    build_benchmark_summary_row(
+                        v2_result,
+                        protein_id=protein_id,
+                        design_id=design_id,
+                        design_idx=int(row.design_idx),
+                        sequence=sequence,
+                        sc_tm=sc_tm,
+                        recovery=recovery,
+                        refold_backend=refold_backend,
+                    )
+                )
+                v2_residue_rows.extend(
+                    build_benchmark_residue_rows(
+                        v2_result,
+                        protein_id=protein_id,
+                        design_id=design_id,
+                        design_idx=int(row.design_idx),
+                        refold_backend=refold_backend,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(
+                    _failure_row(
+                        row,
+                        stage="struct_v2",
+                        reason=f"{type(exc).__name__}:{exc}",
+                    )
+                )
+                continue
+
+        if legacy_metrics:
+            rows.append(
+                {
+                    "protein_id": protein_id,
+                    "design_id": design_id,
+                    "design_idx": int(row.design_idx),
+                    "sequence": sequence,
+                    "scTM": sc_tm,
+                    "pLDDT": float(pred["pLDDT"]),
+                    "bb_RMSD": bb_rmsd,
+                    "scRMSD": sc_rmsd,
+                    "recovery": recovery,
+                    "foldability": foldability,
+                    "refold_backend": refold_backend,
+                }
+            )
 
         if progress_every > 0 and (row_idx % progress_every == 0 or row_idx == total):
             _emit_progress(
                 stage="struct",
                 current=row_idx,
                 total=total,
-                n_rows=len(rows),
+                n_rows=len(rows) if legacy_metrics else len(v2_rows),
                 n_failures=_count_stage_failures(failures, "struct"),
                 started=started,
             )
@@ -617,8 +722,27 @@ def evaluate_structural_rows(
     structural_df = pd.DataFrame(rows)
     structural_residue_df = pd.DataFrame(
         residue_rows,
-        columns=sorted(STRUCTURAL_RESIDUE_COLUMNS),
+        columns=sorted(LEGACY_STRUCTURAL_RESIDUE_COLUMNS),
     )
+    structural_v2_df = pd.DataFrame(v2_rows, columns=sorted(STRUCTURAL_V2_COLUMNS))
+    structural_v2_residue_df = pd.DataFrame(
+        v2_residue_rows,
+        columns=sorted(STRUCTURAL_V2_RESIDUE_COLUMNS),
+    )
+    if return_v2_metrics and not legacy_metrics:
+        if return_residue_metrics:
+            return structural_v2_df, failures, structural_v2_residue_df
+        return structural_v2_df, failures
+    if return_v2_metrics and return_residue_metrics:
+        return (
+            structural_df,
+            failures,
+            structural_residue_df,
+            structural_v2_df,
+            structural_v2_residue_df,
+        )
+    if return_v2_metrics:
+        return structural_df, failures, structural_v2_df, structural_v2_residue_df
     if return_residue_metrics:
         return structural_df, failures, structural_residue_df
     return structural_df, failures
@@ -629,6 +753,29 @@ def compute_recovery(sequence: str, wt_sequence: str) -> float:
         return float("nan")
     matches = sum(a == b for a, b in zip(sequence, wt_sequence))
     return matches / float(len(wt_sequence))
+
+
+def _validate_v2_prediction_plddt(
+    structure_mean: float | None,
+    reported_mean: float | None,
+    *,
+    backend: str,
+    tolerance: float = 1.0,
+) -> None:
+    """Reject cache PDBs that lost per-residue confidence during conversion."""
+
+    if reported_mean is None or not math.isfinite(float(reported_mean)):
+        raise ValueError(f"{backend} reported pLDDT is missing/not finite: {reported_mean}")
+    if structure_mean is None or not math.isfinite(float(structure_mean)):
+        raise ValueError(
+            f"{backend} cache PDB lacks finite per-residue pLDDT B-factors"
+        )
+    if abs(float(structure_mean) - float(reported_mean)) > float(tolerance):
+        raise ValueError(
+            f"{backend} cache PDB pLDDT mean {structure_mean:.3f} disagrees with "
+            f"sidecar {float(reported_mean):.3f}; regenerate the cache with the current "
+            "refold normalizer so B-factors are preserved"
+        )
 
 
 def aggregate_nmp_scores_with_threshold(
@@ -698,10 +845,11 @@ def build_manifest(
 ) -> dict[str, Any]:
     from inverse_folding.reference_flow.runtime import git_sha
 
+    struct_in_run = any(str(mode).startswith("struct") for mode in modes_run)
     manifest = {
         "run_id": run_id,
         "modes_run": modes_run,
-        "refold_backend": args.refold_model if "struct" in modes_run else None,
+        "refold_backend": args.refold_model if struct_in_run else None,
         "allele": args.allele,
         "generated_parquet_path": str(Path(args.generated_parquet).resolve()),
         "generated_parquet_sha256": sha256_file(args.generated_parquet),
@@ -714,6 +862,24 @@ def build_manifest(
         "nmp_batch_size": int(getattr(args, "nmp_batch_size", 8)),
         "nmp_max_lengths_per_call": int(getattr(args, "nmp_max_lengths_per_call", 4)),
         "nmp_workers": int(getattr(args, "nmp_workers", 1)),
+        "structural_metrics_v2": struct_in_run,
+        "structural_metrics_version": "v2" if struct_in_run else None,
+        "constraint_manifest_path": (
+            str(Path(args.constraint_manifest).resolve())
+            if (
+                struct_in_run
+                and getattr(args, "constraint_manifest", None)
+            )
+            else None
+        ),
+        "constraint_manifest_digest": (
+            sha256_file(args.constraint_manifest)
+            if (
+                struct_in_run
+                and getattr(args, "constraint_manifest", None)
+            )
+            else None
+        ),
         "git_sha": git_sha(PROJECT_ROOT),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "n_input_designs": int(len(generated_df)),
@@ -769,7 +935,10 @@ def output_paths(run_dir: str | Path) -> dict[str, Path]:
 
 
 def mode_outputs_exist(
-    mode: str, paths: dict[str, Path], *, no_nmp: bool = False
+    mode: str,
+    paths: dict[str, Path],
+    *,
+    no_nmp: bool = False,
 ) -> tuple[bool, list[Path]]:
     if mode == "imm":
         required = [paths["imm_head"]] if no_nmp else [paths["imm_head"], paths["imm_nmp"]]
@@ -778,7 +947,21 @@ def mode_outputs_exist(
     else:
         raise ValueError(mode)
     existing = [path for path in required if path.exists()]
-    return len(existing) == len(required), existing
+    complete = len(existing) == len(required)
+    if complete and mode == "struct":
+        complete = _parquet_has_columns(paths["structural"], STRUCTURAL_COLUMNS) and (
+            _parquet_has_columns(paths["structural_residues"], STRUCTURAL_RESIDUE_COLUMNS)
+        )
+    return complete, existing
+
+
+def _parquet_has_columns(path: Path, required: set[str] | frozenset[str]) -> bool:
+    try:
+        import pyarrow.parquet as pq
+
+        return set(required) <= set(pq.read_schema(path).names)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def ensure_run_dir_state(
@@ -796,7 +979,11 @@ def ensure_run_dir_state(
         return
     missing_for_requested = False
     for mode in requested_modes:
-        mode_complete, existing = mode_outputs_exist(mode, paths, no_nmp=no_nmp)
+        mode_complete, existing = mode_outputs_exist(
+            mode,
+            paths,
+            no_nmp=no_nmp,
+        )
         if existing and not mode_complete:
             raise FileExistsError(
                 f"run_dir contains partial outputs for mode={mode}; rerun with --overwrite"
@@ -975,6 +1162,10 @@ def run_mode_struct(
     paths: dict[str, Path],
 ) -> tuple[int, float, list[dict[str, Any]]]:
     started = time.time()
+    anchor_indices_by_protein = _load_anchor_indices_by_protein(
+        getattr(args, "constraint_manifest", None),
+        test_lookup,
+    )
     df, failures, residue_df = evaluate_structural_rows(
         generated_df,
         test_lookup,
@@ -985,11 +1176,14 @@ def run_mode_struct(
         esmfold_cache_dir=args.esmfold_cache_dir,
         progress_every=args.progress_every,
         return_residue_metrics=True,
+        return_v2_metrics=True,
+        legacy_metrics=False,
+        anchor_indices_by_protein=anchor_indices_by_protein,
     )
     failed_keys = {
         (row["protein_id"], int(row["design_idx"]))
         for row in failures
-        if row["stage"] in {"struct", "struct_residue"}
+        if row["stage"] in {"struct", "struct_v2"}
     }
     if len(failed_keys) / float(max(len(generated_df), 1)) > args.fail_pct_threshold:
         partial_dir = paths["partial_dir"]
@@ -1001,9 +1195,31 @@ def run_mode_struct(
     if residue_df.empty:
         raise RuntimeError("struct mode produced empty structural_residues.parquet")
     validate_dataframe(residue_df, STRUCTURAL_RESIDUE_COLUMNS)
+
     df.to_parquet(paths["structural"], index=False)
     residue_df.to_parquet(paths["structural_residues"], index=False)
     return len(df), time.time() - started, failures
+
+
+def _load_anchor_indices_by_protein(
+    constraint_manifest: str | Path | None,
+    test_lookup: dict[str, dict[str, Any]],
+) -> dict[str, set[int]]:
+    """Validate an optional manifest against benchmark reference sequences once."""
+
+    if constraint_manifest is None:
+        return {}
+    from inverse_folding.reference_flow.constraints import load_constraint_manifest
+
+    manifest = load_constraint_manifest(constraint_manifest)
+    anchors: dict[str, set[int]] = {}
+    for protein_id, test_row in test_lookup.items():
+        if not manifest.has_protein(protein_id):
+            continue
+        constraint = manifest.constraint_for_protein(protein_id)
+        constraint.validate_against_sequence(str(test_row["sequence"]))
+        anchors[protein_id] = set(constraint.hard_anchor_indices)
+    return anchors
 
 
 def _log_evaluation_distributions(wandb_run: Any, paths: dict[str, Path]) -> None:
@@ -1018,7 +1234,18 @@ def _log_evaluation_distributions(wandb_run: Any, paths: dict[str, Path]) -> Non
     hist_targets: dict[str, tuple[Path, list[str]]] = {
         "imm_head": (paths["imm_head"], ["global_risk", "mean_hotspot", "max_hotspot", "n_hotspot_positions"]),
         "imm_nmp": (paths["imm_nmp"], ["n_strong_binders", "n_weak_binders", "mean_best_rank", "n_windows_scored"]),
-        "structural": (paths["structural"], ["scTM", "pLDDT", "bb_RMSD", "scRMSD", "recovery"]),
+        "structural": (
+            paths["structural"],
+            [
+                "scTM",
+                "global_ca_RMSD",
+                "pLDDT",
+                "active_site_sidechain_RMSD",
+                "max_anchor_sidechain_RMSD",
+                "max_anchor_atom_distance",
+                "recovery",
+            ],
+        ),
     }
 
     payload: dict[str, Any] = {}
@@ -1045,7 +1272,7 @@ def _log_evaluation_distributions(wandb_run: Any, paths: dict[str, Path]) -> Non
             payload[f"summary/{mode}/{col}_median"] = float(series.median())
 
         if mode == "structural" and "foldability" in df.columns:
-            payload["summary/structural/foldability_rate"] = float(
+            payload[f"summary/{mode}/foldability_rate"] = float(
                 pd.Series(df["foldability"], dtype="boolean").fillna(False).mean()
             )
 
@@ -1097,6 +1324,10 @@ def main(argv: list[str] | None = None) -> int:
     if "struct" in requested_modes:
         if args.pdb_root is None:
             raise ValueError("--pdb-root is required for struct/all mode")
+        if args.refold_model in CACHE_READ_BACKENDS and args.esmfold_cache_dir is None:
+            raise ValueError(
+                f"--refold-cache-dir is required for cache-read backend {args.refold_model!r}"
+            )
         if args.esmfold_cache_dir is None:
             args.esmfold_cache_dir = str(run_dir / ".cache" / "esmfold")
 
@@ -1140,7 +1371,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         for mode in requested_modes:
-            complete, existing = mode_outputs_exist(mode, paths, no_nmp=args.no_nmp)
+            complete, existing = mode_outputs_exist(
+                mode,
+                paths,
+                no_nmp=args.no_nmp,
+            )
             if complete and not args.overwrite:
                 print(f"[skip] mode={mode} outputs already exist in {run_dir}", flush=True)
                 modes_run.append(f"{mode}:skipped")

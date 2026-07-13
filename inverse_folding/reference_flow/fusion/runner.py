@@ -46,10 +46,23 @@ def _derive_seed(*parts) -> int:
 
 
 def _guard_active_site_config(config, anchors) -> None:
-    """An anchored protein MUST carry a configured shell ceiling, else the gate is fail-open."""
-    if anchors and config.structure.active_site_RMSD_max is None:
+    """An anchored protein must carry the ceiling matching its selected metric."""
+    if not anchors:
+        return
+    st = config.structure
+    if st.active_site_metric == "legacy_ca_shell" and st.active_site_RMSD_max is None:
         raise FusionRunnerError(
-            "anchored protein requires structure.active_site_RMSD_max (else active-site gate is skipped)")
+            "anchored protein requires structure.active_site_RMSD_max "
+            "for active_site_metric=legacy_ca_shell"
+        )
+    if (
+        st.active_site_metric == "sidechain_max_anchor"
+        and st.max_anchor_sidechain_RMSD_max is None
+    ):
+        raise FusionRunnerError(
+            "anchored protein requires structure.max_anchor_sidechain_RMSD_max "
+            "for active_site_metric=sidechain_max_anchor"
+        )
 
 
 def _validate_anchor_indices(anchors, seq_len: int) -> None:

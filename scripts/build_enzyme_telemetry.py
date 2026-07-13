@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wt-facade-eval-dir", default=None, help="WT facade immune dir (B1; optional)")
     parser.add_argument("--wt-facade-struct-dir", default=None, help="WT facade structural dir (optional)")
     parser.add_argument("--rank-threshold", type=float, default=2.0, help="NMP rank_EL strong-binder threshold")
-    parser.add_argument("--predictor", default="esmfold")
+    parser.add_argument("--predictor", default="esmfold2")
     parser.add_argument("--predictor-version", default="na")
     args = parser.parse_args(argv)
 

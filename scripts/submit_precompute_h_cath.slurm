@@ -29,10 +29,10 @@ SPLIT="${SPLIT:-train}"
 
 if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
     ALLELE_TAG="HLA-DRB1_07_01"
-    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt}"
+    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt}"
 elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
     ALLELE_TAG="HLA-DRB1_04_01"
-    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt}"
+    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold0/runs/LC1/seed_42/best.pt}"
 else
     echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
     exit 2

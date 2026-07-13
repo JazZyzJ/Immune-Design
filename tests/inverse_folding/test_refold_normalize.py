@@ -23,7 +23,13 @@ from inverse_folding.evaluation.refold_normalize import (
 )
 
 
-def _build_cif(path: Path, chains=("A",), n_res: int = 4) -> None:
+def _build_cif(
+    path: Path,
+    chains=("A",),
+    n_res: int = 4,
+    *,
+    b_factor: float | None = None,
+) -> None:
     """Write a tiny CA-only mmCIF with the given chains (fixture)."""
     atoms = []
     for ch in chains:
@@ -39,6 +45,8 @@ def _build_cif(path: Path, chains=("A",), n_res: int = 4) -> None:
                 )
             )
     arr = struc.array(atoms)
+    if b_factor is not None:
+        arr.set_annotation("b_factor", np.full(arr.array_length(), b_factor, dtype=float))
     cif = pdbx.CIFFile()
     pdbx.set_structure(cif, arr)
     cif.write(str(path))
@@ -60,7 +68,7 @@ def test_normalize_plddt_rejects_unknown_scale():
 
 def test_normalize_to_cache_writes_single_chain_pdb_and_plddt(tmp_path):
     cif = tmp_path / "src.cif"
-    _build_cif(cif, chains=("A",), n_res=5)
+    _build_cif(cif, chains=("A",), n_res=5, b_factor=87.5)
     key = "p1_abc123def456"
 
     out = normalize_to_cache(
@@ -77,8 +85,11 @@ def test_normalize_to_cache_writes_single_chain_pdb_and_plddt(tmp_path):
     assert float(plddt_path.read_text().strip()) == pytest.approx(90.0)
 
     # the emitted PDB is single-chain and parseable
-    arr = pdb.PDBFile.read(str(pdb_path)).get_structure(model=1)
+    arr = pdb.PDBFile.read(str(pdb_path)).get_structure(
+        model=1, extra_fields=["b_factor"]
+    )
     assert set(np.unique(arr.chain_id)) == {"A"}
+    assert np.asarray(arr.b_factor) == pytest.approx([87.5] * arr.array_length())
 
 
 def test_normalize_to_cache_rejects_multichain(tmp_path):

@@ -3,15 +3,15 @@
 Usage:
     # Single sequence
     python scripts/infer_v1.py \
-      --checkpoint outputs/ablation/cnn_enhance_v2/B0_s42/best.pt \
-      --variant-id B0 \
+      --checkpoint /scratch/.../cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/.../best.pt \
+      --variant-id LC1 \
       --protein-id P_TEST \
       --sequence ACDEFGHIKLMNPQRSTVWY
 
     # Batch from FASTA
     python scripts/infer_v1.py \
-      --checkpoint outputs/ablation/cnn_enhance_v2/B0_s42/best.pt \
-      --variant-id B0 \
+      --checkpoint /scratch/.../cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/.../best.pt \
+      --variant-id LC1 \
       --input-fasta data/infer_targets.fasta \
       --output-dir outputs/predictions
 """

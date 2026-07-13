@@ -28,7 +28,7 @@ def _structural_df() -> pd.DataFrame:
             "sequence": ["AAAA", "CCCC"],
             "scTM": [0.80, 0.65],
             "pLDDT": [85.0, 70.0],
-            "bb_RMSD": [1.2, 2.5],
+            "global_ca_RMSD": [1.2, 2.5],
             "recovery": [0.40, 0.55],
             "foldability": [0.9, 0.7],
             "refold_backend": ["esmfold", "esmfold"],
@@ -88,7 +88,7 @@ def _wt_structural_df() -> pd.DataFrame:
             "sequence": ["WWWW"],
             "scTM": [0.90],
             "pLDDT": [88.0],
-            "bb_RMSD": [1.0],
+            "global_ca_RMSD": [1.0],
             "recovery": [1.0],
             "foldability": [1.0],
             "refold_backend": ["esmfold"],
@@ -143,7 +143,7 @@ def test_delta_is_na_when_wt_none():
     out = build_f_post_v0(_constraint_rows(), _structural_df(), None)
     for col in (
         "delta_scTM_vs_wt",
-        "delta_bb_RMSD_vs_wt",
+        "delta_global_ca_RMSD_vs_wt",
         "delta_pLDDT_vs_wt",
         "delta_recovery_vs_wt",
     ):
@@ -155,7 +155,7 @@ def test_delta_is_na_when_protein_absent_from_wt():
     out = build_f_post_v0(_constraint_rows(), _structural_df(), wt)
     for col in (
         "delta_scTM_vs_wt",
-        "delta_bb_RMSD_vs_wt",
+        "delta_global_ca_RMSD_vs_wt",
         "delta_pLDDT_vs_wt",
         "delta_recovery_vs_wt",
     ):
@@ -167,19 +167,19 @@ def test_real_delta_when_wt_present():
     r0 = _row(out, 0)
     # design - wt : 0.80 - 0.90 = -0.10 (improvement is negative)
     assert r0["delta_scTM_vs_wt"] == pytest.approx(0.80 - 0.90)
-    assert r0["delta_bb_RMSD_vs_wt"] == pytest.approx(1.2 - 1.0)
+    assert r0["delta_global_ca_RMSD_vs_wt"] == pytest.approx(1.2 - 1.0)
     assert r0["delta_pLDDT_vs_wt"] == pytest.approx(85.0 - 88.0)
     assert r0["delta_recovery_vs_wt"] == pytest.approx(0.40 - 1.0)
     r1 = _row(out, 1)
     assert r1["delta_scTM_vs_wt"] == pytest.approx(0.65 - 0.90)
-    assert r1["delta_bb_RMSD_vs_wt"] == pytest.approx(2.5 - 1.0)
+    assert r1["delta_global_ca_RMSD_vs_wt"] == pytest.approx(2.5 - 1.0)
 
 
 def test_absolute_columns_passthrough():
     out = build_f_post_v0(_constraint_rows(), _structural_df())
     r0 = _row(out, 0)
     assert r0["scTM"] == pytest.approx(0.80)
-    assert r0["bb_RMSD"] == pytest.approx(1.2)
+    assert r0["global_ca_RMSD"] == pytest.approx(1.2)
     assert r0["pLDDT"] == pytest.approx(85.0)
     assert r0["recovery"] == pytest.approx(0.40)
     assert r0["foldability"] == pytest.approx(0.9)
@@ -218,7 +218,7 @@ def test_predictor_fields_propagated():
 
 def test_predictor_defaults():
     out = build_f_post_v0(_constraint_rows(), _structural_df())
-    assert (out["predictor"] == "esmfold").all()
+    assert (out["predictor"] == "esmfold2").all()
     assert (out["predictor_version"] == "na").all()
 
 
@@ -231,12 +231,12 @@ def test_output_columns_exact_set():
         "num_anchor_mismatches",
         "f_fold_status",
         "scTM",
-        "bb_RMSD",
+        "global_ca_RMSD",
         "pLDDT",
         "recovery",
         "foldability",
         "delta_scTM_vs_wt",
-        "delta_bb_RMSD_vs_wt",
+        "delta_global_ca_RMSD_vs_wt",
         "delta_pLDDT_vs_wt",
         "delta_recovery_vs_wt",
         "reference_type",

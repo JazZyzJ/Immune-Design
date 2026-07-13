@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -26,18 +27,23 @@ from inverse_folding.evaluation.esmfold_runner import cache_key
 from scripts.predict_esmfold2_gt import (
     build_fold_records_from_parquet,
     cache_layout_from_manifest,
+    cif_to_pdb,
 )
 
+_ROOT = Path(__file__).resolve().parents[2]
 
-def _build_cif(path: Path, n_res: int = 5) -> None:
+
+def _build_cif(path: Path, n_res: int = 5, b_factor: float = 87.5) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     atoms = [
         struc.Atom([float(i) * 3.8, 0.0, 0.0], chain_id="A", res_id=i + 1,
                    res_name="GLY", atom_name="CA", element="C")
         for i in range(n_res)
     ]
+    arr = struc.array(atoms)
+    arr.set_annotation("b_factor", np.full(arr.array_length(), b_factor))
     cif = pdbx.CIFFile()
-    pdbx.set_structure(cif, struc.array(atoms))
+    pdbx.set_structure(cif, arr)
     cif.write(str(path))
 
 
@@ -78,3 +84,23 @@ def test_cache_layout_from_manifest_writes_0_100_entries(tmp_path):
     assert (cache_dir / f"{key}.pdb").is_file()
     # ESMFold2 mean_plddt is 0-1 -> normalized to 0-100 in the sidecar
     assert float((cache_dir / f"{key}.plddt").read_text().strip()) == pytest.approx(90.0)
+
+
+def test_direct_esmfold2_pdb_conversion_preserves_atom_plddt(tmp_path):
+    cif_path = tmp_path / "pred.cif"
+    _build_cif(cif_path, b_factor=87.5)
+
+    pdb_text = cif_to_pdb(cif_path.read_text())
+
+    atom = next(line for line in pdb_text.splitlines() if line.startswith("ATOM"))
+    assert float(atom[60:66]) == pytest.approx(87.5, abs=0.01)
+
+
+def test_benchmark_and_precompute_slurm_default_to_canonical_esmfold2_cache():
+    benchmark = (_ROOT / "scripts/submit_benchmark.slurm").read_text()
+    precompute = (_ROOT / "scripts/submit_esmfold2_gt.slurm").read_text()
+
+    assert 'REFOLD_MODEL="${REFOLD_MODEL:-esmfold2}"' in benchmark
+    assert 'REFOLD_CACHE_DIR="${REFOLD_CACHE_DIR:-' in benchmark
+    assert "STRUCTURAL_METRICS_V2=" not in benchmark
+    assert 'CACHE_LAYOUT="${CACHE_LAYOUT:-${OUT_DIR}/cache}"' in precompute

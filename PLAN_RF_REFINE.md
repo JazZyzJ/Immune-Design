@@ -94,7 +94,10 @@ core A but creating core B is rejected.
 **Structure reference.** scTM/RMSD are measured against the **WT/target backbone** in
 `pdb_root` (the inverse-folding design target; decision-layer eval, not a firewall violation).
 Floor anchored at the **seed design's** metrics (accept iff `scTM ≥ scTM₀ − ε`, plus optional
-scRMSD / active-site-RMSD ceilings when wired). pLDDT is self-referential.
+global C-alpha telemetry and a fail-closed `max_anchor_sidechain_RMSD` ceiling when wired).
+Active-site geometry is all-heavy-side-chain after one global full-trace C-alpha
+superposition; it is never a local C-alpha shell RMSD. pLDDT is confidence telemetry,
+orthogonal to reference similarity.
 
 **Two modes (keep the interface).** `--target-source nmp` (Mode 1, default) vs
 `--target-source head` (Mode 2, deferred use — to demonstrate head-beats-NMP once blood data
@@ -329,17 +332,15 @@ def rank_margin_mass(core_ranks, *, strong_rank: float = 0.02, margin_band: floa
 
 def structure_gate(seed: "StructureMetrics", cand: "StructureMetrics", *, scTM_eps: float,
                    scRMSD_max: float | None = None,
-                   active_site_RMSD_max: float | None = None) -> tuple[bool, str]:
-    """Verdict for a candidate fold vs the seed design. v0 enforces the scTM floor
-    (scTM ≥ seed.scTM − scTM_eps); the scRMSD / active-site-RMSD ceilings activate only when
-    their thresholds are passed (None in v0). Returns (passed, reason)."""
+                   max_anchor_sidechain_RMSD_max: float | None = None) -> tuple[bool, str]:
+    """Seed-relative global fold floor plus an optional strict active-site gate."""
     if cand.scTM < seed.scTM - scTM_eps:
         return False, f"scTM {cand.scTM:.3f} < {seed.scTM - scTM_eps:.3f}"
-    if scRMSD_max is not None and cand.scRMSD is not None and cand.scRMSD > scRMSD_max:
-        return False, f"scRMSD {cand.scRMSD:.2f} > {scRMSD_max}"
-    if (active_site_RMSD_max is not None and cand.active_site_RMSD is not None
-            and cand.active_site_RMSD > active_site_RMSD_max):
-        return False, f"active_site_RMSD {cand.active_site_RMSD:.2f} > {active_site_RMSD_max}"
+    if max_anchor_sidechain_RMSD_max is not None:
+        if cand.active_site_complete is not True:
+            return False, "side-chain active-site metrics incomplete"
+        if cand.max_anchor_sidechain_RMSD > max_anchor_sidechain_RMSD_max:
+            return False, "max_anchor_sidechain_RMSD exceeds ceiling"
     return True, "ok"
 
 
@@ -361,13 +362,14 @@ class RefineResult:
     best_structure: "StructureMetrics"
     n_accepts: int
     diverged: bool
-    shortlist: list = field(default_factory=list)    # dicts: seq, core_count, scTM, pLDDT, scRMSD, active_site_RMSD, muts
+    shortlist: list = field(default_factory=list)    # includes global CA + active-site side-chain metrics when requested
     trace: list = field(default_factory=list)
 
 
 def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct_fn, anchors,
                     target_window_idx_fn=None, strong_rank=0.02, margin_band=0.10,
-                    scTM_eps=0.05, scRMSD_max=None, active_site_RMSD_max=None,
+                    scTM_eps=0.05, scRMSD_max=None,
+                    max_anchor_sidechain_RMSD_max=None,
                     topB=None, beam_width=8, max_rounds=20, patience=3,
                     max_path_mutations=8, allow_structure_unknown=False):
     import numpy as np
@@ -417,7 +419,8 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
                 metrics = struct_fn(protein_id, c.seq); n_refold += 1
                 passed, reason = structure_gate(seed_metrics, metrics, scTM_eps=scTM_eps,
                                                 scRMSD_max=scRMSD_max,
-                                                active_site_RMSD_max=active_site_RMSD_max)
+                                                max_anchor_sidechain_RMSD_max=(
+                                                    max_anchor_sidechain_RMSD_max))
                 if not (passed or allow_structure_unknown):
                     continue                                    # structure-failed output -> excluded from beam
                 metrics = replace(metrics, passed=passed, reason=reason)
@@ -476,7 +479,8 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
   --head-window-batch-size`); NMP args mirroring `evaluate_phase_c.py` (`--nmp-batch-size
   --nmp-max-lengths-per-call --nmp-workers --nmp-timeout`); structure (`--pdb-root
   --esmfold-cache-dir`); search knobs (§7): `--strong-rank --margin-band --scTM-eps
-  --scRMSD-max --active-site-RMSD-max --topB --beam-width --max-rounds --patience --max-pairs
+  --scRMSD-max --refinement-structure-metrics --max-anchor-sidechain-RMSD-max
+  --structural-metrics-v2 --topB --beam-width --max-rounds --patience --max-pairs
   --head-high-topk --allow-structure-unknown`; `--out-dir`.
 
   **(b) `build_oracles(args) -> (head_fn, nmp_fn, struct_fn, target_window_idx_fn)`** — the
@@ -628,7 +632,7 @@ python scripts/evaluate_phase_c.py --generated <out>/refined/evaluator_ready.par
 | distinct-core identity | `core_start` | per RAR 0024; adjacent-register merge deferred. |
 | `margin_band` | 0.10 | `rank_margin_mass` counts cores with `rank_EL < 10%`. |
 | `scTM_eps` | 0.05 | floor vs seed scTM₀; recalibrate on the Q00511 smoke. |
-| `active_site_RMSD_max` | `None` (advisory v0) | `active_site_RMSD` := `active_site_spatial_shell6A_ca_rmsd` — function-critical (global scTM diverges from it: 66/1532 designs are global-ok/active-site-shifted). Monomer-partial for uricase (tetramer-interface active site); scTM stays the reliable global floor; anchors already frozen (mismatch 0/1532). |
+| `max_anchor_sidechain_RMSD_max` | `None` until calibrated | Strict worst-anchor all-heavy-side-chain ceiling after one global C-alpha superposition; missing/incomplete atom correspondence fails closed. Monomer-partial for uricase (tetramer-interface geometry still requires a later complex-aware gate). |
 | `scRMSD_max` | `None` | global backbone-RMSD ceiling (more local-sensitive than scTM); optional. |
 | `max_path_mutations` | 8 | cheap refold-free cap bounding branch-waste on stacked edits. |
 | `refold_cap` | 16 / round | max count-dropping candidates refolded per round (top by count↓, then edits↓). **Essential:** single mutations kill cores readily (H2ETE7: 2003/2208 candidates dropped count) so unbounded refold explodes (80 min GPU); the cap bounds ESMFold AND is exactly the lean ranked shortlist wanted. |
@@ -702,7 +706,7 @@ generate best-of-N (RF, WT-firewalled)
   │     raw NMP → any strong binder?  NO  → count 0 → DONE (no refinement)   [count-0 needs no de-inflate]
   │                                   YES → de-inflate to distinct cores, then compute:
   │            admission metric = ( attackable de-inflated block count , register degeneracy )   [NOT depth-weighted]
-  │            seed structure    = { scTM , active_site_spatial_shell6A RMSD }
+  │            seed structure    = { scTM , global_ca_RMSD , max_anchor_sidechain_RMSD }
   │
   ├─ seed re-selection (admission drives selection, not the reverse):
   │     among the N, prefer the design MINIMISING the admission metric.

@@ -24,9 +24,21 @@ CANDIDATE_FASTA_DIR="${DATA_DIR}/tier2_candidates"
 CATH_DIR="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/cath_4.3"
 CATH_TRAIN_SOURCE="${CATH_DIR}/chain_set.jsonl"
 CATH_DOMAIN_LIST="${CATH_DIR}/chain_set.jsonl"
-EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
 NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
 ALLELE="${ALLELE:-HLA-DRB1*04:01}"
+
+if [[ -z "${EPITOPE_CKPT:-}" ]]; then
+    if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt"
+    elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold0/runs/LC1/seed_42/best.pt"
+    elif [[ "${ALLELE}" == "HLA-DRB1*15:01" ]]; then
+        EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb1501_seed42/runs/LC1/seed_42/best.pt"
+    else
+        echo "ERROR: EPITOPE_CKPT not set and no a1res03 default exists for ALLELE=${ALLELE}" >&2
+        exit 2
+    fi
+fi
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 

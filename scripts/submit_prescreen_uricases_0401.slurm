@@ -20,7 +20,7 @@ LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/if_eval"
 
 INPUT_FASTA="${DATA_DIR}/uricases/filtered_uricases.fasta"
 CATH_TRAIN_SOURCE="${CATH_DIR}/chain_set.jsonl"
-EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_drb0401_aug/runs/LC1/seed_42/best.pt"
+EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold0/runs/LC1/seed_42/best.pt}"
 NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
 OUTPUT_DIR="${DATA_DIR}/uricase_prescreen"
 

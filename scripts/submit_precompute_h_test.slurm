@@ -33,11 +33,11 @@ CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-500}"
 if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_07_01"
     ALLELE_TAG="HLA-DRB1_07_01"
-    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0701_seed42/runs/LC1/seed_42/best.pt}"
+    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt}"
 elif [[ "${ALLELE}" == "HLA-DRB1*04:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_04_01"
     ALLELE_TAG="HLA-DRB1_04_01"
-    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_v1_npoff_drb0401_seed42/runs/LC1/seed_42/best.pt}"
+    EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold0/runs/LC1/seed_42/best.pt}"
 elif [[ "${ALLELE}" == "HLA-DRB1*15:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_15_01"
     ALLELE_TAG="HLA-DRB1_15_01"

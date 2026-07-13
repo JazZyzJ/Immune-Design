@@ -20,6 +20,8 @@ from scripts.evaluate_phase_c import (
     compute_recovery,
     evaluate_immunogenicity_rows,
     evaluate_structural_rows,
+    mode_outputs_exist,
+    output_paths,
     resolve_nmp_runtime_params,
 )
 
@@ -59,6 +61,48 @@ def _write_ca_pdb(path: Path, sequence: str, offset: tuple[float, float, float] 
             f"ATOM  {idx:5d}  CA  {_AA3[aa]:>3} A{idx:4d}    "
             f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00 50.00           C\n"
         )
+    lines.append("END\n")
+    path.write_text("".join(lines))
+
+
+_TEST_SIDECHAINS = {
+    "A": ("CB",),
+    "C": ("CB", "SG"),
+    "G": (),
+    "T": ("CB", "OG1", "CG2"),
+}
+
+
+def _write_all_atom_pdb(
+    path: Path,
+    sequence: str,
+    offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    *,
+    plddt: float = 88.0,
+) -> None:
+    lines = []
+    serial = 1
+    dx, dy, dz = offset
+    for idx, aa in enumerate(sequence, start=1):
+        ca = (
+            (idx - 1) * 1.6 + dx,
+            ((idx - 1) % 2) * 0.7 + dy,
+            ((idx - 1) % 3) * 0.4 + dz,
+        )
+        atoms = {
+            "N": (ca[0] - 0.5, ca[1], ca[2]),
+            "CA": ca,
+            "C": (ca[0] + 0.5, ca[1], ca[2]),
+            "O": (ca[0] + 0.8, ca[1] + 0.2, ca[2]),
+        }
+        for atom_idx, atom_name in enumerate(_TEST_SIDECHAINS[aa], start=1):
+            atoms[atom_name] = (ca[0], ca[1] + atom_idx * 0.5, ca[2] + atom_idx * 0.2)
+        for atom_name, (x, y, z) in atoms.items():
+            lines.append(
+                f"ATOM  {serial:5d} {atom_name:^4s} {_AA3[aa]:>3} A{idx:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00{plddt:6.2f}          {atom_name[0]:>2}\n"
+            )
+            serial += 1
     lines.append("END\n")
     path.write_text("".join(lines))
 
@@ -246,6 +290,75 @@ def test_evaluate_structural_rows_emits_expected_schema(tmp_path: Path, monkeypa
     assert residues_df["sc_ca_distance"].max() < 1e-5
 
 
+def test_evaluate_structural_rows_v2_is_complete_and_indexable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from inverse_folding.evaluation.schema import (
+        STRUCTURAL_V2_COLUMNS,
+        STRUCTURAL_V2_RESIDUE_COLUMNS,
+    )
+
+    generated = _generated_fixture()
+    test_lookup = _test_lookup_fixture(tmp_path)
+    for protein_id, test_row in test_lookup.items():
+        _write_all_atom_pdb(tmp_path / test_row["pdb_path"], test_row["sequence"])
+
+    def _fake_refold(sequence, protein_id, design_id, backend, cache_dir=None, model=None):
+        pdb_path = tmp_path / f"{protein_id}_{design_id}.pdb"
+        _write_all_atom_pdb(pdb_path, sequence, offset=(10.0, -2.0, 5.0))
+        return {"pdb_path": str(pdb_path), "pLDDT": 88.0}
+
+    monkeypatch.setattr("scripts.evaluate_phase_c.load_refold_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr("scripts.evaluate_phase_c.refold", _fake_refold)
+    monkeypatch.setattr(
+        "inverse_folding.evaluation.tmalign.run_tmalign",
+        lambda **kwargs: {"tm_score": 0.91, "rmsd": 1.2},
+    )
+    monkeypatch.setattr(
+        "inverse_folding.reference_flow.runtime.resolve_structure_path",
+        lambda entry, pdb_root: Path(pdb_root) / str(entry["pdb_path"]),
+    )
+
+    monkeypatch.setattr(
+        "inverse_folding.evaluation.sc_rmsd.compute_ca_self_consistency",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy C-alpha RMSD must not run in canonical v2 mode")
+        ),
+    )
+
+    v2, failures, v2_residues = evaluate_structural_rows(
+        generated,
+        test_lookup,
+        pdb_root=tmp_path,
+        refold_backend="esmfold2",
+        device="cpu",
+        tmalign_bin="TMalign",
+        esmfold_cache_dir=str(tmp_path / ".cache"),
+        progress_every=0,
+        return_residue_metrics=True,
+        return_v2_metrics=True,
+        legacy_metrics=False,
+        anchor_indices_by_protein={"p1": {0}, "p2": {0}},
+    )
+
+    assert failures == []
+    assert len(v2) == 6
+    assert STRUCTURAL_V2_COLUMNS <= set(v2.columns)
+    assert STRUCTURAL_V2_RESIDUE_COLUMNS <= set(v2_residues.columns)
+    assert v2["global_ca_RMSD"].max() < 1e-5
+    assert v2["pLDDT"].tolist() == pytest.approx([88.0] * len(v2))
+    assert v2.loc[v2["protein_id"] == "p1", "active_site_complete"].all()
+    assert len(v2_residues) == sum(len(seq) for seq in generated["sequence"])
+
+    changed = v2_residues[
+        (v2_residues["protein_id"] == "p1")
+        & (v2_residues["design_idx"] == 1)
+        & (v2_residues["residue_idx"] == 3)
+    ].iloc[0]
+    assert changed["match_status"] == "residue_identity_mismatch"
+    assert pd.isna(changed["sidechain_RMSD"])
+
+
 def test_af3_refold_backend_is_cache_read():
     # af3 is now a cache-read backend (official DeepMind AlphaFold3); with no cache_dir
     # it fails fast with a clear, non-OOM error (not NotImplementedError).
@@ -279,7 +392,9 @@ def test_build_manifest_populates_digests(tmp_path: Path):
         epitope_ckpt=str(ckpt_path),
         netmhciipan_bin=str(nmp_bin),
         allele="HLA-DRB1*07:01",
-        refold_model="esmfold",
+        refold_model="esmfold2",
+        structural_metrics_v2=True,
+        constraint_manifest=None,
     )
     manifest = build_manifest(
         args=args,
@@ -292,6 +407,9 @@ def test_build_manifest_populates_digests(tmp_path: Path):
     assert manifest["git_sha"]
     assert manifest["head_ckpt_digest"]
     assert manifest["generated_parquet_sha256"]
+    assert manifest["structural_metrics_v2"] is True
+    assert manifest["structural_metrics_version"] == "v2"
+    assert manifest["constraint_manifest_digest"] is None
 
 
 def test_aggregate_nmp_scores_with_custom_threshold():
@@ -310,3 +428,20 @@ def test_aggregate_nmp_scores_with_custom_threshold():
 
 def test_compute_recovery_matches_expected_identity():
     assert compute_recovery("AAAT", "AAAA") == pytest.approx(0.75)
+
+
+def test_structural_v2_completion_requires_both_standalone_files(tmp_path: Path):
+    from inverse_folding.evaluation.schema import (
+        STRUCTURAL_COLUMNS,
+        STRUCTURAL_RESIDUE_COLUMNS,
+    )
+
+    paths = output_paths(tmp_path)
+    pd.DataFrame(columns=sorted(STRUCTURAL_COLUMNS)).to_parquet(paths["structural"])
+    pd.DataFrame(columns=sorted(STRUCTURAL_RESIDUE_COLUMNS)).to_parquet(
+        paths["structural_residues"]
+    )
+    complete, _ = mode_outputs_exist("struct", paths)
+    assert complete is True
+    assert "structural_v2" not in paths
+    assert "structural_v2_residues" not in paths

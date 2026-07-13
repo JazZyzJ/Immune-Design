@@ -1,8 +1,10 @@
 """Refold backend dispatcher for Phase C evaluation.
 
-Two dispatch classes:
-  * live  (``esmfold`` v1): a torch model is loaded once via ``load_refold_model``
-    and folded per design in-process inside the eval loop.
+Three dispatch classes:
+  * in-process live (``esmfold`` v1): a torch model is loaded once via
+    ``load_refold_model`` and folded per design inside the eval loop.
+  * isolated live (``esmfold2_live``): Fusion starts one persistent worker with
+    the current Python/torch runtime and an isolated Biohub package overlay.
   * cache-read (``esmfold2``, ``protenix``): the structures are produced by a
     SEPARATE SLURM pre-compute step in a foreign conda/tool env (which cannot be
     imported into ``immune-design``) and normalized into the SAME on-disk cache
@@ -12,9 +14,9 @@ Two dispatch classes:
 
 Every backend returns the same normalized dict: a real single-chain ``.pdb``
 ``pdb_path`` (never ``None``) and a ``pLDDT`` float on the 0-100 scale, so the
-structural eval (TMalign scTM with Chain_1 = predicted, sc_rmsd CA parsing,
-foldability, structural.parquet) is format- and scale-consistent regardless of
-backend.
+structural eval (TMalign scTM with Chain_1 = predicted, canonical global C-alpha
+and side-chain metrics, foldability, structural.parquet) is format- and
+confidence-scale-consistent regardless of backend.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from typing import Any
 CACHE_READ_BACKENDS = frozenset({"esmfold2", "protenix", "af3"})
 
 
-def load_refold_model(backend: str, *, device: str = "cuda") -> Any:
+def load_refold_model(backend: str, *, device: str = "cuda", **backend_options: Any) -> Any:
     """Load the model object required by a refold backend.
 
     Returns ``None`` for cache-read backends (esmfold2, protenix): they run in a
@@ -38,6 +40,10 @@ def load_refold_model(backend: str, *, device: str = "cuda") -> Any:
         from inverse_folding.evaluation.esmfold_runner import load_esmfold_model
 
         return load_esmfold_model(device=device)
+    if backend == "esmfold2_live":
+        from inverse_folding.evaluation.esmfold2_live import ESMFold2LiveClient
+
+        return ESMFold2LiveClient(device=device, **backend_options)
     if backend in CACHE_READ_BACKENDS:
         return None
     raise ValueError(f"unsupported refold backend: {backend}")
@@ -62,6 +68,18 @@ def refold(
             design_id=design_id,
             cache_dir=cache_dir,
             model=model,
+        )
+    if backend == "esmfold2_live":
+        if model is None or not hasattr(model, "predict"):
+            raise RuntimeError(
+                "refold backend 'esmfold2_live' requires a loaded model from "
+                "load_refold_model()"
+            )
+        return model.predict(
+            sequence=sequence,
+            protein_id=protein_id,
+            design_id=design_id,
+            cache_dir=cache_dir,
         )
     if backend in CACHE_READ_BACKENDS:
         return _read_cached_structure(backend, protein_id, sequence, cache_dir)

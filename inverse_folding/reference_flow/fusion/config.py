@@ -26,6 +26,8 @@ def _finite_pos(value: float) -> bool:
     return math.isfinite(value) and value > 0.0
 
 _SELECTION_MODES = frozenset({"greedy", "beam", "fk"})
+_ACTIVE_SITE_METRICS = frozenset({"legacy_ca_shell", "sidechain_max_anchor"})
+_STRUCTURE_BACKENDS = frozenset({"esmfold", "esmfold2_live"})
 
 
 class FusionConfigError(ValueError):
@@ -137,7 +139,9 @@ class StructureConfig:
     backend: str
     surrogate_mode: str
     scTM_min: float
+    active_site_metric: str
     active_site_RMSD_max: float | None
+    max_anchor_sidechain_RMSD_max: float | None
     active_site_shell_radius: float
     scRMSD_max: float | None
     cache_dir: str
@@ -327,6 +331,24 @@ def load_fusion_config(source: str | Path | dict) -> FusionConfig:
         as_max = float(as_max)
         if not _finite_pos(as_max):  # NaN/inf ceiling would silently disable the shell gate
             raise FusionConfigError("structure.active_site_RMSD_max must be finite and positive")
+    active_site_metric = str(st.get("active_site_metric", "legacy_ca_shell"))
+    if active_site_metric not in _ACTIVE_SITE_METRICS:
+        raise FusionConfigError(
+            "structure.active_site_metric must be one of "
+            f"{sorted(_ACTIVE_SITE_METRICS)}"
+        )
+    sidechain_max = st.get("max_anchor_sidechain_RMSD_max")
+    if sidechain_max is not None:
+        sidechain_max = float(sidechain_max)
+        if not _finite_pos(sidechain_max):
+            raise FusionConfigError(
+                "structure.max_anchor_sidechain_RMSD_max must be finite and positive"
+            )
+    if active_site_metric == "sidechain_max_anchor" and sidechain_max is None:
+        raise FusionConfigError(
+            "structure.active_site_metric=sidechain_max_anchor requires "
+            "structure.max_anchor_sidechain_RMSD_max"
+        )
     scrmsd_max = st.get("scRMSD_max")
     if scrmsd_max is not None:
         scrmsd_max = float(scrmsd_max)
@@ -336,13 +358,17 @@ def load_fusion_config(source: str | Path | dict) -> FusionConfig:
     if not _finite_pos(shell_radius):
         raise FusionConfigError("structure.active_site_shell_radius must be finite and positive")
     backend = _req_str(st, "backend", "structure")
-    if backend != "esmfold":  # the driver's struct_fn always runs ESMFold
-        raise FusionConfigError(f"structure.backend {backend!r} unsupported in v0 (only esmfold)")
+    if backend not in _STRUCTURE_BACKENDS:
+        raise FusionConfigError(
+            f"structure.backend must be one of {sorted(_STRUCTURE_BACKENDS)}"
+        )
     structure = StructureConfig(
         backend=backend,
         surrogate_mode=surrogate_mode,
         scTM_min=scTM_min,
+        active_site_metric=active_site_metric,
         active_site_RMSD_max=as_max,
+        max_anchor_sidechain_RMSD_max=sidechain_max,
         active_site_shell_radius=shell_radius,
         scRMSD_max=scrmsd_max,
         cache_dir=_req_str(st, "cache_dir", "structure"),

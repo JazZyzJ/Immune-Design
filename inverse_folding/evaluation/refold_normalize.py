@@ -42,7 +42,14 @@ def cif_to_single_chain_pdb_text(cif_path: str) -> str:
     if not os.path.isfile(cif_path):
         raise FileNotFoundError(f"refold normalize: mmCIF not found: {cif_path}")
     cif = pdbx.CIFFile.read(cif_path)
-    arr = pdbx.get_structure(cif, model=1)
+    # v2 reads per-residue confidence from PDB B-factors. Request the mmCIF
+    # confidence column explicitly; Biotite otherwise drops it and writes 0.00.
+    arr = pdbx.get_structure(cif, model=1, extra_fields=["b_factor"])
+    if "b_factor" in arr.get_annotation_categories() and not np.isfinite(arr.b_factor).all():
+        # Some generic fixtures/backends have no atom confidence column. Preserve
+        # the historical conversion behavior; canonical v2 later rejects the
+        # resulting zero-confidence PDB against its nonzero sidecar.
+        arr.del_annotation("b_factor")
     chains = sorted(str(c) for c in np.unique(arr.chain_id))
     if len(chains) != 1:
         raise RuntimeError(

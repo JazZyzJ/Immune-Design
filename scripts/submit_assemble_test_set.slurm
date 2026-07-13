@@ -26,7 +26,7 @@ TIER2_HEAD_CKPT="${OUTPUT_ROOT}/_prescreen_head_results_${ALLELE_TAG}.parquet"
 TIER2_NMP_CKPT="${OUTPUT_ROOT}/_prescreen_nmp_results_${ALLELE_TAG}.parquet"
 TIER3_INPUT="${OUTPUT_ROOT}/uricase_prescreen/uricase_dual_pass_${ALLELE_TAG}.parquet"
 PDB_DIR="${OUTPUT_ROOT}/pdbs"
-EPITOPE_CKPT="/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt"
+EPITOPE_CKPT="${EPITOPE_CKPT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt}"
 NETMHCIIPAN_BIN="/home/zc1519/src/Immune-Design/netMHCIIpan-4.3/netMHCIIpan"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}" "${PDB_DIR}"

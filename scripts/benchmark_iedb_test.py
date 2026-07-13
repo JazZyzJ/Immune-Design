@@ -15,7 +15,7 @@ Usage:
     python scripts/benchmark_iedb_test.py \
         --protein-samples-parquet outputs/manifests/protein_samples_strict.parquet \
         --test-ids outputs/manifests/splits/strict/test_ids.txt \
-        --epitope-ckpt /scratch/.../LC1_lite_aug/.../best.pt \
+        --epitope-ckpt /scratch/.../cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/.../best.pt \
         --netmhciipan-bin /.../netMHCIIpan \
         --allele "HLA-DRB1*07:01" \
         --output-json outputs/benchmark_iedb_drb0701.json \

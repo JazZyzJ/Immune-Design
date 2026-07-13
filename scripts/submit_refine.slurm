@@ -55,6 +55,13 @@ RUN_DIR="${RUN_DIR:-}"                        # directory holding the generated 
 # Leave empty for the explicit-only S0 arm (the driver only requires them when repair/reopen on).
 BASE_IF_CHECKPOINT="${BASE_IF_CHECKPOINT:-}"  # base inverse-folding checkpoint for the repair sampler
 RF_SAMPLER_CONFIG="${RF_SAMPLER_CONFIG:-}"    # reference-flow sampler YAML (temperature/remask base)
+ESMFOLD2_ENV="${ESMFOLD2_ENV:-${HOME}/.conda/envs/esmfold2}"
+ESMFOLD2_SITE_PACKAGES="${ESMFOLD2_SITE_PACKAGES:-}"
+ESMFOLD2_MODEL="${ESMFOLD2_MODEL:-biohub/ESMFold2}"
+ESMFOLD2_NUM_LOOPS="${ESMFOLD2_NUM_LOOPS:-3}"
+ESMFOLD2_NUM_SAMPLING_STEPS="${ESMFOLD2_NUM_SAMPLING_STEPS:-50}"
+ESMFOLD2_NUM_DIFFUSION_SAMPLES="${ESMFOLD2_NUM_DIFFUSION_SAMPLES:-1}"
+ESMFOLD2_SEED="${ESMFOLD2_SEED:-0}"
 
 # Seeds: a --seed-table parquet (protein_id/design_id/sequence). Default = the full
 # difficulty-stratified 0701 validation table; override SEED_TABLE for the smoke.
@@ -108,6 +115,8 @@ EMIT_EVAL_METRICS="${EMIT_EVAL_METRICS:-1}"           # 0 => --no-eval-metrics
 STRONG_BINDER_THRESHOLD="${STRONG_BINDER_THRESHOLD:-2.0}"  # imm_nmp rank_EL% strong cutoff (evaluate default)
 HOTSPOT_THRESHOLD="${HOTSPOT_THRESHOLD:-0.5}"         # imm_head hotspot cutoff (evaluate default)
 IMM_FULL="${IMM_FULL:-0}"                             # 1 => also imm_head_residues + imm_nmp_peptides
+REFINEMENT_STRUCTURE_METRICS="${REFINEMENT_STRUCTURE_METRICS:-global_ca_rmsd,plddt,sidechain}"
+MAX_ANCHOR_SIDECHAIN_RMSD_MAX="${MAX_ANCHOR_SIDECHAIN_RMSD_MAX:-}"
 
 # Output run dir + per-run ESMFold refold cache (writes <key>.pdb/.plddt → gives pdb_path).
 # Base tag is stable across an array (SLURM_ARRAY_JOB_ID) so all tasks share one run dir; each
@@ -124,8 +133,9 @@ if [ "${N_SHARDS}" -gt 1 ]; then
     OUT_DIR="${OUT_DIR}/shard$(printf '%02d' "${SHARD_IDX}")of${N_SHARDS}"
 fi
 ESMFOLD_CACHE_DIR="${ESMFOLD_CACHE_DIR:-${OUT_DIR}/esmfold_cache}"
+REFOLD_CACHE_DIR="${REFOLD_CACHE_DIR:-${ESMFOLD_CACHE_DIR}}"
 
-mkdir -p "${OUT_DIR}" "${ESMFOLD_CACHE_DIR}" "${LOG_DIR}"
+mkdir -p "${OUT_DIR}" "${REFOLD_CACHE_DIR}" "${LOG_DIR}"
 
 # ── Environment (mirrors submit_if_phase_c.slurm) ────────────────────────
 module purge
@@ -138,7 +148,7 @@ export PYTHONPATH="${DPLM_ROOT}/vendor/openfold:${PROJECT_ROOT}:${PYTHONPATH:-}"
 export LD_PRELOAD="${PROJECT_ROOT}/lib/ijit_stub.so"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # reduce head/ESMFold GPU fragmentation
 export TORCH_HOME="${BASE}/model_cache/torch"           # ESMFold weights (esmfold_v1)
-export HF_HOME="${BASE}/model_cache/huggingface"
+export HF_HOME="${HF_HOME:-${BASE}/model_cache/hf}"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export HF_HUB_OFFLINE=1
@@ -152,6 +162,10 @@ EVAL_METRICS_FLAG=(--emit-eval-metrics)
 [ "${EMIT_EVAL_METRICS}" = "0" ] && EVAL_METRICS_FLAG=(--no-eval-metrics)
 IMM_FULL_FLAG=()
 [ "${IMM_FULL}" = "1" ] && IMM_FULL_FLAG=(--imm-full)
+SIDECHAIN_GATE_FLAG=()
+[ -n "${MAX_ANCHOR_SIDECHAIN_RMSD_MAX}" ] && SIDECHAIN_GATE_FLAG=(
+    --max-anchor-sidechain-RMSD-max "${MAX_ANCHOR_SIDECHAIN_RMSD_MAX}"
+)
 
 # Active-site manifest is optional: pass CONSTRAINT_MANIFEST=none to disable (no active site,
 # e.g. non-enzyme highrisk inpaint runs) — the flag is then omitted and all positions are editable.
@@ -176,8 +190,9 @@ echo "  Test set      : ${TEST_SET_PARQUET}"
 echo "  PDB root      : ${PDB_ROOT}"
 echo "  Constraints   : ${CONSTRAINT_MANIFEST}"
 echo "  Out dir       : ${OUT_DIR}"
-echo "  ESMFold cache : ${ESMFOLD_CACHE_DIR}"
+echo "  Refold cache  : ${REFOLD_CACHE_DIR}"
 echo "  Eval metrics  : emit=${EMIT_EVAL_METRICS} strong=${STRONG_BINDER_THRESHOLD} hotspot=${HOTSPOT_THRESHOLD} imm_full=${IMM_FULL}"
+echo "  Structure v2  : canonical; loop=${REFINEMENT_STRUCTURE_METRICS} max_anchor=${MAX_ANCHOR_SIDECHAIN_RMSD_MAX:-none}"
 echo "============================================================"
 
 if [ "${MODE}" = "fusion" ]; then
@@ -186,6 +201,17 @@ if [ "${MODE}" = "fusion" ]; then
     REPAIR_FLAGS=()
     if [ -n "${BASE_IF_CHECKPOINT}" ]; then REPAIR_FLAGS+=(--base-if-checkpoint "${BASE_IF_CHECKPOINT}"); fi
     if [ -n "${RF_SAMPLER_CONFIG}" ]; then REPAIR_FLAGS+=(--rf-sampler-config "${RF_SAMPLER_CONFIG}"); fi
+    # The worker uses immune-design's current Python + torch. Only Biohub's
+    # esm/transformers source path is overlaid in the isolated worker process.
+    if [ -z "${ESMFOLD2_SITE_PACKAGES}" ]; then
+        if [ ! -x "${ESMFOLD2_ENV}/bin/python" ]; then
+            echo "FATAL: ESMFold2 env python not found: ${ESMFOLD2_ENV}/bin/python" >&2
+            exit 2
+        fi
+        ESMFOLD2_SITE_PACKAGES="$("${ESMFOLD2_ENV}/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+    fi
+    echo "  ESMFold2 code : ${ESMFOLD2_SITE_PACKAGES}"
+    echo "  ESMFold2 model: ${ESMFOLD2_MODEL} loops/steps/samples=${ESMFOLD2_NUM_LOOPS}/${ESMFOLD2_NUM_SAMPLING_STEPS}/${ESMFOLD2_NUM_DIFFUSION_SAMPLES}"
     srun python "${PROJECT_ROOT}/scripts/run_rf_refine_fusion.py" \
         --fusion-config "${FUSION_CONFIG}" \
         --run-dir "${RUN_DIR}" \
@@ -200,7 +226,13 @@ if [ "${MODE}" = "fusion" ]; then
         --head-device cuda \
         --head-allele-idx "${HEAD_ALLELE_IDX}" \
         --head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}" \
-        --esmfold-cache-dir "${ESMFOLD_CACHE_DIR}" \
+        --refold-cache-dir "${REFOLD_CACHE_DIR}" \
+        --esmfold2-site-packages "${ESMFOLD2_SITE_PACKAGES}" \
+        --esmfold2-model "${ESMFOLD2_MODEL}" \
+        --esmfold2-num-loops "${ESMFOLD2_NUM_LOOPS}" \
+        --esmfold2-num-sampling-steps "${ESMFOLD2_NUM_SAMPLING_STEPS}" \
+        --esmfold2-num-diffusion-samples "${ESMFOLD2_NUM_DIFFUSION_SAMPLES}" \
+        --esmfold2-seed "${ESMFOLD2_SEED}" \
         "${REPAIR_FLAGS[@]}" \
         --out-dir "${OUT_DIR}" \
         --print-config
@@ -232,6 +264,8 @@ srun python "${PROJECT_ROOT}/scripts/refine_rf_designs.py" \
     --strong-rank "${STRONG_RANK}" \
     --margin-band "${MARGIN_BAND}" \
     --scTM-eps "${SCTM_EPS}" \
+    --refinement-structure-metrics "${REFINEMENT_STRUCTURE_METRICS}" \
+    "${SIDECHAIN_GATE_FLAG[@]}" \
     "${TOPB_FLAG[@]}" \
     --beam-width "${BEAM_WIDTH}" \
     --max-rounds "${MAX_ROUNDS}" \

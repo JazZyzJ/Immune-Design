@@ -6,7 +6,7 @@ IDs are content-derived (process-independent — never Python ``hash()``, which 
 unstable across processes); a ``PopulationState`` has normalized weights; the ``EliteState``
 holds a feasible best-so-far.
 
-The structure result is duck-typed (``.scTM``, ``.active_site_RMSD``, ``.passed`` ...); the
+The structure result is duck-typed (``.scTM``, selected active-site fields, ``.passed`` ...); the
 concrete container is ``reference_flow.refine.StructureMetrics`` (imported only under
 TYPE_CHECKING so this module stays torch-free).
 """

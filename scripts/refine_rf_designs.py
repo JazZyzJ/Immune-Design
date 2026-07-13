@@ -53,6 +53,23 @@ from inverse_folding.reference_flow.refine import (
 # (the head window template is length-dependent — a fixed template mis-maps long proteins).
 Oracles = namedtuple("Oracles", ["head_fn", "nmp_fn", "struct_fn", "window_coords_fn"])
 
+_REFINEMENT_STRUCTURE_METRICS = frozenset(
+    {"global_ca_rmsd", "plddt", "sidechain"}
+)
+
+
+def _parse_refinement_structure_metrics(value: str | None) -> frozenset[str]:
+    requested = frozenset(
+        item.strip().lower() for item in str(value or "").split(",") if item.strip()
+    )
+    unknown = requested - _REFINEMENT_STRUCTURE_METRICS
+    if unknown:
+        raise ValueError(
+            "unknown --refinement-structure-metrics values: "
+            f"{sorted(unknown)}; expected {sorted(_REFINEMENT_STRUCTURE_METRICS)}"
+        )
+    return requested
+
 
 def _make_target_window_idx_fn(win_starts, win_ends):
     """Build the cores->covering-window-indices map for a specific sequence length.
@@ -232,16 +249,34 @@ def _run_ceiling_seed(oracles, protein_id, seed_seq, design_idx, anchors, args) 
         # Soft improvement (PLAN §1): count drop, OR count tie with lower margin mass.
         improving = count < seed_count or (count == seed_count and margin < seed_margin)
         sc_tm = plddt = passed = None
+        global_ca_rmsd = active_site_sidechain_rmsd = None
+        max_anchor_sidechain_rmsd = max_anchor_atom_distance = None
+        active_site_complete = active_site_min_plddt = None
         if improving:
             m = oracles.struct_fn(protein_id, c.seq)
             sc_tm, plddt = m.scTM, m.pLDDT
+            global_ca_rmsd = getattr(m, "global_ca_RMSD", None)
+            active_site_sidechain_rmsd = getattr(m, "active_site_sidechain_RMSD", None)
+            max_anchor_sidechain_rmsd = getattr(m, "max_anchor_sidechain_RMSD", None)
+            max_anchor_atom_distance = getattr(m, "max_anchor_atom_distance", None)
+            active_site_complete = getattr(m, "active_site_complete", None)
+            active_site_min_plddt = getattr(m, "active_site_min_pLDDT", None)
             passed, _ = structure_gate(seed_metrics, m, scTM_eps=args.scTM_eps,
                                        scRMSD_max=args.scRMSD_max,
-                                       active_site_RMSD_max=args.active_site_RMSD_max)
+                                       active_site_RMSD_max=args.active_site_RMSD_max,
+                                       max_anchor_sidechain_RMSD_max=(
+                                           args.max_anchor_sidechain_RMSD_max
+                                       ))
         out.append({
             "protein_id": protein_id, "design_idx": int(design_idx), "muts": c.desc,
             "positions": list(c.positions), "head_proxy": hp, "core_count": count,
             "rank_margin_mass": margin, "scTM": sc_tm, "pLDDT": plddt, "passed": passed,
+            "global_ca_RMSD": global_ca_rmsd,
+            "active_site_sidechain_RMSD": active_site_sidechain_rmsd,
+            "max_anchor_sidechain_RMSD": max_anchor_sidechain_rmsd,
+            "max_anchor_atom_distance": max_anchor_atom_distance,
+            "active_site_complete": active_site_complete,
+            "active_site_min_pLDDT": active_site_min_plddt,
             "eliminates": bool(count < seed_count),
         })
     return out
@@ -261,6 +296,7 @@ def _run_refine_seed(oracles, protein_id, seed_seq, orig_design_idx, seed_val, a
         target_window_idx_fn=tw_fn,
         strong_rank=args.strong_rank, margin_band=args.margin_band, scTM_eps=args.scTM_eps,
         scRMSD_max=args.scRMSD_max, active_site_RMSD_max=args.active_site_RMSD_max,
+        max_anchor_sidechain_RMSD_max=args.max_anchor_sidechain_RMSD_max,
         topB=args.topB, beam_width=args.beam_width, max_rounds=args.max_rounds,
         patience=args.patience, max_path_mutations=args.max_path_mutations,
         refold_cap=args.refold_cap, allow_structure_unknown=args.allow_structure_unknown,
@@ -278,6 +314,12 @@ def _run_refine_seed(oracles, protein_id, seed_seq, orig_design_idx, seed_val, a
                 "core_count_after": entry["core_count"], "scTM_after": entry["scTM"],
                 "pLDDT_after": entry["pLDDT"], "scRMSD_after": entry["scRMSD"],
                 "active_site_RMSD_after": entry["active_site_RMSD"], "diverged": False,
+                "global_ca_RMSD_after": entry["global_ca_RMSD"],
+                "active_site_sidechain_RMSD_after": entry["active_site_sidechain_RMSD"],
+                "max_anchor_sidechain_RMSD_after": entry["max_anchor_sidechain_RMSD"],
+                "max_anchor_atom_distance_after": entry["max_anchor_atom_distance"],
+                "active_site_complete_after": entry["active_site_complete"],
+                "active_site_min_pLDDT_after": entry["active_site_min_pLDDT"],
             })
     else:
         # No accepted refinement: emit a no-op row so every seed appears for re-eval.
@@ -289,6 +331,16 @@ def _run_refine_seed(oracles, protein_id, seed_seq, orig_design_idx, seed_val, a
             "core_count_after": res.best_core_count, "scTM_after": getattr(m, "scTM", None),
             "pLDDT_after": getattr(m, "pLDDT", None), "scRMSD_after": getattr(m, "scRMSD", None),
             "active_site_RMSD_after": getattr(m, "active_site_RMSD", None),
+            "global_ca_RMSD_after": getattr(m, "global_ca_RMSD", None),
+            "active_site_sidechain_RMSD_after": getattr(
+                m, "active_site_sidechain_RMSD", None
+            ),
+            "max_anchor_sidechain_RMSD_after": getattr(
+                m, "max_anchor_sidechain_RMSD", None
+            ),
+            "max_anchor_atom_distance_after": getattr(m, "max_anchor_atom_distance", None),
+            "active_site_complete_after": getattr(m, "active_site_complete", None),
+            "active_site_min_pLDDT_after": getattr(m, "active_site_min_pLDDT", None),
             "diverged": bool(res.diverged),
         })
     trace = [{"protein_id": protein_id, "orig_design_idx": int(orig_design_idx), **t}
@@ -510,7 +562,8 @@ def _free_gpu() -> None:
 
 
 def _write_final_metrics_status(refined_dir: Path, *, ok: bool, error: str | None = None,
-                                n_designs: int | None = None, n_failures: int | None = None) -> None:
+                                n_designs: int | None = None, n_failures: int | None = None,
+                                structural_metrics_version: str | None = None) -> None:
     """Completeness marker written as the LAST step of the metrics pass (ok=True) or by main()'s
     guard on failure (ok=False). Consumers gate a full metric set on ok=true."""
     status = {"ok": ok}
@@ -520,6 +573,8 @@ def _write_final_metrics_status(refined_dir: Path, *, ok: bool, error: str | Non
         status["n_designs"] = n_designs
     if n_failures is not None:
         status["n_failures"] = n_failures
+    if structural_metrics_version is not None:
+        status["structural_metrics_version"] = str(structural_metrics_version)
     with open(refined_dir / "final_metrics_status.json", "w") as f:
         json.dump(status, f, indent=2, default=str)
 
@@ -530,7 +585,7 @@ def _run_final_metrics(args) -> None:
     ``refined/evaluator_ready.parquet``. Runs once after the refine loop.
 
     The search keeps only scalar metrics (core_count, scTM) and discards the raw per-window
-    NMP rows, per-residue head hotspots, and per-residue CA superposition; this pass
+    NMP rows, per-residue head hotspots, and side-chain geometry; this pass
     re-derives and persists them. Every final sequence was ESMFold-refolded during search,
     so ``refold`` is a cache hit here (keyed on (protein_id, sequence)) and structure is cheap.
 
@@ -549,6 +604,7 @@ def _run_final_metrics(args) -> None:
         load_generated_designs, load_test_lookup,
         build_head_predictor, build_nmp_runner,
         evaluate_immunogenicity_rows, evaluate_structural_rows,
+        _load_anchor_indices_by_protein,
     )
 
     gdf = load_generated_designs(gen_parquet)
@@ -586,11 +642,20 @@ def _run_final_metrics(args) -> None:
         _atomic_write(refined_dir, imm_res_df, "imm_head_residues.parquet")
         _atomic_write(refined_dir, imm_pep_df, "imm_nmp_peptides.parquet")
 
-    # --- structure: scTM/pLDDT/bb_RMSD/scRMSD/recovery/foldability + per-residue Kabsch RMSD ---
-    structural_df, struct_fail, struct_res_df = evaluate_structural_rows(
+    # --- structure: canonical v2 summary + index-addressable side-chain rows ---
+    anchor_indices_by_protein = _load_anchor_indices_by_protein(
+        args.constraint_manifest,
+        test_lookup,
+    )
+    evaluated = evaluate_structural_rows(
         gdf, test_lookup, pdb_root=args.pdb_root, refold_backend="esmfold",
         device=args.head_device, tmalign_bin="TMalign",
-        esmfold_cache_dir=args.esmfold_cache_dir, return_residue_metrics=True)
+        esmfold_cache_dir=args.esmfold_cache_dir, return_residue_metrics=True,
+        return_v2_metrics=True,
+        legacy_metrics=False,
+        anchor_indices_by_protein=anchor_indices_by_protein,
+    )
+    structural_df, struct_fail, struct_res_df = evaluated
     _atomic_write(refined_dir, structural_df, "structural.parquet")
     _atomic_write(refined_dir, struct_res_df, "structural_residues.parquet")
 
@@ -600,7 +665,13 @@ def _run_final_metrics(args) -> None:
         with open(refined_dir / "final_metrics_failures.json", "w") as f:
             json.dump(failures, f, indent=2, default=str)
     # completeness marker (LAST write): consumers gate a full set on ok=true
-    _write_final_metrics_status(refined_dir, ok=True, n_designs=len(gdf), n_failures=len(failures))
+    _write_final_metrics_status(
+        refined_dir,
+        ok=True,
+        n_designs=len(gdf),
+        n_failures=len(failures),
+        structural_metrics_version="v2",
+    )
     print(
         f"[refine] final-metrics done: imm_head={len(head_df)} imm_nmp={len(nmp_df)} "
         f"structural={len(structural_df)} structural_residues={len(struct_res_df)} "
@@ -628,6 +699,34 @@ def build_oracles(args) -> Oracles:
     missing = [k for k, v in required.items() if not v]
     if missing:
         raise ValueError(f"build_oracles requires: {', '.join(missing)}")
+    requested_structure_metrics = _parse_refinement_structure_metrics(
+        args.refinement_structure_metrics
+    )
+    if args.active_site_RMSD_max is not None:
+        raise ValueError(
+            "--active-site-RMSD-max is the retired C-alpha active-site gate and has no "
+            "real standalone oracle; use --max-anchor-sidechain-RMSD-max"
+        )
+    if (
+        args.max_anchor_sidechain_RMSD_max is not None
+        and (
+            not np.isfinite(args.max_anchor_sidechain_RMSD_max)
+            or args.max_anchor_sidechain_RMSD_max <= 0.0
+        )
+    ):
+        raise ValueError("--max-anchor-sidechain-RMSD-max must be finite and positive")
+    if (
+        args.max_anchor_sidechain_RMSD_max is not None
+        and "sidechain" not in requested_structure_metrics
+    ):
+        raise ValueError(
+            "--max-anchor-sidechain-RMSD-max requires "
+            "--refinement-structure-metrics sidechain"
+        )
+    if args.max_anchor_sidechain_RMSD_max is not None and not args.constraint_manifest:
+        raise ValueError(
+            "--max-anchor-sidechain-RMSD-max requires --constraint-manifest"
+        )
 
     # --- Head (reuse the existing build_head_scorer helper) ---
     from scripts.run_if_phase_c1 import build_head_scorer  # ControllerSetup-style seam
@@ -719,17 +818,71 @@ def build_oracles(args) -> Oracles:
     from inverse_folding.reference_flow.refine import StructureMetrics
     from inverse_folding.reference_flow.runtime import resolve_structure_path
 
+    evaluate_prediction_v2 = None
+    prepare_reference_context_v2 = None
+    if requested_structure_metrics:
+        from inverse_folding.evaluation.structural_metrics_v2 import (
+            evaluate_prediction as evaluate_prediction_v2,
+            prepare_reference_context as prepare_reference_context_v2,
+        )
+
     model = load_refold_model("esmfold", device=args.head_device)
     test_df = pd.read_parquet(args.test_set_parquet)
     test_lookup = {str(r["protein_id"]): r for _, r in test_df.iterrows()}
+    manifest = load_constraint_manifest(args.constraint_manifest) if args.constraint_manifest else None
+    ref_path_cache: dict[str, Path] = {}
+    reference_context_cache: dict[str, object] = {}
+
+    def _reference_path(pid: str) -> Path:
+        if pid not in test_lookup:
+            raise KeyError(f"protein {pid!r} is absent from --test-set-parquet")
+        if pid not in ref_path_cache:
+            ref_path_cache[pid] = Path(resolve_structure_path(test_lookup[pid], args.pdb_root))
+        return ref_path_cache[pid]
+
+    def _reference_context(pid: str):
+        if pid not in reference_context_cache:
+            ref_sequence = str(test_lookup[pid]["sequence"])
+            anchors = _anchors_for(manifest, pid, ref_sequence)
+            reference_context_cache[pid] = prepare_reference_context_v2(
+                _reference_path(pid),
+                ref_sequence=ref_sequence,
+                anchor_indices=anchors,
+            )
+        return reference_context_cache[pid]
 
     def struct_fn(pid, seq):
         pred = refold(seq, pid, "refine", backend="esmfold",
                       cache_dir=args.esmfold_cache_dir, model=model)
-        ref = resolve_structure_path(test_lookup[pid], args.pdb_root)
+        ref = _reference_path(pid)
         tm = run_tmalign(pred_pdb=str(pred["pdb_path"]), ref_pdb=str(ref), cache_dir=None)
+        v2 = None
+        if requested_structure_metrics:
+            v2 = evaluate_prediction_v2(
+                _reference_context(pid),
+                str(pred["pdb_path"]),
+                design_sequence=seq,
+                metrics=requested_structure_metrics,
+            )
         return StructureMetrics(scTM=float(tm["tm_score"]), pLDDT=float(pred["pLDDT"]),
-                                scRMSD=float(tm["rmsd"]))
+                                scRMSD=float(tm["rmsd"]),
+                                global_ca_RMSD=(None if v2 is None else v2.global_ca_rmsd),
+                                active_site_sidechain_RMSD=(
+                                    None if v2 is None else v2.active_site_sidechain_rmsd
+                                ),
+                                max_anchor_sidechain_RMSD=(
+                                    None if v2 is None else v2.max_anchor_sidechain_rmsd
+                                ),
+                                max_anchor_atom_distance=(
+                                    None if v2 is None else v2.max_anchor_atom_distance
+                                ),
+                                active_site_complete=(
+                                    None if v2 is None else v2.active_site_complete
+                                ),
+                                active_site_min_pLDDT=(
+                                    None if v2 is None
+                                    else v2.predicted_active_site_min_plddt
+                                ))
 
     return Oracles(head_fn=head_fn, nmp_fn=nmp_fn, struct_fn=struct_fn,
                    window_coords_fn=window_coords_fn)
@@ -796,6 +949,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--scTM-eps", dest="scTM_eps", type=float, default=0.05)
     p.add_argument("--scRMSD-max", dest="scRMSD_max", type=float, default=None)
     p.add_argument("--active-site-RMSD-max", dest="active_site_RMSD_max", type=float, default=None)
+    p.add_argument(
+        "--refinement-structure-metrics",
+        default="",
+        help=(
+            "comma-separated lightweight v2 metrics evaluated inside the refold loop: "
+            "global_ca_rmsd,plddt,sidechain (default: none; reference contexts are cached)"
+        ),
+    )
+    p.add_argument(
+        "--max-anchor-sidechain-RMSD-max",
+        dest="max_anchor_sidechain_RMSD_max",
+        type=float,
+        default=None,
+        help=(
+            "fail-closed ceiling on the worst per-anchor all-heavy-side-chain RMSD; "
+            "requires sidechain in --refinement-structure-metrics and a constraint manifest"
+        ),
+    )
     p.add_argument("--topB", type=int, default=None)
     p.add_argument("--beam-width", type=int, default=8,
                    help="working states between rounds; head-ranks the pool (cheap), topB caps NMP")
@@ -825,6 +996,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="imm_head n_hotspot_positions cutoff (evaluate_phase_c default 0.5)")
     p.add_argument("--imm-full", dest="imm_full", action="store_true", default=False,
                    help="also emit imm_head_residues + imm_nmp_peptides (evaluate_phase_c --imm-full)")
+    p.add_argument(
+        "--structural-metrics-v2",
+        action="store_true",
+        default=True,
+        help=(
+            "deprecated no-op: v2 is the canonical structural output"
+        ),
+    )
     p.add_argument("--out-dir", required=True)
     p.add_argument("--print-config", action="store_true")
     return p
@@ -852,7 +1031,8 @@ def main(argv=None) -> int:
                   "refined/evaluator_ready.parquet):", flush=True)
             traceback.print_exc()
             _write_final_metrics_status(Path(args.out_dir) / "refined", ok=False,
-                                        error=traceback.format_exc())
+                                        error=traceback.format_exc(),
+                                        structural_metrics_version="v2")
     return rc
 
 

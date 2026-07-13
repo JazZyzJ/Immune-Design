@@ -78,3 +78,43 @@ def test_af3_is_cache_read_not_stub(tmp_path):
     pred = refold(seq, pid, "design_0000", backend="af3", cache_dir=str(tmp_path), model=None)
     assert pred["pdb_path"] == str(tmp_path / f"{key}.pdb")
     assert pred["pLDDT"] == pytest.approx(88.0)
+
+
+def test_esmfold2_live_dispatches_to_persistent_model(tmp_path):
+    class FakeLiveModel:
+        def __init__(self):
+            self.calls = []
+
+        def predict(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"pdb_path": "/tmp/pred.pdb", "pLDDT": 92.0, "cache_hit": False}
+
+    model = FakeLiveModel()
+    pred = refold(
+        "MKTAYIAKQR",
+        "p1",
+        "fusion",
+        backend="esmfold2_live",
+        cache_dir=str(tmp_path),
+        model=model,
+    )
+
+    assert pred["pLDDT"] == pytest.approx(92.0)
+    assert model.calls == [{
+        "sequence": "MKTAYIAKQR",
+        "protein_id": "p1",
+        "design_id": "fusion",
+        "cache_dir": str(tmp_path),
+    }]
+
+
+def test_esmfold2_live_requires_loaded_model(tmp_path):
+    with pytest.raises(RuntimeError, match="loaded model"):
+        refold(
+            "MKTAYIAKQR",
+            "p1",
+            "fusion",
+            backend="esmfold2_live",
+            cache_dir=str(tmp_path),
+            model=None,
+        )

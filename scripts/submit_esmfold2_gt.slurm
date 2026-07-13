@@ -56,7 +56,11 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"   # for repo imports in --fr
 #   (<CACHE_LAYOUT>/<cache_key>.pdb + .plddt, 0-100) consumed by
 #   evaluate_phase_c.py --refold-model esmfold2.
 FROM_PARQUET="${FROM_PARQUET:-}"
-CACHE_LAYOUT="${CACHE_LAYOUT:-}"
+if [ -n "${FROM_PARQUET}" ]; then
+    CACHE_LAYOUT="${CACHE_LAYOUT:-${OUT_DIR}/cache}"
+else
+    CACHE_LAYOUT="${CACHE_LAYOUT:-}"
+fi
 
 # ── Diagnostics ───────────────────────────────────────────────────────────
 echo "============================================================"

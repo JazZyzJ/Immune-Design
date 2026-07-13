@@ -54,6 +54,9 @@ class FStruct:
     def __call__(self, protein_id, sequence):
         self.calls += 1
         return SimpleNamespace(scTM=0.95, active_site_RMSD=1.0, scRMSD=1.0, pLDDT=80.0,
+                               global_ca_RMSD=0.7, active_site_sidechain_RMSD=0.8,
+                               max_anchor_sidechain_RMSD=0.9, max_anchor_atom_distance=1.2,
+                               active_site_complete=True, active_site_min_pLDDT=75.0,
                                passed=True, reason="")
 
 
@@ -111,6 +114,14 @@ def test_run_fusion_writes_all_artifacts(tmp_path):
     assert set(gen["protein_id"]) == {"P1", "P2"}
     assert list(gen.columns) == ["protein_id", "design_idx", "sequence"]
     assert (gen["design_idx"] == 0).all()  # one elite per protein at design_idx 0
+    candidates = pd.read_parquet(tmp_path / "fusion_candidates.parquet")
+    assert {
+        "global_ca_RMSD",
+        "active_site_sidechain_RMSD",
+        "max_anchor_sidechain_RMSD",
+        "max_anchor_atom_distance",
+        "active_site_complete",
+    } <= set(candidates.columns)
 
 
 def test_particle_and_lineage_join_keys_are_unique(tmp_path):
@@ -163,7 +174,22 @@ def test_arg_parser_has_fusion_surfaces_and_no_nmp():
     # the H3 repair-arm flags forwarded by submit_refine.slurm MODE=fusion must exist here (P1-2
     # SLURM<->driver contract): a rename that desyncs the launcher would fail this.
     assert {"--base-if-checkpoint", "--rf-sampler-config"} <= opts
+    assert {"--refold-cache-dir", "--esmfold2-site-packages", "--esmfold2-model"} <= opts
     assert not any("nmp" in o.lower() or "netmhc" in o.lower() for o in opts)  # Head-only driver
+
+
+def test_smoke_config_uses_live_esmfold2_backend():
+    config_path = _ROOT / "inverse_folding" / "reference_flow" / "configs" / "rf_refine_fusion_smoke.yaml"
+    assert load_fusion_config(config_path).structure.backend == "esmfold2_live"
+
+
+def test_esmfold2_probe_config_bounds_real_folds():
+    config_path = _ROOT / "inverse_folding" / "reference_flow" / "configs" / "rf_refine_fusion_esmfold2_probe.yaml"
+    config = load_fusion_config(config_path)
+    assert config.structure.backend == "esmfold2_live"
+    assert config.core.population_size == 1
+    assert config.core.n_rounds == 1
+    assert config.structure.max_refolds_per_parent == 1
 
 
 # --------------------------------------------------------------------------- #

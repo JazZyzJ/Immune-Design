@@ -14,6 +14,10 @@ when that run is supplied and the protein is present in it; otherwise every
 ``delta_*_vs_wt`` column is ``pd.NA`` (never a placeholder/zero). The packaged WT
 facade run has no ``structural.parquet``, so NA is the expected v0 path.
 
+The structural input is the canonical v2 schema: the retained global RMSD is
+``global_ca_RMSD``; active-site geometry remains in the index-addressable
+``structural_residues.parquet`` sidecar and is never replaced by a C-alpha shell.
+
 This is a PURE function: DataFrame(s)/records in -> DataFrame out. No file IO, no
 CLI, no printing. The CLI wrapper is built separately by the orchestrator.
 """
@@ -31,12 +35,12 @@ _OUTPUT_COLUMNS = [
     "num_anchor_mismatches",
     "f_fold_status",
     "scTM",
-    "bb_RMSD",
+    "global_ca_RMSD",
     "pLDDT",
     "recovery",
     "foldability",
     "delta_scTM_vs_wt",
-    "delta_bb_RMSD_vs_wt",
+    "delta_global_ca_RMSD_vs_wt",
     "delta_pLDDT_vs_wt",
     "delta_recovery_vs_wt",
     "reference_type",
@@ -50,7 +54,7 @@ _OUTPUT_COLUMNS = [
 # Absolute structural metric -> its delta column name.
 _DELTA_METRICS = {
     "scTM": "delta_scTM_vs_wt",
-    "bb_RMSD": "delta_bb_RMSD_vs_wt",
+    "global_ca_RMSD": "delta_global_ca_RMSD_vs_wt",
     "pLDDT": "delta_pLDDT_vs_wt",
     "recovery": "delta_recovery_vs_wt",
 }
@@ -89,7 +93,7 @@ def build_f_post_v0(
     structural_df: pd.DataFrame,
     wt_structural_df: pd.DataFrame | None = None,
     *,
-    predictor: str = "esmfold",
+    predictor: str = "esmfold2",
     predictor_version: str = "na",
 ) -> pd.DataFrame:
     """Build the v0 ``f_post_v0`` measurement envelope.
@@ -154,7 +158,7 @@ def build_f_post_v0(
                 "num_anchor_mismatches": int(num_mismatches),
                 "f_fold_status": f_fold_status,
                 "scTM": sctm,
-                "bb_RMSD": row["bb_RMSD"],
+                "global_ca_RMSD": row["global_ca_RMSD"],
                 "pLDDT": row["pLDDT"],
                 "recovery": row["recovery"],
                 "foldability": row["foldability"],

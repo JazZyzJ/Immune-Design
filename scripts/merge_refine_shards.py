@@ -142,7 +142,15 @@ def main() -> None:
     # master join: objective + structural + imm on design_uid (left from refined_designs)
     master = rd.copy()
     join_cols = {
-        "structural": ["scTM", "pLDDT", "bb_RMSD", "scRMSD", "recovery", "foldability", "refold_backend"],
+        "structural": [
+            "scTM", "global_ca_RMSD", "pLDDT", "reference_pLDDT",
+            "predicted_active_site_mean_pLDDT", "predicted_active_site_min_pLDDT",
+            "reference_active_site_mean_pLDDT", "reference_active_site_min_pLDDT",
+            "active_site_sidechain_RMSD", "max_anchor_sidechain_RMSD",
+            "max_anchor_atom_distance", "active_site_sidechain_atom_count",
+            "anchor_count", "matched_anchor_count", "active_site_complete", "recovery",
+            "foldability", "refold_backend",
+        ],
         "imm_nmp": ["n_strong_binders", "n_weak_binders", "mean_best_rank", "n_windows_scored"],
         "imm_head": ["global_risk", "mean_hotspot", "max_hotspot", "n_hotspot_positions"],
     }
