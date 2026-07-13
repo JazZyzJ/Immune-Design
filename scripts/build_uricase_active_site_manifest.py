@@ -28,9 +28,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from Bio.Align import PairwiseAligner, substitution_matrices
-
-
 @dataclass
 class ProjectedAnchor:
     """A reference anchor projected onto one target sequence."""
@@ -52,6 +49,8 @@ def _make_aligner() -> PairwiseAligner:
     truncations, common across the 200/302/502-aa pool) align without forcing the
     conserved core out of register.
     """
+    from Bio.Align import PairwiseAligner, substitution_matrices
+
     aligner = PairwiseAligner()
     aligner.mode = "global"
     aligner.substitution_matrix = substitution_matrices.load("BLOSUM62")
@@ -182,7 +181,7 @@ def dedup_caseset(df, *, seq_col: str = "sequence", flag_col: str = "characteriz
 # ---------------------------------------------------------------------------
 # CLI orchestration (not unit-tested; the tested core is project_anchors /
 # dedup_caseset). Verified at runtime by a round-trip load_constraint_manifest +
-# validate_against_sequence over every emitted entry.
+# validate_source_sequence over every emitted entry.
 # ---------------------------------------------------------------------------
 
 import argparse  # noqa: E402
@@ -220,6 +219,12 @@ def _read_fasta_seq(path: str | Path) -> str:
 def _load_reference_entry(ref_manifest_path: str | Path, ref_protein_id: str):
     with open(ref_manifest_path) as handle:
         raw = yaml.safe_load(handle)
+    provenance = raw.get("annotation_provenance") or {}
+    if provenance.get("projection_allowed") is False:
+        raise ValueError(
+            f"reference manifest {ref_manifest_path} is not allowed for family "
+            "projection; choose a projection-enabled reference preset"
+        )
     entry = next(e for e in raw["entries"] if str(e["protein_id"]) == ref_protein_id)
     return (
         entry.get("hard_anchors", []),
@@ -461,11 +466,11 @@ def main() -> None:
     reloaded = cmod.load_constraint_manifest(args.out_manifest)
     seqs = dict(zip(df["protein_id"].astype(str), df["sequence"].astype(str)))
     for pid in reloaded.entries:
-        reloaded.entries[pid].validate_against_sequence(seqs[pid])
+        reloaded.entries[pid].validate_source_sequence(seqs[pid])
     print(
         f"[verify] reloaded {len(reloaded.entries)} entries, "
         f"{reloaded.num_hard_anchors_total} hard anchors, "
-        f"hash={reloaded.manifest_hash[:12]}; validate_against_sequence passed for all "
+        f"hash={reloaded.manifest_hash[:12]}; validate_source_sequence passed for all "
         f"(incl {args.ref_protein_id}: {args.ref_protein_id in reloaded.entries})"
     )
 

@@ -13,6 +13,16 @@ positions stay globally editable.
 
 **Design source:** `doc/Uricases_Design.md`.
 
+> **Q00511-only safety amendment (2026-07-13):** For direct Q00511 redesign,
+> use `inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml`.
+> It hard-fixes a 24-residue exact-WT safety-max union: all nine direct UniProt
+> active/binding residues, the full Q00511 experimental pocket/second shell, and
+> selected PS00366 positions L153/S155. The 0-based indices are
+> `{8,10,54,56,57,58,61,152,154,159,170,176,226,227,228,253,254,255,256,258,259,284,286,288}`.
+> This overrides the eight-anchor v0 first-run example below for Q00511 only.
+> It must not be used as the input template for family-wide projection; the v0
+> preset and generated per-protein v0 manifest remain unchanged.
+
 **Architecture:** Enzyme mode v0 is a sampler-owned hard legality layer. It does
 not change D1, D2, D3, SC-GR, the global pressure control law, or the DPLM decoder.
 The full WT sequence is not used as a generation prior. WT appears only in the
@@ -152,6 +162,9 @@ Validation rules:
 - `protein_id` must match the Phase C test-set row.
 - Each `index_0b` must be within the resolved `sequence`.
 - `resolved_sequence[index_0b] == expected_aa` must pass before generation.
+- If `sequence_md5` is present, the complete resolved **source** sequence must match
+  before generation; generated/refined sequences use anchor-only validation because
+  non-anchor edits are expected.
 - Duplicate hard-anchor indices are a hard error.
 - Empty hard-anchor lists are allowed only for unconstrained controls and must be
   recorded as such.
@@ -185,6 +198,8 @@ Validation rules:
       the manifest is present but a requested constrained protein is missing.
 - [ ] Implement `validate_against_sequence(sequence)` that asserts index bounds and
       expected AA identity.
+- [ ] Implement `validate_source_sequence(sequence)` and make fixed-token preflight
+      enforce optional full-sequence MD5 before anchor validation.
 - [ ] Convert hard anchors to model token ids using the existing DPLM alphabet
       mapping at the script/runtime boundary, not inside the manifest parser.
 
@@ -564,7 +579,7 @@ Minimal first target:
 ```text
 protein_id: Q00511
 allele: HLA-DRB1*07:01
-constraint: hard anchors {10, 57, 58, 159, 176, 228, 254, 256}
+constraint: safety-v1 24-site safety-max hard-anchor union (see amendment above)
 mode: reference_flow
 generation: all-mask-except-hard-anchors global RF
 immune eval: evaluate_phase_c.py --imm-full, external NMP primary

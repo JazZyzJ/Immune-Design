@@ -79,10 +79,9 @@ class ActiveSiteConstraint:
     def validate_against_sequence(self, sequence: str) -> None:
         """Fail-fast: assert every hard anchor is in bounds and matches ``expected_aa``.
 
-        Raises ``ValueError`` on the first out-of-range index or AA mismatch. This
-        is the three-way numbering safety net (doc/Uricases_Design.md §7.2): a
-        single mislabeled index relative to the resolved parquet sequence aborts
-        the run before any tokens are generated.
+        This anchor-only validator is also used on generated/refined sequences, which
+        are expected to differ from the source outside the frozen sites. Source-sequence
+        identity is enforced separately by ``validate_source_sequence``.
         """
         n = len(sequence)
         for anchor in self.hard_anchors:
@@ -100,6 +99,24 @@ class ActiveSiteConstraint:
                     f"expected_aa={anchor.expected_aa!r} but resolved sequence has "
                     f"{actual!r}"
                 )
+
+    def validate_source_sequence(self, sequence: str) -> None:
+        """Validate the resolved pre-generation source sequence and its anchors.
+
+        If ``sequence_md5`` is present, the complete sequence must match before any
+        anchor tokens are built. This makes exact-protein presets a runtime boundary
+        while keeping post-generation anchor validation compatible with redesigned
+        non-anchor positions.
+        """
+        if self.sequence_md5 is not None:
+            actual_md5 = hashlib.md5(sequence.encode()).hexdigest()
+            if actual_md5 != self.sequence_md5:
+                raise ValueError(
+                    f"sequence MD5 mismatch for protein {self.protein_id!r}: "
+                    f"manifest expects {self.sequence_md5!r} but resolved sequence "
+                    f"has {actual_md5!r}"
+                )
+        self.validate_against_sequence(sequence)
 
 
 @dataclass(frozen=True)
@@ -221,13 +238,23 @@ def load_constraint_manifest(path: str | Path) -> ConstraintManifest:
                 "for explicit unconstrained controls"
             )
 
+        sequence_md5 = (
+            str(entry["sequence_md5"]).lower() if entry.get("sequence_md5") else None
+        )
+        if sequence_md5 is not None and (
+            len(sequence_md5) != 32
+            or any(char not in "0123456789abcdef" for char in sequence_md5)
+        ):
+            raise ValueError(
+                f"protein {protein_id!r} has invalid sequence_md5={sequence_md5!r}; "
+                "expected 32 lowercase hexadecimal characters"
+            )
+
         entries[protein_id] = ActiveSiteConstraint(
             protein_id=protein_id,
             hard_anchors=hard_anchors,
             monitored_shell=_parse_monitored_shell(entry),
-            sequence_md5=(
-                str(entry["sequence_md5"]) if entry.get("sequence_md5") else None
-            ),
+            sequence_md5=sequence_md5,
             source_sequence=(
                 str(entry["source_sequence"]) if entry.get("source_sequence") else None
             ),
@@ -257,10 +284,11 @@ def build_fixed_token_map(
     """Validate ``constraint`` against the resolved ``sequence``, then map every
     hard-anchor ``index_0b`` to a model token id via ``aa_to_token``.
 
-    Fail-fast: ``validate_against_sequence`` raises before any token is emitted, so
-    a mislabeled anchor aborts the run prior to generation.
+    Fail-fast: ``validate_source_sequence`` verifies optional full-sequence MD5 plus
+    every anchor before any token is emitted, so the wrong source sequence or a
+    mislabeled anchor aborts the run prior to generation.
     """
-    constraint.validate_against_sequence(sequence)
+    constraint.validate_source_sequence(sequence)
     return {
         anchor.index_0b: int(aa_to_token(anchor.expected_aa))
         for anchor in constraint.hard_anchors

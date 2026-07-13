@@ -1,0 +1,141 @@
+# Q00511-only safety-max active-site and pocket-protection constraint.
+#
+# Scope is deliberately narrow: the exact 302-aa UniProt Q00511 canonical
+# sequence (sequence version 3). Do NOT use this file as the reference template
+# for family-wide projection. The v0 preset remains the historical projection
+# template; this v1 preset exists only for direct Q00511 redesign.
+#
+# Numbering contract:
+#   index_0b = UniProt canonical position - 1
+# Some PDB author residue numbers are one lower because initiator Met1 is
+# removed. Never copy PDB auth_seq_id directly into this manifest.
+schema_version: uricase_active_site_v1
+description: Q00511-only safety-max constraint; exact-WT lock of direct functional sites, experimental pocket shell, and selected PROSITE signature positions
+
+annotation_provenance:
+  scope: exact_Q00511_only_no_family_projection
+  projection_allowed: false
+  uniprot:
+    accession: Q00511
+    entry_name: URIC_ASPFL
+    sequence_length: 302
+    sequence_md5: 37bdca69e4f1ddd590d6d54618ef9152
+    sequence_version: 3
+    entry_version: 147
+    annotation_update: "2026-06-10"
+    retrieved: "2026-07-13"
+    url: https://www.uniprot.org/uniprotkb/Q00511/entry
+  direct_functional_union_uniprot_1b: [11, 58, 59, 160, 177, 228, 229, 255, 257]
+  q00511_pocket_shell_union_uniprot_1b: [9, 11, 55, 57, 58, 59, 62, 160, 171, 177, 227, 228, 229, 254, 255, 256, 257, 259, 260, 285, 287, 289]
+  selected_prosite_signature_uniprot_1b: [153, 155]
+  hard_protection_union_uniprot_1b: [9, 11, 55, 57, 58, 59, 62, 153, 155, 160, 171, 177, 227, 228, 229, 254, 255, 256, 257, 259, 260, 285, 287, 289]
+  enforcement_policy: safety_max_exact_wt_hard_fix
+  rationale: >-
+    Q00511 function preservation takes priority over family-level editability.
+    The nine direct UniProt functional sites, every residue in the reproducible
+    Q00511 experimental pocket/second-shell union, and the two selected PS00366
+    three-state positions are immutable at their exact WT identities. Family
+    allowed-AA sets are recorded as evidence but are not substitution permissions.
+
+# Annotation evidence below explains the hard-protection union while preserving
+# the distinction between direct curated functional sites and conservative
+# safety-max additions. Processing/localization and rejected stale labels remain
+# evidence-only and are not runtime constraints.
+annotation_evidence:
+  runtime_policy:
+    direct_functional_union: exact_wt_hard_fix
+    q00511_coordinate_and_literature_shell: exact_wt_hard_fix
+    selected_prosite_three_state_positions: exact_wt_hard_fix
+    family_allowed_aa_sets: recorded_but_not_used_as_substitution_permissions
+    processing_and_localization: evidence_only
+  local_msa_provenance:
+    source_path: data/Uricase/03_alignment/raw/nr90_aln.fasta
+    q00511_coordinate_mapping: ungapped Q00511 row to alignment column
+    frequency_denominator: non-gap residues at the mapped alignment column
+  family_restrictions:
+    - label: Val228
+      uniprot_position_1b: 228
+      local_msa_preferred_aas: [V, L, I]
+      local_msa_preferred_fraction: 0.9603
+      interpretation: evolutionary preference, not Q00511 substitution validation
+      v1_decision: hard_fix_WT_V
+    - label: Phe160
+      uniprot_position_1b: 160
+      local_msa_preferred_aas: [F, W, Y]
+      local_msa_preferred_fraction: 0.9977
+      interpretation: aromatic conservation, not Q00511 substitution validation
+      v1_decision: hard_fix_WT_F
+    - label: Ser227
+      uniprot_position_1b: 227
+      local_msa_preferred_aas: [S, A, G]
+      local_msa_preferred_fraction: 0.9947
+      interpretation: experimentally observed pocket-shell position, not a UniProt direct functional residue
+      v1_decision: hard_fix_WT_S
+  prosite_signature:
+    accession: PS00366
+    uniprot_range_1b: [150, 177]
+    q00511_sequence: LTVLKSTNSQFWGFLRDEYTTLKETWDR
+    three_state_positions:
+      - {uniprot_position_1b: 153, allowed_by_pattern: [L, I, V], q00511_wt: L}
+      - {uniprot_position_1b: 155, allowed_by_pattern: [S, T, V], q00511_wt: S}
+    interpretation: family signature rather than direct active-site annotation; positions 153 and 155 are exact-WT safety-max hard anchors
+  q00511_coordinate_shell:
+    extraction_contract:
+      numbering: UniProt canonical positions mapped through SIFTS, never PDB auth_seq_id
+      biological_assembly: 1
+      distance_cutoff_angstrom: 3.5
+      contact_definition: any protein heavy atom within cutoff of a ligand heavy atom
+      chain_handling: report same-protomer and adjacent-protomer contacts separately
+    structure_audit:
+      - pdb_id: 9QW6
+        state: urate_and_O2
+        contacts:
+          urate_adjacent_protomer_1b: [9, 55, 57, 58, 59]
+          urate_same_protomer_1b: [160, 171, 177, 227, 228, 229, 255, 289]
+          O2_adjacent_protomer_1b: [11, 58]
+          O2_same_protomer_1b: [255, 257, 287, 289]
+      - pdb_id: 9QW5
+        state: 9_methyl_urate
+        audit_scope: additional non-UniProt shell contacts relative to the direct functional union
+        additional_contacts_1b: [62, 259, 260]
+    literature_second_shell:
+      sources: [PMID:14993669, PMID:33520242]
+      uniprot_positions_1b: [254, 256, 285]
+    interpretation: pocket or second-shell structural context; exact-WT hard-fix for Q00511 safety-max without reclassifying these residues as curated catalytic sites
+  processing_and_localization:
+    - {feature: N_acetylserine, uniprot_position_1b: 2, active_site: false}
+    - {feature: peroxisomal_targeting_SKL, uniprot_range_1b: [300, 302], active_site: false}
+  rejected_stale_labels:
+    - {claimed_uniprot_position_1b: 36, claimed_aa: F, actual_q00511_aa: C}
+    - {claimed_uniprot_position_1b: 64, claimed_aa: F, actual_q00511_aa: T}
+    - {claimed_uniprot_position_1b: 144, claimed_aa: R, actual_q00511_aa: K}
+
+entries:
+  - protein_id: Q00511
+    sequence_md5: 37bdca69e4f1ddd590d6d54618ef9152
+    source_sequence: UniProt Q00511 canonical sequence version 3 (302 aa)
+    hard_anchors:
+      - {index_0b: 8,   expected_aa: Y, label: Tyr9,   biological_role: urate_pocket_adjacent_protomer_shell,                  source: "PDB 9QW6 coordinate shell (3.5A)"}
+      - {index_0b: 10,  expected_aa: K, label: Lys11,  biological_role: catalytic_charge_relay,                              source: "UniProt Q00511 ACT_SITE; PMID:24466188"}
+      - {index_0b: 54,  expected_aa: I, label: Ile55,  biological_role: urate_pocket_adjacent_protomer_shell,                  source: "PDB 9QW6 coordinate shell (3.5A)"}
+      - {index_0b: 56,  expected_aa: A, label: Ala57,  biological_role: urate_pocket_adjacent_protomer_shell,                  source: "PDB 9QW6 coordinate shell (3.5A)"}
+      - {index_0b: 57,  expected_aa: T, label: Thr58,  biological_role: catalytic_charge_relay_and_binding_urate_O2_5HIU,    source: "UniProt Q00511 ACT_SITE+BINDING; PMID:24466188,9360612,25314114"}
+      - {index_0b: 58,  expected_aa: D, label: Asp59,  biological_role: binding_urate_5HIU_and_water_network,                source: "UniProt Q00511 BINDING; PMID:9360612,25314114"}
+      - {index_0b: 61,  expected_aa: K, label: Lys62,  biological_role: ligand_pocket_and_water_network_shell,                 source: "PDB 9QW5 coordinate shell (3.5A); PMID:14993669"}
+      - {index_0b: 152, expected_aa: L, label: Leu153, biological_role: selected_PROSITE_PS00366_signature_protection,        source: "PROSITE PS00366 [LIV]"}
+      - {index_0b: 154, expected_aa: S, label: Ser155, biological_role: selected_PROSITE_PS00366_signature_protection,        source: "PROSITE PS00366 [STV]"}
+      - {index_0b: 159, expected_aa: F, label: Phe160, biological_role: binding_urate_5HIU_purine_pi_stacking,               source: "UniProt Q00511 BINDING; PMID:9360612,25314114"}
+      - {index_0b: 170, expected_aa: L, label: Leu171, biological_role: urate_pocket_same_protomer_shell,                      source: "PDB 9QW6 coordinate shell (3.5A)"}
+      - {index_0b: 176, expected_aa: R, label: Arg177, biological_role: binding_urate_5HIU_substrate_stabilizer,             source: "UniProt Q00511 BINDING; PMID:9360612,25314114"}
+      - {index_0b: 226, expected_aa: S, label: Ser227, biological_role: urate_pocket_same_protomer_shell,                      source: "PDB 9QW6 coordinate shell (3.5A); local MSA S/A/G=0.9947"}
+      - {index_0b: 227, expected_aa: V, label: Val228, biological_role: binding_urate_5HIU_pocket_lining_and_backbone_contact, source: "UniProt Q00511 BINDING; PMID:9360612,25314114"}
+      - {index_0b: 228, expected_aa: Q, label: Gln229, biological_role: binding_urate_5HIU_substrate_stabilizer,             source: "UniProt Q00511 BINDING; PMID:9360612,25314114"}
+      - {index_0b: 253, expected_aa: P, label: Pro254, biological_role: literature_second_shell_protection,                    source: "PMID:14993669,33520242"}
+      - {index_0b: 254, expected_aa: N, label: Asn255, biological_role: binding_urate_O2_5HIU_cross_protomer_W1_gate,        source: "UniProt Q00511 BINDING; PMID:25314114,33520242"}
+      - {index_0b: 255, expected_aa: K, label: Lys256, biological_role: literature_second_shell_protection,                    source: "PMID:14993669,33520242"}
+      - {index_0b: 256, expected_aa: H, label: His257, biological_role: catalytic_charge_relay,                              source: "UniProt Q00511 ACT_SITE; PMID:24466188"}
+      - {index_0b: 258, expected_aa: F, label: Phe259, biological_role: ligand_pocket_same_protomer_shell,                     source: "PDB 9QW5 coordinate shell (3.5A)"}
+      - {index_0b: 259, expected_aa: E, label: Glu260, biological_role: ligand_pocket_same_protomer_shell,                     source: "PDB 9QW5 coordinate shell (3.5A)"}
+      - {index_0b: 284, expected_aa: P, label: Pro285, biological_role: literature_second_shell_protection,                    source: "PMID:14993669,33520242"}
+      - {index_0b: 286, expected_aa: G, label: Gly287, biological_role: O2_pocket_same_protomer_shell,                         source: "PDB 9QW6 coordinate shell (3.5A)"}
+      - {index_0b: 288, expected_aa: I, label: Ile289, biological_role: urate_and_O2_pocket_same_protomer_shell,               source: "PDB 9QW6 coordinate shell (3.5A)"}

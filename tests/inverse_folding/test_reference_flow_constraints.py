@@ -9,7 +9,9 @@ boundary); the loader stays pure and import-light.
 
 from __future__ import annotations
 
+import hashlib
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +38,38 @@ Q00511_HARD = [
     (256, "H"),
 ]
 
+Q00511_SAFETY_V1 = [
+    (8, "Y"),
+    (10, "K"),
+    (54, "I"),
+    (56, "A"),
+    (57, "T"),
+    (58, "D"),
+    (61, "K"),
+    (152, "L"),
+    (154, "S"),
+    (159, "F"),
+    (170, "L"),
+    (176, "R"),
+    (226, "S"),
+    (227, "V"),
+    (228, "Q"),
+    (253, "P"),
+    (254, "N"),
+    (255, "K"),
+    (256, "H"),
+    (258, "F"),
+    (259, "E"),
+    (284, "P"),
+    (286, "G"),
+    (288, "I"),
+]
+
+Q00511_SAFETY_V1_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml"
+)
+
 
 def _q00511_manifest_text() -> str:
     anchors = "\n".join(
@@ -54,7 +88,6 @@ def _q00511_manifest_text() -> str:
         "description: Q00511 v0 hard-anchor constraint\n"
         "entries:\n"
         "  - protein_id: Q00511\n"
-        "    sequence_md5: deadbeef\n"
         "    hard_anchors:\n"
         f"{anchors}"
         "    monitored_shell:\n"
@@ -100,11 +133,45 @@ def test_valid_manifest_parses(tmp_path):
     assert manifest.manifest_hash  # non-empty stable digest
 
 
+def test_q00511_safety_v1_freezes_safety_max_protection_union():
+    manifest = load_constraint_manifest(Q00511_SAFETY_V1_PATH)
+    constraint = manifest.constraint_for_protein("Q00511")
+
+    assert manifest.schema_version == "uricase_active_site_v1"
+    assert [
+        (anchor.index_0b, anchor.expected_aa) for anchor in constraint.hard_anchors
+    ] == Q00511_SAFETY_V1
+    assert constraint.monitored_shell == ()
+    assert constraint.sequence_md5 == "37bdca69e4f1ddd590d6d54618ef9152"
+
+
 def test_validate_against_sequence_accepts_matching_sequence(tmp_path):
     manifest = load_constraint_manifest(_write(tmp_path, _q00511_manifest_text()))
     constraint = manifest.constraint_for_protein("Q00511")
     # Should not raise.
     constraint.validate_against_sequence(_seq_with_anchors())
+
+
+def test_sequence_md5_rejects_noncanonical_sequence_with_matching_anchors(tmp_path):
+    sequence = _seq_with_anchors()
+    digest = hashlib.md5(sequence.encode()).hexdigest()
+    text = _q00511_manifest_text().replace(
+        "  - protein_id: Q00511\n",
+        f"  - protein_id: Q00511\n    sequence_md5: {digest}\n",
+    )
+    constraint = load_constraint_manifest(_write(tmp_path, text)).constraint_for_protein(
+        "Q00511"
+    )
+    build_fixed_token_map(constraint, sequence, aa_to_token=ord)
+
+    variant = list(sequence)
+    variant[0] = "C"  # non-anchor edit; every hard-anchor identity still matches
+    with pytest.raises(ValueError, match=r"sequence MD5 mismatch"):
+        build_fixed_token_map(constraint, "".join(variant), aa_to_token=ord)
+
+    # Generated/refined designs are expected to change outside anchors, so the
+    # post-generation anchor-only validator must still accept this sequence.
+    constraint.validate_against_sequence("".join(variant))
 
 
 def test_wrong_expected_aa_fails(tmp_path):

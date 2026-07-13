@@ -14,11 +14,13 @@ import pathlib
 import sys
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
 
 from build_uricase_active_site_manifest import (  # noqa: E402
     ProjectedAnchor,
+    _load_reference_entry,
     dedup_caseset,
     project_anchors,
     projection_summary,
@@ -60,6 +62,16 @@ def test_self_projection_matches_all_anchors():
     m = _by_ref_index(project_anchors(REF, REF, ANCHORS))
     assert m[1].target_index_0b == 1 and m[1].target_aa == "K" and m[1].matched is True
     assert m[3].target_index_0b == 3 and m[3].target_aa == "D" and m[3].matched is True
+
+
+def test_exact_only_reference_manifest_cannot_be_projected():
+    manifest = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml"
+    )
+
+    with pytest.raises(ValueError, match=r"not allowed.*projection"):
+        _load_reference_entry(manifest, "Q00511")
 
 
 def test_offset_target_projects_through_alignment():

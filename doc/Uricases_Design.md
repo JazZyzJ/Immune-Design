@@ -384,6 +384,7 @@ conservation** (it is *not* a pure conservation filter). Identity sequence-verif
 | 58  | 59  | D | 0.974 | binding |
 | 159 | 160 | F | 0.918 | binding (purine stacking) |
 | 176 | 177 | R | 0.985 | binding (stabilizer) |
+| 227 | 228 | V | 0.649 | binding (pocket lining; v0 monitored, Q00511 safety v1 hard-fixed) |
 | 228 | 229 | Q | 0.987 | binding (stabilizer) |
 | 254 | 255 | N | 0.970 | binding (cross-protomer W1) |
 | 256 | 257 | H | 0.944 | active (triad) |
@@ -426,6 +427,20 @@ UniProt binding **Val228** (0-based 227, cons 0.649, family-variable) is **not**
 labeled Phe is C, pos64 labeled Phe is T, pos144 labeled Arg is K; all variable in the
 family, conservation 0.28/0.81/0.22 — not catalytic). The 6 clean entries match. The single
 mitigation is the fail-fast identity assert (§7.4), which would have caught all 3.
+
+**Q00511-only safety v1 (2026-07-13).** For direct redesign of the exact Q00511
+canonical sequence, safety takes precedence over family-level editability. The direct
+functional core remains the nine-residue UniProt active/binding union
+**K11/T58/D59/F160/R177/V228/Q229/N255/H257**, including exact-WT Val228. The
+safety-max preset expands runtime protection to 24 exact-WT residues: the complete
+22-residue Q00511 experimental pocket/second-shell union plus selected PS00366
+positions **L153/S155**. This is
+`configs/uricase_q00511_active_site_safety_v1.yaml`; it is explicitly **not** a source
+for family projection. The historical v0 preset and per-protein v0 manifest remain
+unchanged for reproducibility. Local MSA preferences V/L/I at Val228 (96.03%),
+F/W/Y at Phe160 (99.77%), and S/A/G at Ser227 (99.47%) are evidence for protection,
+not experimentally validated substitution permissions; safety-max hard-fixes their
+Q00511 WT identities.
 
 By homo-symmetry, fixing the chosen positions on the design chain protects all four sites
 **provided the spec is complete** (includes interface-contributing residues). Container
@@ -570,6 +585,28 @@ implementation change).
 - `contract_version`: v0 · `freeze_date`: 2026-06-23 · `review_status`: user-approved
   (Thinker4Uricases). Only mechanical work remains before Coder: the per-case fail-fast
   numbering map.
+
+### 9.0.1 Q00511-only safety amendment (2026-07-13)
+
+- **Scope:** exact UniProt Q00511 canonical sequence only (302 aa; sequence MD5
+  `37bdca69e4f1ddd590d6d54618ef9152`); no family projection.
+- **`ActiveSiteSpec` safety v1:** `hard_fix` = 0-based
+  **{8, 10, 54, 56, 57, 58, 61, 152, 154, 159, 170, 176, 226, 227, 228, 253,
+  254, 255, 256, 258, 259, 284, 286, 288}**. The 24 exact-WT anchors comprise the
+  nine direct UniProt charge-relay/ligand-binding sites, the full 22-residue Q00511
+  experimental pocket/second-shell union (the direct sites are a subset), and selected
+  PS00366 positions L153/S155.
+- **Evidence classification:** Coordinate/literature shell residues and selected
+  PS00366 positions are hard-fixed for safety but are not reclassified as curated
+  catalytic residues. Family substitution sets are not runtime permissions. Ser2
+  acetylation, the terminal SKL targeting motif, and rejected stale labels remain
+  evidence-only because they are not active-site constraints.
+- **Version boundary:** v0 remains the historical family-projection template. Q00511
+  runs that require maximum active-site safety must explicitly pass
+  `uricase_q00511_active_site_safety_v1.yaml`. Its full source-sequence MD5 is
+  checked before fixed-token construction, and `projection_allowed: false` makes
+  the family-manifest builder reject it. Generated/refined candidates are still
+  checked only at the 24 immutable anchors, so non-anchor redesign remains valid.
 
 ### 9.1 `F_post` v0 contract (draft)
 

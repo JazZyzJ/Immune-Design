@@ -3693,3 +3693,32 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - Workflow `wf_7fecdf6b-fd8` (tag-unify-hmap-gate), `scripts/_migrate_tag_unify.sh`, `scripts/run_if_phase_c1.py` gate
   - `L0130` (NoD baseline that motivated dropping h-maps)
+
+### L0132
+- timestamp: 2026-07-13T01:34:07-04:00
+- type: FEATURE
+- module: RF
+- trigger: User requested the maximum-safety active-site recipe for exact UniProt Q00511 only, with no family projection, after re-auditing current UniProt annotations, Q00511 structures/literature, and the local uricase MSA.
+- change_summary: Added `uricase_q00511_active_site_safety_v1.yaml`, a Q00511-only safety-max preset with 24 exact-WT hard anchors: the complete nine-residue UniProt active/binding core, the full 22-residue Q00511 experimental pocket/second-shell union (including that core), and selected PS00366 positions L153/S155. The config records UniProt entry/sequence provenance, local MSA preferences, a reproducible coordinate-shell extraction contract, processing/localization annotations, and rejected stale labels while preserving the evidence-class distinction between curated functional sites and conservative protection additions. Added a source-sequence validation boundary: `build_fixed_token_map` verifies the full configured MD5 before design, while post-generation validation remains anchor-only. The family-manifest builder now fails fast on `projection_allowed: false`. The historical v0 preset and per-protein v0 manifest are unchanged and remain the family-projection contract.
+- rationale: Exact Q00511 function preservation takes priority over family-level editability. Local V/L/I at Val228 (96.03%), F/W/Y at Phe160 (99.77%), and S/A/G at Ser227 (99.47%), plus PS00366 allowed sets, are not Q00511 substitution-validation evidence; safety-max therefore fixes the exact WT identities rather than exposing allowed-AA sets. Coordinate/literature shell and selected signature positions are enforced conservatively without being mislabeled as curated catalytic residues; PTM and localization annotations remain evidence-only. The 24-anchor union leaves 278/302 positions globally editable.
+- artifacts:
+  - `inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml`
+  - `inverse_folding/reference_flow/constraints.py`
+  - `scripts/build_uricase_active_site_manifest.py`
+  - `tests/inverse_folding/test_reference_flow_constraints.py`
+  - `tests/scripts/test_build_uricase_active_site_manifest.py`
+  - `doc/Uricases_Design.md`
+  - `PLAN_URICASE_ENZYME_MODE.md`
+  - `doc/SCRIPTS.md`
+  - `PROGRESS.md`
+- evidence: |
+    `/opt/anaconda3/envs/dl/bin/python -m pytest tests/inverse_folding/test_reference_flow_constraints.py tests/inverse_folding/test_reference_flow_sampler_constraints.py tests/scripts/test_build_uricase_active_site_manifest.py -q` -> 40 passed. Real local Q00511 seed validation passed at length 302 / MD5 `37bdca69e4f1ddd590d6d54618ef9152`; parsed manifest has exactly 24 hard anchors, 0 monitored residues, and every expected AA matches the resolved seed. Negative tests confirm that a non-anchor source-sequence mutation fails the MD5 preflight, the same non-anchor change remains legal during post-generation anchor validation, and the family-manifest builder rejects safety v1. `git diff --check` on touched files passed.
+- impact:
+  - scope: exact-Q00511 RF runs only when the new safety-v1 manifest is explicitly passed. No sampler/controller behavior change, no family manifest regeneration, and no change to valid existing v0 runs; stale or mismatched configured source sequences now fail before fixed-token construction.
+  - risk: low
+  - confidence: 0.94
+- status: done
+- refs:
+  - `doc/Uricases_Design.md` §7.1-7.2 and §9.0.1
+  - UniProt Q00511 entry version 147 (annotation update 2026-06-10)
+  - `L0120` (historical enzyme-mode v0 constraints)
