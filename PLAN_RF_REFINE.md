@@ -18,7 +18,7 @@ active-site anchors.
 **Architecture:** A standalone stage **between** generation (`scripts/run_if_phase_c1.py`)
 and evaluation (`scripts/evaluate_phase_c.py`). Pure search/selection logic lives in
 `inverse_folding/reference_flow/refine.py`; the three expensive oracles (immune head,
-NetMHCIIpan, ESMFold refold) are **injected as callables**, so the logic is unit-testable
+NetMHCIIpan, ESMFold2 refold) are **injected as callables**, so the logic is unit-testable
 without them. A driver `scripts/refine_rf_designs.py` wires the real oracles and does I/O.
 Mechanism = local combinatorial search on the sequence (NOT re-running the RF sampler; the
 sampler's `fixed_tokens` inpainting path is the deferred alternate in §9).
@@ -43,8 +43,9 @@ range 1–12 over char23/0701; Q00511 = 3). Head risk is an inner-loop proxy, no
   optimises head/NMP-surrogate, never trains against NMP (anti-circularity preserved).
 - **Head** (`OnlineHeadScorer`) is the cheap inner-loop ranker (scores many candidates per
   NMP call).
-- **Refold** (a `StructureMetrics` bundle: ESMFold pLDDT + TMalign scTM vs WT backbone, and
-  later scRMSD / active-site RMSD) is the structure/activity gate.
+- **Refold** (a `StructureMetrics` bundle from the persistent isolated ESMFold2 worker plus
+  TMalign scTM vs WT backbone and canonical v2 side-chain/confidence metrics) is the
+  structure/activity gate.
 
 **Experimental framing makes NMP-as-gate honest:** phase-1 wet-lab readout is **activity
 recovery**, not an immunogenicity assay. NMP is an in-silico filter producing
@@ -93,11 +94,11 @@ core A but creating core B is rejected.
 
 **Structure reference.** scTM/RMSD are measured against the **WT/target backbone** in
 `pdb_root` (the inverse-folding design target; decision-layer eval, not a firewall violation).
-Floor anchored at the **seed design's** metrics (accept iff `scTM ≥ scTM₀ − ε`, plus optional
-global C-alpha telemetry and a fail-closed `max_anchor_sidechain_RMSD` ceiling when wired).
-Active-site geometry is all-heavy-side-chain after one global full-trace C-alpha
-superposition; it is never a local C-alpha shell RMSD. pLDDT is confidence telemetry,
-orthogonal to reference similarity.
+The standard protocol gate is conjunctive and absolute: `scTM ≥ X`, direct-functional
+`cat_max_scRMSD ≤ Y`, and `predicted_active_site_min_pLDDT ≥ Z`. `X/Y/Z` are required runtime
+inputs with no repository defaults. Active-site geometry is all-heavy-side-chain after one
+global full-trace C-alpha superposition; it is never a local C-alpha shell RMSD. The legacy
+seed-relative gate remains available only through an explicit compatibility profile.
 
 **Two modes (keep the interface).** `--target-source nmp` (Mode 1, default) vs
 `--target-source head` (Mode 2, deferred use — to demonstrate head-beats-NMP once blood data
@@ -478,8 +479,9 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
   (`--head-checkpoint --head-config-dir --head-variant-id --head-device --head-allele-idx
   --head-window-batch-size`); NMP args mirroring `evaluate_phase_c.py` (`--nmp-batch-size
   --nmp-max-lengths-per-call --nmp-workers --nmp-timeout`); structure (`--pdb-root
-  --esmfold-cache-dir`); search knobs (§7): `--strong-rank --margin-band --scTM-eps
-  --scRMSD-max --refinement-structure-metrics --max-anchor-sidechain-RMSD-max
+  --refold-cache-dir --refold-model --esmfold2-*`); search knobs (§7): `--strong-rank
+  --margin-band --structure-gate-profile --gate-scTM-min --gate-cat-max-scRMSD-max
+  --gate-predicted-active-site-min-pLDDT-min --refinement-structure-metrics
   --structural-metrics-v2 --topB --beam-width --max-rounds --patience --max-pairs
   --head-high-topk --allow-structure-unknown`; `--out-dir`.
 
@@ -495,12 +497,11 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
     `from inverse_folding.evaluation.immunogenicity import NMP_PEP_LENGTHS`; call
     `runner.score_batch([(pid, seq)], allele, NMP_PEP_LENGTHS)` and flatten to rows
     `{pos, pep_length, peptide, core, rank_EL:=el_rank}`.
-  - `struct_fn`: `model = load_refold_model("esmfold", device=args.head_device)` once; per call
-    `pred = refold(seq, pid, design_id, backend="esmfold", cache_dir=args.esmfold_cache_dir,
-    model=model)`, `scTM, rmsd = run_tmalign(pred["pdb_path"], resolve_structure_path(<test_row
-    for pid>, args.pdb_root))`; return `StructureMetrics(scTM=scTM, pLDDT=pred["pLDDT"],
-    scRMSD=rmsd)`. (Confirm `resolve_structure_path`'s exact signature in
-    `scripts/evaluate_phase_c.py` — it takes the test-set row, not a bare id.)
+  - `struct_fn`: start one persistent isolated `esmfold2_live` worker; per call refold into
+    the normalized cache, run TMalign against `resolve_structure_path(<test_row for pid>,
+    args.pdb_root)`, and compute canonical v2 side-chain/confidence metrics. Return
+    `StructureMetrics` including `scTM`, `cat_max_scRMSD`, and
+    `predicted_active_site_min_pLDDT`. The worker is closed before the final cache-read eval.
 
   **(c) `run_refinement(args, oracles)`**: load `generated.parquet` + `imm_head.parquet`; per
   protein pick top `--seeds-per-protein` designs by `global_risk`; anchors via
@@ -572,7 +573,8 @@ python scripts/refine_rf_designs.py --mode ceiling \
 ### E1 — full refinement, char23/0701, re-evaluation
 
 **Objective:** per protein, a ranked shortlist of refined sequences with **lower distinct-core
-count** than the seed at `scTM ≥ scTM₀ − ε`; report how many proteins reach **count 0**.
+count** than the seed and passing the calibrated protocol structure gate; report how many
+proteins reach **count 0**.
 Success (figure-worthy): ≥ 1 protein to 0 and a positive median count reduction vs the seed;
 Q00511 (3 cores) is the primary smoke target.
 
@@ -587,7 +589,9 @@ first, then extend the winner to the full belly.
 
 - [ ] **Smoke — Q00511:** `--mode refine --proteins Q00511 --seeds-per-protein 1
   --topB <E0-informed or omit for NMP-all> --beam-width 8 --max-rounds 20 --patience 3
-  --scTM-eps 0.05 --out-dir Results/RF/Uricase/refine_q00511_smoke_0701` (+ the head/pdb/nmp
+  --gate-scTM-min <X> --gate-cat-max-scRMSD-max <Y>
+  --gate-predicted-active-site-min-pLDDT-min <Z>
+  --out-dir Results/RF/Uricase/refine_q00511_smoke_0701` (+ the head/pdb/nmp
   args from E0). Confirm `refined/refined_designs.parquet` + `refined/evaluator_ready.parquet`
   exist; `core_count_after ≤ before`; scTM floor respected; config echoed; inspect `refine_trace.parquet`.
 - [ ] **Full — char23/0701:** as above with `--proteins all --seeds-per-protein 3
@@ -607,7 +611,8 @@ python scripts/evaluate_phase_c.py --generated <out>/refined/evaluator_ready.par
 - **Environment:** `immune-design` conda env (Python 3.12, PyTorch 2.5.1) on Della; source at
   `/home/zc1519/src/Immune-Design`. Pure-logic tests (R1–R3) also run in a plain numpy env
   (they load `refine.py` by file path, bypassing the torch-backed package `__init__`).
-- **Hardware:** one GPU (immune head forward + ESMFold refold). NetMHCIIpan on CPU via the
+- **Hardware:** one H200-class GPU (immune head forward + persistent ESMFold2 refold worker).
+  NetMHCIIpan runs on CPU via the
   existing `netmhciipan_runner` (the char23 `nmp_local` run confirms a working NMP install).
 - **Inputs (all via CLI, never hardcoded):** the char23/0701 gen+eval run dir, its
   `manifest.json` (head checkpoint/config/allele-idx), the active-site manifest yaml, and
@@ -631,9 +636,10 @@ python scripts/evaluate_phase_c.py --generated <out>/refined/evaluator_ready.par
 | `strong_rank` | 0.02 | strong = `rank_EL < 2%`; "eliminated" = crosses ≥ 2%. |
 | distinct-core identity | `core_start` | per RAR 0024; adjacent-register merge deferred. |
 | `margin_band` | 0.10 | `rank_margin_mass` counts cores with `rank_EL < 10%`. |
-| `scTM_eps` | 0.05 | floor vs seed scTM₀; recalibrate on the Q00511 smoke. |
-| `max_anchor_sidechain_RMSD_max` | `None` until calibrated | Strict worst-anchor all-heavy-side-chain ceiling after one global C-alpha superposition; missing/incomplete atom correspondence fails closed. Monomer-partial for uricase (tetramer-interface geometry still requires a later complex-aware gate). |
-| `scRMSD_max` | `None` | global backbone-RMSD ceiling (more local-sensitive than scTM); optional. |
+| `gate_scTM_min` | required, no default | Absolute global-fold sanity floor; calibrate per run. |
+| `gate_cat_max_scRMSD_max` | required, no default | Worst direct-functional catalytic-residue all-heavy-side-chain RMSD; missing/incomplete correspondence fails closed. |
+| `gate_predicted_active_site_min_pLDDT_min` | required, no default | Worst protected active-site residue confidence floor; calibrate per run. |
+| `structure_gate_profile` | `protocol` | `legacy` is an explicit compatibility path for `scTM_eps` / older optional ceilings. |
 | `max_path_mutations` | 8 | cheap refold-free cap bounding branch-waste on stacked edits. |
 | `refold_cap` | 16 / round | max count-dropping candidates refolded per round (top by count↓, then edits↓). **Essential:** single mutations kill cores readily (H2ETE7: 2003/2208 candidates dropped count) so unbounded refold explodes (80 min GPU); the cap bounds ESMFold AND is exactly the lean ranked shortlist wanted. |
 | `allow_structure_unknown` | `False` | v0 refolds+gates ONLY count-dropping (output) candidates; margin-progress states enter the beam with no refold. |

@@ -138,3 +138,27 @@ Run `uricase_c24_s0_20260711T222303` (job 11032649, ailab H200, 01:24:18; `confi
 - **Two Coder caveats (guarded, not in the invariant set):** #1 full closure needs S2 selector-replay; the elite bypasses the #4 firewall by construction and relies on the `state.py` feasibility guard.
 
 **Next (deferred, §10):** S1 repair/H3 arm · S2 selector replay · formal **P1–P3 immune gate on the B1 high-risk test set** (not this uricase family). Structure metric for future runs → **ESMFold2 + sidechain** (this S0 used ESMFold v1 scTM + Cα-shell RMSD). PLAN §6 cohort still to be reconciled to B1 (currently entangled with the uncommitted sidechain-structure PLAN edit — reconcile when that lands).
+
+## 12. High-risk P1 (H1) — calibration IN PROGRESS (2026-07-13)
+
+Per the local Thinker: S0 mechanism cleared → run **P1 (H1) on the high-risk cohort, explicit-only greedy path** (the exact S0-verified mechanism). **P2 (H3 repair) / P3 (H6 FK-beam) stay on hold** until their mechanism smokes (S1/S2, §10) pass. The three structure/search gates are **calibrated from high-risk telemetry, not transferred from the enzyme/AFDB S0** (where scTM_min was non-binding).
+
+**Resolved facts (verified this session):**
+- **Cohort** = `highrisk_nod_v1_HLA-DRB1_07_01` (100 proteins, len 102–454). **Crystal premise VERIFIED: 100/100 experimental X-ray** (PDB headers EXPDTA X-RAY, REMARK-2 res 0.84–2.5 Å, crystallographic B-factors) — the deliberate opposite of the uricase AFDB cohort, so scTM(design→crystal) genuinely binds (29-overlap sample already shows scTM bimodal: dense 0.90+ mode + real 0.2–0.5 tail).
+- **Parents** = reuse the S0-consistent **DPLM-native gumbel** full-pool (`dplm_native_full_v2_gumbel`, covers 100/100 × 8 unique designs) — NOT the RF-DFM c1_null NoD pool (would swap the parent kernel). No regeneration.
+- **Structure = ESMFold2-live** (`backend: esmfold2_live`, ~7 s/refold vs v1's 2.4 s; new metrics `global_ca_RMSD` / sidechain-anchor / pLDDT are additive; scTM still = TMalign vs crystal ref). Cohort is **non-enzyme → `constraint_manifest=none` → scTM is the SOLE structural gate** (active-site path N/A, no fail-fast). pdb_root = `pdbs_if_ready/HLA-DRB1_07_01` (resolves 100/100). Head = a1res03 cv5 fold0.
+- **Config** = `configs/rf_refine_fusion_highrisk_probe.yaml`.
+
+**Calibration probe DONE (job 11194105, 9 ok / 1 fail, 81.8 min; 10 length-stratified proteins, n_rounds=8, scTM_min=0.5 loose):**
+
+| Gate | Telemetry | Calibrated value |
+|---|---|---|
+| **scTM_min** | candidate scTM (edited seqs vs crystal, esmfold2+TMalign): p05=0.742 / p10=0.864 / p25=0.915 / p50=0.951. Rejection: 0.85→9.7%, 0.88→11%, 0.90→16%. Real lower tail (unlike S0's compressed 0.91–0.98). | **0.85** (binding; drops ~10% structure-breaking edits at candidate-p10) |
+| **n_rounds** | median elite_risk r0=−3.3→r1=−8.1(Δ4.83)→r2=−9.08(Δ0.94)→r3=−9.26(Δ0.18)→r4=−9.39(Δ0.13)→r5=−9.43(Δ0.04)→r6=−9.45(Δ0.017)→r8=−9.53. Elbow r3–4; r6 captures ~99%. Not fully plateaued by 8 (5/9 still microdescending). | **6** (S0's 3 was too short by ~0.19) |
+| **N_H off-target** | rejects 75.7% of candidates (≈S0's 80%) BUT n_feasible_children stays ~28 every round (min 13, never →0); n_selected decline = convergence not starvation. | **keep 0.10** (not starving on the high-burden regime) |
+
+**Cost (ESMFold2, MEASURED):** actual **~2.9 s/refold** (1618 refolds / 78.9 min) — NOT the 7 s the single-fold codex probe suggested (that was model-load-dominated); at scale + cache it matches ESMFold v1. → **full P1 effect run (100 proteins, n_rounds=6) ≈ 12–15 GPU-h**, shard into ~5–6 explicit-PROTEINS sbatch jobs (fusion branch has no array sharding).
+
+**Coverage note:** 1 probe protein (5G3X_A) failed `insufficient_feasible_initial_population` even at the loose 0.5 gate — its DPLM-native parents refold to scTM<0.5 vs crystal. At the effect gate (0.85) more proteins will drop at handoff; this is the scTM gate correctly rejecting proteins whose redesigns do not recover the native crystal fold (report coverage; do not silently loosen).
+
+**Effect run (P1 measurement) — recommended config `rf_refine_fusion_highrisk_p1.yaml`:** scTM_min 0.85, n_rounds 6, N_H 0.10, N=4, esmfold2_live, greedy explicit-only, constraint_manifest=none, all 100 cohort proteins, sharded ~5–6 jobs. **Held for local-Thinker green-light on the gate values before launch** (this is the P1 immune-effect deliverable, not a smoke).

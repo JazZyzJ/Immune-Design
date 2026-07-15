@@ -24,7 +24,8 @@ tetramer-feeder list and a refinement-seed list. Re-calibrate the numeric floors
    active-site metrics are **GATES** (pass/fail reliability); the **AF3 tetramer is the real
    ranker**. Do not over-engineer monomer ranking as if it settled activity.
 3. **Refinement is structure-one-sided.** Objective = immune (distinct epitope-core count);
-   structure is a **one-sided accept gate** (`scTM ≥ scTM₀ − eps`). It preserves-or-degrades,
+   structure is a conjunctive **accept gate** over absolute `scTM`, direct-functional
+   `cat_max_scRMSD`, and `predicted_active_site_min_pLDDT`. It preserves-or-degrades,
    **never repairs**. Expected structural change vs seed is ≤ 0. → **Seed refinement from the
    best structures.** A low-immune / bad-structure design is a bad seed: refinement cannot fix
    its fold. There is no "bad structure that refinement turns good" case to chase.
@@ -83,7 +84,9 @@ structure-mediocre seeds (principle 3).
 reach 0 → less non-anchor fold perturbation).
 
 **Refinement config**: anchors frozen (run constraint manifest); objective = epitope-core
-count → 0; structure gate `scTM_eps`. See `PLAN_RF_REFINE.md` / `scripts/refine_rf_designs.py`.
+count → 0; live refold = ESMFold2; structure gate = `scTM ≥ X ∧ cat_max_scRMSD ≤ Y ∧
+predicted_active_site_min_pLDDT ≥ Z`. The metric set is fixed, but `X/Y/Z` have no repository
+defaults and must be calibrated per run. See `PLAN_RF_REFINE.md` / `scripts/refine_rf_designs.py`.
 
 **Post-refine selection**: re-run structure eval on **all** refined outputs; keep
 (good structure ∧ `n_strong==0`). Over-provision to ~1000+ outputs given the ~1/1000 yield.
@@ -126,9 +129,12 @@ Then List 2 → refinement (anchors frozen, wide beam, keep full shortlist), via
 ```bash
 SEED_TABLE=<run-dir>/selection/list2_refine_seeds.parquet \
 CONSTRAINT_MANIFEST=<run-dir>/meta/constraint_manifest.yaml \
+GATE_SCTM_MIN=<run-calibrated-floor> \
+GATE_CAT_MAX_SCRMSD_MAX=<run-calibrated-ceiling> \
+GATE_ACTIVE_SITE_MIN_PLDDT_MIN=<run-calibrated-floor> \
 ALLELE='HLA-DRB1*04:01' OUT_DIR=<refine-out> \
 sbatch scripts/submit_refine.slurm
-# --mode refine ; deep search per seed ; post-refine re-eval keeps good-structure ∧ n_strong==0
+# deep search per seed; post-refine re-eval keeps protocol-gate-pass ∧ n_strong==0
 ```
 
 ## Calibration (re-run per new dataset)

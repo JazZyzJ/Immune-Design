@@ -13,7 +13,7 @@
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/refine/refine_%j.err
 
 # RF refinement driver (PLAN_RF_REFINE.md) — one GPU job runs all three oracles:
-#   immune head (GPU) + NetMHCIIpan (CPU, --nmp-workers==cpus-per-task) + ESMFold refold (GPU).
+#   immune head (GPU) + NetMHCIIpan (CPU, --nmp-workers==cpus-per-task) + ESMFold2 refold (GPU).
 # Targets ailab H200 (8 cores/GPU); NMP_WORKERS defaults to 8 to match --cpus-per-task=8.
 # PLI H100 fallback (busy): resubmit with
 #   sbatch --account=pli_x --qos=pli-low --partition=pli --constraint= scripts/submit_refine.slurm
@@ -28,7 +28,7 @@
 # NMP_MAX_LENGTHS_PER_CALL=2 keeps all 8 cores busy.
 # Outputs (refined/): refined_designs.parquet + evaluator_ready.parquet + refine_trace.parquet, PLUS
 # (EMIT_EVAL_METRICS=1, default) the evaluate_phase_c-schema tables imm_head/imm_nmp/structural/
-# structural_residues for every final design (reuses evaluate row builders; ESMFold cache hits => cheap).
+# structural_residues for every final design (reuses evaluate row builders; refold cache hits => cheap).
 
 set -euo pipefail
 : "${PS1:=}"
@@ -62,6 +62,7 @@ ESMFOLD2_NUM_LOOPS="${ESMFOLD2_NUM_LOOPS:-3}"
 ESMFOLD2_NUM_SAMPLING_STEPS="${ESMFOLD2_NUM_SAMPLING_STEPS:-50}"
 ESMFOLD2_NUM_DIFFUSION_SAMPLES="${ESMFOLD2_NUM_DIFFUSION_SAMPLES:-1}"
 ESMFOLD2_SEED="${ESMFOLD2_SEED:-0}"
+REFOLD_MODEL="${REFOLD_MODEL:-esmfold2_live}"
 
 # Seeds: a --seed-table parquet (protein_id/design_id/sequence). Default = the full
 # difficulty-stratified 0701 validation table; override SEED_TABLE for the smoke.
@@ -96,7 +97,13 @@ CONSTRAINT_MANIFEST="${CONSTRAINT_MANIFEST:-${C24_INPUTS}/uricase_characterized2
 # Search knobs (PLAN §7).
 STRONG_RANK="${STRONG_RANK:-0.02}"
 MARGIN_BAND="${MARGIN_BAND:-0.10}"
-SCTM_EPS="${SCTM_EPS:-0.05}"
+STRUCTURE_GATE_PROFILE="${STRUCTURE_GATE_PROFILE:-protocol}"
+# Protocol gate thresholds are intentionally unset: calibrate them per run and pass all three.
+GATE_SCTM_MIN="${GATE_SCTM_MIN:-}"
+GATE_CAT_MAX_SCRMSD_MAX="${GATE_CAT_MAX_SCRMSD_MAX:-}"
+GATE_ACTIVE_SITE_MIN_PLDDT_MIN="${GATE_ACTIVE_SITE_MIN_PLDDT_MIN:-}"
+# Explicit compatibility path only (`STRUCTURE_GATE_PROFILE=legacy`).
+SCTM_EPS="${SCTM_EPS:-}"
 TOPB="${TOPB:-64}"                           # head-prune to top-B before NMP (v0 refine default).
                                              # NMP-all (empty) proved infeasible on multi-core seeds
                                              # (pool 2208 -> 60min NMP -> walltime kill). Set TOPB= (empty)
@@ -110,7 +117,7 @@ MAX_PATH_MUTATIONS="${MAX_PATH_MUTATIONS:-8}"
 
 # Full-metrics emission (§ evaluate parity): after refinement, emit evaluate_phase_c-schema
 # tables (imm_head/imm_nmp/structural/structural_residues) for EVERY final design by reusing
-# evaluate_phase_c's row builders. Refolds are ESMFold cache hits, so this is cheap. On by default.
+# evaluate_phase_c's row builders. Refolds are cache hits, so this is cheap. On by default.
 EMIT_EVAL_METRICS="${EMIT_EVAL_METRICS:-1}"           # 0 => --no-eval-metrics
 STRONG_BINDER_THRESHOLD="${STRONG_BINDER_THRESHOLD:-2.0}"  # imm_nmp rank_EL% strong cutoff (evaluate default)
 HOTSPOT_THRESHOLD="${HOTSPOT_THRESHOLD:-0.5}"         # imm_head hotspot cutoff (evaluate default)
@@ -118,7 +125,7 @@ IMM_FULL="${IMM_FULL:-0}"                             # 1 => also imm_head_resid
 REFINEMENT_STRUCTURE_METRICS="${REFINEMENT_STRUCTURE_METRICS:-global_ca_rmsd,plddt,sidechain}"
 MAX_ANCHOR_SIDECHAIN_RMSD_MAX="${MAX_ANCHOR_SIDECHAIN_RMSD_MAX:-}"
 
-# Output run dir + per-run ESMFold refold cache (writes <key>.pdb/.plddt → gives pdb_path).
+# Output run dir + per-run normalized refold cache (writes <key>.pdb/.plddt -> gives pdb_path).
 # Base tag is stable across an array (SLURM_ARRAY_JOB_ID) so all tasks share one run dir; each
 # task then writes to its own shardXXofNN/ subdir (no clobbering the shared refined/*.parquet).
 TS="$(date +%Y%m%dT%H%M%SZ)"
@@ -132,8 +139,8 @@ OUT_DIR="${OUT_DIR:-${BASE}/run/inverse_folding/refine/${RUN_TAG}}"
 if [ "${N_SHARDS}" -gt 1 ]; then
     OUT_DIR="${OUT_DIR}/shard$(printf '%02d' "${SHARD_IDX}")of${N_SHARDS}"
 fi
-ESMFOLD_CACHE_DIR="${ESMFOLD_CACHE_DIR:-${OUT_DIR}/esmfold_cache}"
-REFOLD_CACHE_DIR="${REFOLD_CACHE_DIR:-${ESMFOLD_CACHE_DIR}}"
+REFOLD_CACHE_DIR="${REFOLD_CACHE_DIR:-${ESMFOLD_CACHE_DIR:-${OUT_DIR}/${REFOLD_MODEL}_cache}}"
+ESMFOLD_CACHE_DIR="${ESMFOLD_CACHE_DIR:-${REFOLD_CACHE_DIR}}"  # deprecated env alias
 
 mkdir -p "${OUT_DIR}" "${REFOLD_CACHE_DIR}" "${LOG_DIR}"
 
@@ -166,6 +173,27 @@ SIDECHAIN_GATE_FLAG=()
 [ -n "${MAX_ANCHOR_SIDECHAIN_RMSD_MAX}" ] && SIDECHAIN_GATE_FLAG=(
     --max-anchor-sidechain-RMSD-max "${MAX_ANCHOR_SIDECHAIN_RMSD_MAX}"
 )
+STRUCTURE_GATE_FLAGS=()
+if [ "${MODE}" != "fusion" ]; then
+    if [ "${STRUCTURE_GATE_PROFILE}" = "protocol" ]; then
+        if [ -z "${GATE_SCTM_MIN}" ] || [ -z "${GATE_CAT_MAX_SCRMSD_MAX}" ] || [ -z "${GATE_ACTIVE_SITE_MIN_PLDDT_MIN}" ]; then
+            echo "FATAL: protocol gate requires GATE_SCTM_MIN, GATE_CAT_MAX_SCRMSD_MAX, and GATE_ACTIVE_SITE_MIN_PLDDT_MIN" >&2
+            exit 2
+        fi
+        STRUCTURE_GATE_FLAGS=(
+            --structure-gate-profile protocol
+            --gate-scTM-min "${GATE_SCTM_MIN}"
+            --gate-cat-max-scRMSD-max "${GATE_CAT_MAX_SCRMSD_MAX}"
+            --gate-predicted-active-site-min-pLDDT-min "${GATE_ACTIVE_SITE_MIN_PLDDT_MIN}"
+        )
+    elif [ "${STRUCTURE_GATE_PROFILE}" = "legacy" ]; then
+        STRUCTURE_GATE_FLAGS=(--structure-gate-profile legacy)
+        [ -n "${SCTM_EPS}" ] && STRUCTURE_GATE_FLAGS+=(--scTM-eps "${SCTM_EPS}")
+    else
+        echo "FATAL: STRUCTURE_GATE_PROFILE must be protocol or legacy" >&2
+        exit 2
+    fi
+fi
 
 # Active-site manifest is optional: pass CONSTRAINT_MANIFEST=none to disable (no active site,
 # e.g. non-enzyme highrisk inpaint runs) — the flag is then omitted and all positions are editable.
@@ -191,8 +219,10 @@ echo "  PDB root      : ${PDB_ROOT}"
 echo "  Constraints   : ${CONSTRAINT_MANIFEST}"
 echo "  Out dir       : ${OUT_DIR}"
 echo "  Refold cache  : ${REFOLD_CACHE_DIR}"
+echo "  Refold model  : ${REFOLD_MODEL}"
 echo "  Eval metrics  : emit=${EMIT_EVAL_METRICS} strong=${STRONG_BINDER_THRESHOLD} hotspot=${HOTSPOT_THRESHOLD} imm_full=${IMM_FULL}"
-echo "  Structure v2  : canonical; loop=${REFINEMENT_STRUCTURE_METRICS} max_anchor=${MAX_ANCHOR_SIDECHAIN_RMSD_MAX:-none}"
+echo "  Structure v2  : canonical; loop=${REFINEMENT_STRUCTURE_METRICS} gate=${STRUCTURE_GATE_PROFILE}"
+echo "  Protocol gate : scTM>=${GATE_SCTM_MIN:-unset} cat_max<=${GATE_CAT_MAX_SCRMSD_MAX:-unset} active_site_min_pLDDT>=${GATE_ACTIVE_SITE_MIN_PLDDT_MIN:-unset}"
 echo "============================================================"
 
 if [ "${MODE}" = "fusion" ]; then
@@ -240,6 +270,25 @@ if [ "${MODE}" = "fusion" ]; then
     exit 0
 fi
 
+ESMFOLD2_FLAGS=()
+if [ "${REFOLD_MODEL}" = "esmfold2_live" ]; then
+    if [ -z "${ESMFOLD2_SITE_PACKAGES}" ]; then
+        if [ ! -x "${ESMFOLD2_ENV}/bin/python" ]; then
+            echo "FATAL: ESMFold2 env python not found: ${ESMFOLD2_ENV}/bin/python" >&2
+            exit 2
+        fi
+        ESMFOLD2_SITE_PACKAGES="$("${ESMFOLD2_ENV}/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+    fi
+    ESMFOLD2_FLAGS=(
+        --esmfold2-site-packages "${ESMFOLD2_SITE_PACKAGES}"
+        --esmfold2-model "${ESMFOLD2_MODEL}"
+        --esmfold2-num-loops "${ESMFOLD2_NUM_LOOPS}"
+        --esmfold2-num-sampling-steps "${ESMFOLD2_NUM_SAMPLING_STEPS}"
+        --esmfold2-num-diffusion-samples "${ESMFOLD2_NUM_DIFFUSION_SAMPLES}"
+        --esmfold2-seed "${ESMFOLD2_SEED}"
+    )
+fi
+
 srun python "${PROJECT_ROOT}/scripts/refine_rf_designs.py" \
     --mode "${MODE}" \
     --seed-table "${SEED_TABLE}" \
@@ -260,10 +309,12 @@ srun python "${PROJECT_ROOT}/scripts/refine_rf_designs.py" \
     --nmp-batch-size "${NMP_BATCH_SIZE}" \
     --nmp-max-lengths-per-call "${NMP_MAX_LENGTHS_PER_CALL}" \
     --nmp-timeout "${NMP_TIMEOUT}" \
-    --esmfold-cache-dir "${ESMFOLD_CACHE_DIR}" \
+    --refold-cache-dir "${REFOLD_CACHE_DIR}" \
+    --refold-model "${REFOLD_MODEL}" \
+    "${ESMFOLD2_FLAGS[@]}" \
     --strong-rank "${STRONG_RANK}" \
     --margin-band "${MARGIN_BAND}" \
-    --scTM-eps "${SCTM_EPS}" \
+    "${STRUCTURE_GATE_FLAGS[@]}" \
     --refinement-structure-metrics "${REFINEMENT_STRUCTURE_METRICS}" \
     "${SIDECHAIN_GATE_FLAG[@]}" \
     "${TOPB_FLAG[@]}" \

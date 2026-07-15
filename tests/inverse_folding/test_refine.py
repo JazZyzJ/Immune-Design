@@ -126,6 +126,68 @@ def test_structure_gate_enforces_scTM_floor():
     assert ok is True and bad is False and "scTM" in reason
 
 
+def test_structure_gate_enforces_protocol_metrics_conjunctively():
+    seed = StructureMetrics(scTM=0.96, pLDDT=92.0)
+    good = StructureMetrics(
+        scTM=0.95,
+        pLDDT=91.0,
+        cat_max_scRMSD=1.2,
+        predicted_active_site_min_pLDDT=88.0,
+    )
+    thresholds = {
+        "scTM_min": 0.94,
+        "cat_max_scRMSD_max": 1.5,
+        "predicted_active_site_min_pLDDT_min": 85.0,
+    }
+
+    assert structure_gate(seed, good, scTM_eps=None, **thresholds) == (True, "ok")
+
+    bad_cases = [
+        (refine.replace(good, scTM=0.93), "scTM"),
+        (refine.replace(good, cat_max_scRMSD=1.6), "cat_max_scRMSD"),
+        (
+            refine.replace(good, predicted_active_site_min_pLDDT=84.0),
+            "predicted_active_site_min_pLDDT",
+        ),
+    ]
+    for candidate, metric_name in bad_cases:
+        passed, reason = structure_gate(seed, candidate, scTM_eps=None, **thresholds)
+        assert passed is False and metric_name in reason
+
+
+def test_structure_gate_protocol_metrics_are_fail_closed_when_missing_or_nonfinite():
+    seed = StructureMetrics(scTM=0.96, pLDDT=92.0)
+    thresholds = {
+        "scTM_min": 0.94,
+        "cat_max_scRMSD_max": 1.5,
+        "predicted_active_site_min_pLDDT_min": 85.0,
+    }
+    candidates = [
+        StructureMetrics(
+            scTM=float("nan"),
+            pLDDT=91.0,
+            cat_max_scRMSD=1.2,
+            predicted_active_site_min_pLDDT=88.0,
+        ),
+        StructureMetrics(
+            scTM=0.95,
+            pLDDT=91.0,
+            cat_max_scRMSD=None,
+            predicted_active_site_min_pLDDT=88.0,
+        ),
+        StructureMetrics(
+            scTM=0.95,
+            pLDDT=91.0,
+            cat_max_scRMSD=1.2,
+            predicted_active_site_min_pLDDT=float("nan"),
+        ),
+    ]
+
+    for candidate in candidates:
+        passed, reason = structure_gate(seed, candidate, scTM_eps=None, **thresholds)
+        assert passed is False and "unavailable/not finite" in reason
+
+
 def test_structure_gate_sidechain_max_is_fail_closed():
     seed = StructureMetrics(scTM=0.90, pLDDT=90.0)
     good = StructureMetrics(

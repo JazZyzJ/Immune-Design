@@ -240,6 +240,7 @@
   - C0/C1 drivers: `scripts/run_if_phase_c0.py`, `scripts/run_if_phase_c1.py` (C1 now does h_maps↔test-set md5 alignment check at startup, fail-fast)
   - shared Phase C SLURM: `scripts/submit_if_phase_c.slurm` (`MODE=native|reference_flow`); MAX_ITER default 100 (was 50)
   - h_maps schema includes `sequence_md5` column (2026-05-08); old h_map parquets must be regenerated
+  - **Standard RF refinement structure contract (2026-07-13)**: `scripts/refine_rf_designs.py` / `submit_refine.slurm` now default to the persistent isolated `esmfold2_live` worker (final metrics read the same normalized ESMFold2 cache). The standard gate is the protocol trio `scTM`, direct-functional `cat_max_scRMSD`, and `predicted_active_site_min_pLDDT`; all three thresholds are required per-run inputs with no repository defaults. The previous seed-relative/whole-anchor gate is available only via explicit `structure_gate_profile=legacy`.
   - **D1 monitor-only controller (2026-05-21, L0092)**:
     - `inverse_folding/reference_flow/controller_config.py` — strict D1 YAML schema with `controller_config_hash` provenance helper; preset `configs/d1_monitor.yaml`
     - `inverse_folding/reference_flow/head_scoring.py` — `OnlineHeadScorer` + `StaticWindowCache` (parquet + sidecar meta), fail-fast on `(seq_md5, allele, checkpoint_digest, head_config_hash, score_scale, window_k_min, window_k_max)` drift

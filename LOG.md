@@ -3734,3 +3734,16 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `L0132`/`L0133` (Fusion landing + review-2 hardening), verify workflow `wf_4988d27a`
   - `inverse_folding/reference_flow/fusion/{runner,config,moves,structure_metrics}.py`, `scripts/run_rf_refine_fusion.py`, `scripts/submit_refine.slurm`
+
+### L0135
+- timestamp: 2026-07-13T17:27:04-04:00
+- type: FEATURE
+- module: REFERENCE_FLOW
+- trigger: The standard RF refiner still used in-process ESMFold1 and a seed-relative scTM / whole-anchor compatibility gate, while `PROTOCOL/shortlist_and_refine_seed_selection.md` defines active-site reliability using absolute scTM, direct-functional catalytic side-chain RMSD, and active-site confidence. User requested ESMFold2 and the protocol metric set without hardcoded threshold values.
+- change_summary: Standard `refine`/`ceiling` now defaults to one persistent isolated `esmfold2_live` worker and closes it before the final cache-read structural pass. The standard fail-closed gate is the conjunctive runtime-calibrated trio `scTM >= X`, `cat_max_scRMSD <= Y`, and `predicted_active_site_min_pLDDT >= Z`; all thresholds are required CLI/SLURM inputs with no repository defaults. `cat_max_scRMSD` is computed over the manifest's direct-functional subset (safety-max provenance, or the explicit v0 hard-anchor mapping), persisted in refinement outputs, and missing/incomplete geometry fails closed. The old gate remains only under `structure_gate_profile=legacy`. The launcher uses a backend-specific refold cache by default so an old ESMFold1 cache is not silently reused.
+- evidence: 109 targeted tests pass across pure refine/driver/merge, ESMFold2 live/refold/cache normalization, structural v2, Phase C eval, and Fusion launcher suites; `bash -n`, `py_compile`, and targeted `git diff --check` pass. Della has a complete ESMFold2 package overlay and a 1.3 GB cached `biohub/ESMFold2` model. No live GPU refinement job was run in this change.
+- impact: scope -- standard RF refinement structure oracle, gate semantics, launcher inputs, and refinement metric columns; Fusion behavior is unchanged. Existing ESMFold1 outputs/caches are not rewritten. risk medium until a real H200 one-seed smoke confirms joint Head + ESMFold2 memory/runtime.
+- status: done
+- refs:
+  - `scripts/refine_rf_designs.py`, `scripts/submit_refine.slurm`, `inverse_folding/reference_flow/refine.py`
+  - `PROTOCOL/shortlist_and_refine_seed_selection.md`, `PLAN_RF_REFINE.md`, `doc/SCRIPTS.md`

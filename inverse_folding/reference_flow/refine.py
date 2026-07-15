@@ -159,7 +159,9 @@ class StructureMetrics:
     max_anchor_atom_distance: float | None = None
     active_site_complete: bool | None = None
     active_site_min_pLDDT: float | None = None
-    passed: bool = True                    # set by structure_gate, relative to the seed
+    cat_max_scRMSD: float | None = None
+    predicted_active_site_min_pLDDT: float | None = None
+    passed: bool = True                    # set by structure_gate
     reason: str = ""
 
 
@@ -170,17 +172,48 @@ def rank_margin_mass(core_ranks, *, strong_rank: float = 0.02, margin_band: floa
     return float(sum(max(strong_rank - r, 0.0) for r in core_ranks if r < margin_band))
 
 
-def structure_gate(seed: "StructureMetrics", cand: "StructureMetrics", *, scTM_eps: float,
+def structure_gate(seed: "StructureMetrics", cand: "StructureMetrics", *,
+                   scTM_eps: float | None,
+                   scTM_min: float | None = None,
+                   cat_max_scRMSD_max: float | None = None,
+                   predicted_active_site_min_pLDDT_min: float | None = None,
                    scRMSD_max: float | None = None,
                    active_site_RMSD_max: float | None = None,
                    max_anchor_sidechain_RMSD_max: float | None = None) -> tuple[bool, str]:
-    """Verdict for a candidate fold vs the seed design.
+    """Verdict for a candidate fold against configured structure criteria.
 
-    The side-chain maximum is the current active-site contract. Legacy ceilings remain in
-    this pure API for old callers, but every configured value is now fail-closed.
+    The protocol gate uses an absolute scTM floor, direct-functional catalytic side-chain
+    maximum, and worst active-site confidence. Legacy seed-relative/global ceilings remain
+    available for explicit old callers. Every configured metric is fail-closed.
     """
-    if cand.scTM < seed.scTM - scTM_eps:
-        return False, f"scTM {cand.scTM:.3f} < {seed.scTM - scTM_eps:.3f}"
+    if scTM_min is not None:
+        if not math.isfinite(float(cand.scTM)):
+            return False, f"scTM unavailable/not finite: {cand.scTM}"
+        if cand.scTM < scTM_min:
+            return False, f"scTM {cand.scTM:.3f} < {scTM_min:.3f}"
+    if scTM_eps is not None:
+        if not math.isfinite(float(cand.scTM)) or not math.isfinite(float(seed.scTM)):
+            return False, f"scTM unavailable/not finite: seed={seed.scTM}, cand={cand.scTM}"
+        if cand.scTM < seed.scTM - scTM_eps:
+            return False, f"scTM {cand.scTM:.3f} < {seed.scTM - scTM_eps:.3f}"
+    if cat_max_scRMSD_max is not None:
+        value = cand.cat_max_scRMSD
+        if value is None or not math.isfinite(float(value)):
+            return False, f"cat_max_scRMSD unavailable/not finite: {value}"
+        if value > cat_max_scRMSD_max:
+            return False, f"cat_max_scRMSD {value:.2f} > {cat_max_scRMSD_max}"
+    if predicted_active_site_min_pLDDT_min is not None:
+        value = cand.predicted_active_site_min_pLDDT
+        if value is None or not math.isfinite(float(value)):
+            return False, (
+                "predicted_active_site_min_pLDDT unavailable/not finite: "
+                f"{value}"
+            )
+        if value < predicted_active_site_min_pLDDT_min:
+            return False, (
+                f"predicted_active_site_min_pLDDT {value:.2f} < "
+                f"{predicted_active_site_min_pLDDT_min}"
+            )
     if scRMSD_max is not None:
         if cand.scRMSD is None or not math.isfinite(float(cand.scRMSD)):
             return False, f"scRMSD unavailable/not finite: {cand.scRMSD}"
@@ -315,6 +348,8 @@ def _incremental_nmp_rows(protein_id, seed_seq, seed_rows, cand_seqs, nmp_fn, *,
 def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct_fn, anchors,
                     target_window_idx_fn=None, strong_rank=0.02, margin_band=0.10,
                     scTM_eps=0.05, scRMSD_max=None, active_site_RMSD_max=None,
+                    scTM_min=None, cat_max_scRMSD_max=None,
+                    predicted_active_site_min_pLDDT_min=None,
                     max_anchor_sidechain_RMSD_max=None,
                     topB=None, beam_width=8, max_rounds=20, patience=3,
                     max_path_mutations=8, refold_cap=16, allow_structure_unknown=False,
@@ -421,6 +456,11 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
             tr = time.time()
             metrics = struct_fn(protein_id, c.seq); n_refold += 1
             passed, reason = structure_gate(seed_metrics, metrics, scTM_eps=scTM_eps,
+                                            scTM_min=scTM_min,
+                                            cat_max_scRMSD_max=cat_max_scRMSD_max,
+                                            predicted_active_site_min_pLDDT_min=(
+                                                predicted_active_site_min_pLDDT_min
+                                            ),
                                             scRMSD_max=scRMSD_max,
                                             active_site_RMSD_max=active_site_RMSD_max,
                                             max_anchor_sidechain_RMSD_max=(
@@ -441,6 +481,10 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
                               "max_anchor_atom_distance": metrics.max_anchor_atom_distance,
                               "active_site_complete": metrics.active_site_complete,
                               "active_site_min_pLDDT": metrics.active_site_min_pLDDT,
+                              "cat_max_scRMSD": metrics.cat_max_scRMSD,
+                              "predicted_active_site_min_pLDDT": (
+                                  metrics.predicted_active_site_min_pLDDT
+                              ),
                               "muts": c.desc})
             if state["count"] < best["count"]:
                 best = {"seq": c.seq, "count": state["count"], "structure": metrics}

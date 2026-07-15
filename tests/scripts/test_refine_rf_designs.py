@@ -17,6 +17,7 @@ from scripts.refine_rf_designs import (
     Oracles,
     _atomic_write,
     _canonical_allele,
+    _load_catalytic_indices_by_protein,
     _load_sharded,
     _run_final_metrics,
     build_arg_parser,
@@ -151,10 +152,36 @@ def test_refine_help_lists_key_flags():
     # R4 review fixes + PLAN update: the new seed-table / max-path-mutations knobs must exist.
     parser = build_arg_parser()
     dests = {a.dest for a in parser._actions}
-    assert {"test_set_parquet", "esmfold_cache_dir", "netmhciipan_bin", "constraint_manifest",
+    assert {"test_set_parquet", "refold_cache_dir", "netmhciipan_bin", "constraint_manifest",
             "mode", "nmp_batch_size", "topB", "seed_table", "max_path_mutations",
             "refinement_structure_metrics", "max_anchor_sidechain_RMSD_max",
-            "structural_metrics_v2"} <= dests
+            "structural_metrics_v2", "refold_model", "esmfold2_site_packages",
+            "structure_gate_profile", "gate_scTM_min", "gate_cat_max_scRMSD_max",
+            "gate_predicted_active_site_min_pLDDT_min"} <= dests
+
+
+def test_refiner_defaults_to_esmfold2_and_has_no_numeric_protocol_gate_defaults():
+    args = build_arg_parser().parse_args(
+        ["--seed-table", "t", "--allele", "A", "--out-dir", "o"]
+    )
+    assert args.refold_model == "esmfold2_live"
+    assert args.structure_gate_profile == "protocol"
+    assert args.scTM_eps is None
+    assert args.gate_scTM_min is None
+    assert args.gate_cat_max_scRMSD_max is None
+    assert args.gate_predicted_active_site_min_pLDDT_min is None
+
+
+def test_submit_refine_defaults_to_esmfold2_and_requires_runtime_protocol_thresholds():
+    launcher = (refine_driver.PROJECT_ROOT / "scripts" / "submit_refine.slurm").read_text()
+    assert 'REFOLD_MODEL="${REFOLD_MODEL:-esmfold2_live}"' in launcher
+    assert 'GATE_SCTM_MIN="${GATE_SCTM_MIN:-}"' in launcher
+    assert 'GATE_CAT_MAX_SCRMSD_MAX="${GATE_CAT_MAX_SCRMSD_MAX:-}"' in launcher
+    assert 'GATE_ACTIVE_SITE_MIN_PLDDT_MIN="${GATE_ACTIVE_SITE_MIN_PLDDT_MIN:-}"' in launcher
+    assert '--refold-model "${REFOLD_MODEL}"' in launcher
+    assert '${OUT_DIR}/${REFOLD_MODEL}_cache' in launcher
+    assert '--refold-cache-dir "${REFOLD_CACHE_DIR}"' in launcher
+    assert "protocol gate requires GATE_SCTM_MIN" in launcher
 
 
 def test_deferred_switches_fail_fast():
@@ -185,21 +212,64 @@ def test_build_oracles_validates_sidechain_gate_before_heavy_imports():
         "--esmfold-cache-dir", "cache", "--test-set-parquet", "test.parquet",
         "--pdb-root", "pdb", "--head-checkpoint", "head.pt",
         "--head-config-dir", "configs", "--netmhciipan-bin", "nmp",
+        "--refold-model", "esmfold",
     ]
     args = build_arg_parser().parse_args(
-        base + ["--max-anchor-sidechain-RMSD-max", "1.5"]
+        base + ["--structure-gate-profile", "legacy",
+                "--max-anchor-sidechain-RMSD-max", "1.5"]
     )
     with pytest.raises(ValueError, match="requires --refinement-structure-metrics sidechain"):
         build_oracles(args)
 
     args = build_arg_parser().parse_args(
         base + [
+            "--structure-gate-profile", "legacy",
             "--refinement-structure-metrics", "sidechain",
             "--max-anchor-sidechain-RMSD-max", "1.5",
         ]
     )
     with pytest.raises(ValueError, match="requires --constraint-manifest"):
         build_oracles(args)
+
+
+def test_build_oracles_requires_complete_protocol_gate_before_heavy_imports():
+    base = [
+        "--run-dir", "x", "--allele", "A", "--out-dir", "z",
+        "--esmfold-cache-dir", "cache", "--test-set-parquet", "test.parquet",
+        "--pdb-root", "pdb", "--head-checkpoint", "head.pt",
+        "--head-config-dir", "configs", "--netmhciipan-bin", "nmp",
+        "--esmfold2-site-packages", "site-packages",
+    ]
+    args = build_arg_parser().parse_args(base + ["--gate-scTM-min", "0.94"])
+    with pytest.raises(ValueError, match="requires all three"):
+        build_oracles(args)
+
+
+def test_load_catalytic_indices_uses_protocol_annotation_and_v0_fallback(tmp_path):
+    protocol_manifest = tmp_path / "protocol.yaml"
+    protocol_manifest.write_text(
+        "schema_version: uricase_active_site_v1\n"
+        "annotation_provenance:\n"
+        "  direct_functional_union_uniprot_1b: [2]\n"
+        "entries:\n"
+        "  - protein_id: P\n"
+        "    hard_anchors:\n"
+        "      - {index_0b: 0, expected_aa: A}\n"
+        "      - {index_0b: 1, expected_aa: C}\n"
+    )
+    parsed = refine_driver.load_constraint_manifest(protocol_manifest)
+    assert _load_catalytic_indices_by_protein(protocol_manifest, parsed) == {"P": {1}}
+
+    v0_manifest = tmp_path / "v0.yaml"
+    v0_manifest.write_text(
+        "schema_version: uricase_active_site_v0\n"
+        "entries:\n"
+        "  - protein_id: P\n"
+        "    hard_anchors:\n"
+        "      - {index_0b: 3, expected_aa: A}\n"
+    )
+    parsed = refine_driver.load_constraint_manifest(v0_manifest)
+    assert _load_catalytic_indices_by_protein(v0_manifest, parsed) == {"P": {3}}
 
 
 def test_canonical_allele_normalizes_underscore_tag():
@@ -360,6 +430,7 @@ def test_run_final_metrics_writes_v2_to_canonical_paths(tmp_path, monkeypatch):
 
     assert call["return_v2_metrics"] is True
     assert call["legacy_metrics"] is False
+    assert call["refold_backend"] == "esmfold2"
     structural = pd.read_parquet(refined_dir / "structural.parquet")
     assert "global_ca_RMSD" in structural and "bb_RMSD" not in structural
     assert (refined_dir / "structural_residues.parquet").exists()

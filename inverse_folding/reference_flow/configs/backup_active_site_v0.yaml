@@ -1,0 +1,49 @@
+schema_version: uricase_active_site_v0
+description: Backup collection (EGFP, mCherry, PrASNase, NanoLuc) per-protein active-site hard anchors. index_0b 0-based into resolved IF-ready seq (==WT, AF3 v3.0.3 monomer, offset 0). Active sites from
+  wet-lab collaborator; FP chromophore triads protected as standard residues. PrASNase expanded 2026-07-13 with catalytic T15/T94/D95 + S61 (7 anchors total).
+entries:
+- protein_id: EGFP
+  sequence_md5: 943a3ad598ac0fd45fe8bddb46dbc17d
+  hard_anchors:
+  - {index_0b: 64, expected_aa: L, label: Leu65, biological_role: fold_core, source: user_wetlab_collaborator_spec}
+  - {index_0b: 65, expected_aa: T, label: Thr66, biological_role: chromophore, source: user_wetlab_collaborator_spec}
+  - {index_0b: 66, expected_aa: Y, label: Tyr67, biological_role: chromophore, source: user_wetlab_collaborator_spec}
+  - {index_0b: 67, expected_aa: G, label: Gly68, biological_role: chromophore, source: user_wetlab_collaborator_spec}
+  - {index_0b: 96, expected_aa: R, label: Arg97, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 148, expected_aa: H, label: His149, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 203, expected_aa: T, label: Thr204, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 222, expected_aa: E, label: Glu223, biological_role: active_site, source: user_wetlab_collaborator_spec}
+- protein_id: mCherry
+  sequence_md5: d60f77b492bb3c160d94b65d4d9a574b
+  hard_anchors:
+  - {index_0b: 70, expected_aa: M, label: Met66, biological_role: chromophore, source: user_wetlab_collaborator_spec}
+  - {index_0b: 71, expected_aa: Y, label: Tyr67, biological_role: chromophore, source: user_wetlab_collaborator_spec}
+  - {index_0b: 72, expected_aa: G, label: Gly68, biological_role: chromophore, source: user_wetlab_collaborator_spec}
+  - {index_0b: 74, expected_aa: K, label: Lys70, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 97, expected_aa: W, label: Trp93, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 99, expected_aa: R, label: Arg95, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 167, expected_aa: Q, label: Gln163, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 201, expected_aa: I, label: Ile197, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 219, expected_aa: E, label: Glu215, biological_role: active_site, source: user_wetlab_collaborator_spec}
+- protein_id: PrASNase
+  sequence_md5: 7cb2ffbd20819438935c437808be8e4e
+  hard_anchors:
+  - {index_0b: 14, expected_aa: T, label: Thr15, biological_role: catalytic, source: user_wetlab_collaborator_spec}
+  - {index_0b: 60, expected_aa: S, label: Ser61, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 65, expected_aa: Q, label: Gln66, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 93, expected_aa: T, label: Thr94, biological_role: catalytic, source: user_wetlab_collaborator_spec}
+  - {index_0b: 94, expected_aa: D, label: Asp95, biological_role: catalytic, source: user_wetlab_collaborator_spec}
+  - {index_0b: 97, expected_aa: A, label: Ala98, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 102, expected_aa: S, label: Ser103, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  ligand_annotation: L-asparagine (substrate; annotation only, not modeled in monomer structure)
+- protein_id: NanoLuc
+  sequence_md5: b859aceaf39e355902c9548d3c696859
+  hard_anchors:
+  - {index_0b: 13, expected_aa: Q, label: Gln14, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 43, expected_aa: Q, label: Gln44, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 94, expected_aa: H, label: His95, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 95, expected_aa: Y, label: Tyr96, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 110, expected_aa: Y, label: Tyr111, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 115, expected_aa: Y, label: Tyr116, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 140, expected_aa: D, label: Asp141, biological_role: active_site, source: user_wetlab_collaborator_spec}
+  - {index_0b: 163, expected_aa: R, label: Arg164, biological_role: active_site, source: user_wetlab_collaborator_spec}
