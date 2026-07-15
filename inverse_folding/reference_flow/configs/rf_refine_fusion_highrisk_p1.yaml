@@ -1,0 +1,74 @@
+# RF-Refine Fusion — HIGH-RISK P1 (H1) EFFECT run (ESMFold2-live).
+#
+# The P1 immune-effect measurement on the DRB1*07:01 high-risk crystal cohort (100 proteins),
+# explicit-only greedy path (the S0-verified mechanism). P2 (repair/H3) and P3 (FK/H6) stay on
+# hold until their mechanism smokes (S1/S2) pass — do NOT reuse this n_rounds for them.
+#
+# Gates CALIBRATED from the high-risk telemetry probe (job 11194105), NOT transferred from the
+# enzyme/AFDB S0:
+#   - scTM_min = 0.85  (candidate scTM p10=0.864; rejects ~10% structure-breaking edits; binding
+#     on crystal references, unlike the non-binding S0 0.85 on AFDB self-consistency).
+#   - n_rounds = 6     (elite_risk elbow at r3-4; r6 captures ~99% of the median improvement).
+#   - N_H off-target = 0.10  (probe: rejects ~76% of edits but n_feasible stays ~28/round, never
+#     starves — kept).
+# Cohort is non-enzyme (constraint_manifest=none at submit) -> has_active_site=False -> scTM is the
+# SOLE structural gate (active_site_* fields inert). Folding = ESMFold2-live; scTM = TMalign vs crystal.
+# Coverage: proteins whose native parents cannot reach >=4 designs at scTM>=0.85 fail at handoff with
+# insufficient_feasible_initial_population (that set is the exact native-parent 0.85 denominator).
+fusion:
+  enabled: true
+  seed: 20260715
+  population_size: 4
+  n_rounds: 6
+
+  handoff:
+    mode: terminal_population
+
+  targeting:
+    mode: head_max_window
+    registers_per_parent: 1
+    halo_radius: 4
+
+  objective:
+    head_field: global_risk
+    min_head_improvement: 0.05
+    max_offtarget_window_increase: 0.10
+
+  moves:
+    explicit:
+      enabled: true
+      max_edit_order: 2
+      max_raw_candidates_per_parent: 200
+      pair_seed_budget: 32
+    rf_reopen:
+      enabled: false
+      children_per_parent: 0
+    repair:
+      enabled: false
+      repair_shortlist_per_parent: 4
+      children_per_edit: 1
+      sampler_steps: 8
+      local_remask: false
+
+  structure:
+    backend: esmfold2_live
+    surrogate_mode: none
+    scTM_min: 0.85                          # CALIBRATED effect gate (binding on crystal refs)
+    active_site_metric: sidechain_max_anchor
+    max_anchor_sidechain_RMSD_max: 2.0      # INERT (no anchors on this cohort)
+    active_site_RMSD_max: null
+    active_site_shell_radius: 6.0
+    scRMSD_max: null
+    cache_dir: structure_cache
+    max_refolds_per_parent: 8
+
+  selection:
+    mode: greedy
+    beta_start: 1.0
+    beta_end: 4.0
+    resample_method: multinomial
+
+  telemetry:
+    candidate_detail: true
+    window_detail: false
+    trajectory_detail: true

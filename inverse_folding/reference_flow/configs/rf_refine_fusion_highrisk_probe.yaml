@@ -1,0 +1,71 @@
+# RF-Refine Fusion — HIGH-RISK P1 calibration probe (ESMFold2-live).
+#
+# Purpose: on the DRB1*07:01 high-risk crystal cohort, read telemetry to CALIBRATE the three
+# gates that must NOT be transferred from the enzyme/AFDB S0 run: scTM_min, n_rounds, N_H
+# off-target. This is a calibration probe, NOT the P1 effect run.
+#   - scTM_min: LOOSE 0.5 here so the probe is not gated by the value it calibrates; read the
+#     candidate scTM distribution (structure_evaluated rows, esmfold2_live + TMalign vs crystal ref)
+#     and set the effect-run scTM_min from its low quantiles (p10-p25).
+#   - n_rounds: EXTENDED to 8; read where per-protein elite_risk plateaus (S0's 3 had not plateaued).
+#   - N_H off-target: kept at 0.10 (MEASURED, not changed); read offtarget_hotspot rejection frac
+#     and n_feasible_children to check it does not starve the higher-immune-burden regime.
+# Cohort is non-enzyme (no active-site manifest -> constraint_manifest=none) -> has_active_site=False
+# -> the active_site_* fields are INERT and scTM is the SOLE structural gate.
+# Folding model = ESMFold2 (live worker); scTM still = TMalign(pred, crystal ref).
+fusion:
+  enabled: true
+  seed: 20260713
+  population_size: 4
+  n_rounds: 8                  # EXTENDED for the plateau read (calibrates effect-run n_rounds)
+
+  handoff:
+    mode: terminal_population
+
+  targeting:
+    mode: head_max_window
+    registers_per_parent: 1
+    halo_radius: 4
+
+  objective:
+    head_field: global_risk
+    min_head_improvement: 0.05
+    max_offtarget_window_increase: 0.10   # N_H — MEASURED here, not changed
+
+  moves:
+    explicit:
+      enabled: true
+      max_edit_order: 2
+      max_raw_candidates_per_parent: 200
+      pair_seed_budget: 32
+    rf_reopen:
+      enabled: false                       # P1 = explicit-greedy only (H3 repair on hold for S1)
+      children_per_parent: 0
+    repair:
+      enabled: false
+      repair_shortlist_per_parent: 4
+      children_per_edit: 1
+      sampler_steps: 8
+      local_remask: false
+
+  structure:
+    backend: esmfold2_live
+    surrogate_mode: none
+    scTM_min: 0.5                          # LOOSE probe value (calibration target; NOT the effect gate)
+    active_site_metric: sidechain_max_anchor
+    max_anchor_sidechain_RMSD_max: 2.0     # INERT (no anchors on this cohort)
+    active_site_RMSD_max: null
+    active_site_shell_radius: 6.0
+    scRMSD_max: null
+    cache_dir: structure_cache
+    max_refolds_per_parent: 8
+
+  selection:
+    mode: greedy
+    beta_start: 1.0
+    beta_end: 4.0
+    resample_method: multinomial
+
+  telemetry:
+    candidate_detail: true
+    window_detail: false
+    trajectory_detail: true
