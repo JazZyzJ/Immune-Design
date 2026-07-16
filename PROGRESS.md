@@ -344,10 +344,11 @@ NanoLuc 8 anchors). Collection (Della): `work/immune-design/if_test_set/backup/`
 - **Method finding**: B1Aopen de-immunizes cleanly only when WT has real immune burden + is an enzyme;
   on already-low-immune WT (mCherry, NanoLuc, PrASNase-0701) NMP regresses (head always drops, NMP only
   improves with burden). Screen WT immunogenicity before designing.
-- **Known bug (workaround applied, code unfixed)**: af3 refold normalizer writes `.plddt` sidecar as
-  all-atom mean but `evaluate_phase_c` v2 check expects CA/per-residue mean → af3 struct-eval fails closed
-  (`read_mean_plddt_af3` / `_validate_v2_prediction_plddt`). Worked around by rewriting cache sidecars to
-  CA-mean; proper fix belongs in the normalizer or check tolerance.
+- **Fixed (2026-07-13)**: af3 refold normalizer wrote the `.plddt` sidecar as the all-atom `atom_plddts`
+  mean, ~2-3 pLDDT below `evaluate_phase_c`'s v2 `predicted_global_plddt` (CA/per-residue mean) → af3
+  struct-eval failed closed (`_validate_v2_prediction_plddt`). `normalize_af3_to_cache` now writes the CA
+  B-factor mean of the emitted cache PDB (`mean_ca_plddt_from_pdb`) so sidecar ≡ check; regression test
+  `tests/inverse_folding/test_af3_runner.py`. (esmfold2/protenix unaffected.)
 - **Return (Mac)**: `mhc-if-local:/Users/jerry/Project/MHC-IF/Results/RF/backup/backup_20260713/`
   (collection + per-run gen/imm/struct + WT baselines + `RESULTS_SUMMARY.md`).
 

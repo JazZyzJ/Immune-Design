@@ -23,11 +23,13 @@ from inverse_folding.evaluation.af3_runner import (
 )
 
 
-def _write_cif(path: Path, n_res: int = 5) -> None:
+def _write_cif(path: Path, n_res: int = 5, ca_plddt: float = 88.0) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Real AF3 model.cif carries per-atom pLDDT (0-100) in the B-factor column; the CA B-factors
+    # are what the sidecar / v2 predicted_global_plddt aggregate, so set them explicitly.
     atoms = [
         struc.Atom([float(i) * 3.8, 0.0, 0.0], chain_id="A", res_id=i + 1,
-                   res_name="GLY", atom_name="CA", element="C")
+                   res_name="GLY", atom_name="CA", element="C", b_factor=ca_plddt)
         for i in range(n_res)
     ]
     cif = pdbx.CIFFile()
@@ -35,9 +37,9 @@ def _write_cif(path: Path, n_res: int = 5) -> None:
     cif.write(str(path))
 
 
-def _write_af3_fold(out_dir: Path, name: str, atom_plddts) -> None:
+def _write_af3_fold(out_dir: Path, name: str, atom_plddts, ca_plddt: float = 88.0) -> None:
     d = out_dir / name
-    _write_cif(d / f"{name}_model.cif")
+    _write_cif(d / f"{name}_model.cif", ca_plddt=ca_plddt)
     (d / f"{name}_confidences.json").write_text(json.dumps({"atom_plddts": list(atom_plddts)}))
     (d / f"{name}_summary_confidences.json").write_text(json.dumps({"ptm": 0.8, "ranking_score": 0.9}))
 
@@ -50,15 +52,18 @@ def test_read_mean_plddt_af3(tmp_path):
 
 def test_normalize_af3_writes_cache_entry_0_100(tmp_path):
     name = "Q00511_abc123def456"  # cache_key keeps case; AF3 preserves it
-    _write_af3_fold(tmp_path, name, atom_plddts=[88.0] * 10)
+    # CA (per-residue) pLDDT 92.0 differs from the all-atom atom_plddts mean 88.0. The sidecar must
+    # report the CA mean (= evaluate_phase_c's v2 predicted_global_plddt), NOT the all-atom mean,
+    # or _validate_v2_prediction_plddt fails closed at struct-eval time.
+    _write_af3_fold(tmp_path, name, atom_plddts=[88.0] * 10, ca_plddt=92.0)
 
     out = normalize_af3_to_cache(str(tmp_path), name, cache_dir=str(tmp_path / "cache"), key=name)
 
     pdb_path = Path(out["pdb_path"])
     assert pdb_path == tmp_path / "cache" / f"{name}.pdb"
     assert pdb_path.is_file()
-    # AF3 atom_plddts are already 0-100 -> unchanged
-    assert float(Path(out["plddt_path"]).read_text().strip()) == pytest.approx(88.0)
+    # sidecar = CA-atom B-factor mean (0-100), not the all-atom atom_plddts mean
+    assert float(Path(out["plddt_path"]).read_text().strip()) == pytest.approx(92.0)
     arr = pdb.PDBFile.read(str(pdb_path)).get_structure(model=1)
     assert set(str(c) for c in set(arr.chain_id)) == {"A"}
 
