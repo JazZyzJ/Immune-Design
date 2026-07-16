@@ -1,0 +1,64 @@
+# RF-Refine Fusion — P2 repair CALIBRATION probe (edit+repair, ESMFold2-live + DPLM sampler).
+#
+# Reads the repair convergence elbow (n_rounds for the matched-budget P2 — do NOT reuse P1's 6,
+# repair does more work/round and may converge deeper/slower) and a first rescue-vs-novel signal.
+# scTM_min = 0.85 (the P1-calibrated gate, so the elbow is realistic); n_rounds EXTENDED to 8.
+# repair.enabled=true; --base-if-checkpoint (dplm_v1_adapter best.ckpt) + --rf-sampler-config
+# c1_null.yaml required. Non-enzyme cohort -> constraint_manifest=none -> scTM sole structural gate.
+fusion:
+  enabled: true
+  seed: 20260715
+  population_size: 4
+  n_rounds: 8                  # EXTENDED to read the repair elbow (P1 explicit plateaued ~6)
+
+  handoff:
+    mode: terminal_population
+
+  targeting:
+    mode: head_max_window
+    registers_per_parent: 1
+    halo_radius: 4
+
+  objective:
+    head_field: global_risk
+    min_head_improvement: 0.05
+    max_offtarget_window_increase: 0.10
+
+  moves:
+    explicit:
+      enabled: true
+      max_edit_order: 2
+      max_raw_candidates_per_parent: 200
+      pair_seed_budget: 32
+    rf_reopen:
+      enabled: false
+      children_per_parent: 0
+    repair:
+      enabled: true
+      repair_shortlist_per_parent: 4
+      children_per_edit: 2       # 2 descendants/edit (distinct per-child seed) -> repair diversity
+      sampler_steps: 8
+      local_remask: false
+
+  structure:
+    backend: esmfold2_live
+    surrogate_mode: none
+    scTM_min: 0.85                          # P1-calibrated gate (realistic elbow)
+    active_site_metric: sidechain_max_anchor
+    max_anchor_sidechain_RMSD_max: 2.0     # INERT (no anchors)
+    active_site_RMSD_max: null
+    active_site_shell_radius: 6.0
+    scRMSD_max: null
+    cache_dir: structure_cache
+    max_refolds_per_parent: 8
+
+  selection:
+    mode: greedy
+    beta_start: 1.0
+    beta_end: 4.0
+    resample_method: multinomial
+
+  telemetry:
+    candidate_detail: true
+    window_detail: false
+    trajectory_detail: true

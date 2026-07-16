@@ -1,0 +1,66 @@
+# RF-Refine Fusion — S1 repair MECHANISM smoke (ESMFold2-live + real DPLM sampler).
+#
+# FIRST real end-to-end run of the edit-repair kernel (build_repair_fn_factory docstring: the DPLM
+# sampler path was fake-sampler unit-tested only, pending S1). Mechanism smoke, NOT an effect run.
+# Pass criteria (PLAN §6 S1): repair changes >=1 allowed halo position (non-degenerate); the
+# protected immune edit + hard anchors + outside-halo are byte-identical; output complete and
+# Head/structure re-evaluated after repair; no sampler-level accepted-state remask after ancestry.
+# Requires --base-if-checkpoint (dplm_v1_adapter best.ckpt) + --rf-sampler-config (c1_null.yaml).
+# scTM_min LOOSE (0.5) so repair children have room; small cohort/rounds for a fast mechanism read.
+fusion:
+  enabled: true
+  seed: 20260715
+  population_size: 4
+  n_rounds: 2
+
+  handoff:
+    mode: terminal_population
+
+  targeting:
+    mode: head_max_window
+    registers_per_parent: 1
+    halo_radius: 4
+
+  objective:
+    head_field: global_risk
+    min_head_improvement: 0.05
+    max_offtarget_window_increase: 0.10
+
+  moves:
+    explicit:
+      enabled: true
+      max_edit_order: 2
+      max_raw_candidates_per_parent: 200
+      pair_seed_budget: 32
+    rf_reopen:
+      enabled: false                       # S1 isolates the edit-repair channel
+      children_per_parent: 0
+    repair:
+      enabled: true                        # <-- FIRST real repair run
+      repair_shortlist_per_parent: 4       # lowest-Head new-hotspot-feasible explicit edits repaired
+      children_per_edit: 2                 # 2 descendants/edit -> tests distinct per-child sampler seed (diversity)
+      sampler_steps: 8                     # DPLM halo re-denoise steps
+      local_remask: false
+
+  structure:
+    backend: esmfold2_live
+    surrogate_mode: none
+    scTM_min: 0.5                          # LOOSE (mechanism smoke; give repair children room)
+    active_site_metric: sidechain_max_anchor
+    max_anchor_sidechain_RMSD_max: 2.0     # INERT (no anchors)
+    active_site_RMSD_max: null
+    active_site_shell_radius: 6.0
+    scRMSD_max: null
+    cache_dir: structure_cache
+    max_refolds_per_parent: 8
+
+  selection:
+    mode: greedy
+    beta_start: 1.0
+    beta_end: 4.0
+    resample_method: multinomial
+
+  telemetry:
+    candidate_detail: true
+    window_detail: false
+    trajectory_detail: true

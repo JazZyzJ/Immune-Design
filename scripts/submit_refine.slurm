@@ -38,6 +38,9 @@ export PS1
 PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"
 BASE="${BASE:-/scratch/gpfs/KAIYIJIANG/zijie}"
 DPLM_ROOT="${DPLM_ROOT:-${PROJECT_ROOT}/inverse_folding/dplm}"
+# MODE=fusion repair/reopen loads the DPLM base-IF task, whose .hydra/config.yaml resolves
+# ${oc.env:PROJECT_ROOT}; export it (mirrors submit_if_phase_c.slurm) or that load KeyErrors.
+export PROJECT_ROOT
 C24_INPUTS="${C24_INPUTS:-${BASE}/work/RF/Uricases_RF/characterized24_inputs/20260703T201539Z}"
 LOG_DIR="${LOG_DIR:-${BASE}/logs/refine}"
 

@@ -355,8 +355,10 @@ The binding constraint is structure evaluation, not Head or (absent) NMP. Source
 - Head is cheap and batched: one `score_batch_same_protein` call per protein per evaluation
   stage covers the whole dedup pool [audit of `head_scoring.py`].
 - empirical anchor: the standalone refiner measured ~2003 refolds → ~80 min GPU on H2ETE7,
-  i.e. order **~2.4 s / refold** amortized, which is why it caps refolds [refiner §7 `refold_cap`].
-  Treat this as order-of-magnitude, not a promise.
+  i.e. order **~2.4 s / refold** amortized (ESMFold v1), which is why it caps refolds [refiner §7 `refold_cap`].
+  Treat this as order-of-magnitude, not a promise. **The ESMFold2-live Fusion backend measured ~2.9 s/refold
+  at scale** (RF-Fusion runbook §12 high-risk P1; the single-fold codex probe's ~7 s was model-load-dominated) —
+  use ~2.9 s in the inequality below for `esmfold2_live`.
 
 Per-protein definitive-refold count is bounded by
 
@@ -365,7 +367,7 @@ $$
 $$
 
 with `(protein_id, sequence)` caching removing repeats. The feasibility gate for any configured
-run is `refolds × (~2.4 s) ≤ SLURM walltime budget`. This inequality — not a chosen default —
+run is `refolds × (~2.9 s esmfold2_live measured; ~2.4 s was the ESMFold-v1 refiner anchor) ≤ SLURM walltime budget`. This inequality — not a chosen default —
 bounds the joint calibration of `N`, `max_refolds_per_parent`, and `n_rounds` (§2.1). A
 configuration whose worst-case refold count exceeds the walltime budget must fail fast at config
 load, per `AGENTS.md` §2.
@@ -801,8 +803,12 @@ per-arm refold budget) are fixed from S-smoke telemetry under the §1.8 walltime
 in each RAR **before** the run; no expected effect size is fabricated (`AGENTS.md` §2). All arms
 are Head-only; NMP, if computed, is external post-hoc reporting only. Per-arm metrics: terminal
 Head `global_risk` distribution, scTM pass-rate and tail, unique-sequence fraction (diversity),
-refold count (cost). Cohort = the §6 S0 smoke inputs extended to the low-`global_risk` proteins of
-that run.
+refold count (cost). **Cohort = the B1 high-risk test set** (`highrisk_nod_v1_HLA-DRB1_07_01`, 100 diverse
+DRB1\*07:01 proteins on real experimental-crystal backbones), where cross-protein immune variance + genuine
+crystal references make both the immune effect and scTM meaningful (RF-Fusion runbook §0 cohort-scope, §12).
+The **uricase family is NOT the P1–P3 cohort** — it carries only the **constrained-path mechanism** validation
+(active-site anchors; S0 explicit-greedy + S1 repair). This corrects the earlier "uricase run extended to its
+low-`global_risk` proteins" cohort, which conflated the mechanism cohort with the effect cohort.
 
 **P1 — H1: Head-guided hard-state feedback lowers Head burden under the structure constraint**
 [doc §11 H1; §13 "Unproven and load-bearing"].
