@@ -11,3 +11,4 @@ in their own files; this index is only for locating them.
 ## Protocols
 
 - [Monomer shortlist & refine-seed selection](shortlist_and_refine_seed_selection.md) — constrained single-protein RF redesign runs (hard active-site anchors) feeding AF3 tetramer + de-immunization refinement; how to pick List 1 (tetramer feeder) and List 2 (refine seeds)
+- [Monomer structure-rank refine seeds (no tetramer)](monomer_structure_rank_refine_seeds.md) — monomeric targets ranked by monomer structure alone; class-specific refolder (AF3 for FP β-barrels) + rank (enzyme/fp/gated); one refine-seed list per (protein, allele), separate per Head
