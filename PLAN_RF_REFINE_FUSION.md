@@ -1,7 +1,6 @@
 # RF-Refine Fusion Implementation Plan
 
-> **Status:** READY FOR CODER after the scientific contract in
-> `doc/RF-Refine-Fusion.md` passed the final code audit.
+> **Status:** IMPLEMENTED; S2 selector replay and P3/H6 experiments are next.
 >
 > **Execution contract:** implement task-by-task with RED -> GREEN tests. This PLAN
 > specifies behavior, ownership boundaries, interfaces, artifacts, and gates. It does
@@ -772,8 +771,8 @@ python scripts/run_rf_refine_fusion.py \
   --out-dir Results/RF/Uricase/fusion_smoke_s0_0701 --print-config
 ```
 
-S1 (`moves.repair.enabled=true`) and S2 (selector replay) reuse these inputs with only the
-config/flag change.
+S1 uses the repair-enabled smoke inputs. S2 instead replays persisted evaluated pools from
+the P1/P2 explicit-only arm and performs no new proposal generation, Head scoring, or refold.
 
 ### Smoke S1: one protein, RF edit-repair
 
@@ -788,6 +787,11 @@ Pass only if:
 
 Persist one evaluated candidate pool and replay it through greedy, beam, and FK.
 
+Replay each observed parent-round pool independently. S2 validates selector consumption,
+multiplicity, and lineage semantics only. Because later candidate pools depend on selected
+ancestry, observed later-round pools must not be chained into a counterfactual multi-round H6
+trajectory.
+
 Pass only if:
 
 - candidate evaluations are identical across selector modes;
@@ -796,23 +800,24 @@ Pass only if:
 - elite output is identical or better than the initial elite in every mode;
 - fixed seed reproduces lineage exactly.
 
-### Pre-registered falsifier pilots (run only after S0-S2 pass)
+Report FK ESS, unique-state and unique-root fractions, and all-slot collapse. These are mechanism
+telemetry and guardrails; do not tune `N`, beta, or the cohort from S2 outcomes.
 
-These are pre-registered here, not deferred to a later ad-hoc design. Sizes (`N`, `n_rounds`,
-per-arm refold budget) are fixed from S-smoke telemetry under the §1.8 walltime bound and stated
-in each RAR **before** the run; no expected effect size is fabricated (`AGENTS.md` §2). All arms
-are Head-only; NMP, if computed, is external post-hoc reporting only. Per-arm metrics: terminal
-Head `global_risk` distribution, scTM pass-rate and tail, unique-sequence fraction (diversity),
-refold count (cost). **Cohort = the B1 high-risk test set** (`highrisk_nod_v1_HLA-DRB1_07_01`, 100 diverse
-DRB1\*07:01 proteins on real experimental-crystal backbones), where cross-protein immune variance + genuine
-crystal references make both the immune effect and scTM meaningful (RF-Fusion runbook §0 cohort-scope, §12).
-The **uricase family is NOT the P1–P3 cohort** — it carries only the **constrained-path mechanism** validation
-(active-site anchors; S0 explicit-greedy + S1 repair). This corrects the earlier "uricase run extended to its
-low-`global_risk` proteins" cohort, which conflated the mechanism cohort with the effect cohort.
+### Pre-registered falsifier pilots (P1/P2 completed records; P3 starts after S2)
+
+Each pilot freezes its cohort, `N`, `n_rounds`, selector parameters, and configured proposal/refold
+caps before launch; no expected effect size is fabricated and no null result triggers post-hoc
+selector or cohort tuning (`AGENTS.md` §2). All arms are Head-only; NMP, if computed, is external
+post-hoc reporting only. Per-arm metrics include terminal Head `global_risk`, best-so-far Head
+versus cumulative realized refolds, structure-gate coverage/tail, unique sequence/root ancestry,
+ESS where applicable, actual refolds, and walltime. P1/P2 use the B1 high-risk cohort. P3 uses the
+pre-existing coverage-balanced `if_ready/fast/fast_v2_HLA-DRB1_07_01.parquet` cohort (n=286; 15 Tier 1 plus
+Tier 2 sampled uniformly across coverage; `PROGRESS.md` Module L), which was not selected on Fusion
+outcomes.
 
 **P1 — H1: Head-guided hard-state feedback lowers Head burden under the structure constraint**
-[doc §11 H1; §13 "Unproven and load-bearing"].
-- Inputs: one arm, greedy + explicit edit + edit-repair, Head-only.
+[doc §11 H1; §13 "Supported on the B1 high-risk cohort (P1)"].
+- Inputs: one arm, greedy + explicit edit, repair disabled, Head-only.
 - Acceptance (direction pre-registered; threshold fixed from S0 telemetry): median terminal-elite
   vs initial-population `global_risk` reduction > 0 at scTM ≥ the absolute gate, with improved-protein
   fraction ≥ the S0-fixed floor.
@@ -821,22 +826,36 @@ low-`global_risk` proteins" cohort, which conflated the mechanism cohort with th
 - Validation: `fusion_elite.parquet` initial-vs-final `global_risk`; `fusion_rounds.jsonl` elite risk per round.
 
 **P2 — H3: RF repair improves the immune-structure frontier over explicit edit alone**
-[doc §11 H3; §13 "Unproven and load-bearing"].
-- Inputs: two arms differing ONLY in `moves.repair.enabled`, matched refold budget.
+[doc §11 H3; §13 "Direction observed on B1; strict broad mechanism not established"].
+- Inputs: two arms differing ONLY in `moves.repair.enabled`, with the same configured refold cap;
+  report realized refolds and walltime separately.
 - Acceptance: `edit+repair` feasible-fraction (or scTM at matched `global_risk` drop) exceeds
   `explicit-edit-only` by a margin fixed from S1 telemetry noise.
 - Falsifier: repair merely reverts the immune edit, adds no structure benefit, or is dominated by
   explicit edit + the state-level filter.
 - Validation: compare `fusion_candidates.parquet` feasible/scTM at matched Head deltas across arms.
+- Result/status: P2 is complete. The broad structural-repair form of H3 was not strictly
+  established; a narrower terminal-search direction was observed at accepted added cost. Repair
+  is retained as the default v0 move, and no further repair-specific gate blocks S2/P3.
 
-**P3 — H6: FK interaction adds value beyond independent/beam** [doc §11 H6; §13 "attributable by ablation"].
-- Inputs: greedy/beam/FK arms over the same evaluated pool (S2 harness), then a full multi-round
-  run per selector at matched refold budget.
-- Acceptance: FK terminal Head-structure frontier ≥ beam at matched budget AND FK unique-fraction
-  not below beam by more than the S2-fixed margin.
-- Falsifier: compute-matched beam/independent matches the FK frontier, or FK collapses diversity
-  without more feasible Head improvement.
-- Validation: `fusion_elite` / `fusion_rounds` across selectors.
+**P3 — H6: FK interaction adds value beyond independent/beam** [doc §11 H6; §13 "Pending P3"].
+- Inputs: after S2, run full multi-round greedy/beam/FK arms on the pre-existing coverage-balanced P3
+  cohort above. Repair is disabled identically in all three arms to isolate selector value;
+  resolve or generate one DPLM-native gumbel parent pool for this exact cohort, freeze it, and reuse
+  it byte-identically across arms. The explicit proposal/evaluation law, seeds, and configured
+  proposal/refold caps are also shared. Round 1 consumes the same evaluated pool; later pools may
+  differ only because selected ancestry changes future proposals.
+- Support: FK improves the terminal Head-structure frontier or reaches a matched Head level with
+  fewer realized refolds than beam, without destructive ancestry collapse. Greedy provides the
+  independent parent-lane context; beam is the primary deterministic comparator.
+- Neutral/negative outcomes: an unresolved beam-FK difference is informative and reportable under
+  the frozen v0 configuration. Beam/independent matching FK, or FK diversity collapse without
+  Head/budget benefit, does not trigger a post-hoc `N`/beta/round/cohort sweep.
+- Validation: paired protein-level `fusion_elite` / `fusion_rounds` trajectories plus
+  `fusion_particles` / lineage-derived unique-state and root-ancestry telemetry; report terminal
+  Head, best-so-far Head-versus-realized-refold AUC, scTM, ESS, actual refolds, and walltime.
+- Scope: P3 tests H6 on the explicit move kernel. It does not by itself estimate the total
+  repair+FK package effect.
 
 Do not bundle D2 or SC-GR into P1-P3: per doc §8.2 / §8.4 they are proposal-efficiency ablations
 only after the hard-state core (P1) shows authority. H4 (exact feedback vs marginal actuation) and
@@ -875,10 +894,10 @@ token-state continuation primitive only after RNG and lifecycle semantics are sp
 - [ ] Every inherited child has a definitive target-backbone structure verdict.
 - [ ] Parent null move and elite archive prevent destructive failure.
 - [ ] RF repair preserves edit core, anchors, and outside halo.
-- [ ] Greedy/beam/FK replay the same candidate pool.
+- [ ] Greedy/beam/FK replay the same one-round evaluated pool; full trajectories diverge only through selected ancestry.
 - [ ] FK branch-size normalization and resampling semantics match §1.6.
 - [ ] Driver artifacts permit exact ancestry and cost reconstruction.
 - [ ] No external RERD/FK code or NMP runtime is imported.
 - [ ] New script is registered and existing SLURM is extended, not duplicated.
 - [ ] Existing RF/controller/refiner tests remain green.
-- [ ] Real S0-S2 smokes pass before scientific sweeps begin.
+- [ ] Respect the staged mechanism gates: S0 before P1, S1 before P2, and S2 before P3.
