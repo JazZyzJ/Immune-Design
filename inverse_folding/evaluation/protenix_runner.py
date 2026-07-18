@@ -21,7 +21,10 @@ import glob
 import json
 import os
 
-from inverse_folding.evaluation.refold_normalize import normalize_to_cache
+from inverse_folding.evaluation.refold_normalize import (
+    mean_ca_plddt_from_pdb,
+    normalize_to_cache,
+)
 
 
 def _summary_for_cif(cif_path: str) -> str:
@@ -66,7 +69,12 @@ def find_best_sample(protenix_out_dir: str, name: str) -> tuple[str, str]:
 
 
 def normalize_protenix_to_cache(
-    protenix_out_dir: str, name: str, *, cache_dir: str, key: str
+    protenix_out_dir: str,
+    name: str,
+    *,
+    cache_dir: str,
+    key: str,
+    protein_only: bool = False,
 ) -> dict[str, str]:
     """Pick the global-best Protenix sample for ``name`` and write it into the cache.
 
@@ -74,6 +82,18 @@ def normalize_protenix_to_cache(
     """
     best_cif, best_summary = find_best_sample(protenix_out_dir, name)
     mean_plddt = read_mean_plddt(best_summary)  # 0-100 already
-    return normalize_to_cache(
-        cache_dir, key, cif_path=best_cif, mean_plddt=mean_plddt, native_scale="0-100"
+    result = normalize_to_cache(
+        cache_dir,
+        key,
+        cif_path=best_cif,
+        mean_plddt=mean_plddt,
+        native_scale="0-100",
+        protein_only=protein_only,
     )
+    # Protenix's summary is an all-atom/complex aggregate, while canonical v2
+    # validates and reports the per-residue CA mean from the protein cache PDB.
+    ca_mean = mean_ca_plddt_from_pdb(result["pdb_path"])
+    if ca_mean is not None:
+        with open(result["plddt_path"], "w") as handle:
+            handle.write(f"{ca_mean:.4f}")
+    return result

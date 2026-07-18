@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import biotite.structure as struc
@@ -25,21 +26,34 @@ from inverse_folding.evaluation.protenix_runner import (
 )
 
 
-def _write_cif(path: Path, n_res: int = 5) -> None:
+def _write_cif(path: Path, n_res: int = 5, *, ca_plddt: float = 90.0) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     atoms = [
         struc.Atom([float(i) * 3.8, 0.0, 0.0], chain_id="A", res_id=i + 1,
                    res_name="GLY", atom_name="CA", element="C")
         for i in range(n_res)
     ]
+    arr = struc.array(atoms)
+    arr.set_annotation("b_factor", np.full(arr.array_length(), ca_plddt, dtype=float))
     cif = pdbx.CIFFile()
-    pdbx.set_structure(cif, struc.array(atoms))
+    pdbx.set_structure(cif, arr)
     cif.write(str(path))
 
 
-def _write_seed(out_dir: Path, name: str, seed: int, plddt: float, ranking: float) -> None:
+def _write_seed(
+    out_dir: Path,
+    name: str,
+    seed: int,
+    plddt: float,
+    ranking: float,
+    *,
+    ca_plddt: float | None = None,
+) -> None:
     pred = out_dir / name / f"seed_{seed}" / "predictions"
-    _write_cif(pred / f"{name}_sample_0.cif")
+    _write_cif(
+        pred / f"{name}_sample_0.cif",
+        ca_plddt=plddt if ca_plddt is None else ca_plddt,
+    )
     (pred / f"{name}_summary_confidence_sample_0.json").write_text(
         json.dumps({"plddt": plddt, "ranking_score": ranking, "ptm": 0.7})
     )
@@ -65,10 +79,28 @@ def test_normalize_protenix_writes_cache_entry_0_100(tmp_path):
     pdb_path = Path(out["pdb_path"])
     assert pdb_path == tmp_path / "cache" / f"{key}.pdb"
     assert pdb_path.is_file()
-    # Protenix summary 'plddt' is already 0-100 -> unchanged
+    # The fixture's CA pLDDT equals the summary, so the canonical sidecar agrees.
     assert float(Path(out["plddt_path"]).read_text().strip()) == pytest.approx(83.81)
     arr = pdb.PDBFile.read(str(pdb_path)).get_structure(model=1)
     assert set(str(c) for c in set(arr.chain_id)) == {"A"}
+
+
+def test_normalize_protenix_sidecar_uses_protein_ca_mean(tmp_path):
+    name = "p1_holoabc123"
+    _write_seed(
+        tmp_path,
+        name,
+        seed=101,
+        plddt=92.0,
+        ranking=0.9,
+        ca_plddt=96.5,
+    )
+
+    out = normalize_protenix_to_cache(
+        str(tmp_path), name, cache_dir=str(tmp_path / "cache"), key=name
+    )
+
+    assert float(Path(out["plddt_path"]).read_text().strip()) == pytest.approx(96.5)
 
 
 def test_find_best_sample_missing_output_fails_fast(tmp_path):

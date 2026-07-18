@@ -3747,3 +3747,24 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `scripts/refine_rf_designs.py`, `scripts/submit_refine.slurm`, `inverse_folding/reference_flow/refine.py`
   - `PROTOCOL/shortlist_and_refine_seed_selection.md`, `PLAN_RF_REFINE.md`, `doc/SCRIPTS.md`
+
+### L0136
+- timestamp: 2026-07-17T01:10:36-04:00
+- type: FEATURE
+- module: L
+- trigger: pilot_v2/fast_v2 stratify on `coverage_fraction` (generator-independent, difficulty-blind); user wants a pilot uniform over de-immunization difficulty on the NoD baseline. Question raised: is the highrisk-style regression bias serious enough to require decoupling the difficulty realization from the eval baseline?
+- change_summary: Added `scripts/build_pilot_difficulty.py` (SCRIPTS.md §Module L #13) and built pilot-v3 for both alleles (`if_ready/pilot/pilot_v3_<tag>.parquet` + `.fasta`, n=50 each), stratified uniformly across NoD-baseline difficulty (median NMP strong_frac over ALL 8 designs; 10 equal-frequency quantile bins × 5).
+- rationale: NoD-residual NMP burden is the on-target "de-immunization difficulty" axis (more than native/WT load). The highrisk regression inflation is severe only for *extreme-tail* selection + a quantitative small-effect claim; for a UNIFORM iteration set analyzed qualitatively it is a second-order effect, so binning on all 8 designs (cleanest per-protein estimate) is the default rather than a 4/4 split. The script still supports an optional disjoint `--half-b-designs` reserve for when a rigorous quantitative per-bin method-vs-NoD number is needed (or regenerate a fresh NoD baseline for the 50 proteins at eval time). NMP-only (not head) defines the axis because the head is the RF guidance (circular). fast_v2 unchanged (generator-independent breadth set); pilot_v2 retained in parallel (SC-GR planner cohort, `PLAN_PLANNER_SC_GR.md`).
+- artifacts:
+  - `scripts/build_pilot_difficulty.py`, `tests/scripts/test_build_pilot_difficulty.py`
+  - `work/immune-design/if_test_set/if_ready/pilot/pilot_v3_HLA-DRB1_{07_01,04_01}.parquet` (+`.fasta`)
+  - `run/benchmark/if_phase_c/nod_full_v1/HLA-DRB1_{07_01,04_01}/nod_full_v1_*_imm/` (source NoD imm, 8 designs/protein)
+- evidence: 5 pytest green (per-design difficulty aggregation, equal-frequency quantile binning, remainder→hardest, monotonicity, seed-determinism). Build (all-8 binning): both alleles n=50, 5/bin, per-bin median difficulty monotone, selected NMP strong_frac span 0701 [0.000,0.042] / 0401 [0.001,0.071], all rows ⊂ main IF-ready.
+- impact:
+  - scope: new data-selection script + pilot-v3 canonical subset (both alleles); fast_v2/pilot_v2/main untouched.
+  - risk: low
+  - confidence: 0.90
+- status: done
+- next_action: if a quantitative per-bin method-vs-NoD claim is later needed on pilot-v3, rebuild with a reserved `--half-b-designs` or evaluate against a freshly regenerated NoD baseline for the 50 proteins.
+- refs:
+  - `scripts/build_highrisk_demo.py` (selection framework reused), `PLAN_PLANNER_SC_GR.md` (pilot_v2 cohort)

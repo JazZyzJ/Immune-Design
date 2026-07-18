@@ -16,6 +16,7 @@ sequence)`` — the same function the eval-time cache read uses, so keys cannot 
 from __future__ import annotations
 
 import io
+import math
 import os
 
 import numpy as np
@@ -34,8 +35,29 @@ def normalize_plddt(value: float, native_scale: str) -> float:
     raise ValueError(f"unknown pLDDT native_scale: {native_scale!r} (expected '0-1' or '0-100')")
 
 
-def cif_to_single_chain_pdb_text(cif_path: str) -> str:
-    """Convert an mmCIF file to single-chain PDB text (biotite); fail-fast on multi-chain."""
+def mean_ca_plddt_from_pdb(pdb_path: str) -> float | None:
+    """Return the mean CA B-factor used as canonical per-residue pLDDT."""
+    values: list[float] = []
+    with open(pdb_path) as handle:
+        for line in handle:
+            if line.startswith("ATOM") and line[12:16].strip() == "CA":
+                try:
+                    b_factor = float(line[60:66])
+                except ValueError:
+                    continue
+                if math.isfinite(b_factor):
+                    values.append(b_factor)
+    return sum(values) / len(values) if values else None
+
+
+def cif_to_single_chain_pdb_text(cif_path: str, *, protein_only: bool = False) -> str:
+    """Convert an mmCIF file to single-chain PDB text.
+
+    ``protein_only`` removes hetero atoms before enforcing the single-chain
+    contract.  This is used for holo refolds: the native mmCIF remains intact,
+    while the shared evaluation cache contains only the protein chain expected
+    by the structural evaluator.
+    """
     import biotite.structure.io.pdb as pdb
     import biotite.structure.io.pdbx as pdbx
 
@@ -50,6 +72,13 @@ def cif_to_single_chain_pdb_text(cif_path: str) -> str:
         # the historical conversion behavior; canonical v2 later rejects the
         # resulting zero-confidence PDB against its nonzero sidecar.
         arr.del_annotation("b_factor")
+    if protein_only:
+        arr = arr[~arr.hetero]
+        if arr.array_length() == 0:
+            raise RuntimeError(
+                f"refold normalize: no protein atoms remain after removing hetero atoms "
+                f"from {cif_path}"
+            )
     chains = sorted(str(c) for c in np.unique(arr.chain_id))
     if len(chains) != 1:
         raise RuntimeError(
@@ -97,6 +126,7 @@ def normalize_to_cache(
     cif_path: str,
     mean_plddt: float,
     native_scale: str,
+    protein_only: bool = False,
 ) -> dict[str, str]:
     """Write ``<cache_dir>/<key>.pdb`` (single-chain) + ``<key>.plddt`` (0-100).
 
@@ -105,7 +135,7 @@ def normalize_to_cache(
     """
     os.makedirs(cache_dir, exist_ok=True)
     plddt_100 = normalize_plddt(mean_plddt, native_scale)  # validate scale before touching disk
-    pdb_text = cif_to_single_chain_pdb_text(cif_path)
+    pdb_text = cif_to_single_chain_pdb_text(cif_path, protein_only=protein_only)
 
     pdb_path = os.path.join(cache_dir, f"{key}.pdb")
     plddt_path = os.path.join(cache_dir, f"{key}.plddt")

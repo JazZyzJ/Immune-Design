@@ -27,6 +27,30 @@ def test_build_af3_json_full_msa_omits_msa_fields():
     assert pc["sequence"] == "AAAA"
 
 
+DTZ_ANION_SMILES = "O=c1c(Cc2ccccc2)nc2c(-c3ccccc3)[n-]c(-c3ccccc3)cn1-2"
+
+
+def test_build_af3_json_apo_has_no_ligand_entity():
+    # default (no ligand_smiles) is protein-only — holo must be opt-in
+    j = build_af3_json("k1", "AAAA", no_msa=False)
+    assert len(j["sequences"]) == 1
+    assert all("ligand" not in s for s in j["sequences"])
+
+
+def test_build_af3_json_with_ligand_appends_smiles_entity():
+    j = build_af3_json("k1", "AAAA", no_msa=False, ligand_smiles=DTZ_ANION_SMILES)
+    # protein entity unchanged, ligand appended as a distinct chain id (not "A")
+    assert j["sequences"][0]["protein"]["sequence"] == "AAAA"
+    ligands = [s["ligand"] for s in j["sequences"] if "ligand" in s]
+    assert ligands == [{"id": "L", "smiles": DTZ_ANION_SMILES}]
+
+
+def test_build_af3_json_empty_ligand_smiles_is_apo():
+    # slurm passes --ligand-smiles "" for apo runs; empty string must stay protein-only
+    j = build_af3_json("k1", "AAAA", no_msa=True, ligand_smiles="")
+    assert all("ligand" not in s for s in j["sequences"])
+
+
 def test_records_for_shard_dedups_and_uses_cache_key(tmp_path):
     df = pd.DataFrame(
         [

@@ -102,7 +102,9 @@
   - Phase C: `TEST_SET_PARQUET=if_ready/main/test_proteins_if_ready_<tag>.parquet`, `H_MAPS_PARQUET=if_ready/h_maps_v2/h_maps_<tag>.parquet` (optional; omit for constant_one / controller-only arms), `PDB_ROOT=pdbs_if_ready/<tag>`. Unified allele tag = full `HLA-DRB1_07_01` form on disk everywhere. SLURM `submit_if_phase_c.slurm` H_MAPS default = `h_maps_v2`; set `H_MAPS_PARQUET=` (empty) to run without an h-map.
   - CLIs: `select_tier2_v2.py` (merge shards + stratified sample); `prescreen_tier2.py --selection-mode nmp_only` (`--nmp-screen-lengths/--n-shards/--sample`); lib `inverse_folding/evaluation/{sampling.py,immunogenicity.compute_coverage_fraction}`.
 - **Diagnostic / demonstration subsets (allele-specific, subsets of canonical if_ready):**
-  - **pilot** `if_ready/pilot/pilot_v2_<tag>.parquet` — **0701 47 (5 anchors + 42 T2) / 0401 49 (5 + 44)** after the coverage≥0.8 removal (was 50; 3/1 truncated T2 dropped, not backfilled). 5 Tier 1 band-aligned anchors + Tier 2 in mid-load band [p40,p75] of coverage (0701 [0.33,0.56], 0401 [0.39,0.64]). High-freq RF iteration. `build_pilot_v2.py`.
+  - **pilot** — two parallel variants (different stratification axes; both n≈50, high-freq RF iteration):
+    - **pilot_v3 (CURRENT, 2026-07-17)** `if_ready/pilot/pilot_v3_<tag>.parquet` (+`.fasta`) — **0701 50 / 0401 50**, stratified UNIFORMLY over de-immunization difficulty on the unguided **NoD** baseline. Difficulty = median NMP `strong_frac` over **all 8** NoD designs (cleanest estimate); axis = **NMP-only** (head is RF guidance → diagnostic only). 10 equal-frequency quantile bins × 5, difficulty per-bin monotone, selected span [0.000,~0.07]. `build_pilot_difficulty.py`. Regression note: the highrisk NoD-selection bias is a *second-order* effect for a uniform set + qualitative iteration (severe only for extreme-tail + quantitative claims), so all-8 binning is fine; for a rigorous quantitative per-bin method-vs-NoD number, reserve a disjoint `--half-b-designs` or regenerate a fresh NoD baseline for the 50 proteins at eval time.
+    - **pilot_v2** `if_ready/pilot/pilot_v2_<tag>.parquet` — **0701 47 / 0401 49**, `coverage_fraction` mid-load band [p40,p75] + 5 Tier-1 anchors. Generator-independent but difficulty-blind. Retained: it is the cohort of the SC-GR planner (`PLAN_PLANNER_SC_GR.md`). `build_pilot_v2.py`.
   - **fast** `if_ready/fast/fast_v2_<tag>.parquet` — **0701 286 / 0401 285** (was 300; truncated removed). 15 Tier 1 + Tier 2 uniform across coverage. Global sanity. Carries a `coverage_fraction` column.
   - **highrisk (0701 + 0401 done; 1501 pending)** `if_ready/highrisk/` — top-100 by `min(nmp_pct, head_pct)` (NMP strong-window burden AND epitope-head global_risk both high; `if_sequence_coverage ≥ 0.8`; `build_highrisk_demo.py`).
     - **`highrisk_nod_v1_HLA-DRB1_07_01`** (CURRENT, 2026-07-09) — **primary = NoD full-pool baseline** (RF's own DFM kernel with guidance OFF, `c1_null`; **2879 proteins × 8 diverse designs**, temp 1.0, seed 42; a1res03 fold0 head). Kernel-consistent baseline for the RF-validation/iteration highrisk set (NoD = same DFM sampler as every guided C1/C2/C3/D arm). sel_nmp 0.030–0.082 / sel_head 1.66–4.60; `pmpnn_nmp/head` diagnostic + sorted FASTA. NoD gen `run/inverse_folding/baselines/nod_full_v1/`, imm `run/benchmark/if_phase_c/nod_full_v1/`.
@@ -351,6 +353,27 @@ NanoLuc 8 anchors). Collection (Della): `work/immune-design/if_test_set/backup/`
   `tests/inverse_folding/test_af3_runner.py`. (esmfold2/protenix unaffected.)
 - **Return (Mac)**: `mhc-if-local:/Users/jerry/Project/MHC-IF/Results/RF/backup/backup_20260713/`
   (collection + per-run gen/imm/struct + WT baselines + `RESULTS_SUMMARY.md`).
+
+### LuxSit-i (backup target, 2026-07-15) — reference-fold matrix + RF-ready
+
+De-novo luciferase **LuxSit-i core117** (Baker Nature 2023 / Chem 2025; substrate DTZ). **Redesign target = i only**;
+parent LuxSit kept as reference. No experimental structure exists (Rosetta theoretical only) → **AF3 apo = RF backbone**.
+Manifest `inverse_folding/reference_flow/configs/luxsit_active_site_v0.yaml` (collaborator-supplied `luxsit_active_site_v1`,
+**safety-max 22 hard anchors + 7 monitored**, validates through our loader). Collection (Della):
+`work/immune-design/if_test_set/backup/luxsit/`.
+
+- **Structure = 4-refold reference matrix ×2 predictors**: AF3 v3.0.3 + Protenix v2, each {parent,i}×{apo,holo}. Holo
+  cofolds the **collaborator-verified DTZ anion** `O=c1c(Cc2ccccc2)nc2c(-c3ccccc3)[n-]c(-c3ccccc3)cn1-2` (C25H18N3O⁻).
+  Code: `--ligand-smiles` added to both refold-cache build-json drivers (`precompute_{af3,protenix}_refold.py`, off by default).
+- **AF3-vs-Protenix verdict (LuxSit-i)**: apo **TM 0.985 / 0.50 Å**; holo pocket catalytic distances within ~0.2 Å
+  (Y14–H98 2.7, H98–DTZ O1 2.8, R65–DTZ N1 3.7); **DTZ pose COM 0.13 Å**, ligand intact (29 heavy atoms); both
+  high-confidence (pTM 0.92/0.96, ipTM 0.93/0.965) clash-free. → **No significant difference; safe to switch downstream
+  validation to Protenix** (holo fwd ≈6.5 s/seed). Parent apo looser (TM 0.94). Both sit ~1.45 Å from the Rosetta design
+  model (= paper AF2-vs-design 1.35 Å). Shared model-vs-Rosetta note: D18–R65 salt bridge ~4.2 Å (both) vs Rosetta 2.65 Å.
+  Full table: `if_test_set/backup/luxsit/AF3_vs_Protenix_comparison.md`.
+- **RF-ready-i**: `luxsit_i_caseset_if_ready.parquet` + `pdbs_if_ready/LuxSit-i_core117.pdb` + the manifest;
+  `if_sequence_offset==0`, resolved seq == WT-i, 22 anchors validate. (holo cache-normalize skipped by design — multi-chain
+  guard; holo structures live as raw CIFs with DTZ.)
 
 ## Data Inventory
 

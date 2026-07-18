@@ -199,13 +199,13 @@ S0 mechanism cleared P1 on the high-risk cohort using the explicit-only greedy p
 
 **P2 RESULT — narrower direction observed; strict H3 not established.** Repair-minus-explicit terminal Head had median **−0.0087 nat** (54 wins / 10 ties / 12 losses; paired Wilcoxon, two-sided **p=1.35e−8**), and all returned elites passed scTM≥0.85. The typical margin was small and tail-heavy; repair used **2.6% more realized refolds** and about **32.9% more logged round walltime**. **Decision:** retain repair as the default v0 move, defer stronger structural/post-hoc/generalization claims, and proceed to S2/P3 without another repair-specific gate.
 
-## 14. S2 selector replay — PRECHECK PASS; persist summary before P3
+## 14. S2 selector replay — PRECHECK PASS; summary PERSISTED
 
 - Source = the persisted P2 explicit arm (`p2_h3_20260715T214116Z/explicit`). Replay invokes no proposal, Head, structure oracle, or refold.
 - Primary replay = all **76 round-1 pools**, where the parent population is common before selector divergence. Stress summary = all **608 observed protein-round pools**, replayed independently.
-- Mechanism precheck passes: greedy/beam/FK consume identical evaluated rows, preserve population size `N=4`, exclude infeasible branches, and reproduce fixed-seed FK lineage. Do not chain later observed pools into a counterfactual multi-round trajectory; after round 1, future pools depend on selected ancestry.
-- Current v0 FK telemetry (`beta 1→4`): **48/608 pools have ESS<2**; **34/608** resamples place all four slots on one sequence, including **6/76** round-1 pools. Record this as the frozen diversity guardrail/falsifier; do not tune beta or `N` from P3 outcomes.
-- Before P3 launch, persist a compact replay summary with pool digests, selector outputs, ESS, unique-state/root fractions, and all-slot collapse counts.
+- Mechanism precheck PASS, independently reproduced on-cluster (one-off zero-oracle selector replay, seed 20260715 read from the run manifest; reuses `reference_flow.fusion.selection` + the driver's `_derive_seed`): greedy/beam/FK consume identical evaluated rows, preserve population size `N=4` (**608/608 pools**), exclude infeasible branches (**0** infeasible picks), and reproduce fixed-seed FK lineage (**0** non-deterministic pools). Do not chain later observed pools into a counterfactual multi-round trajectory; after round 1, future pools depend on selected ancestry.
+- v0 FK telemetry (`beta 1→4`), reproduced exactly: **48/608 pools have ESS<2**; **34/608** resamples place all four slots on one sequence, including **6/76** round-1 pools (ESS median 13.36, min 1.00, max 35.99; FK unique states/pool mean 3.32 of N=4). Record this as the frozen diversity guardrail/falsifier; do not tune beta or `N` from P3 outcomes.
+- Replay summary PERSISTED at `p2_h3_20260715T214116Z/s2_selector_replay/` (`s2_replay_pools.parquet` with pool digests + per-pool selector outputs/ESS/unique-state/root/collapse; `s2_replay_summary.{json,md}` headline counts). S2 complete → P3 unblocked.
 
 ## 15. P3 (H6) — coverage-balanced explicit-only selector test
 
@@ -223,3 +223,26 @@ S0 mechanism cleared P1 on the high-risk cohort using the explicit-only greedy p
 - FK better than beam in terminal frontier or refold efficiency without destructive collapse supports H6. Beam better than greedy with FK≈beam supports population/global selection but not FK-specific value. An unresolved beam–FK difference is a valid reportable neutral result. FK collapse without benefit is negative evidence.
 - Freeze cohort, `N`, beta schedule, rounds, and decision metrics before launch. Do not respond to a neutral result with beta/`N`/round/cohort sweeps.
 - Scope: this P3 isolates H6 on the explicit move kernel; it does not by itself estimate the total repair+FK package effect or reverse the default-on repair decision.
+
+## 16. Beta sensitivity — zero-refold diagnostic (bound the "beta mismatched" objection)
+
+Purpose: bound the objection that the P3 FK negative (§15) is an artifact of a mis-set `beta 1→4`, WITHOUT a tuning sweep, a re-run, or any new refold/oracle call. Diagnostic only — `N`, rounds, cohort, and the P3 verdict stay frozen; this does NOT calibrate beta or reopen FK.
+
+- Substrate: the persisted P3 FK pools (`p3_h6_.../fk/shard*of4/`, reconstructed `(protein, parent_round)` evaluated pools). Zero refold: reuse the persisted Head/feasibility only.
+- Predefined multiplier set (fixed, small; NOT a grid): `m ∈ {0.5, 1, 2, 4, 8}` applied to `(beta_r, beta_prev)`; re-normalize FK branch weights per pool at each `m`.
+- Per-pool metrics at each `m`: `ESS` (=1/Σwᵢ²) and `branch_count` (=Σ(Mₐ+1), m-invariant); `beam_top4_mass` (FK weight on the 4 lowest-Head branch states — the states beam keeps); `uphill_null_mass` (FK weight on null branches + children with `R_H(child) ≥ R_H(parent)`). Aggregate mean/median over pools.
+- Read (objective): whether increasing `m` moves FK mass onto the beam top-4 and drives `ESS → N=4` (would indicate weak beta), or instead collapses `ESS → 1` (destroys diversity) / barely shifts mass (structurally mis-fit at any `m`). Persist the per-`m` table; no verdict prose in the artifact.
+- Do NOT: run a beta grid to pick a winner, re-launch FK, or change the §15 decision from this diagnostic.
+
+## 17. Final integration validation — repair+beam package vs explicit+greedy baseline (MAIN-CONCLUSION)
+
+Question: total value of the final Fusion package (repair + beam) over the cheap explicit+greedy baseline, on a non-saturated held-out cohort. This is the last experiment load-bearing for the paper's main claim.
+
+- Cohort: `fast_v2_HLA-DRB1_07_01` (286 proteins, len 95–497, `head_global_risk` −9.3…+5.3 → non-saturated; ∩ pilot_v3 = 3 proteins → effectively held out from P3). `if_ready/fast/fast_v2_HLA-DRB1_07_01.parquet`; pdb_root `pdbs_if_ready/HLA-DRB1_07_01` (286/286).
+- Parents: frozen NoD-native DPLM gumbel 8-design pool (`nod_full_v1` merged; covers 286/286 × 8). Same RUN_DIR + `--proteins` across both arms → byte-identical parents.
+- Arms (differ by TWO knobs on purpose — package vs baseline, not a single-knob ablation):
+  - A = **repair+beam**: `repair.enabled=true`, `children_per_edit=4`, `selection.mode=beam` (`rf_refine_fusion_final_repair_beam.yaml`; needs `--base-if-checkpoint` + `--rf-sampler-config c1_null.yaml`).
+  - B = **explicit+greedy**: `repair.enabled=false`, `selection.mode=greedy` (`rf_refine_fusion_final_explicit_greedy.yaml`).
+- Frozen shared: `N=4`, `n_rounds=8` (≥ both elbows; not confounded by round count — report the baseline's best-so-far@r6 for the even-cheaper reference), scTM_min 0.85, N_H 0.10, esmfold2_live, `max_refolds_per_parent=8`, seed 20260715, constraint_manifest=none.
+- Readout: paired per-protein terminal-elite Head `global_risk` at scTM≥0.85 (A−B), + realized refolds and walltime per arm (the cost the package buys the Head gain with). Coverage denominator = handoff feasibility (identical across arms). Report "package achieves ΔHead at C× the baseline refold cost."
+- Staged launch (repair+beam is a NEW combo — never run): 1 repair+beam canary shard first (verify live path), then release the rest of both arms.

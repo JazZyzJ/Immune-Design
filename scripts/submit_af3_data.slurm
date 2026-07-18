@@ -29,6 +29,7 @@ AF3_RUN="/scratch/gpfs/KAIYIJIANG/tools/alphafold3/bin/af3-run"
 FROM_PARQUET="${FROM_PARQUET:?set FROM_PARQUET (generated parquet with protein_id,sequence)}"
 AF3_OUT="${AF3_OUT:-/scratch/gpfs/KAIYIJIANG/zijie/run/af3_refold/$(basename "${FROM_PARQUET%.parquet}")}"
 N_SHARDS="${N_SHARDS:-8}"                 # must match #SBATCH --array=0-(N-1)
+LIGAND_SMILES="${LIGAND_SMILES:-}"        # non-empty = HOLO cofold (chain L); empty = apo
 SHARD_IDX="${SLURM_ARRAY_TASK_ID:-0}"
 JSON_DIR="${AF3_OUT}/_json/shard${SHARD_IDX}of${N_SHARDS}"
 DATA_DIR="${AF3_OUT}/_data/shard${SHARD_IDX}of${N_SHARDS}"
@@ -52,7 +53,7 @@ conda activate immune-design
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 python "${PROJECT_ROOT}/scripts/precompute_af3_refold.py" --mode build-json \
     --from-parquet "${FROM_PARQUET}" --n-shards "${N_SHARDS}" --shard-idx "${SHARD_IDX}" \
-    --json-dir "${JSON_DIR}"
+    --json-dir "${JSON_DIR}" --ligand-smiles "${LIGAND_SMILES}"
 
 # ── CPU MSA data pipeline (isolated subshell; af3-run self-contained) ──────
 # Match jackhmmer/nhmmer thread count to the allocated cores (avoid oversubscription

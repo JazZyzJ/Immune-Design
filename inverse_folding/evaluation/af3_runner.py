@@ -16,10 +16,12 @@ pLDDT-sidecar conversion.
 from __future__ import annotations
 
 import json
-import math
 import os
 
-from inverse_folding.evaluation.refold_normalize import normalize_to_cache
+from inverse_folding.evaluation.refold_normalize import (
+    mean_ca_plddt_from_pdb,
+    normalize_to_cache,
+)
 
 
 def read_mean_plddt_af3(confidences_path: str) -> float:
@@ -30,28 +32,6 @@ def read_mean_plddt_af3(confidences_path: str) -> float:
     if not arr:
         raise ValueError(f"af3: empty atom_plddts in {confidences_path}")
     return float(sum(arr) / len(arr))
-
-
-def mean_ca_plddt_from_pdb(pdb_path: str) -> float | None:
-    """Mean CA-atom B-factor (pLDDT, 0-100) over residues in a single-chain cache PDB.
-
-    This equals ``evaluate_phase_c``'s v2 ``predicted_global_plddt`` (per-residue CA mean),
-    which ``_validate_v2_prediction_plddt`` compares the ``.plddt`` sidecar against. AF3's
-    all-atom ``atom_plddts`` mean sits ~2-3 pLDDT below it (side-chain atoms are lower
-    confidence than backbone CA), so the sidecar must use this CA mean to stay consistent.
-    Returns ``None`` if the PDB has no parseable CA B-factors (caller falls back).
-    """
-    values: list[float] = []
-    with open(pdb_path) as handle:
-        for line in handle:
-            if line.startswith("ATOM") and line[12:16].strip() == "CA":
-                try:
-                    b = float(line[60:66])
-                except ValueError:
-                    continue
-                if math.isfinite(b):
-                    values.append(b)
-    return sum(values) / len(values) if values else None
 
 
 def normalize_af3_to_cache(

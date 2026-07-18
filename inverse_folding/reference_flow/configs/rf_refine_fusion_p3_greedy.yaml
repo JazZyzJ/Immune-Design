@@ -1,0 +1,66 @@
+# RF-Refine Fusion — P3 (H6) GREEDY arm (independent per-parent control).
+#
+# One of three P3 selector arms (greedy / beam / fk) that differ ONLY in selection.mode. All
+# arms: explicit-only (repair OFF), n_rounds=6 (P1-validated elbow), N=4, beta 1→4, N_H=0.10,
+# scTM_min=0.85, esmfold2_live, on the coverage-balanced pilot_v3 DRB1*07:01 cohort (50 proteins,
+# 10 uniform difficulty bins × 5) with the frozen NoD-native gumbel 8-design parent pool
+# (nod_full_v1). Greedy is the independent parent-lane context (no ancestry crosses lanes); beam is
+# the primary deterministic comparator; FK is the tested optimizer. Only selection.mode differs so
+# the H6 comparison is not confounded (runbook §15).
+fusion:
+  enabled: true
+  seed: 20260715
+  population_size: 4
+  n_rounds: 6
+
+  handoff:
+    mode: terminal_population
+
+  targeting:
+    mode: head_max_window
+    registers_per_parent: 1
+    halo_radius: 4
+
+  objective:
+    head_field: global_risk
+    min_head_improvement: 0.05
+    max_offtarget_window_increase: 0.10
+
+  moves:
+    explicit:
+      enabled: true
+      max_edit_order: 2
+      max_raw_candidates_per_parent: 200
+      pair_seed_budget: 32
+    rf_reopen:
+      enabled: false
+      children_per_parent: 0
+    repair:
+      enabled: false                       # P3 isolates the selector: repair OFF in ALL arms
+      repair_shortlist_per_parent: 4
+      children_per_edit: 4
+      sampler_steps: 8
+      local_remask: false
+
+  structure:
+    backend: esmfold2_live
+    surrogate_mode: none
+    scTM_min: 0.85
+    active_site_metric: sidechain_max_anchor
+    max_anchor_sidechain_RMSD_max: 2.0
+    active_site_RMSD_max: null
+    active_site_shell_radius: 6.0
+    scRMSD_max: null
+    cache_dir: structure_cache
+    max_refolds_per_parent: 8
+
+  selection:
+    mode: greedy                           # <-- the ONLY difference across the 3 P3 arms
+    beta_start: 1.0
+    beta_end: 4.0
+    resample_method: multinomial
+
+  telemetry:
+    candidate_detail: true
+    window_detail: false
+    trajectory_detail: true

@@ -1,0 +1,64 @@
+# RF-Refine Fusion — FINAL integration BASELINE: explicit + greedy (the cheap baseline).
+#
+# repair OFF + selection.mode=greedy, n_rounds=8. Paired against rf_refine_fusion_final_repair_beam.yaml
+# on the non-saturated held-out fast_v2 DRB1*07:01 cohort (286 proteins) with the frozen NoD-native
+# gumbel 8-design parents. Runbook §17 main-conclusion experiment. N=4, scTM_min 0.85, N_H 0.10,
+# esmfold2_live, max_refolds_per_parent=8. This config differs from the package arm by TWO knobs
+# (repair + selector) on purpose — it measures the total package value, not a single-knob ablation.
+fusion:
+  enabled: true
+  seed: 20260715
+  population_size: 4
+  n_rounds: 8
+
+  handoff:
+    mode: terminal_population
+
+  targeting:
+    mode: head_max_window
+    registers_per_parent: 1
+    halo_radius: 4
+
+  objective:
+    head_field: global_risk
+    min_head_improvement: 0.05
+    max_offtarget_window_increase: 0.10
+
+  moves:
+    explicit:
+      enabled: true
+      max_edit_order: 2
+      max_raw_candidates_per_parent: 200
+      pair_seed_budget: 32
+    rf_reopen:
+      enabled: false
+      children_per_parent: 0
+    repair:
+      enabled: false                       # <-- the ONLY difference vs the repair arm
+      repair_shortlist_per_parent: 4
+      children_per_edit: 4
+      sampler_steps: 8
+      local_remask: false
+
+  structure:
+    backend: esmfold2_live
+    surrogate_mode: none
+    scTM_min: 0.85
+    active_site_metric: sidechain_max_anchor
+    max_anchor_sidechain_RMSD_max: 2.0
+    active_site_RMSD_max: null
+    active_site_shell_radius: 6.0
+    scRMSD_max: null
+    cache_dir: structure_cache
+    max_refolds_per_parent: 8
+
+  selection:
+    mode: greedy
+    beta_start: 1.0
+    beta_end: 4.0
+    resample_method: multinomial
+
+  telemetry:
+    candidate_detail: true
+    window_detail: false
+    trajectory_detail: true

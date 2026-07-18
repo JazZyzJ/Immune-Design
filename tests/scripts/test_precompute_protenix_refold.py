@@ -22,6 +22,28 @@ def test_build_protenix_json_is_a_list_of_monomer_jobs():
     ]
 
 
+DTZ_ANION_SMILES = "O=c1c(Cc2ccccc2)nc2c(-c3ccccc3)[n-]c(-c3ccccc3)cn1-2"
+
+
+def test_build_protenix_json_with_ligand_appends_entity():
+    jobs = build_protenix_json([("k1", "AAAA")], ligand_smiles=DTZ_ANION_SMILES)
+    assert jobs == [
+        {
+            "name": "k1",
+            "sequences": [
+                {"proteinChain": {"sequence": "AAAA", "count": 1}},
+                {"ligand": {"ligand": DTZ_ANION_SMILES, "count": 1}},
+            ],
+        },
+    ]
+
+
+def test_build_protenix_json_empty_ligand_smiles_is_apo():
+    # slurm passes --ligand-smiles "" for apo runs; empty string must stay protein-only
+    jobs = build_protenix_json([("k1", "AAAA")], ligand_smiles="")
+    assert jobs == [{"name": "k1", "sequences": [{"proteinChain": {"sequence": "AAAA", "count": 1}}]}]
+
+
 def _parquet(tmp_path):
     df = pd.DataFrame(
         [

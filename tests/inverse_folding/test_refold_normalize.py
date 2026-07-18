@@ -52,6 +52,28 @@ def _build_cif(
     cif.write(str(path))
 
 
+def _append_ligand_chain(path: Path, *, b_factor: float = 80.0) -> None:
+    cif = pdbx.CIFFile.read(str(path))
+    arr = pdbx.get_structure(cif, model=1, extra_fields=["b_factor"])
+    ligand = struc.array(
+        [
+            struc.Atom(
+                [20.0, 0.0, 0.0],
+                chain_id="B",
+                res_id=1,
+                res_name="LIG",
+                atom_name="C1",
+                element="C",
+                hetero=True,
+            )
+        ]
+    )
+    ligand.set_annotation("b_factor", np.array([b_factor], dtype=float))
+    out = pdbx.CIFFile()
+    pdbx.set_structure(out, arr + ligand)
+    out.write(str(path))
+
+
 def test_normalize_plddt_scales_unit_to_percent():
     assert normalize_plddt(0.90, "0-1") == pytest.approx(90.0)
     assert normalize_plddt(0.945, "0-1") == pytest.approx(94.5)
@@ -100,6 +122,26 @@ def test_normalize_to_cache_rejects_multichain(tmp_path):
             str(tmp_path), "p2_deadbeef0000", cif_path=str(cif), mean_plddt=88.0, native_scale="0-100"
         )
     assert "chain" in str(exc.value).lower()
+
+
+def test_normalize_to_cache_can_extract_protein_from_holo_cif(tmp_path):
+    cif = tmp_path / "holo.cif"
+    _build_cif(cif, chains=("A",), n_res=3, b_factor=91.0)
+    _append_ligand_chain(cif)
+
+    out = normalize_to_cache(
+        str(tmp_path),
+        "holo_deadbeef0000",
+        cif_path=str(cif),
+        mean_plddt=91.0,
+        native_scale="0-100",
+        protein_only=True,
+    )
+
+    arr = pdb.PDBFile.read(out["pdb_path"]).get_structure(model=1)
+    assert set(np.unique(arr.chain_id)) == {"A"}
+    assert set(np.unique(arr.res_name)) == {"GLY"}
+    assert arr.array_length() == 3
 
 
 def test_normalize_to_cache_missing_cif_fails_fast(tmp_path):
