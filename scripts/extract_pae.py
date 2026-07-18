@@ -127,7 +127,8 @@ def main():
     args = ap.parse_args()
     man = pd.read_parquet(args.manifest)
     os.makedirs(args.out_dir, exist_ok=True)
-    tasks = [(args.pred_root, args.out_dir, r.pred_id, r.design_uid) for r in man.itertuples()]
+    uid_col = "design_uid" if "design_uid" in man.columns else ("design_id" if "design_id" in man.columns else "pred_id")
+    tasks = [(args.pred_root, args.out_dir, r.pred_id, getattr(r, uid_col)) for r in man.itertuples()]
     with Pool(args.procs) as pool:
         recs = pool.map(process_one, tasks)
     df = pd.DataFrame(recs)

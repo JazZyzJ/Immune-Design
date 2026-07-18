@@ -223,7 +223,7 @@ def main() -> None:
     ap.add_argument("--pred-root", required=True)
     ap.add_argument("--backend", choices=["protenix", "esmfold2"], default="protenix",
                     help="which predictor's output layout to read (gate is backend-selectable)")
-    ap.add_argument("--manifest", required=True, help="build_tetramer_input manifest (id,name,parent,kind,allele)")
+    ap.add_argument("--manifest", required=True, help="manifest parquet with id,name,parent,kind,allele (name = pred output-dir stem)")
     ap.add_argument("--usalign", required=True)
     ap.add_argument("--crystal-ref", default=None, help="1R51_tetramer_ABCD.pdb (for the crystal parent)")
     ap.add_argument("--crystal-parent", default="Q00511")

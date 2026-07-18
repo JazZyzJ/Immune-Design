@@ -12,19 +12,19 @@
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/protenix/refold_%A_%a.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/protenix/refold_%A_%a.err
 
-# Protenix v2 refold-cache precompute — STAGE B (GPU fold + normalize).
+# Protenix v2 refold-cache precompute — GPU fold + normalize (single-stage, local MSA).
 #
-# Full-MSA on Della is two-stage because the compute-node proxy does NOT whitelist
-# the Protenix MSA server (403) and a GPU job idle-waiting on MSA gets auto-killed:
-#   Stage A (login node, direct egress): scripts/protenix_msa_login.sh fetches MSA and
-#     writes <PROTENIX_OUT>/_json/shard{k}of{N}-update-msa.json (a3m paths filled in).
-#   Stage B (THIS GPU job): folds that pre-fetched-MSA JSON — `--use_msa true` reads the
-#     LOCAL a3m (no server call → GPU busy immediately, never idle) — then normalizes
-#     each fold's best sample into CACHE_DIR (<cache_key>.pdb + .plddt, 0-100).
-# USE_MSA=false folds single-sequence (no-MSA, degraded protenix-v2) and needs no stage A.
+# MSA comes from our LOCAL ColabFold (the deprecated Protenix login-node server path is gone):
+#   emit-fasta -> local MSA -> inject, all offline. Prep the a3m once:
+#     precompute_protenix_refold.py --mode emit-fasta --fasta-out <f>   (cache_key-keyed FASTA)
+#     submit_tetramer_msa_local.slurm <f> <MSA_A3M_DIR>                  (local GPU ColabFold)
+#   USE_MSA=true (default): build-json injects <MSA_A3M_DIR>/<cache_key>.a3m as paired/unpaired
+#     paths, then `protenix-run pred --use_msa true` reads the LOCAL a3m (no server, GPU busy
+#     immediately) and normalizes each fold's best sample into CACHE_DIR (<key>.pdb + .plddt).
+#   USE_MSA=false: single-sequence no-MSA (degraded), no a3m needed.
 # The group install (/scratch/gpfs/KAIYIJIANG/tools/protenix) is CALLED, never modified.
-# Required env: FROM_PARQUET, CACHE_DIR; overridable: PROTENIX_OUT, N_SHARDS, USE_MSA,
-# SEEDS, SAMPLE. Match --array size to N_SHARDS.
+# Required env: FROM_PARQUET, CACHE_DIR; USE_MSA=true also needs MSA_A3M_DIR. Overridable:
+# PROTENIX_OUT, N_SHARDS, USE_MSA, MSA_A3M_DIR, SEEDS, SAMPLE. Match --array size to N_SHARDS.
 
 set -euo pipefail
 : "${PS1:=}"; export PS1
@@ -36,12 +36,13 @@ FROM_PARQUET="${FROM_PARQUET:?set FROM_PARQUET (generated parquet with protein_i
 CACHE_DIR="${CACHE_DIR:?set CACHE_DIR (shared refold cache dir)}"
 PROTENIX_OUT="${PROTENIX_OUT:-/scratch/gpfs/KAIYIJIANG/zijie/run/protenix_refold/$(basename "${FROM_PARQUET%.parquet}")}"
 N_SHARDS="${N_SHARDS:-8}"                 # must match #SBATCH --array=0-(N-1)
-USE_MSA="${USE_MSA:-true}"               # true = fold pre-fetched full-MSA (stage A first); false = no-MSA
+USE_MSA="${USE_MSA:-true}"               # true = local ColabFold MSA (needs MSA_A3M_DIR); false = no-MSA
+MSA_A3M_DIR="${MSA_A3M_DIR:-}"           # USE_MSA=true: dir of <cache_key>.a3m from submit_tetramer_msa_local.slurm
 SEEDS="${SEEDS:-101}"
 SAMPLE="${SAMPLE:-5}"
+LIGAND_SMILES="${LIGAND_SMILES:-}"       # non-empty = HOLO cofold; empty = apo
 SHARD_IDX="${SLURM_ARRAY_TASK_ID:-0}"
 SHARD_JSON="${PROTENIX_OUT}/_json/shard${SHARD_IDX}of${N_SHARDS}.json"
-UPDATED_JSON="${PROTENIX_OUT}/_json/shard${SHARD_IDX}of${N_SHARDS}-update-msa.json"
 LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/protenix"
 
 mkdir -p "${PROTENIX_OUT}/_json" "${LOG_DIR}" "${CACHE_DIR}"
@@ -58,26 +59,24 @@ echo "  seeds/sample : ${SEEDS}/${SAMPLE}"
 echo "  Timestamp    : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "============================================================"
 
-# ── Select the fold JSON ───────────────────────────────────────────────────
+# ── Build the fold JSON (immune-design) ────────────────────────────────────
+FOLD_JSON="${SHARD_JSON}"
+module purge
+module load anaconda3/2025.12
+conda activate immune-design
+export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 if [ "${USE_MSA}" = "true" ]; then
-    FOLD_JSON="${UPDATED_JSON}"
-    if [ ! -f "${FOLD_JSON}" ]; then
-        echo "FATAL: full-MSA requested but ${FOLD_JSON} is missing." >&2
-        echo "       Run stage A first: scripts/protenix_msa_login.sh (login node)." >&2
-        exit 2
-    fi
+    # LOCAL ColabFold MSA: inject <MSA_A3M_DIR>/<cache_key>.a3m as paired/unpaired paths
+    [ -n "${MSA_A3M_DIR}" ] || { echo "FATAL: USE_MSA=true needs MSA_A3M_DIR (local ColabFold a3m; run emit-fasta -> submit_tetramer_msa_local.slurm first)." >&2; exit 2; }
+    python "${PROJECT_ROOT}/scripts/precompute_protenix_refold.py" --mode build-json \
+        --from-parquet "${FROM_PARQUET}" --n-shards "${N_SHARDS}" --shard-idx "${SHARD_IDX}" \
+        --out-json "${FOLD_JSON}" --msa-a3m-dir "${MSA_A3M_DIR}" --msa-px-dir "${PROTENIX_OUT}/_msa" \
+        --ligand-smiles "${LIGAND_SMILES}"
 else
-    # no-MSA: build this shard's plain JSON in immune-design (pyarrow) if absent
-    FOLD_JSON="${SHARD_JSON}"
-    if [ ! -f "${FOLD_JSON}" ]; then
-        module purge
-        module load anaconda3/2025.12
-        conda activate immune-design
-        export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
-        python "${PROJECT_ROOT}/scripts/precompute_protenix_refold.py" --mode build-json \
-            --from-parquet "${FROM_PARQUET}" --n-shards "${N_SHARDS}" --shard-idx "${SHARD_IDX}" \
-            --out-json "${FOLD_JSON}"
-    fi
+    # no-MSA single-sequence
+    python "${PROJECT_ROOT}/scripts/precompute_protenix_refold.py" --mode build-json \
+        --from-parquet "${FROM_PARQUET}" --n-shards "${N_SHARDS}" --shard-idx "${SHARD_IDX}" \
+        --out-json "${FOLD_JSON}" --ligand-smiles "${LIGAND_SMILES}"
 fi
 
 # ── Step 1: fold with Protenix (isolated subshell, GPU; a3m is local → no proxy) ──
@@ -99,6 +98,7 @@ conda activate immune-design
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 python "${PROJECT_ROOT}/scripts/precompute_protenix_refold.py" --mode normalize \
     --from-parquet "${FROM_PARQUET}" --n-shards "${N_SHARDS}" --shard-idx "${SHARD_IDX}" \
-    --protenix-out "${PROTENIX_OUT}" --cache-dir "${CACHE_DIR}"
+    --protenix-out "${PROTENIX_OUT}" --cache-dir "${CACHE_DIR}" \
+    --ligand-smiles "${LIGAND_SMILES}"
 
 echo "Shard ${SHARD_IDX} finished."

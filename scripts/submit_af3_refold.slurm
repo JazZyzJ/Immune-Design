@@ -35,8 +35,10 @@ FROM_PARQUET="${FROM_PARQUET:?set FROM_PARQUET (generated parquet with protein_i
 CACHE_DIR="${CACHE_DIR:?set CACHE_DIR (shared refold cache dir)}"
 AF3_OUT="${AF3_OUT:-/scratch/gpfs/KAIYIJIANG/zijie/run/af3_refold/$(basename "${FROM_PARQUET%.parquet}")}"
 N_SHARDS="${N_SHARDS:-8}"                 # must match #SBATCH --array=0-(N-1)
-USE_MSA="${USE_MSA:-true}"               # true = fold stage-A data JSONs; false = no-MSA
+USE_MSA="${USE_MSA:-true}"               # true = fold stage-A data JSONs; false = no-MSA; colabfold = inject local ColabFold a3m
+MSA_A3M_DIR="${MSA_A3M_DIR:-}"           # USE_MSA=colabfold: dir of <cache_key>.a3m from submit_tetramer_msa_local.slurm
 NUM_SAMPLES="${NUM_SAMPLES:-1}"
+LIGAND_SMILES="${LIGAND_SMILES:-}"       # no-MSA branch only: non-empty = HOLO cofold; empty = apo
 SHARD_IDX="${SLURM_ARRAY_TASK_ID:-0}"
 JSON_DIR="${AF3_OUT}/_json/shard${SHARD_IDX}of${N_SHARDS}"
 DATA_DIR="${AF3_OUT}/_data/shard${SHARD_IDX}of${N_SHARDS}"
@@ -74,6 +76,20 @@ if [ "${USE_MSA}" = "true" ]; then
         exit 2
     fi
     echo "  gathered ${n_data} data JSON(s) -> ${INFER_INPUT}"
+elif [ "${USE_MSA}" = "colabfold" ]; then
+    # our local ColabFold a3m injected into unpairedMsa -> --mode inference reads it, skipping
+    # AF3's slow --mode data jackhmmer/nhmmer. Generate the a3m first:
+    #   precompute_af3_refold.py --mode emit-fasta --fasta-out <f>  (cache_key-keyed FASTA)
+    #   submit_tetramer_msa_local.slurm <f> <MSA_A3M_DIR>           (local GPU ColabFold)
+    [ -n "${MSA_A3M_DIR}" ] || { echo "FATAL: USE_MSA=colabfold requires MSA_A3M_DIR." >&2; exit 2; }
+    module purge
+    module load anaconda3/2025.12
+    conda activate immune-design
+    export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+    python "${PROJECT_ROOT}/scripts/precompute_af3_refold.py" --mode build-json \
+        --from-parquet "${FROM_PARQUET}" --n-shards "${N_SHARDS}" --shard-idx "${SHARD_IDX}" \
+        --json-dir "${JSON_DIR}" --msa-a3m-dir "${MSA_A3M_DIR}" --ligand-smiles "${LIGAND_SMILES}"
+    INFER_INPUT="${JSON_DIR}"
 else
     # no-MSA: build empty-MSA JSONs here (immune-design)
     module purge
@@ -82,7 +98,7 @@ else
     export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
     python "${PROJECT_ROOT}/scripts/precompute_af3_refold.py" --mode build-json --no-msa \
         --from-parquet "${FROM_PARQUET}" --n-shards "${N_SHARDS}" --shard-idx "${SHARD_IDX}" \
-        --json-dir "${JSON_DIR}"
+        --json-dir "${JSON_DIR}" --ligand-smiles "${LIGAND_SMILES}"
     INFER_INPUT="${JSON_DIR}"
 fi
 

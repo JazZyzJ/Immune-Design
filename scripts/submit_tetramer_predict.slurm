@@ -1,7 +1,7 @@
 #!/bin/bash
 # Compute-node Protenix prediction array for the tetramer refold gate (PLAN_TETRAMER_GATE.md §5).
 # Each array task predicts ONE homo-oligomer job from a ready-list of MSA-updated JSONs produced
-# by scripts/run_tetramer_msa.sh. MSA must already be attached (run on the login node) — this
+# by scripts/build_protenix_jsons.py (from a local ColabFold a3m). MSA is already attached — this
 # runs `protenix pred --use_msa true`, which reads the pairedMsaPath/unpairedMsaPath in each JSON.
 #
 # Reuses the shared Protenix install (envs/checkpoint via bin/protenix-run), mirroring

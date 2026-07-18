@@ -94,7 +94,8 @@ PY
 sbatch --output=<logs>/cfmsa_%j.out --error=<logs>/cfmsa_%j.err \
   scripts/submit_tetramer_msa_local.slurm  $BASE/seqs.fasta  $BASE/msa_local
 #   -> $BASE/msa_local/<design_id>.a3m  (feeds ESMFold2 directly)
-#   Protenix instead: scripts/submit_tetramer_msa_local_protenix.slurm -> msa/0/{pairing,non_pairing}.a3m
+#   Protenix instead: feed the SAME a3m to scripts/build_protenix_jsons.py (it splits into
+#   pairing/non_pairing itself; the deprecated submit_tetramer_msa_local_protenix.slurm was removed)
 
 # 3) ESMFold2 tetramer + 4 ligands + MSA, as a SLURM array (one design per task)
 ls $BASE/msa_local/*.a3m | sed 's#.*/##;s#\.a3m$##' > $BASE/ids.txt ; N=$(wc -l < $BASE/ids.txt)
@@ -108,9 +109,10 @@ python scripts/eval_tetramer_gate.py --backend esmfold2 \
   --crystal-ref <refs>/1R51_tetramer_ABCD.pdb --crystal-parent Q00511 --out $BASE/tetramer_gate.parquet
 ```
 
-Optional Protenix arm (orthogonal, esp. ligand pose): `submit_tetramer_msa_local_protenix.slurm` →
-build `<name>-update-msa.json` (paired/unpaired paths + ligand) → `submit_tetramer_predict.slurm`
-(ailab H200) → `eval_tetramer_gate.py --backend protenix`. All scripts are in `doc/SCRIPTS.md`
+Optional Protenix arm (orthogonal, esp. ligand pose): `build_protenix_jsons.py` (splits the local
+ColabFold a3m into paired/unpaired + adds the ligand → `<name>-update-msa.json`) →
+`submit_tetramer_predict.slurm` (ailab H200 or pli) → `eval_tetramer_gate.py --backend protenix`.
+All scripts are in `doc/SCRIPTS.md`
 (Tetramer Refold Gate).
 
 ## Gotchas / provenance

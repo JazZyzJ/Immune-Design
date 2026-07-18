@@ -7,16 +7,18 @@ protenix`` becomes a pure cache read. Protenix ships its own interpreter (the AF
 and is CALLED, never imported here; the group install at
 ``/scratch/gpfs/KAIYIJIANG/tools/protenix`` is never modified.
 
-A SLURM shard runs three steps (see scripts/submit_protenix_refold.slurm):
-  1. ``--mode build-json`` (immune-design): build a Protenix-dialect JSON of this
-     shard's UNIQUE ``(protein_id, sequence)`` monomers, fold name = cache_key.
-  2. protenix env: ``module load proxy/default; source .../protenix/bin/protenix-env.sh;
-     protenix-run pred -i <shard.json> -o <protenix_out> --use_msa true`` (full-MSA
-     needs compute-node egress via proxy/default; --use_msa false for the offline
-     no-MSA fallback).
-  3. ``--mode normalize`` (immune-design): pick each fold's global-best sample and
-     write it into ``--cache-dir`` as ``<cache_key>.pdb`` + ``.plddt``. Fail-fast if any
-     fold is missing (no placeholder — a partial cache would silently break struct eval).
+MSA comes from our LOCAL ColabFold (the deprecated login-node server path is gone). A SLURM
+shard (see scripts/submit_protenix_refold.slurm) runs:
+  0. ``--mode emit-fasta`` (once, upstream): write a cache_key-keyed FASTA for
+     submit_tetramer_msa_local.slurm to turn into ``<cache_key>.a3m``.
+  1. ``--mode build-json`` (immune-design): Protenix-dialect JSON of this shard's UNIQUE
+     ``(protein_id, sequence)`` monomers (fold name = cache_key); ``--msa-a3m-dir`` splits
+     each ColabFold a3m into pairedMsaPath/unpairedMsaPath.
+  2. protenix env: ``protenix-run pred -i <shard.json> -o <out> --use_msa true`` — reads the
+     LOCAL a3m paths (no server); ``--use_msa false`` for the no-MSA fallback.
+  3. ``--mode normalize`` (immune-design): pick each fold's global-best sample and write it
+     into ``--cache-dir`` as ``<cache_key>.pdb`` + ``.plddt``. Fail-fast if any fold is
+     missing (no placeholder — a partial cache would silently break struct eval).
 
 Registered in doc/SCRIPTS.md.
 """
@@ -39,12 +41,50 @@ _repo_on_path()
 from inverse_folding.evaluation.refold_normalize import fold_records_from_parquet  # noqa: E402
 
 
-def build_protenix_json(records: list[tuple[str, str]]) -> list[dict]:
-    """Protenix-dialect job list (one single-count protein monomer per record)."""
-    return [
-        {"name": key, "sequences": [{"proteinChain": {"sequence": seq, "count": 1}}]}
-        for key, seq in records
-    ]
+def _split_colabfold_a3m(a3m_text: str, seq: str, out_dir: Path) -> tuple[str, str]:
+    """Local ColabFold a3m -> Protenix (pairing.a3m = query-only, homomer self-pair;
+    non_pairing.a3m = full depth). Drops any leading ``#len\\tcard`` comment line. Returns
+    the two absolute paths for pairedMsaPath / unpairedMsaPath."""
+    lines = a3m_text.splitlines()
+    if lines and lines[0].startswith("#"):
+        lines = lines[1:]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    npair = out_dir / "non_pairing.a3m"
+    npair.write_text("\n".join(lines) + "\n")
+    pair = out_dir / "pairing.a3m"
+    pair.write_text(f">query\n{seq}\n")
+    return str(pair), str(npair)
+
+
+def build_protenix_json(
+    records: list[tuple[str, str]], ligand_smiles: str | None = None,
+    msa_a3m_dir: Path | None = None, msa_px_dir: Path | None = None,
+) -> list[dict]:
+    """Protenix-dialect job list (one single-count protein monomer per record).
+
+    ``ligand_smiles`` (optional) cofolds a single-count SMILES ligand for a HOLO
+    prediction; empty/None keeps the apo protein-only monomer.
+
+    ``msa_a3m_dir`` (optional): inject our local ColabFold ``<cache_key>.a3m`` — split into
+    ``pairedMsaPath``/``unpairedMsaPath`` under ``msa_px_dir/<cache_key>/`` — so
+    ``protenix-run pred --use_msa true`` reads the LOCAL MSA and no server call is made
+    (replaces the deprecated login-node server path).
+    """
+    jobs: list[dict] = []
+    for key, seq in records:
+        chain: dict = {"sequence": seq, "count": 1}
+        if msa_a3m_dir is not None:
+            a3m = msa_a3m_dir / f"{key}.a3m"
+            if not a3m.is_file():
+                raise SystemExit(f"--msa-a3m-dir set but {a3m} missing (run local ColabFold MSA first)")
+            pair, npair = _split_colabfold_a3m(a3m.read_text(), seq, (msa_px_dir or msa_a3m_dir) / key)
+            chain["pairedMsaPath"] = pair
+            chain["unpairedMsaPath"] = npair
+        sequences: list[dict] = [{"proteinChain": chain}]
+        if ligand_smiles:
+            sequences.append({"ligand": {"ligand": ligand_smiles, "count": 1}})
+        jobs.append({"name": key, "sequences": sequences})
+    return jobs
 
 
 def records_for_shard(parquet_path: str, n_shards: int, shard_idx: int) -> list[tuple[str, str]]:
@@ -55,25 +95,49 @@ def records_for_shard(parquet_path: str, n_shards: int, shard_idx: int) -> list[
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=("build-json", "normalize"), required=True)
+    ap.add_argument("--mode", choices=("build-json", "normalize", "emit-fasta"), required=True)
     ap.add_argument("--from-parquet", required=True, help="generated parquet (protein_id, sequence)")
     ap.add_argument("--n-shards", type=int, default=1)
     ap.add_argument("--shard-idx", type=int, default=0)
     ap.add_argument("--out-json", default=None, help="build-json: Protenix JSON output path")
+    ap.add_argument("--fasta-out", default=None,
+                    help="emit-fasta: write this shard's <cache_key>\\n<seq> FASTA (feed local ColabFold MSA)")
+    ap.add_argument("--msa-a3m-dir", default=None,
+                    help="build-json: inject <dir>/<cache_key>.a3m (local ColabFold) as paired/unpaired MSA")
+    ap.add_argument("--msa-px-dir", default=None,
+                    help="build-json: where to write split pairing/non_pairing.a3m (default: alongside --msa-a3m-dir)")
+    ap.add_argument("--ligand-smiles", default=None,
+                    help="build-json: cofold this SMILES ligand (count 1) for a HOLO prediction; "
+                         "empty/omitted = apo protein-only monomer")
     ap.add_argument("--protenix-out", default=None, help="normalize: Protenix `pred` output dir")
     ap.add_argument("--cache-dir", default=None, help="normalize: shared refold cache dir")
     args = ap.parse_args()
 
     recs = records_for_shard(args.from_parquet, args.n_shards, args.shard_idx)
 
+    if args.mode == "emit-fasta":
+        if not args.fasta_out:
+            raise SystemExit("--fasta-out is required for --mode emit-fasta")
+        out = Path(args.fasta_out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("".join(f">{key}\n{seq}\n" for key, seq in recs))
+        print(f"[emit-fasta] shard {args.shard_idx}/{args.n_shards}: {len(recs)} seqs -> {out}")
+        return
+
     if args.mode == "build-json":
         if not args.out_json:
             raise SystemExit("--out-json is required for --mode build-json")
-        jobs = build_protenix_json(recs)
+        jobs = build_protenix_json(
+            recs, ligand_smiles=args.ligand_smiles,
+            msa_a3m_dir=Path(args.msa_a3m_dir) if args.msa_a3m_dir else None,
+            msa_px_dir=Path(args.msa_px_dir) if args.msa_px_dir else None,
+        )
         out = Path(args.out_json)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(jobs, indent=2))
-        print(f"[build-json] shard {args.shard_idx}/{args.n_shards}: {len(jobs)} monomer jobs -> {out}")
+        src = "colabfold-a3m" if args.msa_a3m_dir else "server/none"
+        print(f"[build-json] shard {args.shard_idx}/{args.n_shards}: {len(jobs)} monomer jobs "
+              f"(msa={src}) -> {out}")
         return
 
     # normalize
@@ -84,7 +148,13 @@ def main() -> None:
     n_ok, missing = 0, []
     for key, _seq in recs:
         try:
-            normalize_protenix_to_cache(args.protenix_out, key, cache_dir=args.cache_dir, key=key)
+            normalize_protenix_to_cache(
+                args.protenix_out,
+                key,
+                cache_dir=args.cache_dir,
+                key=key,
+                protein_only=bool(args.ligand_smiles),
+            )
             n_ok += 1
         except FileNotFoundError:
             missing.append(key)
