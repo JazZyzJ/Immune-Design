@@ -1,4 +1,4 @@
-# PROTOCOL: Tetramer prediction & refold-gate (ESMFold2 / Protenix, local MSA)
+# PROTOCOL: Tetramer prediction, interface analysis & refold-gate
 
 ## Scope / when to use
 
@@ -45,6 +45,17 @@ Use whenever a design list needs a **quaternary** structural read that the monom
 5. **Numbering.** Predict **Met-excluded** (drop a leading Met): predicted `res_id` = 1R51 crystal
    `resSeq` = manifest `index_0b`, so anchors/interfaces align across prediction, crystal, and the
    active-site manifest. A 1-off here silently corrupts every interface/distance number.
+6. **Interface scoring is post-prediction CPU analysis.** BSA, contacts, salt bridges, Rosetta
+   binding energy, packstat, H-bonds, and buried unsatisfied polar atoms depend only on the final
+   coordinates. Do not put Rosetta inside the ESMFold2/Protenix GPU jobs. Preserve the complete
+   holo CIF on Della, run the coordinate layer on every prediction, then run Rosetta
+   InterfaceAnalyzer on the final-selection cohort and its same-backend WT controls. No raw-file
+   return to a local workstation is required.
+7. **Uricase has two interfaces, each repeated twice.** The six chain pairs of a homotetramer form
+   three disjoint D2 matchings. Rank each matching by mean coordinate BSA: `interface_1` is the
+   larger repeated interface, `interface_2` the second repeated interface, and `diagonal` the
+   non-interface. Selection uses the weaker copy of **both** interface classes. Never collapse all
+   six pairs into one total and never infer interface identity from fixed predictor chain labels.
 
 ## Outputs (COMPLETE — structure + raw arrays, not just metrics)
 
@@ -56,11 +67,52 @@ Per variant, under `<pred-root>/tetra_<id>/`:
   metrics (e.g. inter-chain PAE at the active-site interface, per-site ligand-pocket geometry).
 - `tetra_<id>_confidence.json` — scalars (plddt_mean, ptm, iptm, pair_chains_iptm) + array shapes.
 
-`scripts/eval_tetramer_gate.py --backend {protenix,esmfold2}` consolidates these into one row per
-variant: **Tier 1** self-confidence (iptm, min protein-protein chain_pair_iptm, [Protenix]
-mean chain_pair_gpde, min chain plddt, has_clash) + **Tier 2** geometry (US-align `-mm 1` complex TM
-vs the parent WT-predicted tetramer and vs 1R51 for Q00511, cross-protomer active-site distances,
-inter-chain contact count).
+`scripts/eval_tetramer_gate.py --backend {protenix,esmfold2}` writes two complete tables:
+
+- `--out` — one row per variant: **Tier 1** self-confidence; **Tier 2** complex TM and
+  cross-protomer active-site geometry; conservative/mean summaries for `interface_1` and
+  `interface_2`; diagonal-interface separation; and real same-backend WT ratios/deltas when a WT
+  row is present.
+- `<out-stem>_interface_pairs.parquet` — six rows per valid tetramer, preserving chain pair,
+  D2 matching/class/copy, coordinate BSA, residue contacts, salt bridges, and optional Rosetta
+  metrics. This long table is the source of truth for site- or interface-specific re-analysis.
+- `<out-stem>_rosetta/` — when Rosetta is enabled, protein-only A/B dimer inputs for the four
+  biological interface copies, the exact command, scorefile, stdout, and stderr. The original holo
+  CIF is never modified.
+
+## Interface metric contract
+
+The torch-free reusable layer is `inverse_folding/evaluation/tetramer_interfaces.py`. Coordinate
+metrics are always available in `immune-design` (Biotite). `submit_tetramer_eval.slurm` enables
+Rosetta 3.15 by default; a direct CLI run can enable it with `--rosetta-interface-analyzer` after
+loading the same module.
+
+| Metric | Long-table field | Conservative variant summary | Direction / interpretation |
+|---|---|---|---|
+| Coordinate BSA | `bsa_total_a2`; `bsa_per_partner_a2` | per class: `*_min_*` + `*_mean_*` | Higher is better. Total BSA = `SASA(A)+SASA(B)-SASA(AB)`; per-partner is total/2. Both are emitted because literature conventions differ. |
+| Topology separation | D2 classes + matching BSA | `interface_topology_bsa_gap_a2`, `interface_topology_bsa_ratio` | Larger separation from the diagonal pairs is better. |
+| Residue contacts | `n_residue_contacts_8a` | per class: minimum + mean | Higher is better; one CB-CB pair per residue pair, CA for Gly. |
+| Salt bridges | `n_salt_bridges_4a` | per class: minimum + mean | Higher is generally better; unique Asp/Glu--Lys/Arg residue pairs within 4 Å. His is excluded because coordinate-only protonation is ambiguous. |
+| Rosetta BSA | `rosetta_dsasa_int_a2` | per class: minimum + mean | Higher is better; use this BSA with Rosetta energy density, not the Biotite BSA. |
+| Binding energy | `rosetta_dg_separated_reu` | per class: **maximum** + mean | More negative is better. This is a Rosetta energy difference in REU, not an experimental kcal/mol measurement. |
+| Energy density | `rosetta_dg_per_sasa_x100`; `rosetta_dg_per_sasa_reu_per_a2` | per class: **maximum** + mean | More negative is better. The first is Rosetta's canonical `dG_separated/dSASAx100`; the second divides it by 100. Prefer this over raw dG when interface areas differ. |
+| Packing / void proxy | `rosetta_packstat` | per class: minimum + mean | Higher is better (0 poor, 1 ideal). This protocol uses InterfaceAnalyzer packstat rather than a separate RosettaHoles/cavity-volume pass. |
+| Cross-interface H-bonds | `rosetta_hbonds_int`; `rosetta_hbond_energy_fraction` | per class: minimum + mean | Report count and energetic fraction together; do not reward count alone. |
+| Buried unsatisfied polar atoms | `rosetta_delta_unsat_hbonds` | per class: **maximum** + mean | Lower is better. This is InterfaceAnalyzer's bound-vs-separated unsatisfied-H-bond count. Do not mix it with a separately configured VBUNS/SBUNS filter. |
+| Shape complementarity | `rosetta_shape_complementarity` | per class: minimum + mean | Higher is better; retained as an additional packing-quality diagnostic. |
+
+Coordinate BSA uses Shrake-Rupley/ProtOr radii, a 1.4 Å probe, and 1000 surface points by default.
+For 1R51, the two interface classes are approximately 5.86k and 5.20k Å² total BSA (2.93k and
+2.60k Å² per partner), while diagonal pairs are approximately 0.74k Å² total. The often-quoted
+1.5–2.0k Å² rule is therefore only an advisory scale and is ambiguous unless the BSA convention is
+stated. Final comparisons must use a real same-predictor WT scored by the identical coordinate and
+Rosetta settings.
+
+Rosetta field definitions follow the official
+[InterfaceAnalyzer documentation](https://docs.rosettacommons.org/docs/latest/application_documentation/analysis/interface-analyzer).
+The choice to score as-predicted coordinates (`pack_input=false`, `pack_separated=false`) avoids
+turning the gate into a redesign/repacking step; this is also consistent with the interface-design
+failure analysis in [Stranges and Kuhlman (2013)](https://pmc.ncbi.nlm.nih.gov/articles/PMC3575862/).
 
 ## Pipeline (the SOP)
 
@@ -70,7 +122,13 @@ List 1 shortlist ─► fasta (Met-stripped) ─► LOCAL MSA (GPU ColabFold DB)
                                                                                     │
                                               [optional] Protenix cross-check ◄──────┤ (same local MSA)
                                                                                     ▼
-                                                                    eval_tetramer_gate → metrics + gate
+                                                          retained holo CIF + confidence/PAE
+                                                                                    │
+                                             coordinate interface metrics (all predictions, CPU)
+                                                                                    │
+                                          Rosetta InterfaceAnalyzer (final cohort + WT, CPU)
+                                                                                    ▼
+                                                   variant summary + six-chain-pair long table
 ```
 
 ## Reproduce (exact scripts + commands)
@@ -103,10 +161,22 @@ sbatch --array=0-$((N-1))%12 --output=<logs>/esmf2_%A_%a.out --error=<logs>/esmf
   scripts/submit_tetramer_esmfold2_array.slurm  $BASE/ids.txt  $BASE/msa_local  $BASE/pred_esmfold2 \
   --ligand-smiles 'O=C1NC(=O)C2=C(N1)NC(=O)N2' --n-copies 4 --num-loops 8 --num-sampling-steps 100
 
-# 4) gate metrics (backend-selectable)
+# 4a) coordinate gate metrics for all predictions (backend-selectable; no Rosetta required)
+#     The final-selection manifest MUST include a real same-backend WT row for every parent.
 python scripts/eval_tetramer_gate.py --backend esmfold2 \
-  --pred-root $BASE/pred_esmfold2 --manifest <manifest.parquet> --usalign <bin>/USalign \
-  --crystal-ref <refs>/1R51_tetramer_ABCD.pdb --crystal-parent Q00511 --out $BASE/tetramer_gate.parquet
+  --pred-root $BASE/pred_esmfold2 --manifest <manifest-with-wt.parquet> --usalign <bin>/USalign \
+  --crystal-ref <refs>/1R51_tetramer_ABCD.pdb --crystal-parent Q00511 \
+  --require-interface-wt --out $BASE/tetramer_gate.parquet
+
+# 4b) final-selection run with Rosetta 3.15 (CPU Slurm; RUN_ROSETTA=1 by default)
+sbatch scripts/submit_tetramer_eval.slurm --backend esmfold2 \
+  --pred-root $BASE/pred_esmfold2 --manifest <final-cohort-plus-wt.parquet> --usalign <bin>/USalign \
+  --crystal-ref <refs>/1R51_tetramer_ABCD.pdb --crystal-parent Q00511 \
+  --rosetta-work-dir $BASE/tetramer_gate_rosetta --require-interface-wt \
+  --out $BASE/tetramer_gate.parquet
+# -> $BASE/tetramer_gate.parquet
+# -> $BASE/tetramer_gate_interface_pairs.parquet
+# -> $BASE/tetramer_gate_rosetta/{dimers,interface_analyzer.sc,*.log,*.command.txt}
 ```
 
 Optional Protenix arm (orthogonal, esp. ligand pose): `build_protenix_jsons.py` (splits the local
@@ -124,6 +194,22 @@ All scripts are in `doc/SCRIPTS.md`
   colabfold conda activation).
 - **US-align** (symmetry-aware multi-chain, `-mm 1`) is required for complex TM; TMalign is
   single-chain only.
+- **WT is a prediction, not a constant.** `--require-interface-wt` fails if any predicted parent
+  lacks a valid `kind=WT` structure in the same backend manifest. Never insert a ratio of 1 or a
+  placeholder WT value. Crystal 1R51 is an absolute sanity reference; the predictor-matched WT is
+  the operational baseline that cancels backend/relaxation bias.
+- **BSA conventions cannot be mixed.** `bsa_total_a2` and Rosetta `dSASA_int` count the two buried
+  partner surfaces together; `bsa_per_partner_a2` divides coordinate BSA by two. State the field
+  name whenever quoting a threshold.
+- **Both interface copies must pass.** Main-table `min` fields are conservative for metrics where
+  higher is better; `max` fields are conservative for dG/dSASA and BUNS where lower/more-negative
+  is better. Use the pair table to inspect asymmetry before accepting a summary rank.
+- **Rosetta dG is comparative.** It is REU from the as-predicted protein-only dimer, not physical
+  binding free energy and not a ligand-binding score. Compare only within one Rosetta version and
+  option set. Large clashes, missing side chains, or alternate protonation can dominate it.
+- **BUNS needs a matched baseline.** Even 1R51 reports a non-zero/high
+  `delta_unsatHbonds` under the unrelaxed Rosetta 3.15 read. Minimize it relative to same-protocol
+  WT; do not import an absolute cutoff from a different BUNS implementation.
 - **Weights** for ESMFold2 are cached (`HF_HOME=.../model_cache/hf`, `HF_HUB_OFFLINE=1`); compute
   nodes have no internet.
 
@@ -134,4 +220,7 @@ metrics separate WT from design but were orthogonal to *activity* in the only we
 (exp2, all-dead designs → failure likely catalytic, not assembly). Finalize the gate only after a
 wet-lab anchor: **gel** (does it assemble?) ties the inter-chain confidence / complex-TM signal to
 real assembly; an **activity assay on some active designs** ties any metric to function. Until then,
-**report the full metric table + raw arrays; rank, do not hard-gate.**
+**report the full metric table + raw arrays; rank, do not hard-gate.** For ranking, first require
+valid four-chain topology and retain both interface classes, then compare each conservative metric
+to same-backend WT. Do not compensate a failed `interface_2` with a strong `interface_1`, and do
+not let favorable raw dG compensate for poor dG/SASA, low packstat, or excess BUNS.

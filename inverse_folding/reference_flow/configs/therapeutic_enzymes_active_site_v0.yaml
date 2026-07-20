@@ -1,0 +1,626 @@
+schema_version: therapeutic_enzymes_active_site_v0
+description: Safety-max exact-identity locks for the therapeutic-enzyme backup targets (ADI P23793, ADA P56658), converted
+  from the collaborator bundle therapeutic_enzymes_20260718.
+annotation_provenance:
+  scope: exact UniProt canonical sequences only; no projection to homologs
+  source_bundle: if_test_set/backup/therapeutic_enzymes/raw (03_annotations/active_site_safety_max.yaml)
+  numbering: UniProt canonical 1-based; index_0b = position_1b - 1
+  design_backbone: exact-canonical AlphaFold models AF-P23793-F1-model_v6.pdb / AF-P56658-F1-model_v6.pdb
+  warning: Do NOT renumber from a mature A2-A357 construct or from PDB author numbering (1KRM/1VFL are non-canonical 356-aa
+    preparations).
+entries:
+- protein_id: P23793_ARCA_MYCAR
+  sequence_md5: bb67ba7b85626af7c9df4071e4b09a22
+  source_sequence: UniProt P23793 canonical, 1-based numbering; length 410
+  hard_anchors:
+  - index_0b: 43
+    expected_aa: L
+    label: L44
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 44
+    expected_aa: F
+    label: F45
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 154
+    expected_aa: N
+    label: N155
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 157
+    expected_aa: F
+    label: F158
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 158
+    expected_aa: T
+    label: T159
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 159
+    expected_aa: R
+    label: R160
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'pdb_direct_contact_extension'
+  - index_0b: 160
+    expected_aa: D
+    label: D161
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 179
+    expected_aa: R
+    label: R180
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 212
+    expected_aa: E
+    label: E213
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 213
+    expected_aa: G
+    label: G214
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 214
+    expected_aa: G
+    label: G215
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'pdb_direct_contact_extension'
+  - index_0b: 215
+    expected_aa: D
+    label: D216
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 216
+    expected_aa: V
+    label: V217
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 231
+    expected_aa: R
+    label: R232
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 267
+    expected_aa: M
+    label: M268
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 268
+    expected_aa: H
+    label: H269
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 269
+    expected_aa: L
+    label: L270
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 270
+    expected_aa: D
+    label: D271
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 271
+    expected_aa: T
+    label: T272
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 348
+    expected_aa: D
+    label: D349
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 351
+    expected_aa: N
+    label: N352
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 391
+    expected_aa: G
+    label: G392
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 392
+    expected_aa: M
+    label: M393
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'pdb_direct_contact_extension'
+  - index_0b: 393
+    expected_aa: G
+    label: G394
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 396
+    expected_aa: R
+    label: R397
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 397
+    expected_aa: C
+    label: C398
+    biological_role: mechanistic_and_primary_structure
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'mechanistic_and_primary_structure'
+  - index_0b: 398
+    expected_aa: M
+    label: M399
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 399
+    expected_aa: S
+    label: S400
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 400
+    expected_aa: M
+    label: M401
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  - index_0b: 401
+    expected_aa: P
+    label: P402
+    biological_role: conserved_motif_and_five_angstrom_extension
+    source: safety_max; P23793_ARCA_MYCAR evidence group 'conserved_motif_and_five_angstrom_extension'
+  monitored_shell:
+  - index_0b: 29
+    expected_aa: R
+    label: R30
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 31
+    expected_aa: I
+    label: I32
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 32
+    expected_aa: D
+    label: D33
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 33
+    expected_aa: Y
+    label: Y34
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 34
+    expected_aa: I
+    label: I35
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 35
+    expected_aa: T
+    label: T36
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 36
+    expected_aa: P
+    label: P37
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 45
+    expected_aa: S
+    label: S46
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 46
+    expected_aa: A
+    label: A47
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 47
+    expected_aa: I
+    label: I48
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 48
+    expected_aa: L
+    label: L49
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 49
+    expected_aa: E
+    label: E50
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 50
+    expected_aa: S
+    label: S51
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 51
+    expected_aa: H
+    label: H52
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 52
+    expected_aa: D
+    label: D53
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 55
+    expected_aa: K
+    label: K56
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 135
+    expected_aa: T
+    label: T136
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 137
+    expected_aa: Y
+    label: Y138
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 146
+    expected_aa: E
+    label: E147
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 147
+    expected_aa: L
+    label: L148
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 336
+    expected_aa: A
+    label: A337
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 337
+    expected_aa: S
+    label: S338
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 338
+    expected_aa: Q
+    label: Q339
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 339
+    expected_aa: M
+    label: M340
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 340
+    expected_aa: E
+    label: E341
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 342
+    expected_aa: E
+    label: E343
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 343
+    expected_aa: R
+    label: R344
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 346
+    expected_aa: H
+    label: H347
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 347
+    expected_aa: F
+    label: F348
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 364
+    expected_aa: S
+    label: S365
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 365
+    expected_aa: R
+    label: R366
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 367
+    expected_aa: E
+    label: E368
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 384
+    expected_aa: H
+    label: H385
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 386
+    expected_aa: N
+    label: N387
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 387
+    expected_aa: Q
+    label: Q388
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+  - index_0b: 390
+    expected_aa: L
+    label: L391
+    enforcement: monitored_posthoc
+    rationale: A2 dimer interface adjacent to the substrate channel (monomer-only design is exploratory)
+- protein_id: P56658_ADA_BOVIN
+  sequence_md5: d139a37e7fe8d483c76b2723b509f4a4
+  source_sequence: UniProt P56658 canonical, 1-based numbering; length 363
+  hard_anchors:
+  - index_0b: 14
+    expected_aa: H
+    label: H15
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 16
+    expected_aa: H
+    label: H17
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 18
+    expected_aa: D
+    label: D19
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 57
+    expected_aa: L
+    label: L58
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'
+  - index_0b: 60
+    expected_aa: F
+    label: F61
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'
+  - index_0b: 61
+    expected_aa: L
+    label: L62
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'
+  - index_0b: 64
+    expected_aa: F
+    label: F65
+    biological_role: five_angstrom_pocket_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'
+  - index_0b: 100
+    expected_aa: R
+    label: R101
+    biological_role: five_angstrom_pocket_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'
+  - index_0b: 101
+    expected_aa: Y
+    label: Y102
+    biological_role: five_angstrom_pocket_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'
+  - index_0b: 102
+    expected_aa: S
+    label: S103
+    biological_role: five_angstrom_pocket_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'
+  - index_0b: 105
+    expected_aa: L
+    label: L106
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'
+  - index_0b: 152
+    expected_aa: C
+    label: C153
+    biological_role: five_angstrom_pocket_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'
+  - index_0b: 154
+    expected_aa: M
+    label: M155
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'
+  - index_0b: 182
+    expected_aa: A
+    label: A183
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'
+  - index_0b: 183
+    expected_aa: G
+    label: G184
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 184
+    expected_aa: D
+    label: D185
+    biological_role: ligand_enclosing_lid_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'ligand_enclosing_lid_extension'
+  - index_0b: 185
+    expected_aa: E
+    label: E186
+    biological_role: ligand_enclosing_lid_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'ligand_enclosing_lid_extension'
+  - index_0b: 213
+    expected_aa: H
+    label: H214
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 216
+    expected_aa: E
+    label: E217
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 237
+    expected_aa: H
+    label: H238
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 261
+    expected_aa: C
+    label: C262
+    biological_role: high_priority_second_shell
+    source: safety_max; P56658_ADA_BOVIN evidence group 'high_priority_second_shell'
+  - index_0b: 268
+    expected_aa: T
+    label: T269
+    biological_role: high_priority_second_shell
+    source: safety_max; P56658_ADA_BOVIN evidence group 'high_priority_second_shell'
+  - index_0b: 294
+    expected_aa: D
+    label: D295
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 295
+    expected_aa: D
+    label: D296
+    biological_role: mechanistic_and_uniprot
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'
+  - index_0b: 299
+    expected_aa: F
+    label: F300
+    biological_role: high_priority_second_shell
+    source: safety_max; P56658_ADA_BOVIN evidence group 'high_priority_second_shell'
+  monitored_shell:
+  - index_0b: 56
+    expected_aa: S
+    label: S57
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 58
+    expected_aa: P
+    label: P59
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 59
+    expected_aa: E
+    label: E60
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 62
+    expected_aa: A
+    label: A63
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 63
+    expected_aa: K
+    label: K64
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 65
+    expected_aa: D
+    label: D66
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 66
+    expected_aa: Y
+    label: Y67
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 67
+    expected_aa: Y
+    label: Y68
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 68
+    expected_aa: M
+    label: M69
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 69
+    expected_aa: P
+    label: P70
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 70
+    expected_aa: A
+    label: A71
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 71
+    expected_aa: I
+    label: I72
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 72
+    expected_aa: A
+    label: A73
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 75
+    expected_aa: R
+    label: R76
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 76
+    expected_aa: E
+    label: E77
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 79
+    expected_aa: K
+    label: K80
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 80
+    expected_aa: R
+    label: R81
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 83
+    expected_aa: Y
+    label: Y84
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 124
+    expected_aa: T
+    label: T125
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 126
+    expected_aa: D
+    label: D127
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 127
+    expected_aa: E
+    label: E128
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 134
+    expected_aa: Q
+    label: Q135
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 137
+    expected_aa: Q
+    label: Q138
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 138
+    expected_aa: E
+    label: E139
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 141
+    expected_aa: R
+    label: R142
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 142
+    expected_aa: D
+    label: D143
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 174
+    expected_aa: Q
+    label: Q175
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 186
+    expected_aa: T
+    label: T187
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 187
+    expected_aa: I
+    label: I188
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 264
+    expected_aa: S
+    label: S265
+    enforcement: monitored_posthoc
+    rationale: activity-sensitive second shell

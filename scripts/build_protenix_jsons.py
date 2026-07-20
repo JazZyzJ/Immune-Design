@@ -10,6 +10,29 @@ import pandas as pd
 LIGAND_SMILES = "O=C1NC(=O)C2=C(N1)NC(=O)N2"  # uric acid (CCD URC)
 
 
+def build_sequences_block(seq, n_copies, ligands=None, apo=False, ligand_copies=None,
+                          paired=None, unpaired=None):
+    """Protenix `sequences` list: one proteinChain + one ligand entity per SMILES.
+
+    ``ligands`` is a LIST so a holo job can carry several distinct entities (e.g. a metal
+    cofactor plus a substrate: ``['[Zn+2]', '<adenosine>']``). ``apo=True`` omits all ligands.
+    ``ligand_copies`` defaults to ``n_copies``.
+    """
+    chain = {"sequence": seq, "count": n_copies}
+    if paired is not None:
+        chain["pairedMsaPath"] = paired
+    if unpaired is not None:
+        chain["unpairedMsaPath"] = unpaired
+    out = [{"proteinChain": chain}]
+    if apo:
+        return out
+    smis = list(ligands) if ligands else [LIGAND_SMILES]
+    k = n_copies if ligand_copies is None else ligand_copies
+    for smi in smis:
+        out.append({"ligand": {"ligand": smi, "count": k}})
+    return out
+
+
 def a3m_query(a3m_path):
     """Return (header_seq) of the first record = the query."""
     hdr = seq = None
@@ -32,7 +55,11 @@ def main():
     ap.add_argument("--msa-px", required=True, help="output dir for <pred_id>/{pairing,non_pairing}.a3m")
     ap.add_argument("--inputs", required=True, help="output dir for <pred_id>-update-msa.json")
     ap.add_argument("--ready-list", required=True)
-    ap.add_argument("--ligand-smiles", default=LIGAND_SMILES)
+    ap.add_argument("--ligand-smiles", action="append", default=None,
+                    help="ligand SMILES; REPEAT for several distinct entities "
+                         "(e.g. --ligand-smiles '[Zn+2]' --ligand-smiles '<substrate>'). Default: uric acid.")
+    ap.add_argument("--ligand-copies", type=int, default=None,
+                    help="count per ligand entity (default: --n-copies)")
     ap.add_argument("--n-copies", type=int, default=4)
     ap.add_argument("--apo", action="store_true", help="omit the ligand entity (monomer/apo prediction)")
     ap.add_argument("--name-prefix", default="tetra_", help="prediction name prefix (e.g. 'mono_')")
@@ -61,16 +88,12 @@ def main():
         # pairing = query only
         with open(os.path.join(d, "pairing.a3m"), "w") as f:
             f.write(f">query\n{exp}\n")
-        seqs_list = [
-            {"proteinChain": {
-                "sequence": exp,
-                "count": args.n_copies,
-                "pairedMsaPath": os.path.join(d, "pairing.a3m"),
-                "unpairedMsaPath": os.path.join(d, "non_pairing.a3m"),
-            }},
-        ]
-        if not args.apo:
-            seqs_list.append({"ligand": {"ligand": args.ligand_smiles, "count": args.n_copies}})
+        seqs_list = build_sequences_block(
+            exp, args.n_copies, ligands=args.ligand_smiles, apo=args.apo,
+            ligand_copies=args.ligand_copies,
+            paired=os.path.join(d, "pairing.a3m"),
+            unpaired=os.path.join(d, "non_pairing.a3m"),
+        )
         obj = [{"name": f"{args.name_prefix}{pid}", "sequences": seqs_list}]
         jp = os.path.join(args.inputs, f"{args.name_prefix}{pid}-update-msa.json")
         with open(jp, "w") as f:

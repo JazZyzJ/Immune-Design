@@ -1,0 +1,444 @@
+"""Reusable post-prediction metrics for D2-symmetric protein tetramers.
+
+This module is predictor-independent and torch-free. Coordinate metrics require Biotite only when
+called; Rosetta InterfaceAnalyzer is an optional subprocess layer for final-selection scoring.
+"""
+from __future__ import annotations
+
+import os
+import shlex
+import shutil
+import subprocess
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+D2_INTERFACE_CLASSES = ("interface_1", "interface_2", "diagonal")
+
+ROSETTA_SCORE_FIELDS = {
+    "dSASA_int": "rosetta_dsasa_int_a2",
+    "dG_separated": "rosetta_dg_separated_reu",
+    "dG_separated/dSASAx100": "rosetta_dg_per_sasa_x100",
+    "packstat": "rosetta_packstat",
+    "hbonds_int": "rosetta_hbonds_int",
+    "hbond_E_fraction": "rosetta_hbond_energy_fraction",
+    "delta_unsatHbonds": "rosetta_delta_unsat_hbonds",
+    "sc_value": "rosetta_shape_complementarity",
+    "nres_int": "rosetta_nres_int",
+}
+
+ROSETTA_REQUIRED_FIELDS = {
+    "dSASA_int",
+    "dG_separated",
+    "dG_separated/dSASAx100",
+    "packstat",
+    "hbonds_int",
+    "hbond_E_fraction",
+    "delta_unsatHbonds",
+}
+
+
+def protein_heavy_atoms(arr):
+    """Return amino-acid heavy atoms only, excluding ligands and explicit hydrogens."""
+    import biotite.structure as struc
+
+    mask = struc.filter_amino_acids(arr)
+    if "element" in arr.get_annotation_categories():
+        mask &= np.char.upper(arr.element.astype(str)) != "H"
+    return arr[mask]
+
+
+def _residue_representatives(chain_arr) -> np.ndarray:
+    """One CB coordinate per residue (CA for Gly), with alternate atoms de-duplicated."""
+    ins_code = (chain_arr.ins_code if "ins_code" in chain_arr.get_annotation_categories()
+                else np.full(len(chain_arr), ""))
+    wanted = ((chain_arr.atom_name == "CB") |
+              ((chain_arr.res_name == "GLY") & (chain_arr.atom_name == "CA")))
+    coords = []
+    seen = set()
+    for i in np.flatnonzero(wanted):
+        key = (int(chain_arr.res_id[i]), str(ins_code[i]))
+        if key not in seen:
+            seen.add(key)
+            coords.append(chain_arr.coord[i])
+    return np.asarray(coords, dtype=float).reshape((-1, 3))
+
+
+def pair_residue_contacts(chain_a, chain_b, cutoff: float = 8.0) -> int:
+    """Count cross-chain residue pairs whose CB (CA for Gly) distance is below cutoff."""
+    ca = _residue_representatives(chain_a)
+    cb = _residue_representatives(chain_b)
+    if len(ca) == 0 or len(cb) == 0:
+        return 0
+    d = np.linalg.norm(ca[:, None, :] - cb[None, :, :], axis=-1)
+    return int((d < cutoff).sum())
+
+
+def _charged_atom_sites(chain_arr, residue_atoms: dict[str, set[str]]):
+    ins_code = (chain_arr.ins_code if "ins_code" in chain_arr.get_annotation_categories()
+                else np.full(len(chain_arr), ""))
+    sites = []
+    for i in range(len(chain_arr)):
+        res_name = str(chain_arr.res_name[i])
+        if chain_arr.atom_name[i] not in residue_atoms.get(res_name, set()):
+            continue
+        residue_key = (int(chain_arr.res_id[i]), str(ins_code[i]), res_name)
+        sites.append((residue_key, chain_arr.coord[i]))
+    return sites
+
+
+def _opposite_charge_residue_pairs(acid_sites, base_sites, cutoff: float):
+    if not acid_sites or not base_sites:
+        return set()
+    acid_coord = np.asarray([coord for _, coord in acid_sites])
+    base_coord = np.asarray([coord for _, coord in base_sites])
+    d = np.linalg.norm(acid_coord[:, None, :] - base_coord[None, :, :], axis=-1)
+    return {
+        (acid_sites[i][0], base_sites[j][0])
+        for i, j in np.argwhere(d < cutoff)
+    }
+
+
+def pair_salt_bridges(chain_a, chain_b, cutoff: float = 4.0) -> int:
+    """Count unique Asp/Glu--Lys/Arg residue pairs with charged atoms below cutoff.
+
+    Histidine is excluded because its charge state cannot be inferred reliably from predictor
+    coordinates. The optional Rosetta layer supplies protonation-aware H-bond/polar metrics.
+    """
+    acid_atoms = {"ASP": {"OD1", "OD2"}, "GLU": {"OE1", "OE2"}}
+    base_atoms = {"LYS": {"NZ"}, "ARG": {"NE", "NH1", "NH2"}}
+    acid_a = _charged_atom_sites(chain_a, acid_atoms)
+    acid_b = _charged_atom_sites(chain_b, acid_atoms)
+    base_a = _charged_atom_sites(chain_a, base_atoms)
+    base_b = _charged_atom_sites(chain_b, base_atoms)
+    ab = _opposite_charge_residue_pairs(acid_a, base_b, cutoff)
+    ba = _opposite_charge_residue_pairs(acid_b, base_a, cutoff)
+    return len(ab) + len(ba)
+
+
+def _pair_key(chain_a: str, chain_b: str) -> tuple[str, str]:
+    return tuple(sorted((str(chain_a), str(chain_b))))
+
+
+def classify_d2_interface_pairs(pair_df: pd.DataFrame) -> pd.DataFrame:
+    """Classify K4 edges into two D2 interface matchings plus the diagonal matching.
+
+    For four chains, the six pair edges form three perfect matchings. Ranking matching-level mean
+    BSA is invariant to predictor chain-label permutations and keeps both symmetry copies together.
+    """
+    chains = sorted(set(pair_df["chain_1"]) | set(pair_df["chain_2"]))
+    if len(chains) != 4 or len(pair_df) != 6:
+        raise ValueError(
+            f"D2 interface classification requires 4 chains/6 pairs, got {chains}/{len(pair_df)}"
+        )
+    a, b, c, d = chains
+    matchings = [
+        (_pair_key(a, b), _pair_key(c, d)),
+        (_pair_key(a, c), _pair_key(b, d)),
+        (_pair_key(a, d), _pair_key(b, c)),
+    ]
+    bsa_by_pair = {
+        _pair_key(r.chain_1, r.chain_2): float(r.bsa_total_a2)
+        for r in pair_df.itertuples()
+    }
+    ranked = []
+    for edges in matchings:
+        label = "|".join(f"{x}:{y}" for x, y in edges)
+        mean_bsa = float(np.mean([bsa_by_pair[edge] for edge in edges]))
+        ranked.append((mean_bsa, label, edges))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+
+    out = pair_df.copy()
+    out["interface_class"] = ""
+    out["interface_class_rank"] = 0
+    out["interface_copy"] = 0
+    out["d2_matching"] = ""
+    out["d2_matching_mean_bsa_total_a2"] = np.nan
+    for rank, ((mean_bsa, matching_label, edges), class_name) in enumerate(
+        zip(ranked, D2_INTERFACE_CLASSES), start=1
+    ):
+        for copy, edge in enumerate(sorted(edges), start=1):
+            mask = [
+                _pair_key(x, y) == edge
+                for x, y in zip(out["chain_1"], out["chain_2"])
+            ]
+            out.loc[mask, "interface_class"] = class_name
+            out.loc[mask, "interface_class_rank"] = rank
+            out.loc[mask, "interface_copy"] = copy
+            out.loc[mask, "d2_matching"] = matching_label
+            out.loc[mask, "d2_matching_mean_bsa_total_a2"] = mean_bsa
+    out["is_biological_interface"] = out["interface_class"] != "diagonal"
+    return out
+
+
+def interface_pair_metrics(
+    arr,
+    pchains,
+    *,
+    sasa_probe_radius: float = 1.4,
+    sasa_point_number: int = 1000,
+    contact_cutoff: float = 8.0,
+    salt_bridge_cutoff: float = 4.0,
+) -> pd.DataFrame:
+    """Calculate coordinate-only interface metrics for all six tetramer chain pairs."""
+    import biotite.structure as struc
+
+    if len(pchains) != 4:
+        raise ValueError(f"expected exactly four protein chains, got {pchains}")
+    protein = protein_heavy_atoms(arr)
+    chain_atoms = {ch: protein[protein.chain_id == ch] for ch in sorted(pchains)}
+    chain_sasa = {
+        ch: float(np.nansum(struc.sasa(sub, probe_radius=sasa_probe_radius,
+                                      point_number=sasa_point_number)))
+        for ch, sub in chain_atoms.items()
+    }
+    rows = []
+    chains = sorted(chain_atoms)
+    for i, chain_a in enumerate(chains):
+        for chain_b in chains[i + 1:]:
+            arr_a, arr_b = chain_atoms[chain_a], chain_atoms[chain_b]
+            pair = arr_a + arr_b
+            pair_sasa = float(np.nansum(struc.sasa(
+                pair, probe_radius=sasa_probe_radius, point_number=sasa_point_number
+            )))
+            bsa_total = max(0.0, chain_sasa[chain_a] + chain_sasa[chain_b] - pair_sasa)
+            rows.append({
+                "chain_1": chain_a,
+                "chain_2": chain_b,
+                "chain_pair": f"{chain_a}:{chain_b}",
+                "bsa_total_a2": bsa_total,
+                "bsa_per_partner_a2": bsa_total / 2.0,
+                "n_residue_contacts_8a": pair_residue_contacts(
+                    arr_a, arr_b, cutoff=contact_cutoff
+                ),
+                "n_salt_bridges_4a": pair_salt_bridges(
+                    arr_a, arr_b, cutoff=salt_bridge_cutoff
+                ),
+            })
+    return classify_d2_interface_pairs(pd.DataFrame(rows))
+
+
+def n_interchain_contacts(arr, pchains, cutoff=8.0) -> int:
+    """Total pairwise residue contacts across all protein chains."""
+    protein = protein_heavy_atoms(arr)
+    n = 0
+    for i, chain_a in enumerate(pchains):
+        for chain_b in pchains[i + 1:]:
+            n += pair_residue_contacts(
+                protein[protein.chain_id == chain_a],
+                protein[protein.chain_id == chain_b],
+                cutoff=cutoff,
+            )
+    return n
+
+
+SUMMARY_METRICS = (
+    ("bsa_total_a2", "bsa_total", "min", "a2"),
+    ("bsa_per_partner_a2", "bsa_per_partner", "min", "a2"),
+    ("n_residue_contacts_8a", "n_residue_contacts", "min", "8a"),
+    ("n_salt_bridges_4a", "n_salt_bridges", "min", "4a"),
+    ("rosetta_dsasa_int_a2", "rosetta_dsasa_int", "min", "a2"),
+    ("rosetta_dg_separated_reu", "rosetta_dg_separated", "max", "reu"),
+    ("rosetta_dg_per_sasa_x100", "rosetta_dg_per_sasa_x100", "max", ""),
+    ("rosetta_dg_per_sasa_reu_per_a2", "rosetta_dg_per_sasa", "max", "reu_per_a2"),
+    ("rosetta_packstat", "rosetta_packstat", "min", ""),
+    ("rosetta_hbonds_int", "rosetta_hbonds_int", "min", ""),
+    ("rosetta_hbond_energy_fraction", "rosetta_hbond_energy_fraction", "min", ""),
+    ("rosetta_delta_unsat_hbonds", "rosetta_delta_unsat_hbonds", "max", ""),
+    ("rosetta_shape_complementarity", "rosetta_shape_complementarity", "min", ""),
+    ("rosetta_nres_int", "rosetta_nres_int", "min", ""),
+)
+
+
+def _summary_column(prefix: str, stem: str, stat: str, unit: str) -> str:
+    suffix = f"_{unit}" if unit else ""
+    return f"{prefix}_{stem}_{stat}{suffix}"
+
+
+def summarize_interface_pairs(pair_df: pd.DataFrame) -> dict:
+    """Return mean and conservative summaries while retaining copy rows in the long table."""
+    rec = {}
+    for class_name in D2_INTERFACE_CLASSES[:2]:
+        sub = pair_df[pair_df["interface_class"] == class_name]
+        if len(sub) != 2:
+            raise ValueError(f"{class_name} must contain two symmetry-related chain pairs")
+        for source, stem, conservative_stat, unit in SUMMARY_METRICS:
+            if source not in sub.columns:
+                continue
+            values = pd.to_numeric(sub[source], errors="coerce")
+            rec[_summary_column(class_name, stem, "mean", unit)] = float(values.mean())
+            rec[_summary_column(class_name, stem, conservative_stat, unit)] = float(
+                getattr(values, conservative_stat)()
+            )
+
+    diagonal = pair_df[pair_df["interface_class"] == "diagonal"]
+    for source, stem, _, unit in SUMMARY_METRICS[:4]:
+        values = pd.to_numeric(diagonal[source], errors="coerce")
+        rec[_summary_column("diagonal", stem, "mean", unit)] = float(values.mean())
+        rec[_summary_column("diagonal", stem, "max", unit)] = float(values.max())
+    interface_2_min = rec["interface_2_bsa_total_min_a2"]
+    diagonal_max = rec["diagonal_bsa_total_max_a2"]
+    rec["interface_topology_bsa_gap_a2"] = interface_2_min - diagonal_max
+    rec["interface_topology_bsa_ratio"] = (
+        interface_2_min / diagonal_max if diagonal_max > 0 else np.inf
+    )
+    return rec
+
+
+def write_rosetta_dimer_pdb(arr, chain_a: str, chain_b: str, out_path: Path) -> None:
+    """Write one protein-only interface dimer with Rosetta-safe chain IDs A and B."""
+    from biotite.structure.io.pdb import PDBFile
+
+    protein = protein_heavy_atoms(arr)
+    dimer = protein[(protein.chain_id == chain_a) | (protein.chain_id == chain_b)].copy()
+    if not np.any(dimer.chain_id == chain_a) or not np.any(dimer.chain_id == chain_b):
+        raise ValueError(f"cannot extract dimer {chain_a}:{chain_b}")
+    dimer.chain_id[dimer.chain_id == chain_a] = "A"
+    dimer.chain_id[dimer.chain_id == chain_b] = "B"
+    if "hetero" in dimer.get_annotation_categories():
+        dimer.hetero[:] = False
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pdb_file = PDBFile()
+    pdb_file.set_structure(dimer)
+    pdb_file.write(str(out_path))
+
+
+def parse_rosetta_scorefile(score_path: Path) -> pd.DataFrame:
+    """Parse a Rosetta whitespace scorefile without altering slash-containing field names."""
+    header = None
+    records = []
+    for line in score_path.read_text().splitlines():
+        if not line.startswith("SCORE:"):
+            continue
+        fields = line.split()[1:]
+        if "description" in fields:
+            header = fields
+            continue
+        if header is not None and len(fields) == len(header):
+            records.append(dict(zip(header, fields)))
+    if header is None or not records:
+        raise ValueError(f"no score records found in Rosetta scorefile: {score_path}")
+    df = pd.DataFrame(records)
+    for col in df.columns:
+        if col != "description":
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _resolve_executable(executable: str) -> str:
+    resolved = shutil.which(executable)
+    if resolved:
+        return resolved
+    path = Path(executable)
+    if path.is_file() and os.access(path, os.X_OK):
+        return str(path.resolve())
+    raise FileNotFoundError(f"executable not found or not executable: {executable}")
+
+
+def _description_to_job_id(description: str, valid_job_ids: set[str]) -> str | None:
+    stem = Path(str(description)).stem
+    if stem in valid_job_ids:
+        return stem
+    matches = [job_id for job_id in valid_job_ids if stem.startswith(f"{job_id}_")]
+    return matches[0] if len(matches) == 1 else None
+
+
+def run_rosetta_interface_analyzer(
+    pair_df: pd.DataFrame,
+    arr_loader,
+    *,
+    executable: str,
+    work_dir: Path,
+    timeout_seconds: int,
+) -> pd.DataFrame:
+    """Run one InterfaceAnalyzer batch over the four biological dimers per tetramer."""
+    interface_rows = pair_df[pair_df["is_biological_interface"]].copy()
+    if interface_rows.empty:
+        return pair_df
+
+    input_dir = work_dir / "dimers"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    jobs = {}
+    input_paths = []
+    for serial, (row_index, row) in enumerate(interface_rows.iterrows()):
+        job_id = f"ifc_{serial:06d}"
+        pdb_path = input_dir / f"{job_id}.pdb"
+        write_rosetta_dimer_pdb(
+            arr_loader(row["name"]), row["chain_1"], row["chain_2"], pdb_path
+        )
+        jobs[job_id] = row_index
+        input_paths.append(pdb_path.resolve())
+
+    list_path = work_dir / "interface_dimers.list"
+    score_path = work_dir / "interface_analyzer.sc"
+    stdout_path = work_dir / "interface_analyzer.stdout.log"
+    stderr_path = work_dir / "interface_analyzer.stderr.log"
+    list_path.write_text("\n".join(map(str, input_paths)) + "\n")
+    score_path.unlink(missing_ok=True)
+
+    cmd = [
+        _resolve_executable(executable),
+        "-l", str(list_path.resolve()),
+        "-interface", "A_B",
+        "-compute_packstat", "true",
+        "-compute_interface_sc", "true",
+        "-pack_input", "false",
+        "-pack_separated", "false",
+        "-out:file:score_only", str(score_path.resolve()),
+        "-jd2:no_output", "true",
+        "-constant_seed",
+        "-jran", "1729",
+        "-ignore_unrecognized_res", "true",
+        "-overwrite",
+    ]
+    (work_dir / "interface_analyzer.command.txt").write_text(shlex.join(cmd) + "\n")
+    try:
+        result = subprocess.run(
+            cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout_seconds
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Rosetta InterfaceAnalyzer timed out after {timeout_seconds}s; work dir: {work_dir}"
+        ) from exc
+    stdout_path.write_text(result.stdout)
+    stderr_path.write_text(result.stderr)
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or result.stdout).splitlines()[-30:])
+        raise RuntimeError(
+            f"Rosetta InterfaceAnalyzer failed with exit code {result.returncode}; "
+            f"work dir: {work_dir}\n{tail}"
+        )
+
+    scores = parse_rosetta_scorefile(score_path)
+    missing_fields = sorted(ROSETTA_REQUIRED_FIELDS - set(scores.columns))
+    if missing_fields:
+        raise ValueError(f"Rosetta scorefile is missing required fields: {missing_fields}")
+    invalid_fields = sorted(
+        field for field in ROSETTA_REQUIRED_FIELDS if scores[field].isna().any()
+    )
+    if invalid_fields:
+        raise ValueError(f"Rosetta scorefile has non-numeric required fields: {invalid_fields}")
+    valid_job_ids = set(jobs)
+    scores["rosetta_job_id"] = scores["description"].map(
+        lambda value: _description_to_job_id(value, valid_job_ids)
+    )
+    if scores["rosetta_job_id"].isna().any():
+        unknown = scores.loc[scores["rosetta_job_id"].isna(), "description"].tolist()
+        raise ValueError(f"cannot map Rosetta score descriptions to dimers: {unknown}")
+    if scores["rosetta_job_id"].duplicated().any():
+        raise ValueError("Rosetta emitted duplicate score rows for an interface dimer")
+    if set(scores["rosetta_job_id"]) != valid_job_ids:
+        missing_jobs = sorted(valid_job_ids - set(scores["rosetta_job_id"]))
+        raise ValueError(f"Rosetta did not emit scores for dimers: {missing_jobs}")
+
+    available_fields = [field for field in ROSETTA_SCORE_FIELDS if field in scores.columns]
+    metrics = scores[["rosetta_job_id", *available_fields]].rename(columns=ROSETTA_SCORE_FIELDS)
+    metrics["rosetta_dg_per_sasa_reu_per_a2"] = (
+        metrics["rosetta_dg_per_sasa_x100"] / 100.0
+    )
+    out = pair_df.copy()
+    out["rosetta_job_id"] = None
+    for job_id, row_index in jobs.items():
+        out.loc[row_index, "rosetta_job_id"] = job_id
+    return out.merge(metrics, on="rosetta_job_id", how="left", validate="many_to_one")
