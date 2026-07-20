@@ -2,18 +2,18 @@
 
 AGENT TASK SPEC. Terse, imperative, machine-actionable. Execute top-to-bottom. Stop and report on any FAIL.
 
-> **Current status (2026-07-16).** S0, S1, P1, and P2 are complete. P2 did not strictly
-> establish the broad structural-repair form of H3; repair remains the default v0 move while
-> stronger claims are deferred. Next: persist the zero-refold S2 selector-replay summary from the
-> P2 explicit pools, then run explicit-only greedy/beam/FK P3 on the pre-existing coverage-balanced
-> `fast_v2` DRB1*07:01 cohort. A beam–FK difference that is not resolved is a reportable result and
-> must not trigger post-hoc selector or cohort tuning.
+> **Current status (2026-07-18).** S0, S1, S2, P1, P2, P3, and final integration are complete.
+> P3 supports deterministic beam over independent greedy lanes but does not support the frozen
+> $N=4$ annealed endpoint-telescoping FK selector; beam is the v0 default and FK is a negative
+> ablation. The post-resampling $1/N$ reset matches the specification and is not an implementation
+> bug. Final integration supports repair+beam over explicit+greedy at additional compute and a
+> modest structural-quality cost. No further FK tuning or rerun is on the v0 critical path.
 
 ## 0. What this is
 - v0 = **terminal-population handoff** (t⋆ = T): Phase 1 runs base DPLM native inverse folding to completion → complete designs; Phase 2 (this task) reads them as the N initial parents and runs the Head-guided edit-and-repair loop.
 - This run is an **engineering smoke + calibration probe**, NOT a target-hitting run. Goal: pipeline executes end-to-end, produces artifacts, yields gate/telemetry to calibrate `scTM_min / eps_H / active_site_RMSD_max / N / n_rounds / beta`.
 - Head is the ONLY runtime immune signal. NetMHCIIpan is NOT used (not imported). Do not pass any `--nmp*` / `--netmhciipan*` / `--seed-table`.
-- **Cohort scope — read before interpreting anything.** The smoke cohort is `uricase_characterized24`: a **single enzyme family** with prior inpainting references and AFDB-predicted backbones. It is chosen because it is the **only** cohort that exercises the constrained path (active-site anchors present). It is a **mechanism + plumbing** cohort, NOT an immune-effect cohort. Do **not** read a final immune result from this run: (a) a single Pfam family has near-zero cross-protein immune-burden variance, so no generalizable effect (or CI) is estimable; (b) under AFDB references, `scTM` is ESMFold↔AlphaFold **prediction self-consistency**, not experimental structural fidelity — high baseline, low discriminative power. Neither structure threshold (`scTM_min`, `active_site_RMSD_max`) is scientifically *calibratable* on this degenerate distribution; the smoke only exercises the gate mechanics. P1/P2 ran on the diverse B1 high-risk cohort with experimental structures. P3 moves to the pre-existing coverage-balanced `fast_v2` DRB1*07:01 cohort so selector value is measured outside the B1 high-risk stress setting. The constrained active-site/anchor mechanism remains validated here, on uricase.
+- **Cohort scope — read before interpreting anything.** The smoke cohort is `uricase_characterized24`: a **single enzyme family** with prior inpainting references and AFDB-predicted backbones. It is chosen because it is the **only** cohort that exercises the constrained path (active-site anchors present). It is a **mechanism + plumbing** cohort, NOT an immune-effect cohort. Do **not** read a final immune result from this run: (a) a single Pfam family has near-zero cross-protein immune-burden variance, so no generalizable effect (or CI) is estimable; (b) under AFDB references, `scTM` is ESMFold↔AlphaFold **prediction self-consistency**, not experimental structural fidelity — high baseline, low discriminative power. Neither structure threshold (`scTM_min`, `active_site_RMSD_max`) is scientifically *calibratable* on this degenerate distribution; the smoke only exercises the gate mechanics. P1/P2 ran on the diverse B1 high-risk cohort with experimental structures. P3 ultimately executed on `pilot_v3`; the final package comparison used the pre-existing coverage-balanced `fast_v2` DRB1*07:01 cohort. The constrained active-site/anchor mechanism remains validated here, on uricase.
 
 ## 1. Environment
 ```bash
@@ -144,7 +144,7 @@ Run `uricase_c24_s0_20260711T222303` (job 11032649, ailab H200, 01:24:18; `confi
 - **Full analysis returned:** `mhc-if-local:…/Results/RF/HLA-DRB1_0701/fusion_v0_s0__20260712T005832Z/` (`analysis/fusion_v0_s0_summary.md` + artifacts + logs + meta).
 - **Two Coder caveats (guarded, not in the invariant set):** #1 full closure needs the persisted S2 selector-replay summary; the elite bypasses the #4 firewall by construction and relies on the `state.py` feasibility guard.
 
-**Current continuation:** S1, P1, and P2 are complete. Persist the S2 selector-replay summary, then run P3 on the coverage-balanced `fast_v2` cohort. Future runs use ESMFold2 + sidechain telemetry (S0 used ESMFold v1 scTM + Cα-shell RMSD).
+**Current continuation:** S1, P1, P2, S2, P3, and final integration are complete; resolved results are recorded in §§14–17. No new FK run is on the v0 path. Future runs, if separately authorized, use ESMFold2 + sidechain telemetry (S0 used ESMFold v1 scTM + Cα-shell RMSD).
 
 ## 12. High-risk P1 (H1) — COMPLETE
 
@@ -222,19 +222,33 @@ S0 mechanism cleared P1 on the high-risk cohort using the explicit-only greedy p
 - Budget-efficiency readout = AUC of initial-minus-best-so-far Head versus cumulative realized refolds on a common grid. Also report scTM/coverage, actual refolds, walltime, FK ESS, unique sequences, unique root ancestry, and all-slot collapse.
 - FK better than beam in terminal frontier or refold efficiency without destructive collapse supports H6. Beam better than greedy with FK≈beam supports population/global selection but not FK-specific value. An unresolved beam–FK difference is a valid reportable neutral result. FK collapse without benefit is negative evidence.
 - Freeze cohort, `N`, beta schedule, rounds, and decision metrics before launch. Do not respond to a neutral result with beta/`N`/round/cohort sweeps.
-- Scope: this P3 isolates H6 on the explicit move kernel; it does not by itself estimate the total repair+FK package effect or reverse the default-on repair decision.
+- Scope: this P3 isolates H6 on the explicit move kernel; it does not by itself estimate the total repair-plus-selector package effect or reverse the default-on repair decision.
 
-## 16. Beta sensitivity — zero-refold diagnostic (bound the "beta mismatched" objection)
+**P3 AS-RUN RESULT (COMPLETED, `p3_h6_20260717T012509Z`).** The historical preregistration above named full `fast_v2`; the executed selector-isolation run used `pilot_v3` (50 requested, 40 common feasible handoffs). This deviation is recorded rather than retroactively rewriting the design; final integration (§17) independently used held-out `fast_v2`.
+
+- Beam beat FK on **37/40** proteins (median FK-minus-beam **+0.0332 nat**, two-sided Wilcoxon **p=2.04e−7**) and used **4,972** realized refolds versus FK's **6,465**.
+- Beam beat greedy on **34/40** proteins (median beam-minus-greedy **−0.0436 nat**, **p=2.21e−5**); FK and greedy were unresolved (median FK-minus-greedy +0.0020, p=0.609).
+- All returned elites passed scTM≥0.85. FK did not destructively collapse (ESS median 35.54/36; 0/240 ESS<2; 0 all-slot collapses), but its later-round incremental allocation was close to uniform.
+- **Decision:** H6 is not supported for the frozen FK configuration. Beam is the v0 selector. Do not generalize this result to all FK potentials or treat it as evidence of an implementation mismatch.
+
+## 16. Beta sensitivity — COMPLETED zero-refold diagnostic; reset-bug reading superseded
 
 Purpose: bound the objection that the P3 FK negative (§15) is an artifact of a mis-set `beta 1→4`, WITHOUT a tuning sweep, a re-run, or any new refold/oracle call. Diagnostic only — `N`, rounds, cohort, and the P3 verdict stay frozen; this does NOT calibrate beta or reopen FK.
 
 - Substrate: the persisted P3 FK pools (`p3_h6_.../fk/shard*of4/`, reconstructed `(protein, parent_round)` evaluated pools). Zero refold: reuse the persisted Head/feasibility only.
 - Predefined multiplier set (fixed, small; NOT a grid): `m ∈ {0.5, 1, 2, 4, 8}` applied to `(beta_r, beta_prev)`; re-normalize FK branch weights per pool at each `m`.
-- Per-pool metrics at each `m`: `ESS` (=1/Σwᵢ²) and `branch_count` (=Σ(Mₐ+1), m-invariant); `beam_top4_mass` (FK weight on the 4 lowest-Head branch states — the states beam keeps); `uphill_null_mass` (FK weight on null branches + children with `R_H(child) ≥ R_H(parent)`). Aggregate mean/median over pools.
+- Per-pool metrics at each `m`: `ESS` (=1/Σwᵢ²) and `branch_count` (=Σ(Mₐ+1), m-invariant); `beam_top4_mass` (FK weight on the four absolute-lowest-Head branch states, used only as a proxy for hard-beam pressure, not exact beam outputs); `uphill_null_mass` (FK weight on null branches + children with `R_H(child) ≥ R_H(parent)`). Aggregate mean/median over pools.
 - Read (objective): whether increasing `m` moves FK mass onto the beam top-4 and drives `ESS → N=4` (would indicate weak beta), or instead collapses `ESS → 1` (destroys diversity) / barely shifts mass (structurally mis-fit at any `m`). Persist the per-`m` table; no verdict prose in the artifact.
 - Do NOT: run a beta grid to pick a winner, re-launch FK, or change the §15 decision from this diagnostic.
 
-## 17. Final integration validation — repair+beam package vs explicit+greedy baseline (MAIN-CONCLUSION)
+**RAR 0032 diagnostic read and correction.**
+
+- The as-run weight on the absolute-lowest-Head top four was **1.057×** its branch-uniform reference; restricting to the 186/240 balanced 36-branch pools gives **1.055×**. Round 0 was more concentrated (1.858×), while later rounds were approximately 1.040×.
+- These values diagnose weak **conditional incremental selection** in the realized P3 pools. They do not show that ancestry mass was lost: after multinomial resampling, preceding mass is represented by duplicate particle slots and stored weights correctly reset to $1/N$.
+- The RAR 0032 F1/F2 claim that reset breaks telescoping is therefore superseded. Carrying old non-uniform weights on resampled copies would double-count the preceding potential.
+- Multiplier replay holds the as-run ancestry and candidate pools fixed, so it is a local sensitivity diagnostic rather than a complete high-beta trajectory counterfactual. It neither reopens P3 nor licenses selector tuning.
+
+## 17. Final integration validation — COMPLETED repair+beam package vs explicit+greedy baseline (MAIN-CONCLUSION)
 
 Question: total value of the final Fusion package (repair + beam) over the cheap explicit+greedy baseline, on a non-saturated held-out cohort. This is the last experiment load-bearing for the paper's main claim.
 
@@ -245,4 +259,15 @@ Question: total value of the final Fusion package (repair + beam) over the cheap
   - B = **explicit+greedy**: `repair.enabled=false`, `selection.mode=greedy` (`rf_refine_fusion_final_explicit_greedy.yaml`).
 - Frozen shared: `N=4`, `n_rounds=8` (≥ both elbows; not confounded by round count — report the baseline's best-so-far@r6 for the even-cheaper reference), scTM_min 0.85, N_H 0.10, esmfold2_live, `max_refolds_per_parent=8`, seed 20260715, constraint_manifest=none.
 - Readout: paired per-protein terminal-elite Head `global_risk` at scTM≥0.85 (A−B), + realized refolds and walltime per arm (the cost the package buys the Head gain with). Coverage denominator = handoff feasibility (identical across arms). Report "package achieves ΔHead at C× the baseline refold cost."
-- Staged launch (repair+beam is a NEW combo — never run): 1 repair+beam canary shard first (verify live path), then release the rest of both arms.
+- Historical staged-launch rule (completed): run one repair+beam canary shard first, then release the rest of both arms after verifying the live path.
+
+**FINAL-INTEGRATION RESULT (COMPLETED; RAR 0031).** Of 286 requested proteins, 229 entered both arms with identical parents. Repair+beam had lower terminal Head on **223/229** proteins (median package-minus-baseline **−0.097 nat**, two-sided Wilcoxon **p=9.96e−38**). It used **1.30×** the realized refolds and **1.66×** the logged round walltime. All returned elites passed scTM≥0.85; package median scTM was 0.954 versus 0.961 for baseline. Terminal NMP, evaluated only after generation, also favored the package in aggregate. This supports the system-level v0 claim; it does not separately attribute the gain to repair or beam.
+
+## 18. Deferred selector preregistration — DO NOT LAUNCH
+
+These are prospective exploratory variants, not fixes to P3 and not v0 tasks:
+
+1. **ESS-adaptive endpoint/difference-FK.** Carry cumulative weights only across non-resampling rounds; trigger resampling through a prospectively fixed particle-level ESS rule; reset resampled slots to $1/N$.
+2. **Immediate-potential Boltzmann stochastic soft-beam.** On the current feasible pool, sample mass proportional to $q_a\exp[-\tau R_H(y)]$ without the endpoint law's parent-correction term.
+
+Before either variant is run, freeze its formula, proposal-mass semantics, temperature or ESS rule, $N$, rounds, elite policy, compute matching, and primary endpoint, then use a cohort not used to develop the selector. Reopen only if a separate stochastic/uphill-interaction claim becomes paper-critical, reproducible beam mode trapping appears, or a reviewer requires it.
