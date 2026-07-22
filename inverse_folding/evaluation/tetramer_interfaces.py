@@ -6,15 +6,28 @@ called; Rosetta InterfaceAnalyzer is an optional subprocess layer for final-sele
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 import numpy as np
 import pandas as pd
 
 D2_INTERFACE_CLASSES = ("interface_1", "interface_2", "diagonal")
+
+CANONICAL_AMINO_ACIDS = frozenset({
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+})
+
+# Parent mappings are intentionally explicit: silently guessing a modified residue's chemistry can
+# corrupt both SASA and Rosetta energies. 1R51 starts with N-acetyl-serine (SAC).
+MODIFIED_AMINO_ACID_PARENTS = {
+    "SAC": ("SER", frozenset({"N", "CA", "C", "O", "OXT", "CB", "OG"})),
+}
 
 ROSETTA_SCORE_FIELDS = {
     "dSASA_int": "rosetta_dsasa_int_a2",
@@ -39,14 +52,132 @@ ROSETTA_REQUIRED_FIELDS = {
 }
 
 
-def protein_heavy_atoms(arr):
-    """Return amino-acid heavy atoms only, excluding ligands and explicit hydrogens."""
-    import biotite.structure as struc
+def _ins_codes(arr) -> np.ndarray:
+    if "ins_code" in arr.get_annotation_categories():
+        return arr.ins_code.astype(str)
+    return np.full(len(arr), "", dtype="U1")
 
-    mask = struc.filter_amino_acids(arr)
+
+def canonical_protein_atoms(arr):
+    """Return complete, canonicalized polymer amino-acid heavy atoms.
+
+    Canonical HETATM amino acids are excluded because they may be free crystallization components.
+    A residue must contain N/CA/C to prevent incomplete terminal records from entering SASA. Known
+    modified polymer residues are mapped only through ``MODIFIED_AMINO_ACID_PARENTS``.
+    """
+    if len(arr) == 0:
+        return arr.copy()
+
+    ins_code = _ins_codes(arr)
+    keep = np.zeros(len(arr), dtype=bool)
+    residue_keys = dict.fromkeys(zip(
+        arr.chain_id.astype(str), arr.res_id.astype(int), ins_code
+    ))
+    for chain, res_id, insertion in residue_keys:
+        indices = np.flatnonzero(
+            (arr.chain_id == chain) & (arr.res_id == res_id) & (ins_code == insertion)
+        )
+        residue_names = set(arr.res_name[indices].astype(str))
+        if len(residue_names) != 1:
+            continue
+        residue_name = next(iter(residue_names))
+        atom_names = set(arr.atom_name[indices].astype(str))
+        if not {"N", "CA", "C"}.issubset(atom_names):
+            continue
+
+        if residue_name in CANONICAL_AMINO_ACIDS:
+            hetero = (arr.hetero[indices] if "hetero" in arr.get_annotation_categories()
+                      else np.zeros(len(indices), dtype=bool))
+            if np.all(hetero):
+                continue
+            keep[indices] = True
+        elif residue_name in MODIFIED_AMINO_ACID_PARENTS:
+            _, allowed_atoms = MODIFIED_AMINO_ACID_PARENTS[residue_name]
+            keep[indices[np.isin(arr.atom_name[indices], list(allowed_atoms))]] = True
+
     if "element" in arr.get_annotation_categories():
-        mask &= np.char.upper(arr.element.astype(str)) != "H"
-    return arr[mask]
+        keep &= np.char.upper(arr.element.astype(str)) != "H"
+    out = arr[keep].copy()
+    for modified_name, (parent_name, _) in MODIFIED_AMINO_ACID_PARENTS.items():
+        out.res_name[out.res_name == modified_name] = parent_name
+    if "hetero" in out.get_annotation_categories():
+        out.hetero[:] = False
+    return out
+
+
+def protein_heavy_atoms(arr):
+    """Backward-compatible alias for complete canonical polymer heavy atoms."""
+    return canonical_protein_atoms(arr)
+
+
+def interface_residue_candidates(
+    arr,
+    chain_a: str,
+    chain_b: str,
+    *,
+    cutoff: float = 5.0,
+) -> pd.DataFrame:
+    """Return residues on either chain with any cross-chain heavy-atom contact below cutoff."""
+    if cutoff <= 0:
+        raise ValueError(f"interface residue cutoff must be positive, got {cutoff}")
+    protein = canonical_protein_atoms(arr)
+    chain_arrays = {
+        chain_a: protein[protein.chain_id == chain_a],
+        chain_b: protein[protein.chain_id == chain_b],
+    }
+    if any(len(chain_arr) == 0 for chain_arr in chain_arrays.values()):
+        raise ValueError(f"cannot extract protein chains for interface {chain_a}:{chain_b}")
+
+    atoms_a, atoms_b = chain_arrays[chain_a], chain_arrays[chain_b]
+    distances = np.linalg.norm(
+        atoms_a.coord[:, None, :] - atoms_b.coord[None, :, :], axis=-1
+    )
+    atom_minima = {
+        chain_a: distances.min(axis=1),
+        chain_b: distances.min(axis=0),
+    }
+    rows = []
+    for source_chain, partner_chain, rosetta_chain in (
+        (chain_a, chain_b, "A"),
+        (chain_b, chain_a, "B"),
+    ):
+        chain_arr = chain_arrays[source_chain]
+        ins_code = _ins_codes(chain_arr)
+        residue_keys = dict.fromkeys(zip(chain_arr.res_id.astype(int), ins_code))
+        for res_id, insertion in residue_keys:
+            mask = (chain_arr.res_id == res_id) & (ins_code == insertion)
+            min_distance = float(atom_minima[source_chain][mask].min())
+            if min_distance >= cutoff:
+                continue
+            residue_names = set(chain_arr.res_name[mask].astype(str))
+            if len(residue_names) != 1:
+                raise ValueError(
+                    f"ambiguous residue identity at {source_chain}:{res_id}{insertion}"
+                )
+            residue_name = next(iter(residue_names))
+            rows.append({
+                "interface_pair": f"{chain_a}:{chain_b}",
+                "source_chain": source_chain,
+                "partner_chain": partner_chain,
+                "rosetta_chain": rosetta_chain,
+                "res_id": int(res_id),
+                "ins_code": str(insertion),
+                "wt_residue_name3": residue_name,
+                "min_cross_chain_heavy_atom_distance_a": min_distance,
+                "is_native_alanine": residue_name == "ALA",
+                "is_glycine_to_alanine": residue_name == "GLY",
+                "is_proline_to_alanine": residue_name == "PRO",
+                "is_interpretable_sidechain_alanine": residue_name not in {"ALA", "GLY", "PRO"},
+            })
+    columns = [
+        "interface_pair", "source_chain", "partner_chain", "rosetta_chain", "res_id",
+        "ins_code", "wt_residue_name3", "min_cross_chain_heavy_atom_distance_a",
+        "is_native_alanine", "is_glycine_to_alanine", "is_proline_to_alanine",
+        "is_interpretable_sidechain_alanine",
+    ]
+    return pd.DataFrame(rows, columns=columns).sort_values(
+        ["rosetta_chain", "res_id", "ins_code"]
+    ).reset_index(drop=True)
 
 
 def _residue_representatives(chain_arr) -> np.ndarray:
@@ -294,8 +425,9 @@ def write_rosetta_dimer_pdb(arr, chain_a: str, chain_b: str, out_path: Path) -> 
     dimer = protein[(protein.chain_id == chain_a) | (protein.chain_id == chain_b)].copy()
     if not np.any(dimer.chain_id == chain_a) or not np.any(dimer.chain_id == chain_b):
         raise ValueError(f"cannot extract dimer {chain_a}:{chain_b}")
-    dimer.chain_id[dimer.chain_id == chain_a] = "A"
-    dimer.chain_id[dimer.chain_id == chain_b] = "B"
+    original_chain_ids = dimer.chain_id.copy()
+    dimer.chain_id[original_chain_ids == chain_a] = "A"
+    dimer.chain_id[original_chain_ids == chain_b] = "B"
     if "hetero" in dimer.get_annotation_categories():
         dimer.hetero[:] = False
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,6 +458,97 @@ def parse_rosetta_scorefile(score_path: Path) -> pd.DataFrame:
     return df
 
 
+_DDG_SCAN_WT_RE = re.compile(
+    r"wild-type binding ddG\s*=\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
+)
+_DDG_SCAN_ROW_RE = re.compile(
+    r"Residue\s+(?P<chain>\S)(?P<res_id>-?\d+)"
+    r"(?P<wt>[A-Z0-9]{3})->(?P<mut>[A-Z0-9]{3})\s*:\s*"
+    r"(?P<ddg>[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)"
+)
+
+
+def parse_rosetta_ddg_scan_log(text: str) -> tuple[float, pd.DataFrame]:
+    """Parse a Rosetta DdGScan report and return WT binding dG plus mutation deltas."""
+    wt_values = [float(value) for value in _DDG_SCAN_WT_RE.findall(text)]
+    if not wt_values:
+        raise ValueError("Rosetta DdGScan log is missing the wild-type binding ddG")
+    if not np.allclose(wt_values, wt_values[0], atol=1e-6, rtol=0):
+        raise ValueError(f"Rosetta DdGScan log has inconsistent WT binding ddGs: {wt_values}")
+
+    rows = [
+        {
+            "rosetta_chain": match.group("chain"),
+            "res_id": int(match.group("res_id")),
+            "wt_residue_name3": match.group("wt"),
+            "mut_residue_name3": match.group("mut"),
+            "ddg_bind_reu": float(match.group("ddg")),
+        }
+        for match in _DDG_SCAN_ROW_RE.finditer(text)
+    ]
+    if not rows:
+        raise ValueError("Rosetta DdGScan log contains no per-residue mutation records")
+    out = pd.DataFrame(rows)
+    if out.duplicated(["rosetta_chain", "res_id"]).any():
+        duplicate = out[out.duplicated(["rosetta_chain", "res_id"], keep=False)]
+        raise ValueError(
+            "Rosetta DdGScan emitted duplicate residue rows: "
+            f"{duplicate[['rosetta_chain', 'res_id']].to_dict('records')}"
+        )
+    return wt_values[0], out
+
+
+def aggregate_homomer_alanine_scan(scan_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate side-specific homomer alanine scans to one row per interface/residue index."""
+    required = {
+        "interface_pair", "source_chain", "res_id", "ins_code", "wt_residue_name3",
+        "ddg_bind_reu", "is_native_alanine", "is_glycine_to_alanine",
+        "is_proline_to_alanine", "is_interpretable_sidechain_alanine",
+    }
+    missing = sorted(required - set(scan_df.columns))
+    if missing:
+        raise ValueError(f"alanine-scan table is missing required columns: {missing}")
+    group_columns = ["interface_pair", "res_id", "ins_code", "wt_residue_name3"]
+    grouped = scan_df.groupby(group_columns, dropna=False, sort=True)
+    out = grouped.agg(
+        source_chains=("source_chain", lambda values: ",".join(sorted(set(map(str, values))))),
+        n_chain_sides=("source_chain", "nunique"),
+        ddg_bind_mean_reu=("ddg_bind_reu", "mean"),
+        ddg_bind_min_reu=("ddg_bind_reu", "min"),
+        ddg_bind_max_reu=("ddg_bind_reu", "max"),
+        is_native_alanine=("is_native_alanine", "all"),
+        is_glycine_to_alanine=("is_glycine_to_alanine", "all"),
+        is_proline_to_alanine=("is_proline_to_alanine", "all"),
+        is_interpretable_sidechain_alanine=("is_interpretable_sidechain_alanine", "all"),
+    ).reset_index()
+    out["ddg_bind_chain_range_reu"] = (
+        out["ddg_bind_max_reu"] - out["ddg_bind_min_reu"]
+    )
+    if "min_cross_chain_heavy_atom_distance_a" in scan_df.columns:
+        min_distance = grouped["min_cross_chain_heavy_atom_distance_a"].min().reset_index(
+            name="min_cross_chain_heavy_atom_distance_a"
+        )
+        out = out.merge(min_distance, on=group_columns, how="left", validate="one_to_one")
+    for optional in ("interface_class", "rosetta_score_function"):
+        if optional in scan_df.columns:
+            values = grouped[optional].first().reset_index(name=optional)
+            out = out.merge(values, on=group_columns, how="left", validate="one_to_one")
+    out["ddg_bind_rank_desc"] = out.groupby("interface_pair")[
+        "ddg_bind_mean_reu"
+    ].rank(method="min", ascending=False).astype(int)
+    out["sidechain_ddg_bind_rank_desc"] = pd.Series(pd.NA, index=out.index, dtype="Int64")
+    interpretable = out["is_interpretable_sidechain_alanine"]
+    out.loc[interpretable, "sidechain_ddg_bind_rank_desc"] = (
+        out.loc[interpretable]
+        .groupby("interface_pair")["ddg_bind_mean_reu"]
+        .rank(method="min", ascending=False)
+        .astype("Int64")
+    )
+    return out.sort_values(
+        ["interface_pair", "res_id", "ins_code"]
+    ).reset_index(drop=True)
+
+
 def _resolve_executable(executable: str) -> str:
     resolved = shutil.which(executable)
     if resolved:
@@ -334,6 +557,207 @@ def _resolve_executable(executable: str) -> str:
     if path.is_file() and os.access(path, os.X_OK):
         return str(path.resolve())
     raise FileNotFoundError(f"executable not found or not executable: {executable}")
+
+
+def _write_ddg_scan_protocol(
+    protocol_path: Path,
+    *,
+    resfile_path: Path,
+    score_function: str,
+) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", score_function):
+        raise ValueError(f"invalid Rosetta score-function name: {score_function!r}")
+    escaped_resfile = xml_escape(str(resfile_path.resolve()), {'"': "&quot;"})
+    escaped_score = xml_escape(score_function, {'"': "&quot;"})
+    protocol_path.write_text(
+        "<ROSETTASCRIPTS>\n"
+        "  <SCOREFXNS>\n"
+        f"    <ScoreFunction name=\"scan_score\" weights=\"{escaped_score}\"/>\n"
+        "  </SCOREFXNS>\n"
+        "  <TASKOPERATIONS>\n"
+        f"    <ReadResfile name=\"scan_positions\" filename=\"{escaped_resfile}\"/>\n"
+        "  </TASKOPERATIONS>\n"
+        "  <MOVERS>\n"
+        "    <ddG name=\"binding_dg\" scorefxn=\"scan_score\" chain_num=\"2\"\n"
+        "         repack_unbound=\"false\" repack_bound=\"false\"\n"
+        "         relax_unbound=\"false\" relax_bound=\"false\"/>\n"
+        "  </MOVERS>\n"
+        "  <FILTERS>\n"
+        "    <DdGScan name=\"alanine_scan\" task_operations=\"scan_positions\"\n"
+        "             repeats=\"1\" scorefxn=\"scan_score\" report_diffs=\"1\"\n"
+        "             write2pdb=\"0\" ddG_mover=\"binding_dg\"/>\n"
+        "  </FILTERS>\n"
+        "  <PROTOCOLS>\n"
+        "    <Add filter_name=\"alanine_scan\"/>\n"
+        "  </PROTOCOLS>\n"
+        "  <OUTPUT scorefxn=\"scan_score\"/>\n"
+        "</ROSETTASCRIPTS>\n"
+    )
+
+
+def run_rosetta_alanine_scan(
+    arr,
+    chain_pairs,
+    *,
+    executable: str,
+    run_dir: Path,
+    log_dir: Path,
+    timeout_seconds: int,
+    interface_cutoff: float = 5.0,
+    score_function: str = "ref2015",
+    seed: int = 1729,
+    native_alanine_tolerance: float = 1e-4,
+) -> pd.DataFrame:
+    """Run no-repack Rosetta DdGScan for selected dimer interfaces.
+
+    ``ddg_bind_reu`` is ``binding_dG(mutant) - binding_dG(WT)``. Positive values therefore mean
+    the alanine mutation weakens binding. Only residues with a cross-chain heavy-atom distance
+    below ``interface_cutoff`` are scanned. Native Ala->Ala rows are retained as zero controls.
+    Rosetta inputs, protocols, commands, and scorefiles are written below ``run_dir``; captured
+    stdout/stderr are written below the separate ``log_dir``.
+    """
+    if timeout_seconds <= 0:
+        raise ValueError("Rosetta alanine-scan timeout must be positive")
+    resolved_executable = _resolve_executable(executable)
+    run_dir = Path(run_dir)
+    log_dir = Path(log_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    all_results = []
+
+    for pair_index, pair in enumerate(chain_pairs):
+        if len(pair) != 2 or pair[0] == pair[1]:
+            raise ValueError(f"invalid interface chain pair: {pair!r}")
+        chain_a, chain_b = map(str, pair)
+        pair_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{chain_a}{chain_b}")
+        pair_dir = run_dir / f"{pair_index:02d}_{pair_slug}"
+        pair_log_dir = log_dir / f"{pair_index:02d}_{pair_slug}"
+        pair_dir.mkdir(parents=True, exist_ok=True)
+        pair_log_dir.mkdir(parents=True, exist_ok=True)
+
+        candidates = interface_residue_candidates(
+            arr, chain_a, chain_b, cutoff=interface_cutoff
+        )
+        if candidates.empty:
+            raise ValueError(
+                f"no interface residues found for {chain_a}:{chain_b} within "
+                f"{interface_cutoff:.3f} A"
+            )
+        nonempty_insertions = candidates[candidates["ins_code"].astype(str) != ""]
+        if not nonempty_insertions.empty:
+            raise ValueError(
+                "Rosetta alanine scan does not yet support PDB insertion codes: "
+                f"{nonempty_insertions[['source_chain', 'res_id', 'ins_code']].to_dict('records')}"
+            )
+
+        input_path = pair_dir / "input_dimer.pdb"
+        resfile_path = pair_dir / "scan.resfile"
+        protocol_path = pair_dir / "ddg_scan.xml"
+        score_path = pair_dir / "ddg_scan.sc"
+        stdout_path = pair_log_dir / "ddg_scan.stdout.log"
+        stderr_path = pair_log_dir / "ddg_scan.stderr.log"
+        command_path = pair_dir / "ddg_scan.command.txt"
+        write_rosetta_dimer_pdb(arr, chain_a, chain_b, input_path)
+
+        resfile_lines = ["NATRO", "start"]
+        resfile_lines.extend(
+            f"{row.res_id} {row.rosetta_chain} PIKAA A"
+            for row in candidates.itertuples()
+        )
+        resfile_path.write_text("\n".join(resfile_lines) + "\n")
+        _write_ddg_scan_protocol(
+            protocol_path, resfile_path=resfile_path, score_function=score_function
+        )
+        score_path.unlink(missing_ok=True)
+
+        cmd = [
+            resolved_executable,
+            "-s", str(input_path.resolve()),
+            "-parser:protocol", str(protocol_path.resolve()),
+            "-nstruct", "1",
+            "-jd2:no_output", "true",
+            "-constant_seed",
+            "-jran", str(int(seed)),
+            "-ignore_unrecognized_res", "true",
+            "-overwrite",
+            "-out:file:score_only", str(score_path.resolve()),
+        ]
+        command_path.write_text(shlex.join(cmd) + "\n")
+        try:
+            result = subprocess.run(
+                cmd, cwd=pair_dir, capture_output=True, text=True, timeout=timeout_seconds
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Rosetta alanine scan timed out after {timeout_seconds}s; run dir: {pair_dir}"
+            ) from exc
+        stdout_path.write_text(result.stdout)
+        stderr_path.write_text(result.stderr)
+        if result.returncode != 0:
+            tail = "\n".join((result.stderr or result.stdout).splitlines()[-30:])
+            raise RuntimeError(
+                f"Rosetta alanine scan failed with exit code {result.returncode}; "
+                f"run dir: {pair_dir}; log dir: {pair_log_dir}\n{tail}"
+            )
+
+        wt_binding_dg, parsed = parse_rosetta_ddg_scan_log(result.stdout)
+        expected_keys = candidates[["rosetta_chain", "res_id"]]
+        observed_keys = parsed[["rosetta_chain", "res_id"]]
+        if set(map(tuple, expected_keys.to_numpy())) != set(map(tuple, observed_keys.to_numpy())):
+            missing = sorted(
+                set(map(tuple, expected_keys.to_numpy()))
+                - set(map(tuple, observed_keys.to_numpy()))
+            )
+            extra = sorted(
+                set(map(tuple, observed_keys.to_numpy()))
+                - set(map(tuple, expected_keys.to_numpy()))
+            )
+            raise ValueError(
+                f"Rosetta alanine-scan residue mismatch for {chain_a}:{chain_b}; "
+                f"missing={missing}, extra={extra}"
+            )
+        merged = candidates.merge(
+            parsed,
+            on=["rosetta_chain", "res_id"],
+            how="left",
+            validate="one_to_one",
+            suffixes=("", "_rosetta"),
+        )
+        identity_mismatch = merged[
+            merged["wt_residue_name3"] != merged["wt_residue_name3_rosetta"]
+        ]
+        if not identity_mismatch.empty:
+            mismatch_columns = [
+                "source_chain", "res_id", "wt_residue_name3", "wt_residue_name3_rosetta"
+            ]
+            raise ValueError(
+                f"Rosetta residue identity mismatch for {chain_a}:{chain_b}: "
+                f"{identity_mismatch[mismatch_columns].to_dict('records')}"
+            )
+        merged = merged.drop(columns=["wt_residue_name3_rosetta"])
+        merged["wt_binding_dg_reu"] = wt_binding_dg
+        merged["mut_binding_dg_reu"] = wt_binding_dg + merged["ddg_bind_reu"]
+        merged["ddg_sign_convention"] = "mutant_minus_wildtype"
+        merged["rosetta_score_function"] = score_function
+        merged["repack_bound"] = False
+        merged["repack_unbound"] = False
+        merged["interface_residue_cutoff_a"] = float(interface_cutoff)
+
+        native_ala = merged[merged["is_native_alanine"]]
+        if not native_ala.empty:
+            bad_controls = native_ala[
+                native_ala["ddg_bind_reu"].abs() > native_alanine_tolerance
+            ]
+            if not bad_controls.empty:
+                raise RuntimeError(
+                    "Rosetta DdGScan failed the native Ala->Ala zero control: "
+                    f"{bad_controls[['source_chain', 'res_id', 'ddg_bind_reu']].to_dict('records')}"
+                )
+        all_results.append(merged)
+
+    if not all_results:
+        raise ValueError("at least one interface chain pair is required for alanine scanning")
+    return pd.concat(all_results, ignore_index=True)
 
 
 def _description_to_job_id(description: str, valid_job_ids: set[str]) -> str | None:
@@ -349,15 +773,20 @@ def run_rosetta_interface_analyzer(
     arr_loader,
     *,
     executable: str,
-    work_dir: Path,
+    run_dir: Path,
+    log_dir: Path,
     timeout_seconds: int,
 ) -> pd.DataFrame:
-    """Run one InterfaceAnalyzer batch over the four biological dimers per tetramer."""
+    """Run one InterfaceAnalyzer batch with runtime artifacts and logs kept separate."""
     interface_rows = pair_df[pair_df["is_biological_interface"]].copy()
     if interface_rows.empty:
         return pair_df
 
-    input_dir = work_dir / "dimers"
+    run_dir = Path(run_dir)
+    log_dir = Path(log_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    input_dir = run_dir / "dimers"
     input_dir.mkdir(parents=True, exist_ok=True)
     jobs = {}
     input_paths = []
@@ -370,10 +799,10 @@ def run_rosetta_interface_analyzer(
         jobs[job_id] = row_index
         input_paths.append(pdb_path.resolve())
 
-    list_path = work_dir / "interface_dimers.list"
-    score_path = work_dir / "interface_analyzer.sc"
-    stdout_path = work_dir / "interface_analyzer.stdout.log"
-    stderr_path = work_dir / "interface_analyzer.stderr.log"
+    list_path = run_dir / "interface_dimers.list"
+    score_path = run_dir / "interface_analyzer.sc"
+    stdout_path = log_dir / "interface_analyzer.stdout.log"
+    stderr_path = log_dir / "interface_analyzer.stderr.log"
     list_path.write_text("\n".join(map(str, input_paths)) + "\n")
     score_path.unlink(missing_ok=True)
 
@@ -392,14 +821,14 @@ def run_rosetta_interface_analyzer(
         "-ignore_unrecognized_res", "true",
         "-overwrite",
     ]
-    (work_dir / "interface_analyzer.command.txt").write_text(shlex.join(cmd) + "\n")
+    (run_dir / "interface_analyzer.command.txt").write_text(shlex.join(cmd) + "\n")
     try:
         result = subprocess.run(
-            cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout_seconds
+            cmd, cwd=run_dir, capture_output=True, text=True, timeout=timeout_seconds
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
-            f"Rosetta InterfaceAnalyzer timed out after {timeout_seconds}s; work dir: {work_dir}"
+            f"Rosetta InterfaceAnalyzer timed out after {timeout_seconds}s; run dir: {run_dir}"
         ) from exc
     stdout_path.write_text(result.stdout)
     stderr_path.write_text(result.stderr)
@@ -407,7 +836,7 @@ def run_rosetta_interface_analyzer(
         tail = "\n".join((result.stderr or result.stdout).splitlines()[-30:])
         raise RuntimeError(
             f"Rosetta InterfaceAnalyzer failed with exit code {result.returncode}; "
-            f"work dir: {work_dir}\n{tail}"
+            f"run dir: {run_dir}; log dir: {log_dir}\n{tail}"
         )
 
     scores = parse_rosetta_scorefile(score_path)

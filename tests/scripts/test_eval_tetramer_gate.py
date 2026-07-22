@@ -7,13 +7,18 @@ import pandas as pd
 import pytest
 
 from inverse_folding.evaluation.tetramer_interfaces import (
+    aggregate_homomer_alanine_scan,
+    canonical_protein_atoms,
     classify_d2_interface_pairs,
+    interface_residue_candidates,
     pair_residue_contacts,
     pair_salt_bridges,
+    parse_rosetta_ddg_scan_log,
     parse_rosetta_scorefile,
     summarize_interface_pairs,
 )
 from scripts.eval_tetramer_gate import add_interface_wt_normalization
+from scripts.eval_tetramer_reference import _paths_overlap, main as reference_main
 
 
 def _pair_table() -> pd.DataFrame:
@@ -48,8 +53,25 @@ def _atom_array(rows):
     arr.res_name = np.asarray([row[3] for row in rows])
     arr.atom_name = np.asarray([row[4] for row in rows])
     arr.element = np.asarray([row[5] for row in rows])
-    arr.hetero = np.zeros(len(rows), dtype=bool)
+    arr.hetero = np.asarray([
+        row[6] if len(row) > 6 else False
+        for row in rows
+    ], dtype=bool)
     return arr
+
+
+def _residue(chain, res_id, res_name, origin, *, hetero=False, sidechain="CB"):
+    x, y, z = origin
+    rows = [
+        ((x, y, z), chain, res_id, res_name, "N", "N", hetero),
+        ((x + 1.0, y, z), chain, res_id, res_name, "CA", "C", hetero),
+        ((x + 2.0, y, z), chain, res_id, res_name, "C", "C", hetero),
+        ((x + 2.5, y, z), chain, res_id, res_name, "O", "O", hetero),
+    ]
+    if sidechain:
+        rows.append(((x + 1.0, y + 1.0, z), chain, res_id, res_name,
+                     sidechain, "O" if sidechain == "OG" else "C", hetero))
+    return rows
 
 
 def test_d2_classification_keeps_disjoint_symmetry_copies_together():
@@ -105,6 +127,75 @@ def test_contacts_and_salt_bridges_count_residue_pairs_not_atom_pairs():
     assert pair_salt_bridges(chain_a, chain_b, cutoff=4.0) == 1
 
 
+def test_canonical_protein_atoms_keeps_complete_polymer_and_normalizes_sac():
+    rows = []
+    rows += _residue("A", 1, "SAC", (0.0, 0.0, 0.0), hetero=True, sidechain="OG")
+    rows.append(((-1.0, 0.0, 0.0), "A", 1, "SAC", "C1A", "C", True))
+    rows += _residue("A", 2, "ALA", (4.0, 0.0, 0.0))
+    rows.append(((8.0, 0.0, 0.0), "A", 296, "SER", "N", "N", False))
+    rows.extend([
+        ((9.0, 0.0, 0.0), "A", 700, "CYS", "CB", "C", True),
+        ((10.0, 0.0, 0.0), "A", 700, "CYS", "SG", "S", True),
+    ])
+
+    out = canonical_protein_atoms(_atom_array(rows))
+
+    assert set(out.res_id) == {1, 2}
+    assert set(out.res_name[out.res_id == 1]) == {"SER"}
+    assert "C1A" not in set(out.atom_name)
+    assert not out.hetero.any()
+
+
+def test_interface_residue_candidates_returns_both_sides_and_min_distance():
+    rows = []
+    rows += _residue("A", 10, "LEU", (0.0, 0.0, 0.0))
+    rows += _residue("A", 20, "LYS", (30.0, 0.0, 0.0))
+    rows += _residue("B", 11, "ASP", (0.0, 4.0, 0.0))
+    rows += _residue("B", 21, "GLU", (60.0, 0.0, 0.0))
+    arr = _atom_array(rows)
+
+    out = interface_residue_candidates(arr, "A", "B", cutoff=5.0)
+
+    assert set(zip(out["source_chain"], out["res_id"])) == {("A", 10), ("B", 11)}
+    assert out["min_cross_chain_heavy_atom_distance_a"].max() == pytest.approx(3.0)
+
+
+def test_parse_and_aggregate_rosetta_ddg_scan_output():
+    wt, parsed = parse_rosetta_ddg_scan_log(
+        "job wild-type binding ddG = -155.368\n"
+        " Residue A49ALA->ALA : 0.0000\n"
+        " Residue B236GLU->ALA : -6.2583\n"
+    )
+    assert wt == pytest.approx(-155.368)
+    assert parsed.to_dict("records") == [
+        {
+            "rosetta_chain": "A", "res_id": 49, "wt_residue_name3": "ALA",
+            "mut_residue_name3": "ALA", "ddg_bind_reu": 0.0,
+        },
+        {
+            "rosetta_chain": "B", "res_id": 236, "wt_residue_name3": "GLU",
+            "mut_residue_name3": "ALA", "ddg_bind_reu": -6.2583,
+        },
+    ]
+
+    long = pd.DataFrame([
+        {"interface_pair": "A:B", "source_chain": "A", "res_id": 10,
+         "ins_code": "", "wt_residue_name3": "LEU", "ddg_bind_reu": 2.0,
+         "is_native_alanine": False, "is_glycine_to_alanine": False,
+         "is_proline_to_alanine": False,
+         "is_interpretable_sidechain_alanine": True},
+        {"interface_pair": "A:B", "source_chain": "B", "res_id": 10,
+         "ins_code": "", "wt_residue_name3": "LEU", "ddg_bind_reu": 2.2,
+         "is_native_alanine": False, "is_glycine_to_alanine": False,
+         "is_proline_to_alanine": False,
+         "is_interpretable_sidechain_alanine": True},
+    ])
+    by_position = aggregate_homomer_alanine_scan(long)
+    assert by_position.loc[0, "n_chain_sides"] == 2
+    assert by_position.loc[0, "ddg_bind_mean_reu"] == pytest.approx(2.1)
+    assert by_position.loc[0, "ddg_bind_chain_range_reu"] == pytest.approx(0.2)
+
+
 def test_parse_rosetta_scorefile_preserves_canonical_interface_fields(tmp_path):
     score = tmp_path / "scores.sc"
     score.write_text(
@@ -138,3 +229,31 @@ def test_wt_normalization_uses_real_parent_wt_and_can_fail_fast():
     without_wt = df[df["kind"] != "WT"].copy()
     with pytest.raises(ValueError, match="P1"):
         add_interface_wt_normalization(without_wt, require_wt=True)
+
+
+def test_reference_rosetta_requires_separate_run_and_log_roots(tmp_path, capsys):
+    structure = tmp_path / "reference.pdb"
+    structure.write_text("")
+
+    with pytest.raises(SystemExit, match="2"):
+        reference_main([
+            "--structure", str(structure),
+            "--name", "ref",
+            "--out-dir", str(tmp_path / "work"),
+            "--rosetta-interface-analyzer", "InterfaceAnalyzer",
+        ])
+    assert "requires --run-dir" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit, match="2"):
+        reference_main([
+            "--structure", str(structure),
+            "--name", "ref",
+            "--out-dir", str(tmp_path / "work"),
+            "--run-dir", str(tmp_path / "work" / "runtime"),
+            "--log-dir", str(tmp_path / "logs"),
+            "--rosetta-interface-analyzer", "InterfaceAnalyzer",
+        ])
+    assert "must be separate directory trees" in capsys.readouterr().err
+
+    assert _paths_overlap(tmp_path / "run", tmp_path / "run" / "nested")
+    assert not _paths_overlap(tmp_path / "run", tmp_path / "logs")

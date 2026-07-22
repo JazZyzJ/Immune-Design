@@ -62,12 +62,12 @@ case "${MODE}" in
     train_refiner)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/refiner_train" ;;
     train_sidecar)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/sidecar_train" ;;
     train_encoder)    OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/encoder_train" ;;
-    generate_refiner) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${INPUT_SOURCE}/${ARM:-baseline}" ;;
-    generate_encoder) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${INPUT_SOURCE}/encoder" ;;
-    compare_ablation) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/compare" ;;
-    diag_arms)        OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/diag" ;;
-    diag_encoder)     OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/diag_encoder" ;;
-    *) OUTPUT_ROOT_DEFAULT="${WORK_DIR}/if_imp/${MODE}" ;;
+    generate_refiner) OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/${INPUT_SOURCE}/${ARM:-baseline}" ;;
+    generate_encoder) OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/${INPUT_SOURCE}/encoder" ;;
+    compare_ablation) OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/compare" ;;
+    diag_arms)        OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/diag" ;;
+    diag_encoder)     OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/diag_encoder" ;;
+    *) OUTPUT_ROOT_DEFAULT="${RUN_DIR}/if_imp/${MODE}" ;;
 esac
 OUTPUT_ROOT="${OUTPUT_ROOT:-${OUTPUT_ROOT_DEFAULT}}"
 

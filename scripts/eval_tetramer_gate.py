@@ -319,8 +319,17 @@ def main() -> None:
         default=os.environ.get("ROSETTA_INTERFACE_ANALYZER"),
         help="optional InterfaceAnalyzer executable; enables CPU Rosetta interface metrics",
     )
-    ap.add_argument("--rosetta-work-dir", default=None,
-                    help="persistent Rosetta dimer/score/log directory")
+    ap.add_argument(
+        "--rosetta-run-dir", "--rosetta-work-dir", dest="rosetta_run_dir", default=None,
+        help=(
+            "Rosetta dimer, command, and score directory in the experiment run layer "
+            "(--rosetta-work-dir is a deprecated alias)"
+        ),
+    )
+    ap.add_argument(
+        "--rosetta-log-dir", default=None,
+        help="captured Rosetta stdout/stderr directory in the project logs layer",
+    )
     ap.add_argument("--rosetta-timeout-seconds", type=int, default=21600)
     ap.add_argument(
         "--require-interface-wt",
@@ -338,6 +347,19 @@ def main() -> None:
         ap.error("interface distance cutoffs must be positive")
     if args.rosetta_timeout_seconds <= 0:
         ap.error("--rosetta-timeout-seconds must be positive")
+    if args.rosetta_interface_analyzer and not args.rosetta_run_dir:
+        ap.error("--rosetta-interface-analyzer requires --rosetta-run-dir")
+    if args.rosetta_interface_analyzer and not args.rosetta_log_dir:
+        ap.error("--rosetta-interface-analyzer requires --rosetta-log-dir")
+    if args.rosetta_run_dir and args.rosetta_log_dir:
+        rosetta_run_dir = Path(args.rosetta_run_dir).resolve()
+        rosetta_log_dir = Path(args.rosetta_log_dir).resolve()
+        if (
+            rosetta_run_dir == rosetta_log_dir
+            or rosetta_run_dir in rosetta_log_dir.parents
+            or rosetta_log_dir in rosetta_run_dir.parents
+        ):
+            ap.error("--rosetta-run-dir and --rosetta-log-dir must be separate directory trees")
 
     man = pd.read_parquet(args.manifest)
     required_manifest = {"id", "name", "parent", "kind"}
@@ -462,16 +484,16 @@ def main() -> None:
             raise ValueError(
                 "Rosetta interface scoring requested, but no valid tetramer pairs exist"
             )
-        rosetta_work_dir = (
-            Path(args.rosetta_work_dir) if args.rosetta_work_dir else
-            out_path.with_name(f"{out_path.stem}_rosetta")
-        )
-        rosetta_work_dir.mkdir(parents=True, exist_ok=True)
+        rosetta_run_dir = Path(args.rosetta_run_dir)
+        rosetta_log_dir = Path(args.rosetta_log_dir)
+        rosetta_run_dir.mkdir(parents=True, exist_ok=True)
+        rosetta_log_dir.mkdir(parents=True, exist_ok=True)
         pair_df = run_rosetta_interface_analyzer(
             pair_df,
             get_arr,
             executable=args.rosetta_interface_analyzer,
-            work_dir=rosetta_work_dir,
+            run_dir=rosetta_run_dir,
+            log_dir=rosetta_log_dir,
             timeout_seconds=args.rosetta_timeout_seconds,
         )
         scored_manifest_rows = set(

@@ -102,8 +102,10 @@ loading the same module.
 | Shape complementarity | `rosetta_shape_complementarity` | per class: minimum + mean | Higher is better; retained as an additional packing-quality diagnostic. |
 
 Coordinate BSA uses Shrake-Rupley/ProtOr radii, a 1.4 Å probe, and 1000 surface points by default.
-For 1R51, the two interface classes are approximately 5.86k and 5.20k Å² total BSA (2.93k and
-2.60k Å² per partner), while diagonal pairs are approximately 0.74k Å² total. The often-quoted
+For standardized 1R51, the two interface classes are approximately 5.78k and 5.22k Å² total BSA
+(2.89k and 2.61k Å² per partner), while diagonal pairs are approximately 0.74k Å² total. The
+standardization maps N-terminal N-acetyl-serine (`SAC`) to its `SER` parent and removes incomplete
+or free amino-acid crystal records before both coordinate and Rosetta scoring. The often-quoted
 1.5–2.0k Å² rule is therefore only an advisory scale and is ambiguous unless the BSA convention is
 stated. Final comparisons must use a real same-predictor WT scored by the identical coordinate and
 Rosetta settings.
@@ -113,6 +115,45 @@ Rosetta field definitions follow the official
 The choice to score as-predicted coordinates (`pack_input=false`, `pack_separated=false`) avoids
 turning the gate into a redesign/repacking step; this is also consistent with the interface-design
 failure analysis in [Stranges and Kuhlman (2013)](https://pmc.ncbi.nlm.nih.gov/articles/PMC3575862/).
+
+## Per-residue interface binding sensitivity
+
+Run an alanine scan **after prediction**, only for 1R51/WT and the final retained cohort. It is not a
+GPU-predictor feature and is too redundant to run on every early candidate. The operational backend
+is RosettaScripts `DdGScan`, not InterfaceAnalyzer itself: InterfaceAnalyzer supplies whole-interface
+metrics, whereas `DdGScan` mutates each selected residue separately.
+
+- Scan the representative A-B (`interface_1`) and A-D (`interface_2`) dimers. Select residues having
+  any cross-chain heavy-atom distance below 5 Å on either partner; preserve both chain-side rows and
+  an index-level homomer aggregate.
+- Use `ref2015`; mutate only the target residue to Ala; do not globally repack or relax either bound
+  or separated states. Thus WT and mutant use the same fixed-backbone energy protocol.
+- Report `ddg_bind_reu = binding_dG(mutant) - binding_dG(WT)`. Positive means Ala weakens binding;
+  negative means Ala is predicted to improve binding. Values are REU, not kcal/mol and not an
+  experimental free-energy estimate.
+- Native Ala→Ala must be exactly zero (within parser precision) or the run fails. Retain Ala, Gly,
+  and Pro indices for extraction, but exclude them from side-chain-hotspot ranking: Ala is a no-op,
+  Gly→Ala adds a Cβ, and Pro→Ala changes backbone chemistry rather than merely truncating a side
+  chain.
+- Thresholds are intentionally absent. Rank side-chain-sensitive positions and compare design vs
+  same-protocol WT; do not turn a single-residue REU value into a hard assembly gate without wet-lab
+  calibration.
+
+Implementation and output contract: `scripts/eval_tetramer_reference.py` writes
+`*_alanine_scan_chain_residue.{parquet,csv}` (source of truth) and
+`*_alanine_scan_by_position.{parquet,csv}` (one row per original residue index per interface) to the
+persistent `work/` output. Rosetta PDB/XML/resfile/command/score artifacts remain in `run/`; captured
+stdout/stderr remain in `logs/`. The three roots are mandatory and must not overlap. See the official Rosetta
+[DdGScan](https://docs.rosettacommons.org/docs/latest/scripting_documentation/RosettaScripts/Filters/filter_pages/DdGScanFilter)
+and [AlaScan](https://docs.rosettacommons.org/docs/latest/scripting_documentation/RosettaScripts/Filters/filter_pages/AlaScanFilter)
+definitions.
+
+FoldX is a valid alternate backend but is not installed in the current Della environment.
+`PositionScan` alone reports mutation stability DDG, not interface binding DDG. For the requested
+quantity use FoldX [Pssm](https://foldxsuite.crg.eu/command/Pssm), which composes BuildModel and
+AnalyseComplex, with `aminoacids=A` and `analyseComplexChains=A,B`; or explicitly run
+[AnalyseComplex](https://foldxsuite.crg.eu/command/AnalyseComplex) on matched WT/mutant structures
+and subtract their interaction energies. Do not mix FoldX kcal/mol values with Rosetta REU.
 
 ## Pipeline (the SOP)
 
@@ -138,45 +179,73 @@ Env: `immune-design` for the driver/eval; the ESMFold2 predictor runs in the **`
 1R51 crystal-pose overlay use `--ligand-ccd AZA` instead.
 
 ```bash
-BASE=<work-dir>            # e.g. .../tetramer_gate/<run>
+RUN_BASE=<run-dir>/tetramer_gate/<run_tag>
+WORK_BASE=<work-dir>/tetramer_gate
+LOG_BASE=<logs-dir>/tetramer_gate/<run_tag>
+export RUN_BASE
+mkdir -p "$RUN_BASE" "$WORK_BASE" "$LOG_BASE"
+
 # 1) shortlist parquet -> Met-stripped fasta (id = design_id), one seq per design
 python - <<'PY'
-import pandas as pd, re
+import os
+import re
+from pathlib import Path
+
+import pandas as pd
+
 df = pd.read_parquet("<...>/list1_tetramer_shortlist.parquet")
 strip = lambda s: (s[1:] if s.startswith("M") else s)
-open(f"{'$BASE'}/seqs.fasta","w").write("".join(
+Path(os.environ["RUN_BASE"], "seqs.fasta").write_text("".join(
     f">{r.design_id}\n{strip(re.sub('[^A-Za-z]','',str(r.sequence)).upper())}\n" for r in df.itertuples()))
 PY
 
 # 2) LOCAL GPU MSA for the whole list (one batch; DB loads once)  [PREFERRED path]
-sbatch --output=<logs>/cfmsa_%j.out --error=<logs>/cfmsa_%j.err \
-  scripts/submit_tetramer_msa_local.slurm  $BASE/seqs.fasta  $BASE/msa_local
-#   -> $BASE/msa_local/<design_id>.a3m  (feeds ESMFold2 directly)
+sbatch --output="$LOG_BASE/cfmsa_%j.out" --error="$LOG_BASE/cfmsa_%j.err" \
+  scripts/submit_tetramer_msa_local.slurm "$RUN_BASE/seqs.fasta" "$RUN_BASE/msa_local"
+#   -> $RUN_BASE/msa_local/<design_id>.a3m  (feeds ESMFold2 directly)
 #   Protenix instead: feed the SAME a3m to scripts/build_protenix_jsons.py (it splits into
 #   pairing/non_pairing itself; the deprecated submit_tetramer_msa_local_protenix.slurm was removed)
 
 # 3) ESMFold2 tetramer + 4 ligands + MSA, as a SLURM array (one design per task)
-ls $BASE/msa_local/*.a3m | sed 's#.*/##;s#\.a3m$##' > $BASE/ids.txt ; N=$(wc -l < $BASE/ids.txt)
-sbatch --array=0-$((N-1))%12 --output=<logs>/esmf2_%A_%a.out --error=<logs>/esmf2_%A_%a.err \
-  scripts/submit_tetramer_esmfold2_array.slurm  $BASE/ids.txt  $BASE/msa_local  $BASE/pred_esmfold2 \
+find "$RUN_BASE/msa_local" -maxdepth 1 -name '*.a3m' -printf '%f\n' | sed 's#\.a3m$##' \
+  | sort > "$RUN_BASE/ids.txt"
+N=$(wc -l < "$RUN_BASE/ids.txt")
+sbatch --array=0-$((N-1))%12 --output="$LOG_BASE/esmf2_%A_%a.out" --error="$LOG_BASE/esmf2_%A_%a.err" \
+  scripts/submit_tetramer_esmfold2_array.slurm "$RUN_BASE/ids.txt" "$RUN_BASE/msa_local" "$RUN_BASE/pred_esmfold2" \
   --ligand-smiles 'O=C1NC(=O)C2=C(N1)NC(=O)N2' --n-copies 4 --num-loops 8 --num-sampling-steps 100
 
 # 4a) coordinate gate metrics for all predictions (backend-selectable; no Rosetta required)
 #     The final-selection manifest MUST include a real same-backend WT row for every parent.
 python scripts/eval_tetramer_gate.py --backend esmfold2 \
-  --pred-root $BASE/pred_esmfold2 --manifest <manifest-with-wt.parquet> --usalign <bin>/USalign \
-  --crystal-ref <refs>/1R51_tetramer_ABCD.pdb --crystal-parent Q00511 \
-  --require-interface-wt --out $BASE/tetramer_gate.parquet
+  --pred-root "$RUN_BASE/pred_esmfold2" --manifest <manifest-with-wt.parquet> --usalign <bin>/USalign \
+  --crystal-ref "$WORK_BASE/refs/1R51_tetramer_ABCD.pdb" --crystal-parent Q00511 \
+  --require-interface-wt --out "$RUN_BASE/tetramer_gate.parquet"
 
 # 4b) final-selection run with Rosetta 3.15 (CPU Slurm; RUN_ROSETTA=1 by default)
-sbatch scripts/submit_tetramer_eval.slurm --backend esmfold2 \
-  --pred-root $BASE/pred_esmfold2 --manifest <final-cohort-plus-wt.parquet> --usalign <bin>/USalign \
-  --crystal-ref <refs>/1R51_tetramer_ABCD.pdb --crystal-parent Q00511 \
-  --rosetta-work-dir $BASE/tetramer_gate_rosetta --require-interface-wt \
-  --out $BASE/tetramer_gate.parquet
-# -> $BASE/tetramer_gate.parquet
-# -> $BASE/tetramer_gate_interface_pairs.parquet
-# -> $BASE/tetramer_gate_rosetta/{dimers,interface_analyzer.sc,*.log,*.command.txt}
+sbatch --output="$LOG_BASE/gate_%j.out" --error="$LOG_BASE/gate_%j.err" \
+  scripts/submit_tetramer_eval.slurm --backend esmfold2 \
+  --pred-root "$RUN_BASE/pred_esmfold2" --manifest <final-cohort-plus-wt.parquet> --usalign <bin>/USalign \
+  --crystal-ref "$WORK_BASE/refs/1R51_tetramer_ABCD.pdb" --crystal-parent Q00511 \
+  --rosetta-run-dir "$RUN_BASE/tetramer_gate_rosetta" \
+  --rosetta-log-dir "$LOG_BASE/tetramer_gate_rosetta" --require-interface-wt \
+  --out "$RUN_BASE/tetramer_gate.parquet"
+# -> $RUN_BASE/tetramer_gate{,_interface_pairs}.parquet
+# -> $RUN_BASE/tetramer_gate_rosetta/{dimers,interface_analyzer.sc,*.command.txt}
+# -> $LOG_BASE/tetramer_gate_rosetta/{interface_analyzer.stdout,interface_analyzer.stderr}.log
+
+# 4c) static 1R51 reference + A-B/A-D per-residue binding sensitivity
+module load rosetta/3.15
+python scripts/eval_tetramer_reference.py \
+  --structure "$WORK_BASE/refs/1R51_tetramer_ABCD.pdb" --name 1R51 \
+  --out-dir "$WORK_BASE/reference_metrics/1R51" \
+  --run-dir "$RUN_BASE/reference_metrics/1R51/rosetta" \
+  --log-dir "$LOG_BASE/reference_metrics/1R51/rosetta" \
+  --rosetta-interface-analyzer "$(command -v InterfaceAnalyzer)" \
+  --rosetta-scripts "$(command -v rosetta_scripts)" \
+  --alanine-scan-pair A:B --alanine-scan-pair A:D
+# -> $WORK_BASE/reference_metrics/1R51/1R51_{interface,alanine_scan}_* (persistent data)
+# -> $RUN_BASE/reference_metrics/1R51/rosetta/... (runtime evidence)
+# -> $LOG_BASE/reference_metrics/1R51/rosetta/... (stdout/stderr)
 ```
 
 Optional Protenix arm (orthogonal, esp. ligand pose): `build_protenix_jsons.py` (splits the local
@@ -211,6 +280,10 @@ All scripts are in `doc/SCRIPTS.md`
 - **Rosetta dG is comparative.** It is REU from the as-predicted protein-only dimer, not physical
   binding free energy and not a ligand-binding score. Compare only within one Rosetta version and
   option set. Large clashes, missing side chains, or alternate protonation can dominate it.
+- **Crystal standardization is part of the metric definition.** 1R51 contains N-terminal `SAC`, an
+  incomplete terminal SER record, and free CYS crystallization atoms. The evaluator keeps complete
+  polymer residues, maps `SAC` to `SER`, and removes the incomplete/free records. Do not compare the
+  corrected reference tables to older unstandardized probe values.
 - **BUNS needs a matched baseline.** Even 1R51 reports a non-zero/high
   `delta_unsatHbonds` under the unrelaxed Rosetta 3.15 read. Minimize it relative to same-protocol
   WT; do not import an absolute cutoff from a different BUNS implementation.

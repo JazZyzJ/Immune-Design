@@ -58,6 +58,12 @@ def test_doc_scripts_registers_if_imp_scripts():
     assert "scripts/submit_if_imp.slurm" in text
 
 
+def test_submit_if_imp_defaults_experiment_outputs_to_run_layer():
+    text = (SCRIPTS / "submit_if_imp.slurm").read_text()
+    assert '${RUN_DIR}/if_imp/' in text
+    assert '${WORK_DIR}/if_imp/' not in text
+
+
 # ── Helpers for monkey-patched main-path tests ──────────────────────────────
 
 

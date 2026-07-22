@@ -13,6 +13,15 @@ from scripts.run_if_phase_c0 import (
 )
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_submit_phase_c_defaults_experiment_outputs_to_run_layer():
+    text = (ROOT / "scripts/submit_if_phase_c.slurm").read_text()
+    assert 'OUTPUT_ROOT="${OUTPUT_ROOT:-${RUN_DIR}/if_phase_c/${MODE}}"' in text
+    assert '${WORK_DIR}/if_phase_c/' not in text
+
+
 def test_generate_rows_for_entries_preserves_protein_ids_and_lengths(tmp_path: Path):
     entries = pd.DataFrame(
         [

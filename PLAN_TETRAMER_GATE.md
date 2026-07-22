@@ -22,7 +22,7 @@ Our current structural gate folds each designed sequence as a **monomer** (ESMFo
 | Decision | Value | Rationale |
 |---|---|---|
 | Predictor | **Protenix v2.0.0** primary; AF3 for WT cross-check only | Open weights, `count` field, fits GPU, easy to batch. AF3 weights gated + heavy MSA setup → poor fit for per-design scale. |
-| MSA | **ON (mandatory), via login-node ColabFold server.** No-MSA rejected (empirically too inaccurate). | MSA-free too inaccurate. Compute nodes have no internet; the **login node reaches `api.colabfold.com` (verified)**. So run `protenix msa --msa_server_mode protenix` on the **login node** → `protenix pred` on the **compute node**. AF3 local-DB HMMER search = slow fallback only. |
+| MSA | **ON (mandatory), via local GPU ColabFold.** No-MSA rejected (empirically too inaccurate). | The shared GPU-indexed UniRef30 + environmental DB under `/scratch/gpfs/KAIYIJIANG/databases/colabfold` is faster, deeper, offline, and unthrottled. The deprecated login-node `api.colabfold.com` path is no longer part of the workflow. |
 | Gate placement | **Second-layer benchmark supplement** — post-hoc on the returned/final design set; **NOT** used inside generation or refinement | Layer-1 monomer gate (monomer active-site RMSD + global structure) already exists; monomer fold quality is *necessary* for tetramer assembly (bad monomer ⇒ bad tetramer), so monomer-first is a valid cheap pre-filter and the tetramer gate only adds information on monomer-passing designs. |
 | Tetramer-gate metrics | complex TM + D2 + **cross-protomer active-site distance panel**; **drop monomer active-site RMSD** (already in layer-1) | The unique value-add is the **inter-subunit** catalytic-pocket geometry — which no monomer metric and no confidence metric captures. Monomer active-site RMSD would be redundant. |
 | Ligand mode | **holo throughout** (WT and designs both predicted WITH ligand) | 1R51 is holo; relative gate (design-holo vs WT-holo) is apples-to-apples; free pocket readout. |
@@ -69,17 +69,17 @@ Thresholds τ₁…τ₅, ε are **calibrated in the WT pilot** (§5–§6), not
 
 Two-environment split, reusing the existing "predict out-of-env, read cache" architecture already encoded in `inverse_folding/evaluation/refold.py` (`CACHE_READ_BACKENDS = {esmfold2, protenix, af3}`):
 
-1. **Predict (Protenix env, out-of-env):** `/scratch/gpfs/KAIYIJIANG/tools/protenix` (v2.0.0, Python 3.12 / torch 2.7.1). Wrapper `bin/protenix-env.sh` + `bin/protenix-run`; submit template `slurm/protenix_pred.slurm` (A100-40G, gpu-short, 128G, 10h). → writes ranked mmCIF (full per-atom coords incl. ligand) + `*_summary_confidences.json` + `*_confidences.json` (PAE/PDE/pLDDT/ipTM/chain_pair_iptm/ranking/has_clash).
+1. **Predict (Protenix env, out-of-env):** `/scratch/gpfs/KAIYIJIANG/tools/protenix` (v2.0.0, Python 3.12 / torch 2.7.1). Wrapper `bin/protenix-env.sh` + `bin/protenix-run`; the public `slurm/protenix_pred.slurm` now defaults to `MSA_MODE=local_gpu` on ailab H200 (240 GB host memory, 10 h), with `MSA_MODE=input|none|protenix_server` retained explicitly. It writes ranked mmCIF (full per-atom coordinates including ligand) + `*_summary_confidences.json` + `*_confidences.json` (PAE/PDE/pLDDT/ipTM/chain_pair_iptm/ranking/has_clash).
 2. **Evaluate (immune-design env):** read predicted CIF + confidence JSON + reference structures → compute Tier 1/Tier 2/advisory → `tetramer_gate.parquet`.
 
-### 3.1 MSA wiring (Phase 0 — resolved: server-first)
-The shared Protenix wrapper is no-MSA by default (`PROTENIX_USE_MSA=1` flips it), and ships no local databases. MSA-free is rejected (too inaccurate). Strategy, in priority order:
+### 3.1 MSA wiring (Phase 0 — resolved: local GPU)
+MSA-free prediction is rejected as too inaccurate. The implemented strategy is:
 
-1. **PRIMARY — login-node ColabFold server.** Protenix v2 ships `protenix msa --msa_server_mode protenix`, which queries the remote ColabFold MMseqs2 API (`api.colabfold.com`, in `protenix/web_service/colab_request_utils.py`). Della **compute nodes have no internet, but the login node does** (reachability to `api.colabfold.com` verified). So: run the MSA search on the **login node** (light — a remote API call, not local compute), persist the MSA, then run `protenix pred` on the **compute node** with the MSA attached (`proteinChain.pairedMsaPath` / the `msa` out_dir convention). This is the fast path the user asked to prioritize.
-2. **Fallback A — local ColabFold search.** `scripts/colabfold_msa.py` + local ColabFold DB + MMseqs2 (`docs/colabfold_compatible_msa.md`); offline but needs the DB downloaded.
-3. **Fallback B — AF3 local-DB HMMER.** AF3 at `/scratch/gpfs/KAIYIJIANG/tools/alphafold3` (patched HMMER `hmmer/3.4-patched/bin`) was used for a full-MSA local-DB Pegloticase prediction, so its genetic DBs exist locally. **Slow** (user's experience) → last resort only.
+1. **PRIMARY — local GPU ColabFold.** `scripts/submit_tetramer_msa_local.slurm` and the shared public launchers use GPU MMseqs2 over `/scratch/gpfs/KAIYIJIANG/databases/colabfold` (`uniref30_2302_db` + `colabfold_envdb_202108_db`, GPU indexed). The workflow is offline, unthrottled, and runs on a GPU compute node.
+2. **Precomputed/custom MSA.** Protenix reads `pairedMsaPath` + `unpairedMsaPath`; use the public `MSA_MODE=input` for a custom heteromer-paired MSA. The local default conservatively uses a query-only paired MSA plus the full-depth unpaired A3M and does not invent heteromer pairing.
+3. **Compatibility only.** `MSA_MODE=protenix_server` retains the upstream remote server path when egress is available; `MSA_MODE=none` retains no-MSA. AF3 native HMMER remains the slow `MSA_MODE=af3_native` fallback in the shared AF3 launcher.
 
-Homotetramer reuses **one** MSA for the single sequence (built once, shared across the 4 copies). **The WT pilot needs exactly one login-node MSA call.** Deferred to v1: for design screening, de-immunized variants are sparse substitutions (same length, no indels) → **reuse the WT MSA with the query row swapped** ("MSA transplant") to avoid a per-design search; validate transplant-vs-fresh on one design before relying on it.
+A homotetramer reuses **one** MSA for its single unique sequence across all four copies. Large benchmark arrays precompute each design's A3M once and reuse it across prediction modes rather than loading the ColabFold database independently in every prediction task.
 
 ### 3.2 Input JSON shape (Protenix dialect, confirmed on v2 example)
 ```json
@@ -100,8 +100,9 @@ Phase 0 smoke must confirm the `ligand` entity + `count` + `pairedMsaPath` are a
 
 | Script | Env | Purpose | Reuse note |
 |---|---|---|---|
-| `scripts/build_tetramer_input.py` | immune-design | FASTA/seq (+ optional MSA path, ligand code) → Protenix JSON with `count:4` protein + `count:4` ligand; Met-strip option; batch mode for a design table | new |
-| `scripts/submit_tetramer_predict.slurm` | protenix | thin wrapper: `protenix-run msa/prep` (AF3 DBs) → `protenix-run pred`; array-capable over a JSON dir | **wraps** `tools/protenix/slurm/protenix_pred.slurm`; do NOT duplicate the base template |
+| `scripts/build_protenix_jsons.py` | immune-design | Per-design ColabFold A3M + manifest → Protenix JSON with `pairedMsaPath`/`unpairedMsaPath`, configurable protein/ligand copy count, and ready-list | implemented |
+| `scripts/submit_tetramer_msa_local.slurm` | colabfold module | Batched local GPU ColabFold search against the shared GPU-indexed database | implemented |
+| `scripts/submit_tetramer_predict.slurm` | protenix | Array-capable Protenix prediction over MSA-ready JSONs; keeps MSA search separate so one database load serves a batch | implemented; reuses the shared `protenix-run` wrapper |
 | `scripts/eval_tetramer_gate.py` | immune-design | read predicted CIF + confidence JSON + reference (WT-predicted / 1R51) → Tier1+Tier2+advisory → `tetramer_gate.parquet` + pass/fail | reuse `run_tmalign` / Kabsch from `scripts/sc_rmsd.py`; add US-align/MM-align call + freesasa |
 
 External binary to add (Phase 0): **US-align** (MM-align mode) — single static binary; `TMalign` already used single-chain in the repo but is not symmetry-aware multi-chain.
@@ -111,14 +112,14 @@ External binary to add (Phase 0): **US-align** (MM-align mode) — single static
 ## 5. WT pilot protocol (v0, executable)
 
 ### Phase 0 — verify & wire (no science yet)
-0.1 **MSA server path (priority):** on the login node, run `protenix msa --msa_server_mode protenix` on a single test sequence → confirm it returns an MSA; confirm the MSA feeds `protenix pred` on a compute node. (Fallbacks: local ColabFold search, then AF3 local-DB HMMER — locate AF3 DBs only if the server path fails.)
+0.1 **Local GPU MSA path:** run `scripts/submit_tetramer_msa_local.slurm` on a single test sequence, confirm a query-matched A3M is emitted, build the Protenix MSA paths with `scripts/build_protenix_jsons.py`, and confirm `protenix pred --use_msa true` consumes them without a server call.
 0.2 Install US-align binary (MM-align mode) into the immune-design toolchain; confirm `TMalign` location in the env.
 0.3 Ligand-schema smoke: minimal 2-copy protein + 1 ligand JSON through `protenix-run pred` (no-MSA, fast) → confirm the ligand entity + `count` parse and a CIF with ligand atoms is produced on v2.0.0.
 0.4 Fetch **1R51 biological assembly** (tetramer) + ligand from RCSB: `1r51.pdb1` / `1R51-assembly1.cif`; extract the 4 protein chains + AZA; record the crystal active-site + AZA pose as the ground-truth reference. **Fix the cross-protomer distance-panel residue pairs from the 1R51 interface contact map** (§2 Tier 2), anchored on the manifest anchors.
 
 ### Phase 1 — WT holo prediction + method accuracy
 WT = the if-ready Q00511 row from `work/.../Uricases_RF/uricase_caseset_if_ready_dedup_labeled.parquet` (pipeline form), cross-checked against the 302-aa `Q00511_Aspergillus_flavus.fasta` seed; **predicted Met-excluded 301-aa** to match 1R51. (P16164/Pegloticase is an optional second positive control but has no A. flavus crystal match — skip in v0.)
-1.1 Build WT MSA once (login-node server, 301-aa Met-excluded Q00511).
+1.1 Build WT MSA once with local GPU ColabFold (301-aa Met-excluded Q00511).
 1.2 Predict **WT holo tetramer, ligand = URC** (`count:4` + URC `count:4`, MSA on). Multiple seeds.
 1.3 Predict **WT holo tetramer, ligand = AZA** (for the 1R51 overlay).
 1.4 Compute all metrics for WT-predicted vs **1R51**: complex TM-score, active-site interface RMSD, D2 recovery, per-chain pLDDT, ipTM/chain_pair, active-site-interface PAE, ligand(AZA)–pocket RMSD vs crystal.
@@ -155,19 +156,19 @@ If Phase 1 fails (WT does not reproduce 1R51), the gate is not trustworthy — *
 - **Mechanism to be aware of (not a reason to move it earlier):** de-immunization targets *surface* MHC-II epitopes, and protein–protein interfaces are also surface-located → de-immunizing mutations may **preferentially** land on/near interface residues. So the tetramer gate is not a rubber-stamp on monomer-passers — it may reject a non-trivial fraction by catching real interface/pocket damage the monomer gate is blind to. That is exactly its purpose.
 - Implementation: `eval_tetramer_gate.py` consumes a design table + the Protenix tetramer predictions and **adds columns** to the benchmark output (it does not feed back). Tier 1 pre-filters (skip the geometry compute on obvious fails), Tier 2 sets `tetramer_gate_pass`, ligand distance flows to the report only.
 - The predicted tetramer + confidence are stored as a **new multi-chain cache-read product** analogous to `refold.py`'s existing single-chain `protenix` backend (tetramer CIF + confidence JSON keyed on `(protein_id, sequence)`), with a multimer reader.
-- Design-scale MSA via the **WT MSA transplant** (§3.1), validated before rollout.
+- Design-scale MSA uses fresh per-design local ColabFold A3Ms, batched so the database load is amortized across many sequences.
 - Column additions to the benchmark/design table: `tetra_complex_TM`, `tetra_xprot_as_dist_dev` (cross-protomer active-site distance deviation vs WT), `tetra_D2_ok`, `tetra_ipTM`, `tetra_min_chain_pair_ipTM`, `tetra_as_interface_PAE`, `tetra_has_clash`, `tetra_interface_BSA`, `tetra_ligand_pocket_dist` (advisory), `tetramer_gate_pass`.
 
 ---
 
 ## 8. Risks & open items
 
-- **MSA path (medium; primary verified):** login-node `protenix msa --msa_server_mode protenix` → `api.colabfold.com` is reachable from the login node, but depends on that external service (rate limits / downtime) and on the login-node→compute-node MSA hand-off working cleanly. Fallbacks (local ColabFold search, AF3 local-DB HMMER) are slower. Phase 0 must prove the hand-off before Phase 1.
+- **MSA path (low; verified):** local GPU ColabFold uses the shared GPU-indexed UniRef30 + environmental database and emits query-validated A3Ms entirely on compute nodes. There is no external-service or login-node hand-off dependency. The main operational cost is one large database load per MSA batch.
 - **Ligand pose hallucination:** the reason ligand distance is advisory-only; do not let a good-looking ligand pose on a mutant imply an intact pocket.
 - **Ligand ≠ crystal ligand:** default URC vs 1R51's AZA — only matters for the precise pose overlay (Phase 1 runs AZA for that); irrelevant to the gate.
 - **Negative-control realism:** synthetic controls may not mimic the true failure mode (subtle interface drift). Prefer a real assembly-failing / inactive mutant if the user can supply one.
 - **Symmetry-aware alignment correctness:** chain mapping under D2 symmetry must use MM-align/US-align proper multi-chain mode, not naive chain-order alignment.
-- **GPU fit:** 4×301 + ligand ≈ 1.2k tokens ≈ 20–40 GB; A100-40G template may be tight → be ready to request an 80 GB card (H200/A100-80G) if OOM.
+- **GPU fit:** 4×301 + ligand ≈ 1.2k tokens ≈ 20–40 GB. The public default is H200; A100-40G may be tight and should be treated as an explicit resource override, not the baseline.
 - **Met-numbering:** predict Met-excluded 301-aa so anchor `index_0b` and 1R51 numbering align; a 1-off here silently corrupts every interface-RMSD number.
 
 ---

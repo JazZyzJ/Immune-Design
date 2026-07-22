@@ -52,11 +52,14 @@ Thinker with critical and logical reasoning should act as a pragmatic technical 
 
 | 层 | 路径 | 用途 |
 |----|------|------|
-| Data | `work/` | 数据、manifests、augmentation |
-| Experiment | `run/` | 训练 run、checkpoint、config |
-| Logs | `logs/` | SLURM stdout/stderr |
+| Data | `work/` | 数据集、manifests、静态参考、需长期持久化的数据产物 |
+| Experiment | `run/` | 所有实验工作目录、prediction、MSA、runtime/cache、中间产物、训练 run、checkpoint、config |
+| Logs | `logs/` | SLURM 及子进程 stdout/stderr |
 
-SLURM `--output/--error` 必须指向 `logs/`，不能混入 `run/`。
+- `run/` 是任何实验的默认 cwd/output root；禁止把 `work/` 当作实验工作目录。
+- 只有输入数据集、静态 reference，或明确从实验中提升为长期数据产品的最终表格/结构才能进入 `work/`；与其配套的临时 PDB/XML/resfile/score/cache 仍放 `run/`。
+- SLURM `--output/--error` 和程序捕获的 stdout/stderr 必须指向 `logs/`，不能混入 `run/` 或 `work/`。
+- 新 CLI/脚本应使用语义明确的 `data_dir` / `run_dir` / `log_dir`，不要用含混的 cluster `work_dir` 表示运行目录。
 
 ### SLURM 脚本格式
 
@@ -94,4 +97,3 @@ Do not create timestamped routine RAR archive directories; rsync to the stable p
 - **Reuse-First Gate**: Before creating any new script or SLURM file, read `doc/SCRIPTS.md` to check for existing scripts that can be parameterized or extended. Default to **adding arguments** over **adding files**.
 - **Registration Gate**: Every new script must be registered in `doc/SCRIPTS.md` under the correct module section; unregistered scripts make the task incomplete.
 - For script or SLURM work, also read `scripts/CLAUDE.md`; do not create a duplicate `scripts/AGENTS.md` unless the user explicitly asks.
-
