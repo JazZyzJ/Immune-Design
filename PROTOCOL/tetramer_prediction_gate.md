@@ -181,7 +181,11 @@ sbatch scripts/submit_tetramer_eval.slurm --backend esmfold2 \
 
 Optional Protenix arm (orthogonal, esp. ligand pose): `build_protenix_jsons.py` (splits the local
 ColabFold a3m into paired/unpaired + adds the ligand → `<name>-update-msa.json`) →
-`submit_tetramer_predict.slurm` (ailab H200 or pli) → `eval_tetramer_gate.py --backend protenix`.
+`submit_tetramer_predict.slurm` (small array; one persistent Protenix model per H200/H100 task) →
+`eval_tetramer_gate.py --backend protenix`. The H200 default is `ailab`; PLI H100 submissions add
+`--account=pli_x --qos=pli-low --partition=pli --gres=gpu:h100:1`. Do not submit one array task per
+design for a large cohort: use a small array so each task strides over multiple JSONs and amortizes
+checkpoint loading.
 All scripts are in `doc/SCRIPTS.md`
 (Tetramer Refold Gate).
 
