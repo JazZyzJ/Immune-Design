@@ -270,50 +270,63 @@ framework (Hopf et al. 2019, *Bioinformatics*; Marks et al. 2011, *PLoS ONE*).
 
 ## 8. Round-1 experiment plan (activity rescue)
 
-**Decision (round-1): pragmatic blunt lock.** Prioritise a fast positive control over mechanistic resolution.
-Lock **all three signals together** — structure + conservation + coevolution — accepting that `sigma`-locking is a
-*blunt over-constraint* (§4.1): it **cannot hurt activity** (WT is active), it only spends de-immunisation freedom
-and cannot explain *why* a design worked. The principled field-vs-coupling decomposition (§4.1) and its causal test
-(§9) are **deliberately deferred** to later rounds, gated on obtaining the Potts model / N_eff (§9). This is an
-explicit "dump-and-lock" first shot to establish that *any* heavy lock rescues activity.
+**Design: a 3×2 hypothesis matrix (structure × coevolution), read as two ladders + a diagonal.** Because structure
+and coevolution are near-orthogonal (§4.2, Jaccard 0.16), each axis's marginal effect is readable if the other is
+held constant. **Coevolution (`sigma`) is the signal of interest**; **conservation (`C`) is ~redundant with
+structure** (only 8 of 36 `C≥0.8` and 50 of 122 `C≥0.5` positions lie outside structure) so it is **not locked** —
+carried by structure. This is "make coevolution the driver" (§4.2): keep geometry, let `sigma` act beyond it.
 
-**Cells** (masks in `Results/Reference/Covariance/round1_lock_masks.csv`; EV = Kaiyi's `C_i_nogap ≥ 0.5 OR
-sigma_pct ≥ t`; numbering §0; `wt_aa` verified == Q00511 at all 301 positions):
+**Signals + provenance.** structure = Rosetta ref2015 interface + Ala scan (`Results/Reference/1R51`); levels are
+nested — V1 active-site (24) ⊂ V1∪AB catalytic dimer (79) ⊂ V1∪AB∪AD **full interface (137 = 46%)** (Rosetta
+hotspots R1/R2 are subsumed inside AB/full). `sigma` = EVcouplings **deep** Potts model
+(`Results/Reference/Covariance/coupling`), **validated**: N_eff/L 10.7, EC-vs-tetramer top-L precision 0.685 (gate
+≥0.60 **PASS**); the shallow nr90 baseline (3.6, 0.566) **FAILED** and is discarded. `sigma` = `pairs.enrichment`
+(port of Skopintsev et al. *Science* 2026); pairwise chain = `…/coupling/02_couplings/deep_ECs.txt` (45 451 pairs).
 
-| Cell | Hard-lock set | positions | % of 301 | free | role |
-|---|---|---|---|---|---|
-| **S** | structure only (`v1 ∪ interface`) | 137 | 46% | conservation+coevolution+surface | control / lower anchor |
-| **U67** | `structure ∪ EV(S0.90)` | 203 | 67% | 98 | union, min |
-| **U71** | `structure ∪ EV(S0.85)` | 213 | 71% | 88 | union, mid |
-| **U74** | `structure ∪ EV(S0.80)` | 222 | 74% | 79 | union, max (dump) |
+**The matrix** (positions; % of 301). configs `inverse_folding/reference_flow/configs/uricase_q00511_r1_S{loose,mid,full}_sig{90,80}.yaml`; numbering §0; `wt_aa` == Q00511 verified:
 
-Titration S→U67→U71→U74 spans 46→74% — structure pinned at max, conservation net (122) fixed, `sigma` threshold
-loosened 0.90→0.80. Suggested split: **30 at the strict union U74** (the guarantee), **S = 15** (lower anchor), and
-one looser union (**10–15**) to read how far the lock can drop before activity is lost. (The earlier corrected
-draft's 187/203 "A/B" split — separating conservation from `sigma` — is retained in §9 as the *later* mechanistic
-follow-up, not run in round-1.)
+| structure ↓ \ σ → | **σ≥0.90** | **σ≥0.80** |
+|---|---|---|
+| **loose** = V1 (24) | 55 (18%) | 84 (28%) |
+| **mid** = V1∪AB (79) | 107 (36%) | 134 (45%) |
+| **full** = V1∪AB∪AD (137) | 164 (54%) | 188 (62%) |
+
+Plus one **control**: `…_r1_Sfull_sigOFF.yaml` = full structure, **σ OFF = 137 (46%)** — pure geometry, tests
+whether structure alone rescues activity. **7 configs total.**
+
+**Three views into the matrix (75 seqs, ≥10/tier):**
+- **Structure hypothesis ladder** = the σ≥0.80 column, vary structure: 84 → 134 → 188 (28→45→62%). σ held
+  conservative. Marginal value of quaternary geometry. **30 seqs.**
+- **Coevolution hypothesis ladder** = the full-structure row, vary σ: **137 (σ-off) → 164 (σ90) → 188 (σ80)**
+  (46→54→62%). Structure held conservative; the σ-off control is the baseline. Marginal value of the coevolution
+  network beyond structure (narrow span — `sigma` is sparse; a flat response = "coevolution adds little"). **30 seqs.**
+- **Union (both vary)** = the two cells that complete the matrix: 55 and 107 (loose/mid × σ90). Fills the joint /
+  interaction term. **15 seqs.**
+- Shared corner: (full, σ80) = 188 sits in both hypothesis ladders.
 
 **Readout / gate.** Refold every design (Protenix, WT `set0_AF` oracle: iptm 0.97, chain-pair 0.94–0.96,
 `xprot_*_dev` 0); advance only near-WT `xprot_Thr58/Lys11/His257_dev`, active-site RMSD, `min_pp_chain_pair_iptm`.
-The **lowest active cell** sets the round-2 relax target and feeds the §5.2 subtractive ladder.
+Structure column → how much interface is required; coevolution row (incl. σ-off) → whether `sigma` adds anything
+beyond full structure; the two σ90 cells → interaction. Lowest active cell per ladder sets the round-2 relax target (§5.2).
 
 ---
 
 ## 9. Coevolution: causal validation and required artifacts
 
-**Why a separate test.** §8 A-vs-B asks whether `sigma`-locking helps in aggregate; it cannot say **why** (identity
-vs compatibility): a `sigma`-free design that fails may have failed by making an *incompatible* combination, not by
-leaving WT. Distinguishing them needs a design that is **non-WT but Potts-compatible** — which requires the pairwise
+**Why a separate test.** The §8 coevolution ladder asks whether `sigma`-locking helps in aggregate; it cannot say
+**why** (identity vs compatibility): a design that frees a coupled position and fails may have failed by making an
+*incompatible* combination, not by leaving WT. Distinguishing them needs a design that is **non-WT but
+Potts-compatible** — which requires the pairwise
 model, not the per-residue `sigma`.
 
-**Required artifacts (currently missing — request from Kaiyi).** The per-residue score CSV is insufficient:
-1. **Pairwise ECs / coupling scores** — the `CouplingScores.csv`-style table (CN/FN score per residue pair i,j).
-2. **Potts model parameters** h_i(a) and J_ij(a,b) (e.g. plmc `.params`) — to compute sequence statistical energy
-   E and per-substitution ΔE, and to build compatible / incompatible pairs.
-3. **N_eff (effective sequence count) + MSA depth** — **gating check first**: if N_eff is low relative to length L,
-   the couplings are unreliable and the whole coevolution premise (including `sigma`) is suspect.
-4. **Traceable generation config** — the EVcouplings/plmc run YAML (MSA source, filters, λ regularisation, scoring),
-   so masks and energies are reproducible. (Also missing from the current drop: S0.85 file, pairwise EC, Potts model.)
+**Required artifacts — NOW IN HAND** (`Results/Reference/Covariance/coupling/`, ported from Kaiyi's pipeline):
+1. **Pairwise ECs** — `02_couplings/deep_ECs.txt` (45 451 pairs; `i aa_i j aa_j seg score`).
+2. **Potts model** h_i(a), J_ij(a,b) — `02_couplings/deep.model` (309 MB, on cluster; pull when running ΔE).
+3. **N_eff — RESOLVED.** deep model N_eff/L = **10.7** (`01_msa/deep_stats.tsv`), passes the EC-vs-tetramer gate
+   (top-L 0.685 ≥ 0.60, `05_validation/report.txt`). The nr90 baseline (N_eff/L 3.6) **fails** (0.566) and is
+   discarded. So the coevolution premise is validated, not suspect — for the deep model only.
+4. **Traceable config** — `scripts/11–16` + `02_couplings/deep_plmc_summary.json` (theta 0.8, λ_h 0.01, λ_J 60.2,
+   12 223 valid seqs). Method = port of Skopintsev et al. *Science* 2026 (`science.aed6123.pdf`).
 
 **Causal pair-swap experiment** (per strong-coupling pair (i,j); 6 conditions):
 
