@@ -154,10 +154,17 @@ Three *independent* ways to ask "must this position stay WT", and their practica
 3. **Evolution — EVcouplings** [`Results/Reference/Covariance/…csv`]. Two orthogonal columns:
    - `C_i` = **single-site conservation** (invariance). High C = catalytic/functional (e.g. Arg177 C_rank 3,
      Gln229 C_rank 2).
-   - `sigma` = **coevolution / covariance** = a position's total evolutionary-coupling strength to the rest of
-     the protein. Top ECs correspond to **side-chain contacts / epistatic pairs** (Hopf/Marks; Marks 2011;
-     "co-evolving residues are in spatial proximity, mutations compensated by partners"). High sigma = the WT
-     identity is constrained by its structural/functional partners; mutating it alone breaks a compensation network.
+   - `sigma` = **coevolution / covariance** = a position's *marginal* coupling strength (a per-residue summary of
+     the pairwise couplings J_ij). Top ECs correspond to **side-chain contacts / epistatic pairs** (Hopf/Marks;
+     Marks 2011). **Correction (per Codex, adopted):** high `sigma` does **not** mean "must be WT". A Potts/DCA
+     model expresses J_ij(a,b) = whether two residue *states* are compatible in the current background; a
+     high-coupling position usually means "**can vary, but a partner must co-vary to compensate**" — a
+     *compatibility* constraint, not an *identity* constraint. Decomposing the Potts statistical energy makes this
+     precise: the **independent field** h_i(a) is the identity/conservation term (legitimate hard-lock), the
+     **coupling** Σ_j J_ij(a,b_j) is the compatibility term (must be *scored*, not frozen). Only positions that are
+     high-`sigma` **and** high-`C` are effectively must-WT (via the conservation channel). Therefore `sigma` alone
+     can only **propose candidate coupled pairs**; it must **not** enter a hard-lock union. Proper use: (i) a Potts
+     ΔE filter on candidate designs, (ii) the causal pair-swap test in §9.
 
 ### 4.2 Intersection (this session's key comparison)
 
@@ -169,10 +176,13 @@ Three *independent* ways to ask "must this position stay WT", and their practica
 | EV `active_site` flag (15) | 10 are high-C, **0 are high-sigma** | Catalytic residues are conserved but *not* coevolving (invariant ⇒ nothing to covary with). |
 
 **Interpretation.** "Structural-contact" and "covariance" are orthogonal *in principle* and, empirically, overlap
-only through the conservation channel. The **distinctive** evolutionary contribution is `sigma`, and it is a
-genuinely new layer: the intra-chain epistatic/fold-core network. Mechanistically this maps onto the *second*
-failure mode — `sigma`-locking targets **stability/expression** (the collapsed `expression` in §3.2), whereas
-interface-locking targets **registration/activity**. They should be **unioned**, not chosen between.
+only through the conservation channel. The **distinctive** evolutionary contribution is `sigma` (the intra-chain
+epistatic/fold-core network), and it does map onto the *second* failure mode (stability/expression, §3.2). **But
+`sigma` is a compatibility signal, not an identity signal (§4.1 correction), so it enters as a Potts ΔE score plus
+the §9 causal test — not as a hard-lock.** The legitimate hard-lock signals are structure (geometry) and
+conservation / field h_i (identity); see §5.1. (Note: this intersection table used the percentile column `C_pct`;
+the constraint masks in §5/§8 use Kaiyi's absolute `C_i_nogap ≥ 0.5` conservation net — the orthogonality
+conclusion for `sigma` is unchanged, and stronger, since the broader conservation net overlaps structure more.)
 
 ---
 
@@ -185,19 +195,24 @@ interface-locking targets **registration/activity**. They should be **unioned**,
 | `v1` | active-site pocket + 2nd shell (curated) | 24 | 8% | config |
 | `v1 + R1+R2` | + Rosetta interface **hot spots** (AB registration + AD assembly) | 49 | 17% | Ala scan |
 | `v1 + all interface` | + full AB∪AD interface (structural scaffold) | 137 | 46% | BSA/contacts + Ala scan |
-| **`+ EV top-10%`** | ∪ conservation & coevolution (C∪sigma, pct≥0.90) | **171** | **57%** | EVcouplings |
-| `+ EV top-15%` | ∪ pct≥0.85 | 189 | 63% | EVcouplings |
+| **`+ conservation`** | ∪ field-h_i net (`C_i_nogap ≥ 0.5`, 122 pos; +50 beyond structure) | **187** | **62%** | EVcouplings conservation |
+| `(+ coevolution)` | **not a hard-lock** — `sigma` is a compatibility signal (§4.1); via Potts ΔE + §9 test | — | — | — |
 
-EV union sizes at other thresholds (∪ structural scaffold): top-25% → 218 (72%); top-5% → 155 (51%)
-[reproducible from the EV csv]. The EV layer is *tunable*; "tight" spans 51% (top-5%) to 72% (top-25%).
+**Corrected mask numbers (definition fixed).** Kaiyi's masks are `(C_i_nogap ≥ 0.5) OR (sigma_pct ≥ t)`:
+**S0.90 = 142, S0.85 = 154, S0.80 = 166** (an earlier draft mis-used the percentile column `C_pct` and reported
+61/118 — wrong). Conservation net alone = 122; **structure + conservation = 187 (62%) is the defensible
+hard-lock**. Folding in the high-`sigma`/low-`C` positions would push structure∪S0.90 to 203 (67%); those marginal
+**16 high-`sigma` low-`C` non-structural positions** [UniProt 34,37,54,77,83,102,128,132,148,165,175,190,206,215,
+224,243] are **candidate coupled positions for §9, not hard-lock members**.
 
 ### 5.2 Recommendation — subtractive experiment from a high lock
 
 Because `v1` (lock 8%) is falsified by 46/46 designs, an *additive* search from v1 is unpromising. Start from a
 **maximal** lock and **relax**:
 
-- **L0 (start) = structural scaffold ∪ EV top-10% = 171 positions (57%)**, leaving ~130 (43%) free for
-  de-immunisation. This matches the working hypothesis that >50% may need to be fixed.
+- **L0 (start) = structure + conservation hard-lock = 187 positions (62%)** (geometry + identity signals only;
+  `sigma` excluded per §4.1), leaving 114 (38%) free for de-immunisation. This matches the working hypothesis
+  that >50% may need to be fixed.
 - **Relax priority (peel first → last), by evidence strength:**
   1. EV-only positions with high `sigma`, low `C`, non-structural (indirect / possibly phylogenetic) — relax first.
   2. A:C diagonal / A:D non-hotspot interface.
@@ -223,9 +238,11 @@ needed to recover native active-site geometry, without a full ladder.
   (assembled-but-mis-registered) + stability loss; a "correct-MW tetramer that binds but is catalytically dead"
   has no clean precedent in the literature [synthesis §3] — this project could be the first to demonstrate it
   (retained inhibitor binding by ITC/Ki on an intact-SEC, inactive design ⇒ H2).
-- **`sigma` hard-lock is conservative.** Coevolution reflects a *network*; a high-sigma position may tolerate
-  substitution to a partner-compatible residue rather than strictly WT. Treated here as WT-lock for the maximal
-  rung, and flagged as the first to relax.
+- **`sigma` is a compatibility, not identity, signal (central correction, §4.1/§9).** Coevolution reflects
+  pairwise compatibility J_ij(a,b); a high-`sigma` position may vary if a partner co-varies. It is therefore
+  **excluded from the hard-lock** and handled as a Potts ΔE score + the §9 causal pair-swap test. Hard-locking it
+  to WT is a blunt over-constraint that conflates compatibility with identity and cannot explain *why* a design
+  worked.
 - **EV MSA scope.** `sigma` here appears to derive from a monomer uricase-family MSA (intra-chain couplings),
   which is why it is disjoint from the inter-chain interface. A *complex* (concatenated) EVcouplings run would
   additionally recover inter-chain couplings and is worth checking against the Rosetta interface set.
@@ -253,46 +270,62 @@ framework (Hopf et al. 2019, *Bioinformatics*; Marks et al. 2011, *PLoS ONE*).
 
 ## 8. Round-1 experiment plan (activity rescue)
 
-**Rationale.** No active redesign exists yet, so we start from a **heavy lock** and treat activity recovery as a
-positive-control problem, then subtract in later rounds. Three signals are combined; **structure is held at its
-maximum (full AB∪AD interface) in every union cell** because the evidence that interface breakage kills activity
-is the strongest (§3.2: 46/46 true-`v1` designs assemble but drift and die). The **coevolution axis is titrated**
-because its marginal value on top of full structure is the least-known quantity.
+**Decision (round-1): pragmatic blunt lock.** Prioritise a fast positive control over mechanistic resolution.
+Lock **all three signals together** — structure + conservation + coevolution — accepting that `sigma`-locking is a
+*blunt over-constraint* (§4.1): it **cannot hurt activity** (WT is active), it only spends de-immunisation freedom
+and cannot explain *why* a design worked. The principled field-vs-coupling decomposition (§4.1) and its causal test
+(§9) are **deliberately deferred** to later rounds, gated on obtaining the Potts model / N_eff (§9). This is an
+explicit "dump-and-lock" first shot to establish that *any* heavy lock rescues activity.
 
-**Common core (all arms):** `v1` active site = 24 positions (index_0b listed in §2.2 / config). Every design is
-de-immunised only on its *free* positions.
+**Cells** (masks in `Results/Reference/Covariance/round1_lock_masks.csv`; EV = Kaiyi's `C_i_nogap ≥ 0.5 OR
+sigma_pct ≥ t`; numbering §0; `wt_aa` verified == Q00511 at all 301 positions):
 
-| Arm | Lock set | positions | % of 301 | free positions | n_seq | tests |
-|---|---|---|---|---|---|---|
-| **S** structure-only | `v1 ∪ interface(AB∪AD)` | 137 | 46% | coevolution-distinct + surface | 30 | registration/assembly hypothesis; also the **EV=0 anchor** of the union titration |
-| **E** coevolution-only | `v1 ∪ EV(pct≥0.80)` | 124 | 41% | interface-distinct + surface | 30 | fold-network/stability hypothesis; **predicted-negative control** (frees the interface → expect order2-like drift) |
-| **U57** union | `structure ∪ EV top-10% (pct≥0.90)` | 171 | 57% | surface only | 10 | union (min coevolution) |
-| **U63** union | `structure ∪ EV top-15% (pct≥0.85)` | 189 | 63% | surface only | 10 | union (mid) |
-| **U68** union | `structure ∪ EV top-20% (pct≥0.80)` | 205 | 68% | surface only | 10 | union (max) `= S ∪ E` |
+| Cell | Hard-lock set | positions | % of 301 | free | role |
+|---|---|---|---|---|---|
+| **S** | structure only (`v1 ∪ interface`) | 137 | 46% | conservation+coevolution+surface | control / lower anchor |
+| **U67** | `structure ∪ EV(S0.90)` | 203 | 67% | 98 | union, min |
+| **U71** | `structure ∪ EV(S0.85)` | 213 | 71% | 88 | union, mid |
+| **U74** | `structure ∪ EV(S0.80)` | 222 | 74% | 79 | union, max (dump) |
 
-Total = **90 designs**. Position sets are disjoint enough (§4.2, EV∩structure Jaccard 0.16) that S and E share
-only the active-site core; their *distinctive* sets (81 interface-only vs 68 coevolution-only positions) are what
-each arm actually probes.
+Titration S→U67→U71→U74 spans 46→74% — structure pinned at max, conservation net (122) fixed, `sigma` threshold
+loosened 0.90→0.80. Suggested split: **30 at the strict union U74** (the guarantee), **S = 15** (lower anchor), and
+one looser union (**10–15**) to read how far the lock can drop before activity is lost. (The earlier corrected
+draft's 187/203 "A/B" split — separating conservation from `sigma` — is retained in §9 as the *later* mechanistic
+follow-up, not run in round-1.)
 
-**Titration structure.** S + U57 + U63 + U68 form a 4-point coevolution dose-response — **structure pinned at 137,
-coevolution incremented** (EV = 0 → top-10% → top-15% → top-20%, i.e. +0/+34/+52/+68 positions over structure
-alone: 46→57→63→68%). Comparing per-arm activity rate (out of 10–30) reads off how much coevolution locking is
-needed once the full interface is fixed.
+**Readout / gate.** Refold every design (Protenix, WT `set0_AF` oracle: iptm 0.97, chain-pair 0.94–0.96,
+`xprot_*_dev` 0); advance only near-WT `xprot_Thr58/Lys11/His257_dev`, active-site RMSD, `min_pp_chain_pair_iptm`.
+The **lowest active cell** sets the round-2 relax target and feeds the §5.2 subtractive ladder.
 
-**Readout (round-1 decision table).**
+---
 
-| Outcome | Conclusion |
-|---|---|
-| some U active | heavy lock CAN rescue activity (positive control); **lowest active U level = coevolution requirement** |
-| S active | full interface alone suffices → coevolution locking unnecessary → relax EV in round 2 |
-| E active | coevolution substitutes for interface (unexpected) → overturns the registration hypothesis |
-| all U dead | structure+coevolution insufficient → a critical position lies in the free surface, or cause is non-scaffold → rethink |
+## 9. Coevolution: causal validation and required artifacts
 
-**Pre-wet-lab gate.** Refold every design (Protenix, same setup as the WT `set0_AF` oracle: iptm 0.97, protein–
-protein chain-pair iptm 0.94–0.96, `xprot_*_dev` 0). Advance only designs with near-WT `xprot_Thr58/Lys11/His257_dev`,
-active-site RMSD, and `min_pp_chain_pair_iptm`; this catches designs where a position outside the scaffold drifted,
-independent of lock fraction.
+**Why a separate test.** §8 A-vs-B asks whether `sigma`-locking helps in aggregate; it cannot say **why** (identity
+vs compatibility): a `sigma`-free design that fails may have failed by making an *incompatible* combination, not by
+leaving WT. Distinguishing them needs a design that is **non-WT but Potts-compatible** — which requires the pairwise
+model, not the per-residue `sigma`.
 
-**Open parameter.** The two EVcouplings selection configs chosen by Kaiyi map onto the EV-threshold column above
-(top-10/15/20% = `sigma_pct/C_pct ≥ 0.90/0.85/0.80`); record their exact percentile/rank cutoffs here when confirmed
-so the E arm and union titration use identical definitions.
+**Required artifacts (currently missing — request from Kaiyi).** The per-residue score CSV is insufficient:
+1. **Pairwise ECs / coupling scores** — the `CouplingScores.csv`-style table (CN/FN score per residue pair i,j).
+2. **Potts model parameters** h_i(a) and J_ij(a,b) (e.g. plmc `.params`) — to compute sequence statistical energy
+   E and per-substitution ΔE, and to build compatible / incompatible pairs.
+3. **N_eff (effective sequence count) + MSA depth** — **gating check first**: if N_eff is low relative to length L,
+   the couplings are unreliable and the whole coevolution premise (including `sigma`) is suspect.
+4. **Traceable generation config** — the EVcouplings/plmc run YAML (MSA source, filters, λ regularisation, scoring),
+   so masks and energies are reproducible. (Also missing from the current drop: S0.85 file, pairwise EC, Potts model.)
+
+**Causal pair-swap experiment** (per strong-coupling pair (i,j); 6 conditions):
+
+1. parent pair (both non-WT, as designed);
+2. restore i alone;
+3. restore j alone;
+4. double-WT (restore both);
+5. **Potts-compatible non-WT pair** (both non-WT, low ΔE by J_ij);
+6. mutation-count-matched **incompatible** non-WT pair (control, high ΔE).
+
+Decision: if **only WT-containing conditions rescue** → the constraint is *identity* (WT-lock justified). If the
+**compatible non-WT pair (5) also rescues** while the incompatible control (6) does not → the constraint is *pair
+compatibility* → do **not** hard-lock `sigma`; instead impose a **Potts ΔE ceiling** on the free positions and let
+de-immunisation use any compatible substitution. This decision fixes how coevolution enters the design objective in
+all later rounds.
