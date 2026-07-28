@@ -3769,3 +3769,89 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `scripts/build_highrisk_demo.py` (selection framework reused), `PLAN_PLANNER_SC_GR.md` (pilot_v2 cohort)
 
+
+### L0137
+- timestamp: 2026-07-27T02:40:00-04:00
+- type: FEATURE
+- module: REFERENCE_FLOW
+- trigger: `PLAN_RF_REFINE_FUSION_V1.md` (V1-A) had no implementation. A first pass landed the P1 pre-terminal arm, the P1 terminal arm and T0; a Codex review plus an 8-way adversarial verification pass then found that several of them were silently wrong rather than merely incomplete.
+- change_summary: |
+    Implements V1-A end to end on `fusion_rf_refine` (worktree-only, uncommitted). New pure package
+    `inverse_folding/reference_flow/fusion/v1_{records,config,seeds,alloc,admission,ledger}.py`,
+    entry orchestration `scripts/rf_fusion_v1_{entry_core,cohort,artifacts,preflight,oracles}.py`,
+    driver `scripts/run_rf_fusion_v1_entry.py`, launcher `MODE=v1_entry`, and three canary configs.
+    The entry runtime is the frozen null kernel (`g(h)=1`, `controller=None`, no h-map); BOTH
+    position-dependency pathways are actively refused, and isolation is verified AT THE SAMPLER with
+    a positive control (the same comparison under `linear_clamp` must diverge).
+    The review pass fixed six defects that produced plausible wrong numbers rather than errors:
+    (1) T0 grid points shared one root pool, so a later maturity estimated/selected/evaluated on an
+    EARLIER maturity's roots and its reserved budget -- hence the size of its compute-matched control
+    -- grew with grid position; each point now reads only the journal tail it wrote, and
+    `full_control` ledger ids carry `rho_id`.
+    (2) T0 wrote only membership tables, leaving all four runbook §6.1 GO/KILL conditions
+    uncomputable from disk while exiting 0; it now writes the standard §9 evidence tables, the
+    per-maturity reserved budget, and every realized seed.
+    (3) the T0 `independent_full` control was never Head-scored (while its ledger booked
+    `head_samples=1` per trajectory); it is now ranked by exact terminal Head under the Terminal law.
+    (4) the §3.4 launch gate under-projected T0 by `len(rho_grid)` and omitted the full control
+    entirely, so a run blew its declared `max_dfe`/`max_refolds` and still returned 0.
+    (5) the Terminal reservation was not bound to the experiment that produced it and its content
+    did not enter the resume signature, so a manifest from another campaign ran at the wrong scale
+    silently; and the cohort total used `min × n_proteins`.
+    (6) facade collapse dropped lineages that were persisted nowhere (breaking the §2.11 chain) and
+    labelled a converged top-`F_cap` trajectory `rank=null`, which the schema documents as "generated
+    but not submitted"; collapse is now persisted to `facade_collapse.parquet`, a shortened facade
+    returns `entry_facade_collapsed`, and below `N` the entry stage hard-fails instead of letting v0
+    misattribute it.
+    Also: the entry→v0 edge is now an explicit `entry_source_id` carried onto `ParticleState` and
+    persisted through `fusion_particles` (PLAN §2.11:531 forbids reconstructing it from sequence);
+    the batched sampler finalizer no longer drops `logical_dfe`/`final_scores`; the declared
+    `random_membership_seed` now participates in the draw it names; `realized_seeds` lists only the
+    `final` seeds actually drawn; and the dead `continuation_batch_size` knob is removed.
+- evidence: full local suite 2355 passed / 47 skipped, with the SAME 14 pre-existing failures as the pristine tree (unrelated modules with missing optional deps) -- i.e. zero new failures. `bash -n scripts/submit_if_phase_c.slurm` clean. Every fix landed RED-first. NOTHING has run on a GPU; all evidence is unit/contract tests and local adversarial probes.
+- impact:
+  - scope: new V1 entry pipeline + configs + launcher mode; v0 Fusion behavior unchanged except two additive, defaulted fields (`ParticleState.entry_source_id`, `fusion_particles.entry_source_id`) that stay null on a standalone v0 run.
+  - risk: medium until the cluster canary runs; the matched-compute claim is the load-bearing one and has never been exercised on real DPLM/Head/structure oracles.
+  - confidence: 0.75
+- followup_2026-07-27: |
+    Second Codex review + a 6-way adversarial verification pass. Six further defects closed, three
+    of them introduced by the first pass:
+    (a) the multi-rho T0 checkpoint derived its status from `points[0]`, so a grid whose later
+    maturities all failed reported `t0_complete`/ok=true and exited 0; status is now the first
+    failing point's and `per_rho_status` is persisted.
+    (b) the Head-ranked `full_pool` added for the T0 control was never read by the structure
+    subsample. Fixing that by truncating the control to the Terminal law's top-`F_cap` was WRONG
+    and was reverted: PLAN §2.10 requires "no policy may use another rule or sample size", and a
+    one-sided truncation would have drawn the control from its best ~25% while the partial views
+    used 100% of theirs, biasing GO/KILL condition 3 toward a false KILL. The eligible pool is an
+    OPEN scientific decision now recorded in runbook §6.0 as blocking a scientific T0.
+    (c) `{protein}__{arm}.json` collided between T0 and P1 pre-terminal (T0's arm IS preterminal),
+    silently overwriting the P1 reservation; the phase is now part of the name.
+    (d) the Terminal reservation was not bound to the scientific substrate: the manifest never
+    recorded the pre-terminal `S`, so a Terminal run reading S from its own YAML got 2x/4x the
+    matched budget with no error and every artifact internally consistent at the wrong scale. The
+    manifest now persists S + Head/DPLM/backbone/v0-config digests + the Head INFERENCE config
+    (variant, allele index, window k-min/k-max, allele) and the loader compares all of them;
+    an absent substrate block is refused rather than waived.
+    (e) v0 admission dropped every rejected facade row with a bare `continue` and booked no round-0
+    refolds, so an anchor violation on a completed sequence (detectable nowhere else) vanished and
+    a matched-compute check on refolds compared two zeros. Added the §2.11-authorized additive
+    audit seam: `fusion_initial_admission_verdicts.parquet` + `manifest.initial_refolds_by_protein`.
+    (f) `_seed_digest` omitted `entry_source_id`, so two entry runs whose ranked sequences converge
+    but whose roots differ shared a v0 resume key and inherited the wrong lineage.
+    Also: two justifications written into the collapse docstring were FALSE (v0 does not re-refold a
+    duplicate -- the cache keys on sequence_md5 -- and particle_id is not ambiguous, it embeds
+    slot_idx); the one real reason is that duplicate round-0 particles buy ancestry mass, which v0's
+    own contract forbids. Restored the 24-anchor `uricase_q00511_active_site_safety_v1.yaml` (the
+    branch had only the 8-anchor v0 projection template, and the authority fixes 24/302). Added
+    runbook §11.7: the v0 terminal stage is a SECOND job, and `submit_refine.slurm`'s default
+    `FUSION_CONFIG` is the SMOKE package, which runs to completion and emits a plausible elite from
+    the wrong method. 20 stale PLAN line-anchors corrected repo-wide.
+    NOT fixed, disclosed instead: a crash inside an oracle still loses that call's burned physical
+    cost (the real fix is an oracle-contract change; booking a zero would be a fabricated
+    measurement), and `admit_facade` can lose up to `F_cap` such attempts, not one.
+- status: done (local); V1F7 cluster canaries pending
+- next_action: run runbook §11.2 (Canary A) then §11.3 / §11.5 / §11.6; freeze `TEST_SET_PARQUET`, `DEV_IDS`/`HOLDOUT_IDS`, the T0 `rho_grid`/`K_EVAL`/`Q_T0`, and the measured `SECONDS_PER_REFOLD`/`SECONDS_PER_DFE` (the gate refuses an unverifiable walltime by design).
+- refs:
+  - `PLAN_RF_REFINE_FUSION_V1.md`, `doc/FUSION_V1.md`, `doc/RF_Fusion_v1_Cluster_Runbook.md`, `doc/SCRIPTS.md`
+  - two known gaps stated in the runbook status block: no T0→v0 definitive-structure handoff, and `maturity_telemetry.anchor_preservation` is null (not a measurement)

@@ -12,7 +12,7 @@ The RF stack acts inside token generation. It observes a hard completion, evalua
 
 The standalone refiner acts on complete sequences. It searches a broad mutation neighborhood, evaluates hard candidates, keeps selected complete states, and repeats from those states. The NMP-driven run is a mechanism control: it shows that, when the iterative search receives a usable reward, broad hard-state search and feedback can drive that reward strongly while preserving high global scTM in the selected outputs. NMP is not the intended runtime objective and Head-NMP agreement is not a requirement of the proposed method.
 
-The proposed fusion is **Reward-Selected Edit-and-Repair Reference Flow**. The frozen Head is the runtime guidance objective. RERD supplies the repeated move-evaluate-feedback law, while Feynman-Kac (FK) selection supplies a population-level mechanism for reallocating descendants toward lower-Head basins without requiring reward gradients. Its core transition is
+The proposed fusion is **Reward-Selected Edit-and-Repair Reference Flow**. The frozen Head is the runtime guidance objective. RERD supplies the repeated move-evaluate-feedback law, while complete-state population selection reallocates descendants toward lower-Head basins without requiring reward gradients. Deterministic beam is the supported v0 selector; Feynman-Kac (FK) ancestry resampling is a tested stochastic alternative rather than a required performance claim. The core transition is
 
 ```text
 complete RF parent population
@@ -21,7 +21,7 @@ complete RF parent population
     -> conditionally repair local context with RF/DPLM
     -> evaluate the complete repaired children
     -> apply a state-level structure constraint
-    -> Head-potential weighting and whole-state selection/resampling
+    -> Head-based whole-state selection (beam in v0; optional stochastic resampling)
     -> inherit exact selected children as the next parents
     -> repeat
 ```
@@ -73,7 +73,7 @@ The Path-C diagnostics distinguish broad search from coordinated denoising. Incr
 - repeated selection from the selected state;
 - exact carryover of the evaluated sequence.
 
-It does not currently show that correlated multi-step coordination is the source of the gain. This does not remove RERD or FK from the target architecture: RERD organizes how search is repeatedly reopened, and FK organizes how Head value reallocates a population. The unsupported claim is narrower: neither correlated denoising nor a particular exact FK estimator has yet been shown to be the empirical lever.
+It does not currently show that correlated multi-step coordination is the source of the gain. This does not remove RERD or complete-state population selection from the target architecture: RERD organizes how search is repeatedly reopened, while the selector determines which evaluated states receive future proposal budget. P3 supports deterministic beam over independent greedy lanes; the frozen FK configuration did not add value beyond beam.
 
 ### 2.4 Global remask is both useful and misaligned
 
@@ -86,6 +86,12 @@ The lesson is precise:
 > Re-noising is valuable; **uncontrolled global re-noising is not a valid reward acceptance rule**.
 
 The fused method retains structural noising/denoising as a proposal and repair mechanism, while replacing implicit residue survival with explicit complete-state evaluation and acceptance.
+
+### 2.5 The integrated v0 package uses repair plus beam
+
+On the held-out `fast_v2` DRB1*07:01 cohort, 229 proteins entered both final-integration arms with identical parents. Repair plus beam improved terminal Head relative to explicit-only greedy on 223 of 229 proteins (paired median package-minus-baseline $=-0.097$ nat; two-sided Wilcoxon $p=9.96\times10^{-38}$). The package used 1.30 times as many realized refolds and 1.66 times the logged round walltime. All returned elites passed scTM $\geq 0.85$, although the package had a modestly lower median scTM than the baseline (0.954 versus 0.961). NMP, used only after generation, also favored the package in aggregate.
+
+This supports the conservative system-level claim that **repair-enabled beam Fusion improves terminal search at additional compute and a small structural-quality cost**. Because the arms intentionally differ in both repair and selector, this result does not attribute the package gain to either component alone.
 
 ## 3. The central design correction
 
@@ -255,7 +261,7 @@ Every ancestry-eligible candidate is evaluated as the exact complete sequence th
 - state-level structural feasibility;
 - optional diversity and movement diagnostics.
 
-The selector retains the parent as a null move. The greedy and hard-beam controls require Head improvement; the FK population method requires only structure and no-new-hotspot feasibility, treating Head as a soft potential that permits bounded uphill exploration, with an elite archive of the best-so-far feasible state so the returned design never degrades. The FK potential preserves multiple promising basins and reallocates future proposal budget.
+The selector retains the parent as a null move. The greedy and hard-beam controls require Head improvement; the FK population method requires only structure and no-new-hotspot feasibility, treating Head as a soft potential that permits bounded uphill exploration, with an elite archive of the best-so-far feasible state so the returned design never degrades. The FK potential is designed to preserve multiple promising basins and reallocate future proposal budget.
 
 ### 5.6 Head-guided Feynman-Kac selection
 
@@ -269,7 +275,7 @@ G_r^{(n)}
 \exp\!\left[-\beta_r R_H\!\left(y_r^{(n)}\right)+\beta_{r-1}R_H\!\left(x_r^{(a)}\right)\right],
 $$
 
-with initial weights $w_0^{(n)}\propto\exp[-\beta_0 R_H(x_0^{(n)})]$. Telescoping along ancestry makes the cumulative weight track $\exp[-\beta_r R_H(x_r)]$, so the population concentrates on absolute low-Head feasible states; at fixed $\beta$ it degenerates to a difference potential $\exp[-\beta(R_H(y_r^{(n)})-R_H(x_r^{(a)}))]$. The schedule $\beta_r$ is deferred calibration (§12).
+with initial weights $w_0^{(n)}\propto\exp[-\beta_0 R_H(x_0^{(n)})]$. Telescoping along the ancestry measure makes the target mass track $\exp[-\beta_r R_H(x_r)]$; at fixed $\beta$ the incremental potential becomes $\exp[-\beta(R_H(y_r^{(n)})-R_H(x_r^{(a)}))]$. After resampling, preceding mass is represented by particle multiplicity in the empirical population, and stored slot weights correctly reset to $1/N$; retaining the old non-uniform weights on resampled copies would count the preceding potential twice. This measure-level identity does not require the incremental weights in every finite realized pool to reproduce hard-beam ordering. P3 froze $\beta:1\rightarrow4$; alternative temperature laws are deferred (§12), not an active v0 calibration.
 
 The population weights update as
 
@@ -281,7 +287,7 @@ $$
 
 Resampling duplicates promising complete children and prunes poor ancestry while retaining a diversity mechanism or elite parent. FK therefore answers **which Head-favorable hard states receive the next round of RF proposals**. It does not generate candidates; $K_{\mathrm{move}}$ does.
 
-This macro-state FK law is part of the target guidance architecture. The method's positive claim is **Head-guided FK optimization**: population reweighting and ancestry resampling that concentrate mass on structure-feasible, low-Head states, not exact posterior sampling from the original RF path measure. An exact-posterior claim would additionally require normalized proposal kernels, proposal-ratio accounting, and a fully specified resampling law; under the optimization claim the D2 proposal is a valid heuristic that owes no proposal-ratio correction, and such a correction becomes obligatory only if the exact-posterior claim is later made. Hard beam and no-resampling populations remain essential controls for isolating the value of FK interaction.
+This macro-state FK law is the tested stochastic population-selection variant. Its intended operation is population reweighting and ancestry resampling toward structure-feasible, low-Head states, not exact posterior sampling from the original RF path measure. An exact-posterior claim would additionally require normalized proposal kernels, proposal-ratio accounting, and a fully specified resampling law; under the optimization framing the D2 proposal is a valid heuristic that owes no proposal-ratio correction, and such a correction becomes obligatory only if the exact-posterior claim is later made. P3 did not support a positive FK-specific performance claim, so hard beam is the v0 selection law and FK remains an ablation.
 
 The population weighting is closed by a fixed contract: each parent draws the same child budget, and if budgets differ the child weights are divided by the parent's offspring count before combination, so multiplicity does not buy ancestry mass; an infeasible child (failing the structure or no-new-hotspot gate) receives zero weight; on a non-resampling round the normalized child weights carry to the next round, and on a resampling round the resampled population resets to uniform $1/N$; because the feasible parent is always retained as a null move, an all-infeasible round keeps the parents rather than falling back to a uniform distribution over infeasible children.
 
@@ -326,9 +332,9 @@ This is the project-specific RERD adaptation. The useful idea is not the externa
 
 Interleaving hard-state correction with an unfinished RF trajectory is a deferred variant; the frozen formulation is the permanent post-$t_\star$ handoff described next.
 
-The reward-facing phase is not a single terminal polish. It is a **maturity-triggered handoff**. Before a maturity point $t_\star$, the base RF generator runs with structural-confidence remask and no Head-controlled selection, because the Head value of an early hard completion is not yet reliable. At $t_\star$ the state is materialized as a complete hard-particle population, and every subsequent reopen belongs to the edit-and-repair loop under Head potential, structure gate, and FK resampling. The correction loop is therefore the **reward-eligible phase substrate** over $[t_\star, T]$: a repeated, multi-round process, not a one-time step, so in-generation structural co-adaptation accrues across the whole phase rather than at a terminal instant. The current code does not implement this handoff: a `t_start` gate stops immune refresh and logit correction, but there is no particle materialization, no old-state termination, and no permanent phase switch, and in remask-enabled modes the sampler still remasks after `t_start`; the handoff is net-new. It must not inherit low-level controller state — sampled scores, unmask history, sticky or pending D2 evidence, D3 memory, or pressure state — into particle ancestry; such state may feed register nomination or telemetry only. The materialization itself is one base RF completion of $x_{t_\star}$ into $N$ complete parents (§5.1), not a per-round partial-state value rollout; the latter remains deferred (§12).
+The reward-facing phase is not a single terminal polish. It is a **maturity-triggered handoff**. Before a maturity point $t_\star$, the base RF generator runs with structural-confidence remask and no Head-controlled selection, because the Head value of an early hard completion is not yet reliable. At $t_\star$ the state is materialized as a complete hard-particle population, and every subsequent reopen belongs to the edit-and-repair loop under Head evaluation, a structure gate, and complete-state population selection. The correction loop is a repeated, multi-round process, so reward-selected proposals and exact-state feedback recur across correction rounds rather than being reduced to one terminal choice. The legacy sampler-level `t_start` gate is not this handoff: it does not materialize a particle population or terminate the old sampler state. The Fusion path therefore uses a separate population loop and does not inherit sampled scores, unmask history, sticky or pending D2 evidence, D3 memory, or pressure state into particle ancestry; such state may feed register nomination or telemetry only.
 
-**On the value of $t_\star$ (clarification).** Moving $t_\star$ earlier only changes outcomes if the post-$t_\star$ generation is itself reward-guided: with pure base completion, materializing at $t_\star < T$ and completing is distributionally the same as $t_\star = T$. That reward-guided completion of the trajectory is exactly the per-round partial-state rollout deferred in §12. Hence *that* a handoff exists is frozen, but $t_\star$'s value stays an open empirical question (H5), and v0 fixes $t_\star = T$ (so it reuses the complete base generation directly).
+**v0 handoff scope.** v0 fixes $t_\star=T$: base RF completes first, after which the complete hard-state population enters correction rounds indexed separately by $r=1,\ldots,R$. Earlier reward-guided intervention on an unfinished trajectory remains deferred (§12).
 
 ### 6.3 D3 is not the move kernel
 
@@ -344,7 +350,7 @@ RF/DPLM supplies backbone-conditioned sequence preference. It can prioritize lik
 
 ### 7.2 State-level gate
 
-The actual structure contract is two-tier. A cheap, configurable surrogate (for example a fold-confidence statistic) screens every raw proposal and supplies the feasibility indicator inside the FK potential. The definitive gate is calibrated against refold-based structure metrics such as scTM to the target backbone, and every candidate eligible to enter ancestry must pass it; a proposal that passes only the cheap screen is not inheritable until the definitive gate confirms it. Which cheap surrogate is used is an empirical choice left open. Recovery is a diversity diagnostic, not a structure objective.
+The actual structure contract is two-tier. A cheap, configurable surrogate (for example a fold-confidence statistic) screens every raw proposal and supplies the selector feasibility indicator, including the indicator inside the FK potential when that ablation is used. The definitive gate is calibrated against refold-based structure metrics such as scTM to the target backbone, and every candidate eligible to enter ancestry must pass it; a proposal that passes only the cheap screen is not inheritable until the definitive gate confirms it. Which cheap surrogate is used is an empirical choice left open. Recovery is a diversity diagnostic, not a structure objective.
 
 The current refinement evidence validates global scTM only. It does not establish active-site geometry or biochemical function because active-site RMSD was not populated in the reported run. The method must not equate preserved global fold with preserved activity until that surface is measured.
 
@@ -370,7 +376,7 @@ If not, D2 is not required by the fused method. Marginal projection, sticky deli
 
 D3 may contribute revisit memory or target nomination. Global remask remains part of the initial structural generator. Neither is allowed to overwrite an accepted hard child without a new complete-state evaluation.
 
-The residue-survival behavior the fusion displaces is not one object called D3. It is three distinct objects: the sampler's global bottom-$k$ remask transition; the four-term Stage-A survival rank used in D2 modes, which overrides the true D3 score when active; and the two-term D3 revisit rank that adds an immune-memory term only on certain refresh steps. The post-$t_\star$ macro-loop bypasses all three — targeted reopen replaces the global remask transition, and FK whole-state resampling replaces the combined residue-survival surrogate they jointly form. That surrogate can be read intuitively as an FK-like credit that compresses complete-state Head evidence into a per-residue rank instead of carrying the complete state forward, but this is an analogy, not a formal identity, since none of the three maintains a particle population, potential weighting, or ancestry resampling. D3 itself is retained only as telemetry or an ablation baseline, never in inheritance. Early structural remask, before $t_\star$ where the Head penalty is inactive, retains its generative role.
+The residue-survival behavior the fusion displaces is not one object called D3. It is three distinct objects: the sampler's global bottom-$k$ remask transition; the four-term Stage-A survival rank used in D2 modes, which overrides the true D3 score when active; and the two-term D3 revisit rank that adds an immune-memory term only on certain refresh steps. The post-$t_\star$ macro-loop bypasses all three — targeted reopen replaces the global remask transition, and complete-state population selection replaces the combined residue-survival surrogate they jointly form. That surrogate can be read intuitively as an FK-like credit that compresses complete-state Head evidence into a per-residue rank instead of carrying the complete state forward, but this is an analogy, not a formal identity, since none of the three maintains a particle population, potential weighting, or ancestry resampling. D3 itself is retained only as telemetry or an ablation baseline, never in inheritance. Early structural remask, before $t_\star$ where the Head penalty is inactive, retains its generative role.
 
 ### 8.4 SC-GR
 
@@ -392,7 +398,7 @@ The relevant distinction is feedback:
 
 Chronologically, the first correction round may begin after an initial RF sequence is complete. Scientifically, the generator continues because RF conditional proposals and reward selection alternate over multiple macro-transitions. This is a composite generative process, not merely selection of the initial RF output.
 
-## 10. RERD and Feynman-Kac as organizing principles
+## 10. RERD and complete-state population selection as organizing principles
 
 ### 10.1 RERD defines the move-evaluate-feedback loop
 
@@ -409,22 +415,20 @@ selected states
 
 RF-Refine Fusion does not import the external implementation unchanged. It replaces the unconditional generator with fixed-backbone inverse folding, random global remask with targeted register reopening, and the external reward with the frozen Head. Explicit mutation is added as a breadth branch when denoising support is too conservative.
 
-RERD is therefore not discarded. The external RERD already contains both an inner reward lookahead and an outer population resampling step; what it lacks is exact carryover of the evaluated complete state, a hard feasibility constraint, and explicit lineage. The fusion reconstructs RERD's heuristic resampling into a constrained Head-FK macro-state selection, rather than supplying a population selection that RERD does not have. The edit-and-repair cycle is the project-specific realization of its refinement principle.
+RERD is therefore not discarded. The external RERD already contains both an inner reward lookahead and an outer population resampling step; what it lacks is exact carryover of the evaluated complete state, a hard feasibility constraint, and explicit lineage. The fusion reconstructs RERD's heuristic resampling into constrained Head-selected macro-state search. The edit-and-repair cycle is the project-specific realization of its refinement principle.
 
-### 10.2 FK defines population guidance
+### 10.2 Population guidance is supported through beam
 
-FK contributes a different and complementary operation: it moves **population mass and future compute**, not individual logits. Head-derived potentials weight complete children, and ancestry resampling gives lower-burden feasible states more descendants in later RERD rounds.
+Complete-state population selection moves **future compute**, not individual logits. A selected state changes the distribution of later proposals because it remains in the live population and may acquire additional descendants.
 
-This is more than independent best-of-$N$. Its value is the interaction between rounds: a promising state changes the distribution of future proposals because it acquires more descendants. A hard beam is a deterministic approximation and an important ablation, but it is not the only intended selector.
-
-The current sampler's independent batch lanes do not already implement this behavior. That is an implementation gap, not a reason to remove FK from the scientific target.
+P3 shows that this global population operation has value: hard beam outperformed independent greedy lanes. The frozen $N=4$ annealed endpoint-telescoping FK configuration, however, was worse than beam while using more refolds. FK therefore remains a valid stochastic framework and negative ablation, but it is not the supported v0 selector or a required component of the current performance claim.
 
 ### 10.3 Their roles are complementary
 
 The two ideas answer different questions:
 
 - RERD: **how is a selected state reopened to generate a better local neighborhood?**
-- FK: **which Head-favorable states receive more descendants and search budget?**
+- Beam/FK selection: **which Head-favorable states receive more descendants and search budget?**
 - RF/DPLM: **how are reopened regions proposed or repaired under the target backbone?**
 - Explicit mutation: **how is proposal breadth preserved outside the denoiser's local mode?**
 - Head: **which complete sequences and ancestry are desirable?**
@@ -455,6 +459,8 @@ D-CBG-, GILC-, or other discrete-logit guidance may improve the proposal distrib
 
 **Falsifier**: repair merely reverts immune edits, adds no structure benefit, or is dominated by direct mutation plus state-level filtering.
 
+**P2 status (B1 high-risk, $n=76$, same configured refold cap) — provisionally retained.** The preregistered broad structural-rescue form of H3 was not strictly established. A narrower terminal-search effect was observed: repair-enabled search improved paired terminal Head relative to explicit-only (median repair-minus-explicit $=-0.0087$ nat; 54 wins / 10 ties / 12 losses; paired Wilcoxon, two-sided $p=1.35\times10^{-8}$), while all returned elites passed the scTM $\ge 0.85$ gate. The typical margin was small and one stall-escape case dominated the mean; the repair arm used 2.6% more realized refolds and about 33% more logged round walltime. Repair is retained as a default v0 move. No broader structural-mechanism, post-hoc-superiority, or cross-cohort magnitude claim is made.
+
 ### H4. Exact feedback outperforms marginal actuation
 
 **Hypothesis**: carrying the evaluated child into the next round recovers more terminal Head gain than projecting the same candidate evidence into marginal logits and remask ranks.
@@ -473,17 +479,21 @@ D-CBG-, GILC-, or other discrete-logit guidance may improve the proposal distrib
 
 **Falsifier**: compute-matched independent or beam search matches the population frontier, or FK resampling collapses diversity without increasing feasible Head improvement.
 
+**Interpretation rule**: a beam–FK difference that is not resolved under the frozen v0 configuration is a reportable neutral result, not a trigger for post-hoc selector tuning.
+
+**P3 status (`pilot_v3`; 40 common proteins; $N=4$, six rounds, $\beta:1\rightarrow4$, explicit-only) — not supported for the frozen FK selector.** P3 tested the implementation specified in §5.6. Beam reached lower terminal Head than FK on 37 of 40 proteins (median FK-minus-beam $=+0.0332$ nat; two-sided Wilcoxon $p=2.04\times10^{-7}$) while using 4,972 realized refolds versus 6,465 for FK. Beam also beat greedy on 34 of 40 proteins (median beam-minus-greedy $=-0.0436$ nat; $p=2.21\times10^{-5}$), whereas FK and greedy were unresolved. The later-round FK incremental weights were usually close to uniform, but this is a finite-configuration behavior, not evidence that post-resampling weight reset breaks telescoping. The result is negative for the frozen annealed endpoint-telescoping FK configuration, not a general disproof of FK or stochastic population selection.
+
 ## 12. Frozen scientific decisions
 
 The following decisions define the proposed method:
 
 - Runtime immune control uses the frozen Head on complete hard sequences.
 - NMP has no role in guidance; any retained use is terminal external reporting or filtering.
-- The persistent state is a population of exact complete sequences; single-parent and hard-beam variants are controls.
+- The persistent state is a population of exact complete sequences; deterministic beam is the supported v0 selector and greedy is the independent-lane control.
 - Broad explicit mutation is a first-class proposal family.
 - RF/DPLM is used as a backbone-conditioned proposal and local repair operator.
 - RERD-style targeted reopen, complete-child evaluation, and repeated feedback define the correction loop.
-- Head-guided FK weighting and ancestry resampling are a first-class population selection law, with beam and independent search as controls.
+- Complete-state population selection is first-class. The tested FK law is retained as a negative ablation, not as a supported performance lever.
 - Local structural logits are a proposal prior, not the fold-feasibility boundary.
 - Structural acceptance is a complete-state constraint.
 - The parent remains available as a null move.
@@ -491,12 +501,12 @@ The following decisions define the proposed method:
 - Generic global remask does not silently alter accepted late-stage states.
 - Residue-level fields allocate proposals; complete-state Head values select ancestry.
 - Generation is two-phase: base RF with structural remask before a maturity point $t_\star$, then a reward-eligible complete hard-state population after it. Persistent particle states are complete at correction-round boundaries; transient masked states are permitted only inside $K_{\mathrm{move}}$ and never become inherited ancestry.
-- The guidance claim is Head-guided FK optimization, not exact twisted-SMC posterior sampling.
+- The empirical guidance claim is Head-guided complete-state population optimization; no positive FK-specific performance claim is made.
 - Feasibility (structure and no-new-hotspot) is the hard admissibility; Head is a soft objective; an elite archive of the best-so-far feasible state makes the returned design monotone.
 - The $t_\star$ handoff does not inherit low-level controller state (scores, unmask history, sticky or pending D2 evidence, D3 memory, pressure state) into particle ancestry; such state may feed nomination or telemetry only.
-- Structural feasibility is two-tier: a configurable cheap surrogate screens raw proposals and enters the FK potential; the definitive refold gate (scTM to the target backbone) is required for any candidate to enter ancestry.
-- The FK population weighting is closed: per-parent child budget or offspring-count normalization; infeasible children get zero weight; non-resampling rounds carry normalized weights, resampling rounds reset to $1/N$; an all-infeasible round keeps the null parent and never falls back to uniform.
-- The FK potential targets the absolute Head level (annealed form); the fixed-$\beta$ difference potential is its degenerate case.
+- Structural feasibility is two-tier: a configurable cheap surrogate screens raw proposals and enters selector feasibility; the definitive refold gate (scTM to the target backbone) is required for any candidate to enter ancestry.
+- The tested endpoint-telescoping FK weighting remains closed: per-parent child budget or offspring-count normalization; infeasible children get zero weight; non-resampling rounds carry normalized weights, resampling rounds reset to $1/N$; an all-infeasible round keeps the null parent and never falls back to uniform.
+- The tested FK potential targets the absolute terminal Head tilt through its annealed ancestry measure; the fixed-$\beta$ difference potential is its degenerate case.
 - Per-round partial-state value rollouts and exact proposal-ratio correction are deferred extensions.
 
 The following remain open because the current evidence does not determine them:
@@ -506,10 +516,16 @@ The following remain open because the current evidence does not determine them:
 - mutation breadth and edit radius;
 - repair-halo size and whether edited core positions are always protected;
 - the specific cheap structure surrogate (configurable) and the refold budget/cadence for ancestry candidates;
-- greedy versus beam selection;
-- FK population size, potential tempering, ESS policy, and diversity preservation;
-- the exact maturity point $t_\star$ and its trigger criterion (that a $t_\star$ handoff exists is frozen; its value is not);
+- deployment-time beam budget and stopping policy;
+- any earlier maturity point $t_\star<T$ and its trigger criterion beyond v0 (v0 fixes $t_\star=T$);
 - whether D2 or SC-GR improves proposal efficiency after the core loop is established.
+
+Two selector variants are preregistered only as deferred exploratory work, not as fixes to P3:
+
+- **ESS-adaptive endpoint/difference-FK** carries cumulative weights only across non-resampling rounds, triggers resampling through a prospectively fixed particle-level ESS rule, and resets resampled slots to $1/N$.
+- **Immediate-potential Boltzmann stochastic soft-beam** samples the current feasible pool with mass proportional to $q_a\exp[-\tau R_H(y)]$, without the parent-correction term of the endpoint-telescoping law.
+
+Neither variant changes the frozen P3 verdict or belongs to the v0 execution path. Any future test must first freeze the formula, proposal-mass semantics, temperature or ESS rule, population size, rounds, elite policy, compute matching, and primary endpoint, then use a cohort not used to develop the selector.
 
 ## 13. Evidence ledger and claim boundaries
 
@@ -519,16 +535,18 @@ The following remain open because the current evidence does not determine them:
 | D2 alone explains the B1 gain | Not identified |
 | Broad iterative reward search can find strongly reward-improved, high-scTM neighbors | Supported by the NMP-driven mechanism control |
 | Head guidance must reproduce NMP rankings or outcomes | Not required by the method objective |
-| Head-guided hard-state feedback lowers Head burden under the structure constraint | Unproven and load-bearing |
+| Head-guided hard-state feedback lowers Head burden under the structure constraint | Supported on the B1 high-risk cohort (P1) |
 | Candidate breadth is a stronger observed lever than coordinated denoising | Supported by Path-C diagnostics |
 | Local structural-logit support equals the fold-feasible set | Rejected as a scientific interpretation |
 | Specific successful refinement edits were excluded by D2 support | Not yet measured |
 | Global remask changes terminal outcomes and can erase D2 edits | Supported |
 | Removing all remask makes the controller sufficient | Not supported |
-| RF local repair improves over direct broad mutation | Unproven and load-bearing |
+| Adding RF repair to explicit search improves terminal search | Direction observed on B1 (P2); retained as a default v0 move, but the original broad structural mechanism is not strictly established |
+| Deterministic global population selection improves over independent greedy lanes | Supported on `pilot_v3` (P3); beam is the v0 selector |
+| The repair-plus-beam package improves terminal search over explicit-only greedy | Supported on held-out `fast_v2`; median Head difference $-0.097$ nat at 1.30 times the realized refolds, with a modest structural-quality cost |
 | Global scTM preservation implies activity preservation | Not supported |
-| RERD-style targeted reopen improves over continued generic remask | Unproven and load-bearing |
-| FK ancestry resampling improves over matched beam or independent search | Unproven and attributable by ablation |
+| RERD-style targeted reopen improves over continued generic remask | Unproven; not required for the current v0 claim and deferred |
+| FK ancestry resampling improves over matched beam or independent search | Not supported for the frozen $N=4$ P3 configuration; this does not constitute a general FK disproof |
 
 ## 14. References and project evidence
 
@@ -543,3 +561,5 @@ The following remain open because the current evidence does not determine them:
 9. Project evidence: [RAR 0023 breadth and selection decomposition](../Results/Analysis/0023-c0b-headroom-decomposition-downhill-vs-s/record.md).
 10. Project evidence: [RAR 0025 SC-GR where/value ablations](../Results/Analysis/0025-sc-gr-v1-1-where-value-ablations-triage-/record.md).
 11. Project evidence: [RAR 0026 refinement reach-zero outcomes](../Results/Analysis/0026-char24-0701-refinement-outcomes-reach-0-/record.md), git `824ca53`.
+12. Project evidence: [RAR 0030 P3 selector comparison](../Results/Analysis/0030-rf-fusion-p3-h6-selector-comparison/record.md), git `048ecb1`.
+13. Project evidence: [RAR 0031 final integration](../Results/Analysis/0031-rf-fusion-final-integration-fastv2-immune-structure/record.md), git `50fabb1`.

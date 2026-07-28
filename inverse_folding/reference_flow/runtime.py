@@ -23,6 +23,15 @@ if str(BYPROT_SRC) not in sys.path:
 
 from dataclasses import dataclass
 
+# Structure-path resolution lives in a torch-free module so a model-free launch gate can resolve
+# EXACTLY the file this runtime will later load; a validator with its own copy of the candidate
+# order would certify a path the run does not use. Re-exported here, so existing imports and the
+# monkeypatch target ``reference_flow.runtime.resolve_structure_path`` are unchanged.
+from inverse_folding.reference_flow.structure_paths import (  # noqa: E402
+    infer_chain_id,
+    resolve_structure_path,
+    safe_file_id,
+)
 
 _BYPROT_IMPORTS: dict[str, Any] | None = None
 CANONICAL_AA = frozenset("ACDEFGHIKLMNPQRSTVWY")
@@ -57,10 +66,6 @@ class BatchedDPLMDenoiserContext:
 
 def safe_allele_tag(allele: str) -> str:
     return "".join(c if (c.isalnum() or c in ("-", ".")) else "_" for c in allele)
-
-
-def safe_file_id(protein_id: str) -> str:
-    return "".join(c if (c.isalnum() or c in ("-", "_", ".")) else "_" for c in protein_id)
 
 
 def utc_timestamp() -> str:
@@ -111,45 +116,6 @@ def load_test_entries(test_set_parquet: str | Path) -> pd.DataFrame:
     return df
 
 
-def resolve_structure_path(entry: pd.Series | dict[str, Any], pdb_root: str | Path) -> Path:
-    row = dict(entry)
-    root = Path(pdb_root)
-    protein_id = str(row["protein_id"])
-    pdb_path = str(row.get("pdb_path") or "")
-    safe_id = safe_file_id(protein_id)
-
-    candidates: list[Path] = []
-    raw_path = Path(pdb_path) if pdb_path else None
-    if raw_path:
-        if raw_path.is_absolute():
-            candidates.append(raw_path)
-        else:
-            candidates.append(root / raw_path)
-            candidates.append(root / raw_path.name)
-            stem = raw_path.stem
-            candidates.append(root / f"{stem}.pdb")
-            candidates.append(root / f"{stem}.cif")
-
-    candidates.extend(
-        [
-            root / f"{protein_id}.pdb",
-            root / f"{protein_id}.cif",
-            root / f"{safe_id}.pdb",
-            root / f"{safe_id}.cif",
-        ]
-    )
-
-    seen: set[Path] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        if candidate.exists():
-            return candidate
-
-    raise FileNotFoundError(
-        f"could not resolve structure for protein_id={protein_id} under pdb_root={root}"
-    )
 
 
 def _coords_from_entry_or_structure(
@@ -630,13 +596,6 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
-
-
-def infer_chain_id(protein_id: str) -> str | None:
-    parts = protein_id.split("_", maxsplit=1)
-    if len(parts) == 2 and len(parts[0]) == 4 and parts[0][0].isdigit():
-        return parts[1]
-    return None
 
 
 def _seed_all(seed: int) -> None:

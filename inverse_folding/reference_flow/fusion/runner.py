@@ -192,7 +192,23 @@ def _keep_parent(parent, *, protein_id, round_idx, slot, weight) -> ParticleStat
         sequence=parent.sequence, sequence_md5=parent.sequence_md5, weight=weight,
         parent_particle_id=parent.particle_id, source_proposal_id=None,
         head_global_risk=parent.head_global_risk, structure=parent.structure,
-        feasible=True, lineage_seed=parent.lineage_seed)
+        feasible=True, lineage_seed=parent.lineage_seed,
+        entry_source_id=parent.entry_source_id)
+
+
+
+def _metric(structure, field):
+    return None if structure is None else getattr(structure, field, None)
+
+
+def _entry_source_of(parents, parent_particle_id):
+    """The V1 entry facade row a parent came from, or ``None`` (standalone v0 run / unknown parent).
+    Inherited by descendants so the reported elite NAMES its facade row instead of requiring a
+    parent walk back to round 0 (PLAN_RF_REFINE_FUSION_V1 §2.11:531)."""
+    for p in parents:
+        if p.particle_id == parent_particle_id:
+            return p.entry_source_id
+    return None
 
 
 def _is_canonical(seq: str) -> bool:
@@ -218,24 +234,56 @@ def build_initial_population(source_rows, *, protein_id, oracles, structure_cach
     n = config.core.population_size
     rows = sorted(source_rows, key=lambda r: (int(r["design_idx"]), int(r.get("seed", 0))))
 
-    chosen: list = []  # (sequence, metrics)
+    chosen: list = []  # (sequence, metrics, entry_source_id)
     ref_len = int(expected_length) if expected_length is not None else None
+    # ADDITIVE AUDIT SEAM (§2.11). Every decision below is unchanged; each one is now also
+    # RECORDED, because the definitive verdict on a facade row exists only here -- the entry stage
+    # defers -- and a bare `continue` threw it away.
+    attempts: list[dict] = []
+    refolds = 0
+
+    def _record(row, verdict, reason, *, slot_idx=None, structure_evaluated=False,
+                cache_hit=None, metrics=None):
+        attempts.append({
+            "design_idx": int(row["design_idx"]),
+            "entry_source_id": row.get("entry_source_id"),
+            "sequence_md5": sequence_md5(str(row["sequence"])),
+            "verdict": verdict, "reason": reason, "slot_idx": slot_idx, "particle_id": None,
+            "structure_evaluated": structure_evaluated, "cache_hit": cache_hit,
+            "scTM": _metric(metrics, "scTM"), "pLDDT": _metric(metrics, "pLDDT"),
+        })
+
     for row in rows:
         seq = str(row["sequence"])
         if not _is_canonical(seq):
+            _record(row, "rejected", "non_canonical_sequence")
             continue
         if ref_len is None:
             ref_len = len(seq)
         elif len(seq) != ref_len:  # length must match the target backbone / other slots
+            _record(row, "rejected", "length_mismatch")
             continue
         if anchor_expected and any(i >= len(seq) or seq[i] != aa
                                    for i, aa in anchor_expected.items()):
+            # The ONLY place an anchor violation on a completed sequence is detected: the entry
+            # stage never re-checks anchors after completion.
+            _record(row, "rejected", "anchor_mismatch")
             continue
-        metrics, _hit = structure_cache.evaluate(protein_id, seq, oracles.struct_fn)
-        passed, _reason = structure_feasible(metrics, config, has_active_site=has_active_site)
+        metrics, hit = structure_cache.evaluate(protein_id, seq, oracles.struct_fn)
+        if not hit:
+            refolds += 1
+        passed, reason = structure_feasible(metrics, config, has_active_site=has_active_site)
         if not passed:
+            _record(row, "rejected", reason, structure_evaluated=True, cache_hit=bool(hit),
+                    metrics=metrics)
             continue
-        chosen.append((seq, metrics))
+        _record(row, "admitted", "ok", slot_idx=len(chosen), structure_evaluated=True,
+                cache_hit=bool(hit), metrics=metrics)
+        # Carry the entry facade row id forward when the source row has one. v0's particle_id embeds
+        # only the sequence md5, so without this the entry->v0 edge would be re-derived from the
+        # sequence rather than persisted (PLAN_RF_REFINE_FUSION_V1 §2.11:531). None for a standalone
+        # v0 run, whose generated parquet carries no entry lineage.
+        chosen.append((seq, metrics, row.get("entry_source_id")))
         if len(chosen) >= n:
             break
     if len(chosen) < n:
@@ -259,13 +307,22 @@ def build_initial_population(source_rows, *, protein_id, oracles, structure_cach
             protein_id=protein_id, round_idx=0, slot_idx=i, sequence=seq,
             sequence_md5=sequence_md5(seq), weight=wt, parent_particle_id=None,
             source_proposal_id=None, head_global_risk=risk, structure=metrics,
-            feasible=True, lineage_seed=_derive_seed(config.core.seed, protein_id, "init", i))
-        for i, ((seq, metrics), risk, wt) in enumerate(zip(chosen, risks, weights)))
+            feasible=True, lineage_seed=_derive_seed(config.core.seed, protein_id, "init", i),
+            entry_source_id=entry_source_id)
+        for i, ((seq, metrics, entry_source_id), risk, wt)
+        in enumerate(zip(chosen, risks, weights)))
     best_i = min(range(n), key=lambda i: (risks[i], seqs[i]))
     elite_particle = replace(particles[best_i],
                              particle_id=make_elite_id(protein_id, 0, particles[best_i].sequence_md5))
     elite = EliteState(particle=elite_particle, first_round_seen=0, last_round_seen=0)
-    return PopulationState(round_idx=0, particles=particles, elite=elite)
+    # backfill the particle id onto the admitted rows so the facade -> slot -> particle edge is a
+    # stored key rather than a re-derivation
+    by_slot = {p.slot_idx: p.particle_id for p in particles}
+    for attempt in attempts:
+        if attempt["verdict"] == "admitted":
+            attempt["particle_id"] = by_slot.get(attempt["slot_idx"])
+    return PopulationState(round_idx=0, particles=particles, elite=elite,
+                           admission_attempts=tuple(attempts), initial_refolds=refolds)
 
 
 def _round_proposals(protein_id, r, parents, parent_windows, *, oracles, config, anchors, repair_fn):
@@ -425,7 +482,10 @@ def run_protein(*, protein_id, initial_population, oracles, structure_cache, con
                     sequence_md5=sequence_md5(bp.sequence), weight=inv_n,
                     parent_particle_id=best_e.parent_particle_id, source_proposal_id=best_e.proposal_id,
                     head_global_risk=best_e.head_global_risk, structure=best_e.structure,
-                    feasible=True, lineage_seed=_derive_seed(config.core.seed, protein_id, r, "elite"))
+                    feasible=True, lineage_seed=_derive_seed(config.core.seed, protein_id, r, "elite"),
+                    # inherited from the parent so the elite row itself names its entry facade row;
+                    # otherwise the join is a parent walk back to round 0 (§2.11:531)
+                    entry_source_id=_entry_source_of(parents, best_e.parent_particle_id))
                 elite = EliteState(particle=cand, first_round_seen=r, last_round_seen=r)
 
         # Stage C — selector dispatch; greedy/beam/FK all replay the SAME evaluated pool.
@@ -463,7 +523,8 @@ def run_protein(*, protein_id, initial_population, oracles, structure_cache, con
                 sequence_md5=sequence_md5(bp.sequence), weight=inv_n,
                 parent_particle_id=parent_id, source_proposal_id=ev.proposal_id,
                 head_global_risk=ev.head_global_risk, structure=ev.structure,
-                feasible=True, lineage_seed=_derive_seed(config.core.seed, protein_id, r, slot)))
+                feasible=True, lineage_seed=_derive_seed(config.core.seed, protein_id, r, slot),
+                entry_source_id=parent.entry_source_id))
 
         # Beam elite protection — applied BEFORE lineage/telemetry so no dangling child is logged.
         # The carry re-instates the elite by re-applying its OWN originating proposal to its OWN
@@ -485,7 +546,7 @@ def run_protein(*, protein_id, initial_population, oracles, structure_cache, con
                 sequence_md5=e.sequence_md5, weight=inv_n, parent_particle_id=e.parent_particle_id,
                 source_proposal_id=e.source_proposal_id,  # the elite's own originating proposal
                 head_global_risk=e.head_global_risk, structure=e.structure, feasible=True,
-                lineage_seed=e.lineage_seed)
+                lineage_seed=e.lineage_seed, entry_source_id=e.entry_source_id)
             if e.source_proposal_id is not None:
                 lineage.append({"parent_particle_id": e.parent_particle_id,
                                 "child_particle_id": new_particles[protected_slot].particle_id,

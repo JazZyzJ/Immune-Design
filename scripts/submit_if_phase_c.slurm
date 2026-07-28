@@ -63,6 +63,12 @@ NATIVE_BATCH_SIZE="${NATIVE_BATCH_SIZE:-1}"
 # (H_MAPS_PARQUET= sbatch ...) to run without an h-map (constant_one /
 # controller-only arms, where g(h)=1 and h is inert). The `-` (not `:-`) keeps an
 # explicit empty value instead of falling back to the default.
+#
+# Because an UNSET variable silently becomes the allele default, "non-empty" alone
+# cannot distinguish caller intent from the fallback. MODE=v1_entry must REFUSE a
+# caller-supplied h-map (V1-A runs g(h)=1 with no h-map at all), so record whether
+# the caller set the variable at all BEFORE the default is applied.
+H_MAPS_PARQUET_REQUESTED="${H_MAPS_PARQUET+requested}"
 H_MAPS_PARQUET="${H_MAPS_PARQUET-${H_MAPS_DEFAULT}}"
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_ROOT}/inverse_folding/reference_flow/configs/c1_null.yaml}"
 FAIL_PCT_THRESHOLD="${FAIL_PCT_THRESHOLD:-0.05}"
@@ -74,7 +80,8 @@ RF_BATCH_SIZE="${RF_BATCH_SIZE:-1}"
 
 # Phase D1 controller wiring (optional; only consumed by MODE=reference_flow).
 # CONTROLLER_CONFIG empty → controller is disabled and the head flags are
-# ignored.
+# ignored. MODE=v1_entry refuses a non-empty value outright.
+CONTROLLER_CONFIG_REQUESTED="${CONTROLLER_CONFIG:+requested}"
 CONTROLLER_CONFIG="${CONTROLLER_CONFIG:-}"
 HEAD_CHECKPOINT="${HEAD_CHECKPOINT:-}"
 HEAD_CONFIG_DIR="${HEAD_CONFIG_DIR:-${PROJECT_ROOT}/epitope_head/configs}"
@@ -88,8 +95,37 @@ HEAD_ALLELE_IDX="${HEAD_ALLELE_IDX:-0}"
 GLOBAL_PRESSURE_CALIBRATION_JSON="${GLOBAL_PRESSURE_CALIBRATION_JSON:-}"
 
 # Uricase enzyme mode v0 hard-anchor constraint manifest (optional; consumed only
-# by MODE=reference_flow). Empty → unconstrained global RF (unchanged behavior).
+# by MODE=reference_flow and MODE=v1_entry). Empty → unconstrained global RF.
 CONSTRAINT_MANIFEST="${CONSTRAINT_MANIFEST:-}"
+
+# ---------------------------------------------------------------------------
+# MODE=v1_entry (RF-Refine Fusion v1 entry) inputs. Declared here with defaults
+# so `set -u` cannot abort mid-job on an unbound variable AFTER the allocation is
+# granted; the branch itself fails fast with a named reason on the required ones.
+# ---------------------------------------------------------------------------
+ENTRY_CONFIG="${ENTRY_CONFIG:-}"
+TERMINAL_REPAIR_CONFIG="${TERMINAL_REPAIR_CONFIG:-}"
+RF_SAMPLER_CONFIG="${RF_SAMPLER_CONFIG:-}"
+FUSION_CONFIG="${FUSION_CONFIG:-}"
+# TERMINAL arm only: manifest.json of the COMPLETED pre-terminal run. M_T is derived
+# from its persisted per-protein C_reserved, which is what makes the two arms
+# compute-matched; the terminal arm may not invent its own budget.
+PRETERMINAL_RESERVATION="${PRETERMINAL_RESERVATION:-}"
+V1_PROTEINS="${V1_PROTEINS:-}"
+V1_SUBMODE="${V1_SUBMODE:-run}"
+S_STEPS="${S_STEPS:-}"
+R_PARENT="${R_PARENT:-}"
+N_ROUNDS="${N_ROUNDS:-}"
+SECONDS_PER_REFOLD="${SECONDS_PER_REFOLD:-}"
+SECONDS_PER_DFE="${SECONDS_PER_DFE:-}"
+# Head epitope-window bounds: they select WHICH sub-sequences are scored, so they
+# are method knobs bound into the run provenance, not driver literals.
+WINDOW_K_MIN="${WINDOW_K_MIN:-12}"
+WINDOW_K_MAX="${WINDOW_K_MAX:-25}"
+# A partial cohort exits 3 by default. Set to 1 only when a deliberately incomplete cohort is the
+# intent -- accepting one silently would let a downstream stage treat outcome-correlated survivors
+# as the frozen split.
+ALLOW_PARTIAL_COHORT="${ALLOW_PARTIAL_COHORT:-0}"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
@@ -276,8 +312,107 @@ case "${MODE}" in
             "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}" \
             "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;
+    v1_entry)
+        # RF-Refine Fusion v1 entry (Arm-C P1; Head-only, NO NMP). Reuses this launcher's
+        # DPLM + Head environment. The entry stage emits OUTPUT_ROOT/generated.parquet (the
+        # ordered facade); the TERMINAL complete-state stage is a SEPARATE v0 run launched via
+        # submit_refine.slurm MODE=fusion reading that parquet (PLAN §6.2-6.3). V1_SUBMODE
+        # selects run | print_config | dry_run (the latter two load no model).
+        #
+        # NULL-RUNTIME FIREWALL (PLAN_RF_REFINE_FUSION_V1 §2.12). V1-A measures pre-terminal
+        # reward allocation under a frozen null entry kernel: g(h)=1, controller=None, no
+        # h-map. Both position-dependency pathways are refused here, at the launcher, because
+        # H_MAPS_PARQUET resolves to the ALLELE DEFAULT above whenever the caller leaves it
+        # unset -- forwarding it would silently turn this into a different method.
+        if [[ -n "${H_MAPS_PARQUET_REQUESTED}" && -n "${H_MAPS_PARQUET}" ]]; then
+            echo "MODE=v1_entry refuses H_MAPS_PARQUET=${H_MAPS_PARQUET}: V1-A runs g(h)=1 with no h-map" >&2
+            exit 2
+        fi
+        if [[ -n "${CONTROLLER_CONFIG_REQUESTED}" ]]; then
+            echo "MODE=v1_entry refuses CONTROLLER_CONFIG=${CONTROLLER_CONFIG}: V1-A runs controller=None" >&2
+            exit 2
+        fi
+        H_MAPS_PARQUET=""
+        CONTROLLER_CONFIG=""
+        # The driver's launch gate (§3.4) refuses a null content digest for a missing model input,
+        # so every one of these must be present BEFORE the job spends its allocation finding out.
+        for _required in ENTRY_CONFIG TERMINAL_REPAIR_CONFIG RF_SAMPLER_CONFIG FUSION_CONFIG \
+                         V1_PROTEINS S_STEPS R_PARENT N_ROUNDS HEAD_CHECKPOINT HEAD_CONFIG_DIR; do
+            if [[ -z "${!_required}" ]]; then
+                echo "MODE=v1_entry requires ${_required}" >&2
+                exit 2
+            fi
+        done
+        echo "  Entry config    : ${ENTRY_CONFIG}"
+        echo "  Terminal config : ${TERMINAL_REPAIR_CONFIG}"
+        echo "  Proteins        : ${V1_PROTEINS}"
+        echo "  Entry kernel    : ${RF_SAMPLER_CONFIG}"
+        echo "  Fusion config   : ${FUSION_CONFIG}"
+        echo "  Preterm reserv. : ${PRETERMINAL_RESERVATION:-<n/a: pre-terminal arm>}"
+        echo "  Entry runtime   : g(h)=1 (null kernel), controller=None, h-map=<refused>"
+        echo "  Constraint mfst : ${CONSTRAINT_MANIFEST:-<unconstrained>}"
+        echo "  Head window k   : ${WINDOW_K_MIN}..${WINDOW_K_MAX} batch=${HEAD_WINDOW_BATCH_SIZE:-<default>}"
+        echo "  S/R/rounds      : ${S_STEPS}/${R_PARENT}/${N_ROUNDS}"
+        echo "  Unit costs s    : refold=${SECONDS_PER_REFOLD:-<unset>} dfe=${SECONDS_PER_DFE:-<unset>}"
+        echo "  V1 sub-mode     : ${V1_SUBMODE}"
+        V1_FLAGS=(--rf-sampler-config "${RF_SAMPLER_CONFIG}" --fusion-config "${FUSION_CONFIG}")
+        if [[ -n "${PRETERMINAL_RESERVATION}" ]]; then V1_FLAGS+=(--preterminal-reservation "${PRETERMINAL_RESERVATION}"); fi
+        if [[ -n "${CONSTRAINT_MANIFEST}" ]]; then V1_FLAGS+=(--constraint-manifest "${CONSTRAINT_MANIFEST}"); fi
+        if [[ -n "${HEAD_CHECKPOINT}" ]]; then V1_FLAGS+=(--head-checkpoint "${HEAD_CHECKPOINT}"); fi
+        if [[ -n "${HEAD_CONFIG_DIR}" ]]; then V1_FLAGS+=(--head-config-dir "${HEAD_CONFIG_DIR}"); fi
+        if [[ -n "${HEAD_VARIANT_ID}" ]]; then V1_FLAGS+=(--head-variant-id "${HEAD_VARIANT_ID}"); fi
+        if [[ -n "${HEAD_WINDOW_BATCH_SIZE}" ]]; then V1_FLAGS+=(--head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}"); fi
+        if [[ -n "${SECONDS_PER_REFOLD}" ]]; then V1_FLAGS+=(--seconds-per-refold "${SECONDS_PER_REFOLD}"); fi
+        if [[ -n "${SECONDS_PER_DFE}" ]]; then V1_FLAGS+=(--seconds-per-dfe "${SECONDS_PER_DFE}"); fi
+        if [[ "${ALLOW_PARTIAL_COHORT}" == "1" ]]; then V1_FLAGS+=(--allow-partial-cohort); fi
+        case "${V1_SUBMODE}" in
+            print_config) V1_FLAGS+=(--print-config) ;;
+            dry_run)      V1_FLAGS+=(--dry-run) ;;
+            run)          ;;
+            *) echo "Unsupported V1_SUBMODE=${V1_SUBMODE}; expected run|print_config|dry_run" >&2; exit 2 ;;
+        esac
+        # Belt and braces: the driver also refuses these flags, but a launcher that can emit
+        # them at all is one edit away from re-enabling a position-dependent entry runtime.
+        for _flag in "${V1_FLAGS[@]}"; do
+            case "${_flag}" in
+                --h-map|--h-maps-parquet|--controller-config|--h-corpus-stats)
+                    echo "internal error: banned runtime flag ${_flag} in V1_FLAGS" >&2
+                    exit 2
+                    ;;
+            esac
+        done
+        # --proteins is unquoted on purpose (nargs; space-separated protein ids).
+        #
+        # The driver's exit code carries the cohort outcome (0 = every requested protein produced
+        # a terminal parent, 2 = nothing usable, 3 = partial cohort). `set -e` would abort here and
+        # skip the summary, so the status is captured explicitly, reported, and re-raised as the
+        # job's own exit code -- a partial cohort must never be reported to sbatch as success.
+        set +e
+        python -u "${PROJECT_ROOT}/scripts/run_rf_fusion_v1_entry.py" \
+            --entry-config "${ENTRY_CONFIG}" \
+            --terminal-repair-config "${TERMINAL_REPAIR_CONFIG}" \
+            --proteins ${V1_PROTEINS} \
+            --out-dir "${OUTPUT_ROOT}" \
+            --logs-dir "${LOG_DIR}" \
+            --allele "${ALLELE}" \
+            --test-set-parquet "${TEST_SET_PARQUET}" \
+            --pdb-root "${PDB_ROOT}" \
+            --base-if-checkpoint "${CHECKPOINT}" \
+            --head-allele-idx "${HEAD_ALLELE_IDX}" \
+            --head-device "${HEAD_DEVICE}" \
+            --window-k-min "${WINDOW_K_MIN}" \
+            --window-k-max "${WINDOW_K_MAX}" \
+            --s-steps "${S_STEPS}" \
+            --r-parent "${R_PARENT}" \
+            --n-rounds "${N_ROUNDS}" \
+            "${V1_FLAGS[@]}"
+        V1_RC=$?
+        set -e
+        echo "Phase C v1_entry exit=${V1_RC} (0=cohort complete, 2=nothing produced, 3=partial)"
+        exit "${V1_RC}"
+        ;;
     *)
-        echo "Unsupported MODE=${MODE}; expected native or reference_flow" >&2
+        echo "Unsupported MODE=${MODE}; expected native, reference_flow, or v1_entry" >&2
         exit 2
         ;;
 esac

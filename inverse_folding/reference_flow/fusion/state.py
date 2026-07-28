@@ -89,6 +89,15 @@ class ParticleState:
     structure: Any
     feasible: bool
     lineage_seed: int
+    #: The entry-stage facade row this particle's round-0 ancestor came from (V1 only).
+    #:
+    #: PLAN_RF_REFINE_FUSION_V1 §2.11:531 -- "Do not reconstruct the mapping from sequence alone.
+    #: Distinct roots may converge to the same complete sequence." Without this the only edge from a
+    #: round-0 particle back to its root is ``sequence_md5``, a DERIVED key: it happens to be unique
+    #: because the handoff refuses duplicate sequences, but the PLAN requires the mapping to be
+    #: PERSISTED, not re-derived. ``None`` for a standalone v0 run, whose generated parquet carries
+    #: no entry lineage at all.
+    entry_source_id: str | None = None
 
     def __post_init__(self) -> None:
         _require_canonical(self.sequence)
@@ -200,6 +209,17 @@ class PopulationState:
     round_idx: int
     particles: tuple[ParticleState, ...]
     elite: EliteState
+    #: ADDITIVE AUDIT SEAM (PLAN_RF_REFINE_FUSION_V1 §2.11: "The v0 admission path may receive an
+    #: additive audit seam, but its decisions remain..."). One dict per facade row the round-0 scan
+    #: examined, admitted or rejected, with the reason. Without it a row v0 drops leaves no trace
+    #: anywhere -- the ENTRY stage cannot cover it, because its own gate defers and the definitive
+    #: verdict exists only here. Empty for a population not built by ``build_initial_population``.
+    admission_attempts: tuple = ()
+    #: Definitive structure evaluations actually executed during round-0 admission (cache misses).
+    #: The entry ledger books 0 structure requests for a deferred attempt precisely because v0
+    #: charges it; v0 counts refolds only from round 1, so without this the round-0 spend is
+    #: charged in no artifact at all.
+    initial_refolds: int = 0
 
     def __post_init__(self) -> None:
         if not self.particles:

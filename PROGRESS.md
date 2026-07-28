@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-07-20T18:10:14-04:00
+> **Last synced**: 2026-07-27T02:45:00-04:00
 > **Branch**: fusion_rf_refine
 
 ---
@@ -323,6 +323,40 @@
 - Structural collapse (scTM ≤ 0.5) proteins: TBD
 - OOM-retried-on-CPU: TBD
 - `g_max_cap` triggered (protein_id, max g_i): TBD
+
+---
+
+## RF-Refine Fusion V1-A — pre-terminal entry (PLAN_RF_REFINE_FUSION_V1.md)
+
+> **IMPLEMENTED LOCALLY, NEVER RUN ON A GPU.** Branch `fusion_rf_refine`, worktree
+> `/Users/jerry/Project/MHC-IF-fusion`, **uncommitted**. All evidence is unit/contract tests and
+> local adversarial probes. Do not read any scientific claim out of this row.
+
+**The question.** Same total DFE, different ALLOCATION POINT: does spending the reward signal at a
+partial state (ρ_edit<1) beat spending it at the endpoint? "Matched compute" is the entire claim.
+
+| Piece | State |
+|---|---|
+| P1 `preterminal` arm (continuation-value allocation) | implemented, canary-configured |
+| P1 `terminal` arm (complete trajectories, exact terminal Head rank) | implemented, canary-configured |
+| T0 calibration (3 policy views over ONE root pool + ONE held-out K_EVAL) | implemented, canary-configured |
+| Null-runtime firewall (§2.12), verified at the SAMPLER with a positive control | done |
+| §3.4 fail-closed launch gate, §4.2 content-bound resume | done |
+| Cluster canaries (V1F7) | **not run**; A and B runnable (each + runbook §11.7), C blocked |
+
+**Blocking a scientific run** (not a canary): `TEST_SET_PARQUET`, `DEV_IDS`/`HOLDOUT_IDS`, the real
+T0 `rho_grid`/`K_EVAL`/`Q_T0`, and measured `SECONDS_PER_REFOLD`/`SECONDS_PER_DFE` — the gate
+refuses an unverifiable walltime by design, so the last one is a hard stop.
+
+**Known gaps, stated so no canary over-claims them** (full list in the runbook status block):
+1. no T0→v0 definitive-structure handoff — T0's `3·Q_T0` subset is charged and recorded but
+   deferred, so runbook §6.1 GO/KILL condition 3 cannot be closed from a T0 run alone;
+2. `maturity_telemetry.anchor_preservation` is null and is NOT a measurement — root-level
+   preservation is structurally enforced (so a value there would be 1.0 by construction) and the
+   completed-sequence checksum is not computed.
+
+**Local test state**: full suite 2388 passed / 47 skipped, with the same 14 pre-existing failures
+as the pristine tree (unrelated modules, missing optional deps) — zero new failures.
 
 ---
 

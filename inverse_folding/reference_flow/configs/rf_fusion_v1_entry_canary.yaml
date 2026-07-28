@@ -1,0 +1,56 @@
+# =============================================================================
+# CANARY — RF-Refine Fusion V1-A, PRE-TERMINAL arm. DEPLOYMENT SMOKE ONLY.
+#
+# NOT production and NOT calibrated science. The values below are minimal
+# contract-check placeholders whose only purpose is to exercise the real
+# pre-terminal path (sampler continuation -> continuation value -> root beam ->
+# fresh final -> ordered facade -> v0 handoff) end to end on the cluster before
+# T0/P1. Do not infer any scientific effect from a canary run.
+#
+# Its Terminal counterpart is rf_fusion_v1_entry_canary_terminal.yaml. The two
+# share campaign_id, master_seed, n_population and initial_refold_attempt_cap:
+# F_cap is the COMMON frozen facade cap, so both arms attempt at most the same
+# number of initial refolds (PLAN_RF_REFINE_FUSION_V1 §3.2.1).
+#
+# Model/data PATHS are supplied on the CLI (--base-if-checkpoint, --head-*,
+# --rf-sampler-config, --fusion-config, --test-set-parquet,
+# --constraint-manifest), never hardcoded here. S comes from the entry sampler
+# YAML and N/R_parent/n_rounds from the frozen Fusion config; the matching CLI
+# flags are cross-checks only.
+# =============================================================================
+
+schema_version: v1cfg-1
+campaign_id: canary
+phase: p1
+split_role: canary
+entry_arm: preterminal
+master_seed: 20260723
+
+# The frozen V1-A null entry runtime (§2.12): g(h) == 1, controller=None, no
+# h-map. The firewall verifies the actual --rf-sampler-config (and the separate
+# --terminal-repair-config) against these declarations and refuses to launch if
+# either RF role is not the null kernel.
+entry_rf_config: c1_null.yaml
+backbone_only: true
+controller_enabled: false
+h_maps_present: false
+
+# allocation — tiny; a canary is a contract smoke, not a search.
+# Capacity chain: prefix_attempts >= unique_root_capacity
+#                 >= initial_refold_attempt_cap >= n_population
+n_population: 4
+prefix_attempts: 16
+k_est: 4
+unique_root_capacity: 8
+initial_refold_attempt_cap: 6
+completions_per_ranked_root: 1
+estimator: mean_global_risk
+
+# maturity — one frozen pre-terminal target
+rho_target: 0.85
+
+# budget caps — generous enough to admit the worst-case canary projection. The
+# launch gate (§3.4) still fails closed if a larger cohort or S would exceed them.
+max_dfe: 200000
+max_refolds: 2000
+max_walltime_s: 7200.0

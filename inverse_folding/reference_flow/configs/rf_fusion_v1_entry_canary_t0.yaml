@@ -1,0 +1,59 @@
+# =============================================================================
+# CANARY — RF-Refine Fusion V1-A, T0 calibration. DEPLOYMENT SMOKE ONLY.
+#
+# T0 asks whether a predeclared late maturity carries a continuation-value signal
+# that generalizes to INDEPENDENT continuations. It answers that with THREE policy
+# VIEWS over ONE shared root pool and ONE shared held-out K_EVAL table:
+#
+#   selected_partial  — the continuation-value beam
+#   random_partial    — a Head-INDEPENDENT membership draw from the SAME pool
+#   independent_full  — the compute-matched full-trajectory control
+#
+# selected and random differ in exactly one thing: which roots they hold. Switching
+# the label must not redraw a single continuation, or T0 measures sampling noise
+# instead of selection (§2.9-§2.10).
+#
+# T0 materializes NO parent: no `final` continuation, no v0 admission. Its only
+# structure spend is the Q_T0 subsample of each view, i.e. 3*Q_T0 requests.
+# Building a parent here would spend the P1 budget and let a calibration outcome
+# leak into the P1 population.
+#
+# The rho_grid below is a SMOKE grid, not the calibration grid. The real grid is
+# frozen from the runbook before the scientific T0 launch; do not read an effect
+# out of a canary.
+# =============================================================================
+
+schema_version: v1cfg-1
+campaign_id: canary
+phase: t0
+split_role: canary
+entry_arm: preterminal
+master_seed: 20260723
+
+# the same frozen null runtime as both P1 arms (§2.12)
+entry_rf_config: c1_null.yaml
+backbone_only: true
+controller_enabled: false
+h_maps_present: false
+
+# root pool — shared by all three views
+prefix_attempts: 16
+k_est: 4
+unique_root_capacity: 8
+completions_per_ranked_root: 1
+estimator: mean_global_risk
+n_population: 4
+initial_refold_attempt_cap: 6
+
+# T0-only: the held-out evaluation table and the equal-sized structure subsample
+rho_grid: [0.80, 0.85, 0.90]
+k_eval: 4
+q_t0: 4
+structure_subsample_seed: 20260723
+random_membership_seed: 20260724
+t0_policies: [selected_partial, random_partial, independent_full]
+
+# budget caps — the §3.4 gate still fails closed on a larger cohort or S
+max_dfe: 400000
+max_refolds: 2000
+max_walltime_s: 7200.0

@@ -44,7 +44,7 @@ _PARTICLE_COLS = ["protein_id", "round_idx", "slot_idx", "particle_id", "parent_
                   "scTM", "pLDDT", "global_ca_RMSD", "active_site_RMSD",
                   "active_site_sidechain_RMSD", "max_anchor_sidechain_RMSD",
                   "max_anchor_atom_distance", "active_site_complete", "active_site_min_pLDDT",
-                  "feasible", "is_elite"]
+                  "feasible", "is_elite", "entry_source_id"]
 _LINEAGE_COLS = ["protein_id", "parent_particle_id", "child_particle_id", "round_idx",
                  "proposal_id", "selector", "multiplicity"]
 _ELITE_COLS = ["protein_id", "initial_sequence", "initial_head_global_risk", "initial_scTM",
@@ -58,8 +58,19 @@ _ELITE_COLS = ["protein_id", "initial_sequence", "initial_head_global_risk", "in
                "final_max_anchor_atom_distance", "final_active_site_complete",
                "final_active_site_min_pLDDT",
                "improvement", "n_rounds", "elite_particle_id",
-               "source_parent_particle_id", "source_proposal_id"]
+               "source_parent_particle_id", "source_proposal_id",
+               # V1 entry lineage on the row the experiment REPORTS. Without it, closing the
+               # facade -> elite chain needs a join back through fusion_particles, and for a
+               # round-0 seed elite that join lands on the SEQUENCE -- which PLAN §2.11:531
+               # forbids. Null for a standalone v0 run.
+               "entry_source_id", "initial_entry_source_id"]
 _FAILURE_COLS = ["protein_id", "reason", "message", "last_completed_round"]
+#: Round-0 admission verdicts (PLAN_RF_REFINE_FUSION_V1 §2.11's additive audit seam). Closes the
+#: `facade design_idx -> admission attempt and verdict -> initial slot / particle_id` edge, which
+#: the ENTRY stage cannot close: its own gate defers, so the definitive verdict exists only here.
+_ADMISSION_COLS = ["protein_id", "design_idx", "entry_source_id", "sequence_md5", "verdict",
+                   "reason", "slot_idx", "particle_id", "structure_evaluated", "cache_hit",
+                   "scTM", "pLDDT"]
 
 
 # --------------------------------------------------------------------------- #
@@ -103,6 +114,19 @@ def candidate_rows(result, selection_counts=None):
     return rows
 
 
+def admission_verdict_rows(result):
+    """One row per facade row the round-0 scan examined -- admitted or rejected, with the reason.
+
+    A bare ``continue`` used to drop rejected rows, so the rank-vs-feasibility evidence for §2.11's
+    "on structure failure, advance to the next ranked root" was unreconstructible, and an anchor
+    violation on a completed sequence (which ONLY v0 detects) left no trace at all.
+    """
+    return [
+        {"protein_id": result.protein_id, **attempt}
+        for attempt in result.initial_population.admission_attempts
+    ]
+
+
 def particle_rows(result):
     rows = []
     for pop in result.populations:
@@ -123,6 +147,10 @@ def particle_rows(result):
                 "active_site_complete": _sm(p.structure, "active_site_complete"),
                 "active_site_min_pLDDT": _sm(p.structure, "active_site_min_pLDDT"),
                 "feasible": p.feasible, "is_elite": p.sequence_md5 == elite_md5,
+                # V1 entry lineage: which facade row this particle's round-0 ancestor came from.
+                # Null for a standalone v0 run. Persisting it is the point -- an in-memory-only key
+                # is the same as no key when the reviewer reads parquet (§2.11:531).
+                "entry_source_id": p.entry_source_id,
             })
     return rows
 
@@ -143,6 +171,8 @@ def elite_row(result):
     e = result.elite
     init = result.initial_population.elite.particle
     return {"protein_id": result.protein_id,
+            "entry_source_id": e.entry_source_id,
+            "initial_entry_source_id": init.entry_source_id,
             "initial_sequence": init.sequence, "initial_head_global_risk": init.head_global_risk,
             "initial_scTM": _sm(init.structure, "scTM"),
             "initial_pLDDT": _sm(init.structure, "pLDDT"),
@@ -183,6 +213,9 @@ def protein_payload(result):
         "candidates": candidate_rows(result, sel_counts), "particles": particle_rows(result),
         "lineage": [{"protein_id": result.protein_id, **edge} for edge in result.lineage],
         "rounds": round_rows(result), "elite": elite_row(result), "generated": generated_row(result),
+        # §2.11 audit seam: what round-0 admission examined, admitted or rejected, and what it spent
+        "initial_admission": admission_verdict_rows(result),
+        "initial_refolds": int(result.initial_population.initial_refolds),
     }
 
 
@@ -280,7 +313,14 @@ def _provenance(args) -> dict:
 def _seed_digest(rows) -> str:
     """Content digest of a protein's seed designs (order-independent), so a changed input
     sequence set invalidates its resume checkpoint."""
-    items = sorted((str(r.get("design_idx")), str(r.get("seed", "")), str(r["sequence"])) for r in rows)
+    # `entry_source_id` is part of the key: PLAN_RF_REFINE_FUSION_V1 §2.11 warns that distinct roots
+    # may converge to the same complete sequence, so two entry runs with identical ranked sequences
+    # but different roots would otherwise share this digest. v0 would reuse the earlier checkpoint
+    # and every lineage column would then name the wrong root -- the sequence-derived attribution
+    # §2.11 forbids, moved from the join into the cache key. Empty for a standalone v0 run, so the
+    # legacy key is unchanged.
+    items = sorted((str(r.get("design_idx")), str(r.get("seed", "")), str(r["sequence"]),
+                    str(r.get("entry_source_id", ""))) for r in rows)
     return hashlib.sha256(json.dumps(items).encode("utf-8")).hexdigest()
 
 
@@ -360,6 +400,8 @@ def _aggregate_artifacts(out_dir: Path, ckpt_dir: Path, config, manifest_extra, 
     _df(_rows("candidates"), _CANDIDATE_COLS).to_parquet(out_dir / "fusion_candidates.parquet", index=False)
     _df(_rows("particles"), _PARTICLE_COLS).to_parquet(out_dir / "fusion_particles.parquet", index=False)
     _df(_rows("lineage"), _LINEAGE_COLS).to_parquet(out_dir / "fusion_lineage.parquet", index=False)
+    _df(_rows("initial_admission"), _ADMISSION_COLS).to_parquet(
+        out_dir / "fusion_initial_admission_verdicts.parquet", index=False)
     _df([p["elite"] for p in ok], _ELITE_COLS).to_parquet(out_dir / "fusion_elite.parquet", index=False)
     _df([p["generated"] for p in ok], ["protein_id", "design_idx", "sequence"]).to_parquet(
         out_dir / "generated.parquet", index=False)
@@ -376,7 +418,15 @@ def _aggregate_artifacts(out_dir: Path, ckpt_dir: Path, config, manifest_extra, 
         "proteins": list(proteins),
         "artifacts": ["fusion_candidates.parquet", "fusion_particles.parquet",
                       "fusion_lineage.parquet", "fusion_elite.parquet", "generated.parquet",
-                      "fusion_failures.parquet", "fusion_rounds.jsonl"],
+                      "fusion_failures.parquet", "fusion_rounds.jsonl",
+                      "fusion_initial_admission_verdicts.parquet"],
+        # Definitive round-0 folds. The ENTRY ledger books 0 structure requests for a deferred
+        # attempt on the grounds that v0 charges it; v0 counted refolds only from round 1, so this
+        # spend was charged in no artifact at all and a matched-compute check on refolds compared
+        # two zeros.
+        "initial_refolds_by_protein": {
+            p["protein_id"]: int(p.get("initial_refolds", 0)) for p in ok
+        },
         **(manifest_extra or {}),
     }
     _write_json_atomic(out_dir / "manifest.json", manifest)
@@ -724,10 +774,20 @@ def _load_generated(args):
 
 def _seed_rows_by_protein(generated_df, proteins):
     rows_by = {}
+    has_entry_lineage = "entry_source_id" in generated_df.columns
     for pid in proteins:
         sub = generated_df[generated_df["protein_id"] == pid]
-        rows_by[pid] = [{"design_idx": int(r["design_idx"]), "seed": int(r.get("seed", 0)),
-                         "sequence": str(r["sequence"])} for _, r in sub.iterrows()]
+        rows = []
+        for _, r in sub.iterrows():
+            row = {"design_idx": int(r["design_idx"]), "seed": int(r.get("seed", 0)),
+                   "sequence": str(r["sequence"])}
+            # V1 handoff only: the entry facade row id, carried so the entry->v0 edge is a PERSISTED
+            # key rather than one re-derived from the sequence (PLAN_RF_REFINE_FUSION_V1 §2.11:531).
+            # A plain v0 generated parquet has no such column and the field stays absent.
+            if has_entry_lineage and pd.notna(r.get("entry_source_id")):
+                row["entry_source_id"] = str(r["entry_source_id"])
+            rows.append(row)
+        rows_by[pid] = rows
     return rows_by
 
 

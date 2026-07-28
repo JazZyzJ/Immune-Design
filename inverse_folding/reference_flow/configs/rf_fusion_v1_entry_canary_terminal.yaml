@@ -1,0 +1,48 @@
+# =============================================================================
+# CANARY — RF-Refine Fusion V1-A, TERMINAL arm. DEPLOYMENT SMOKE ONLY.
+#
+# The other half of the P1 comparison. This arm draws M_T INDEPENDENT complete
+# c1_null trajectories, ranks them by exact complete-sequence Head, and submits
+# only the top F_cap to the SAME unchanged v0 admission the pre-terminal arm
+# feeds. It exists because v0's build_initial_population deliberately does not
+# preselect on Head — its design_idx is whatever order generation emitted — so
+# without an explicit Head rank here the comparison would confound "does Head
+# selection help at all" with "does selecting at a partial state beat selecting
+# at the endpoint". V1-A isolates the latter.
+#
+# This arm carries NO maturity target and NONE of the pre-terminal allocation
+# knobs (rho_target / prefix_attempts / k_est / unique_root_capacity /
+# completions_per_ranked_root / estimator); the config layer rejects them here.
+#
+# M_T is NOT configured. It is derived as floor(C_reserved / S) from the
+# COMPLETED pre-terminal run's persisted per-protein reservation, passed via
+# --preterminal-reservation <preterminal_run>/manifest.json (§3.2.1). That is
+# what makes the two arms compute-matched by construction; M_T < F_cap is a hard
+# failure, never a shrunken facade.
+#
+# Shares campaign_id / master_seed / n_population / initial_refold_attempt_cap
+# with rf_fusion_v1_entry_canary.yaml. The seed namespace still separates the
+# arms: entry_arm is part of every seed prefix.
+# =============================================================================
+
+schema_version: v1cfg-1
+campaign_id: canary
+phase: p1
+split_role: canary
+entry_arm: terminal
+master_seed: 20260723
+
+# the same frozen null runtime as the pre-terminal arm (§2.12)
+entry_rf_config: c1_null.yaml
+backbone_only: true
+controller_enabled: false
+h_maps_present: false
+
+# N and the COMMON frozen facade cap F_cap — identical to the pre-terminal arm.
+n_population: 4
+initial_refold_attempt_cap: 6
+
+# budget caps — the same submitted ceilings; the §3.4 gate still fails closed.
+max_dfe: 200000
+max_refolds: 2000
+max_walltime_s: 7200.0
