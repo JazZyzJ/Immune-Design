@@ -498,6 +498,47 @@ It does **not** freeze the P1 cohort size, dev/holdout split size, primary pract
 winning maturity. Those are frozen after T0 from measured variance/cost; the winning P1 maturity
 is the lowest rho that passes every §6.1 condition.
 
+### 6.0B FROZEN T0 DEVELOPMENT COHORT — 2026-07-29
+
+Drawn and frozen by `scripts/freeze_t0_dev_cohort.py` under §3.1. **This section is the human
+record; the machine-readable manifests are the single source of truth and live only at**
+`WORK_DIR/fusion_v1/` (`t0_dev_cohort.{parquet,csv}`, `t0_dev_exclusions.{parquet,csv}`,
+`t0_dev_shard_0{0..3}.ids`, `t0_dev_provenance.json`). Do not re-draw after the first shard starts.
+
+**Provenance (frozen).** `master_seed=20260729`; deterministic order = `sha256("<tag>|seed|id")[:8]`
+big-endian (never Python's salted `hash()`); source table
+`if_ready/main/test_proteins_if_ready_HLA-DRB1_07_01.parquet` `sha256=366767db…87488` (2879 rows);
+`cohort_sha256=9a2bb600…9ab4f38`; derivation git `6b80757`.
+
+**Selection accounting.** pool 2879 → excluded-in-main 673 → eligible 2206 → exact-sequence dedup
+collapses 231 → 1975 representatives → 6 per WT-length quartile (edges 155/229/314.5; eligible reps
+per stratum 489/498/494/494) → **24**, round-robined into four length-mixed six-ID shards. Integrity
+drops 0 (every pool protein is AA20-complete, length-consistent, structure-resolvable). Homology:
+this set carries no CATH/mmseqs cluster labels and mmseqs is not installed, so **exact WT-sequence
+identity is the frozen one-per-cluster proxy**; `head_train_overlap_flag` is recorded but is NOT an
+exclusion criterion (§3.1 excludes dev/pilot/integration membership + homology, not Head-training
+membership).
+
+**Exclusions (per §3.1, deliberately more conservative).** dataset IDs removed from the pool:
+`highrisk_nod` 100, `highrisk_pmpnn` 100 (B1/P2 high-risk dev), `pilot_v2` 47, `pilot_v3` 50 (P3),
+`fast_v2` 286 (RAR0031 integration); Canary A/C `{5ZHV_B, 9L2Q_A}`; maturity-scan
+`{2O4T_A, 5YAA_B, 3O1Q_C, 7V2T_A}`; plus 183 main-pool proteins sharing an exact WT sequence with
+any excluded protein (near-duplicate homologs). Union = 673.
+
+**Frozen shards** (byte-identical config; each spans all four length strata; length in aa):
+
+| Shard | Protein IDs (WT length) |
+|---|---|
+| `shard_00` | 6EXP_F(103) 1NQ3_F(133) 6G6Q_H(160) 7JM0_B(274) 6QT8_A(289) 9BZ4_D(442) |
+| `shard_01` | 6QWV_K(148) 1KHI_A(147) 7B4B_D(186) 2DXT_B(235) 4P3I_D(289) 3KV3_R(334) |
+| `shard_02` | 3SZ6_A(116) 8I18_B(156) 7FF9_A(197) 6D2V_B(306) 8WVR_A(323) 8AGR_B(325) |
+| `shard_03` | 3BD4_A(112) 2ABL_A(163) 7NDP_D(201) 5UA0_C(274) 8H0C_A(387) 2BWN_A(396) |
+
+All four shards pass login-node `--print-config` + `--dry-run` (`n_valid=6/6`, `anchors=0`, DFE
+748800<800000, refold 216<240, projected walltime 15602 s<21600 s, null-kernel firewall clean). The
+frozen HEAD is `run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt`
+(`LC1`) and the DPLM base `run/inverse_folding/dplm_v1_adapter/seed42_20260319_094244/…/best.ckpt`.
+
 ### 6.1 T0 GO/KILL rule
 
 All four conditions must hold at one maturity:
