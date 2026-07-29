@@ -3,7 +3,7 @@
 AGENT TASK SPEC. Execute top-to-bottom. Stop and report on any FAIL. Do not tune a
 failed gate into a positive result.
 
-> **Current status (2026-07-29): Canaries A, B, the terminal-arm smoke, AND Canary C (T0, B*+structure-handoff) EXECUTED and verified on the cluster; scientific T0/P1 still BLOCKED on the frozen manifests/grid.** Both P1 arms are
+> **Current status (2026-07-29): Canaries A, B, the terminal-arm smoke, AND Canary C (T0, B*+structure-handoff) EXECUTED and verified on the cluster; the scientific T0 CONFIG is frozen in §6.0A, while launch remains BLOCKED on the cohort/exclusion manifests and the preregistered analysis gate.** Both P1 arms are
 > implemented and wired end to end (`preterminal` and `terminal`), the null-runtime firewall
 > verifies BOTH reference-flow roles, the launch gate is fail-closed on inputs/cohort/anchors,
 > S and N/R_parent/n_rounds are resolved from the frozen YAMLs with CLI cross-check, structure
@@ -52,8 +52,10 @@ failed gate into a positive result.
 >   16/16, .85 14–15/16). This is a WIRING canary — scTM/gate-pass are sizing evidence, NOT a
 >   GO/KILL number; the scientific grid/`K_EVAL`/`Q_T0`/cohort remain frozen from §6 before a real T0.
 > - **T0 sizing inputs from Canary C (2 proteins, 100–105 aa; feed §3.1/§6/§7, do NOT over-read).**
->   - *Cost model.* Per protein per rho: actual `logical_dfe` ≈ 1.9k (root_prefix ~775 + est ~200 +
->     eval ~200 + full_control ~1.9k... reserved ≈ 1.7k–2.3k), `3*Q_T0=12` structure requests of
+>   - *Cost model.* Per protein per rho: reserved partial-root allocation ≈ 1.7k–2.3k DFE
+>     (root prefix ≈1.5k plus estimator/evaluation tails); the matched `independent_full` control
+>     spends approximately the same reservation, giving **≈3.9k total logical DFE per
+>     protein-rho**. Each point also uses `3*Q_T0=12` structure requests, of
 >     which ~11 are real folds (a few deterministic-completion cache hits). Whole run: 23214 DFE +
 >     66 real ESMFold2 folds for 2×3 points, **16m18s gross** (incl. one DPLM+ESMFold2 load).
 >     **Unit costs are still ANCHORS, not this-round measurements**: the oracle ledger recorded
@@ -126,9 +128,11 @@ failed gate into a positive result.
 > `biohub/ESMFold2`; and the entry oracle takes the per-request maturity from `rho_id` (a T0 grid
 > varies rho while the oracle is built once — the P1 single-`rho_target` path is unchanged).
 >
-> **Still blocking a scientific run** (not a canary): the cohort manifests (`DEV_IDS` /
-> `HOLDOUT_IDS` / `TEST_SET_PARQUET`), the T0 `rho_grid`/`K_EVAL`/`Q_T0` values, and the measured
-> `SECONDS_PER_REFOLD` / `SECONDS_PER_DFE` unit costs are not frozen. No SCIENTIFIC run has
+> **Still blocking a scientific run** (not a canary): the 24-protein T0 development cohort,
+> prior-cohort exclusion manifest, four fixed six-protein shard manifests, and the preregistered
+> T0 analysis command/output do not yet exist. The scientific T0 knobs are frozen in §6.0A and
+> `rf_fusion_v1_entry_t0_dev.yaml`; `SECONDS_PER_REFOLD=2.9` and `SECONDS_PER_DFE=0.02` remain
+> conservative launch anchors and must be replaced by measured T0 values before P1. No SCIENTIFIC run has
 > launched — the canaries executed 2026-07-29 (see the execution block above), but a canary is a
 > contract smoke only; do not read any treatment effect out of it.
 
@@ -350,7 +354,7 @@ generalizes to independent continuations while leaving real basin choice?
 
 Freeze in `resolved_t0.yaml` before launch:
 
-- a small late-maturity grid (`RHO_GRID`; values and count TBD before data inspection);
+- the frozen maturity grid `RHO_GRID=[.50,.70,.85]`;
 - frozen root-prefix attempt count per protein `B` and minimum valid unique-root
   capacity after equivalence collapse;
 - estimator continuations per root `K_EST`;
@@ -367,20 +371,20 @@ The last forward may still resolve many editable residues, so this does not prov
 is degenerate. It does prove that nominally different late rho targets may collapse onto the same
 final maturity jump.
 
-Before freezing the scientific `RHO_GRID`, run an outcome-independent maturity-only sizing scan
-over a wider diagnostic grid such as `[.50,.60,.70,.80,.85]`. Do not inspect Head treatment
-differences. Select three late targets only if they produce:
+Canary C supplied the outcome-independent maturity-only sizing evidence used to freeze the
+scientific `RHO_GRID`. It did not inspect or adjudicate Head treatment differences. The three
+targets were accepted because the canary established distinct step/rho/unresolved-mass strata
+and adequate crossing/unique-root coverage. The scientific T0 must additionally verify:
 
-- distinct `snapshot_step` / tail-DFE strata rather than the same final jump;
-- distinct `rho_actual` distributions;
-- adequate absolute unresolved editable mass;
 - non-trivial unique-descendant branching;
-- acceptable crossing and unique-root coverage under the frozen `B`.
+- multiple terminal basins under the frozen §6.1 definition.
 
-Prefer three operationally separated states (for example, median tail DFE on the order of
-approximately 20, 10 and 5) over three closely spaced rho decimals. These are sizing targets, not
-new effect gates. If three distinct late states do not exist, stop rather than presenting a
-nominal three-point grid that is one state in practice.
+The sampler's late schedule is steep: the three targets land at approximately steps 94/97/99,
+not at evenly spaced tail DFE. They are nevertheless operationally distinct in the quantity that
+matters for intervention — approximately 49/27/11 unresolved editable positions on the two
+Canary-C proteins. The scientific T0 therefore freezes all three and lets condition 4 reject a
+nominal maturity if this separation does not generalize to the 24-protein cohort. Do not add a
+lower rho after opening T0 outcomes.
 
 Use the arithmetic mean terminal Head `global_risk` over `K_EST` complete rollouts as
 the root-value estimate; lower is better. Report alternative summaries descriptively but
@@ -446,25 +450,49 @@ Hard gates, evaluated before spending the corresponding generation/structure bud
 - valid `independent_full` survivors `>= F_cap`;
 - every policy produces exactly `Q_T0` definitive structure verdicts, with no shrink or backfill.
 
-**Coder checklist before Canary C:**
-
-1. change `run_t0_protein` so `independent_full` structure eligibility is the mapped
-   `full_pool[:F_cap]`, not `full_survivors`;
-2. make selected/random structure subsets root-balanced and reuse the same endpoint for an
-   overlapping root;
-3. add the config/runtime hard gates above, failing before expensive work where possible;
-4. retain all-survivor rows only as descriptive evidence;
-5. add tests proving that partial endpoints are never terminal-Head-truncated, independent-full
-   is top-`F_cap`, every held partial root is represented once, and undersized pools fail closed.
-
-Canary C remains a wiring canary and publishes no GO/KILL number, but because it has not run yet,
-it should exercise this final B* contract rather than the superseded all-survivor implementation.
+**Implementation/Canary closure (2026-07-29).** All five former coder items are implemented and
+covered by contract tests. Canary C exercised the final B* law and produced exactly four
+definitive verdicts per policy and grid point. It remains a wiring canary and publishes no GO/KILL
+number.
 
 Estimator and evaluation rollouts are evidence only. None may become a P1 parent.
 Branch-and-materialize is outside this V1-A runbook and coder scope.
 In the seed manifest, `selected_partial` and `random_partial` are membership views over
 `entry_arm=preterminal`; their policy labels never enter root/`est`/`eval` continuation
 seeds. Only random subset membership has its own selection seed.
+
+### 6.0A FROZEN SCIENTIFIC T0 CONFIG — 2026-07-29
+
+The scientific T0 config is
+`inverse_folding/reference_flow/configs/rf_fusion_v1_entry_t0_dev.yaml`. Do not edit it after the
+first scientific shard starts. Freeze the following values:
+
+| Quantity | Frozen value | Basis |
+|---|---:|---|
+| development proteins | 24, generic anchor-free DRB1*07:01 | gives 24 paired protein units and 96 structure verdicts per policy/rho |
+| execution layout | 4 fixed shards × 6 proteins | bounds one failed job without changing the frozen cohort |
+| `rho_grid` | `[.50, .70, .85]` | Canary C: distinct unresolved mass (~49/27/11), despite late steps 94/97/99 |
+| `B=prefix_attempts` | 16 | Canary A/C crossing and unique-root yield |
+| `unique_root_capacity` | 12 | coverage gate; also supports the common `F_cap` |
+| `K_EST` | 4 | frozen estimator budget used by the canaries |
+| `K_EVAL` | 8 | stronger held-out estimate than the smoke; cheap at the measured late tails |
+| `N` | 4 | frozen v0 population |
+| `F_cap` | 12 | common future P1 cap; at Canary-C pass rates 0.46–0.50, an iid sizing model gives ~0.88–0.93 probability of at least four feasible rows |
+| `Q_T0` | 4 | equals `N`; policy-faithful B* structure denominator |
+| estimator | arithmetic mean Head `global_risk` | frozen scientific definition |
+| shard caps | 800000 DFE, 240 refolds, 21600 s | worst-case six-protein preflight at `S=100`, plus startup margin |
+| launch unit-cost anchors | 0.02 s/DFE, 2.9 s/refold | Canary/RAR feasibility anchors; replace with measured T0 costs before P1 |
+
+The 24 IDs must be drawn and frozen under §3.1 before any scientific shard runs. Stratify on
+pre-existing length/coverage only; persist the exclusion list for P2/P3/RAR0031 proteins and four
+non-overlapping six-ID shard manifests. All four shards use the byte-identical config, model
+digests and analysis commit. Opening one shard's treatment results before the remaining shards
+are irrevocably submitted is prohibited.
+
+This freezes only T0 and the shared method constants needed to define its Terminal comparator.
+It does **not** freeze the P1 cohort size, dev/holdout split size, primary practical margin, or
+winning maturity. Those are frozen after T0 from measured variance/cost; the winning P1 maturity
+is the lowest rho that passes every §6.1 condition.
 
 ### 6.1 T0 GO/KILL rule
 
@@ -480,9 +508,32 @@ All four conditions must hold at one maturity:
    multiple unique descendants, and more than one terminal basin are observed under
    the frozen non-degeneracy rule.
 
-Freeze statistical tests, confidence level, and practical margins from null/replicate
-variation before opening arm labels. Do not choose them from the observed treatment
-difference.
+The preregistered analysis command must be implemented and committed before launch as
+`scripts/analysis/rf_fusion_v1_t0_gate.py`; it writes one immutable JSON verdict plus the
+protein-level table. It must apply the following frozen rules independently at each rho:
+
+1. **Coverage first:** at least 20/24 requested proteins must have complete root/eval/structure
+   evidence. Report all 24 and every failure; never analyze only successful rows.
+2. **Value reliability:** compute per-protein Spearman correlation between `K_EST` root value and
+   the disjoint `K_EVAL` mean. Pass only when the median correlation is positive and a 10,000-draw
+   within-protein root-label permutation test remains significant after Holm correction across
+   the three rho values at family-wise `alpha=0.05`.
+3. **Selected over random:** for each protein compute mean held-out Head risk of selected minus
+   random roots from the shared `K_EVAL` table. Pass only when the median delta is negative and a
+   10,000-draw protein-level sign-flip test remains significant after Holm correction across the
+   three rho values at family-wise `alpha=0.05`.
+4. **Structure non-inferiority:** compare selected-partial with independent-full using the frozen
+   definitive gate-pass denominator. The one-sided 98.33% protein-cluster bootstrap lower bound
+   (Bonferroni family-wise 0.05 across three rho values) for
+   `pass_rate(selected)-pass_rate(independent_full)` must exceed `-0.10`. Report scTM deltas
+   descriptively; do not substitute them for the gate.
+5. **Meaningful action:** median unresolved editable count is at least 10 **and** median unresolved
+   editable fraction is at least 0.10; at least 75% of selected roots have two or more distinct
+   `K_EVAL` terminal sequences; and, on at least 75% of complete-evidence proteins, median
+   between-root editable Hamming distance exceeds median within-root distance.
+
+These tests, family-wise confidence levels and the `-0.10` structure margin are frozen before
+scientific arm labels are opened. Do not choose an alternative test from the observed difference.
 
 If several maturities pass, freeze the earliest (lowest $\rho_{\mathrm{edit}}$) passing
 one. If none pass, stop V1-A and report the negative. Do not rescue it by sweeping more
@@ -795,9 +846,8 @@ T0 needs no `PRETERMINAL_RESERVATION`: it has no Terminal counterpart to match, 
 own budget. It writes no `generated.parquet` (it builds no parent); its deliverables are
 `t0_control_membership` / `t0_structure_subset` / `t0_structure_results`.
 
-**Required coder handoff before submission:** Canary C must no longer stop at
-`t0_structure_deferred`. Implement either an integrated evaluator or a second structure-only job
-that:
+**Implemented and verified by Canary C (2026-07-29):** T0 no longer stops at
+`t0_structure_deferred` when the definitive evaluator is available. The integrated evaluator:
 
 1. reads every frozen request from `t0_structure_subset.parquet` without changing membership;
 2. preserves `(protein_id, rho_id, policy, request_id, sequence, sequence_md5)` exactly;
@@ -828,12 +878,34 @@ ESMFOLD2_SITE_PACKAGES=/home/zc1519/.conda/envs/esmfold2/lib/python3.12/site-pac
 sbatch scripts/submit_if_phase_c.slurm
 ```
 
-The `rho_grid` in the canary config is a deliberately wide SMOKE grid. Canary A showed that
+The `rho_grid` in the canary config was a deliberately wide SMOKE grid. Canary A showed that
 `.85` was captured near step 99 on two proteins, so the Canary C grid spans `.50/.70/.85` to
-exercise meaningfully different resume points if the sampler exposes them. The scientific T0
-grid, `K_EVAL`, `Q_T0` and cohort manifests are frozen from §6 only after the outcome-independent
-maturity sizing rule above — a canary answers whether the pipeline runs, never where rho should
-be.
+exercise meaningfully different resume points. Canary C subsequently showed distinct unresolved
+mass at all three points, and §6.0A freezes the scientific grid and other T0 knobs. The canary
+still answers only whether the pipeline runs; it contributes no HT1/HT2 effect evidence.
+
+### 11.5A Scientific T0 development launch
+
+Do not submit this block until the 24-ID cohort/exclusion manifest, four six-ID shard manifests,
+and `scripts/analysis/rf_fusion_v1_t0_gate.py` are committed and hashed. Run `--print-config` and
+`dry_run` for every shard first. Each shard uses the same config:
+
+```bash
+MODE=v1_entry V1_SUBMODE=dry_run \
+OUTPUT_ROOT=${RUN_ROOT}/t0_dev_v1/shard_00 \
+ENTRY_CONFIG=inverse_folding/reference_flow/configs/rf_fusion_v1_entry_t0_dev.yaml \
+V1_PROTEINS="$(xargs < ${WORK_DIR}/fusion_v1/t0_dev_shard_00.ids)" \
+REFOLD_CACHE_DIR=${RUN_ROOT}/t0_dev_v1/refold_cache \
+ESMFOLD2_SITE_PACKAGES=/home/zc1519/.conda/envs/esmfold2/lib/python3.12/site-packages \
+SECONDS_PER_DFE=0.02 SECONDS_PER_REFOLD=2.9 \
+... (same frozen c1_null / Fusion / Head / test-set / PDB inputs as Canary C) \
+sbatch scripts/submit_if_phase_c.slurm
+```
+
+Repeat for `shard_01..03`; only after all four dry-runs pass, submit all four with
+`V1_SUBMODE=run`. The first scientific shard must not be used to revise IDs, rho, `K_EST`,
+`K_EVAL`, `F_cap`, `Q_T0`, seeds, tests or margins. Aggregate all four shards, run the frozen gate
+script once, and archive config/input/code digests with its JSON verdict.
 
 ### 11.6 Canary B — anchor-heavy Q00511 (PRE-TERMINAL)
 

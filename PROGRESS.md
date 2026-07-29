@@ -328,7 +328,7 @@
 
 ## RF-Refine Fusion V1-A — pre-terminal entry (PLAN_RF_REFINE_FUSION_V1.md)
 
-> **LOCAL IMPLEMENTATION COMPLETE; CANARIES A/B + TERMINAL-ARM SMOKE COMPLETE.** Branch
+> **LOCAL IMPLEMENTATION COMPLETE; CANARIES A/B/C + TERMINAL-ARM SMOKE COMPLETE.** Branch
 > `fusion_rf_refine`, worktree `/Users/jerry/Project/MHC-IF-fusion`. The deployment canaries ran
 > on Della on 2026-07-29; no scientific T0/P1 has run. Do not read a treatment claim out of canary
 > data.
@@ -340,10 +340,10 @@ partial state (ρ_edit<1) beat spending it at the endpoint? "Matched compute" is
 |---|---|
 | P1 `preterminal` arm (continuation-value allocation) | implemented, canary-configured |
 | P1 `terminal` arm (complete trajectories, exact terminal Head rank) | implemented, canary-configured |
-| T0 calibration (3 policy views over ONE root pool + ONE held-out K_EVAL) | implemented, canary-configured |
+| T0 calibration (3 policy views over ONE root pool + ONE held-out K_EVAL) | implemented; B*/definitive-structure Canary C complete; scientific config frozen |
 | Null-runtime firewall (§2.12), verified at the SAMPLER with a positive control | done |
 | §3.4 fail-closed launch gate, §4.2 content-bound resume | done |
-| Cluster canaries (V1F7) | A/B + terminal-arm smoke complete; C blocked |
+| Cluster canaries (V1F7) | A/B/C + terminal-arm smoke complete |
 
 Canary A entry sizing (2026-07-29; deployment evidence only):
 
@@ -377,19 +377,25 @@ Cluster closure (2026-07-29; deployment evidence only):
   Triton, real DPLM checkpoint + 119-residue generation, and real a1res03 Head inference all pass.
   Phase C/Fusion can opt in with `CONDA_ENV=immune-design-blackwell` plus
   `--partition=rtx6000 --gres=gpu:rtx_pro_6000:1`; the default environment is unchanged.
+- Canary C completed on a PLI H100 in 16m18s: both proteins reached `t0_complete`; 72/72
+  B* structure requests were definitive, with exact `Q_T0=4` denominators per policy/rho.
+  Its outcome-independent maturity telemetry separated `.50/.70/.85` at approximately
+  49/27/11 unresolved editable positions.
 
-**Blocking a scientific run** (not a canary): `TEST_SET_PARQUET`, `DEV_IDS`/`HOLDOUT_IDS`, the real
-T0 `rho_grid`/`K_EVAL`/`Q_T0`, and measured `SECONDS_PER_REFOLD`/`SECONDS_PER_DFE` — the gate
-refuses an unverifiable walltime by design, so the last one is a hard stop.
+**Scientific T0 frozen values:** 24 generic anchor-free development proteins in four fixed
+six-protein shards; `rho_grid=[.50,.70,.85]`, `B=16`, `K_EST=4`, `K_EVAL=8`,
+`unique_root_capacity=F_cap=12`, `N=Q_T0=4`. Config:
+`inverse_folding/reference_flow/configs/rf_fusion_v1_entry_t0_dev.yaml`.
 
-**Known gaps, stated so no canary over-claims them** (full list in the runbook status block):
-1. no T0→v0 definitive-structure handoff — T0's `3·Q_T0` subset is charged and recorded but
-   deferred, so runbook §6.1 GO/KILL condition 3 cannot be closed from a T0 run alone;
-2. the T0 structure-eligibility law is frozen as policy-faithful B* but the code still uses
-   all independent-full survivors; Canary C must exercise the corrected law;
-3. `maturity_telemetry.anchor_preservation` is null and is NOT a measurement — root-level
-   preservation is structurally enforced (so a value there would be 1.0 by construction) and the
-   completed-sequence checksum is not computed.
+**Blocking the scientific T0 launch:** freeze/persist the 24-ID cohort, prior-cohort exclusions
+and four shard manifests; implement and commit the preregistered
+`scripts/analysis/rf_fusion_v1_t0_gate.py` from runbook §6.1. P1 cohort size, split sizes,
+winning maturity and primary margin remain intentionally unfrozen until T0 variance/cost exists.
+
+**Known gap, stated so no canary over-claims it** (full list in the runbook status block):
+`maturity_telemetry.anchor_preservation` is null and is NOT a measurement — root-level
+preservation is structurally enforced (so a value there would be 1.0 by construction) and the
+completed-sequence checksum is not computed.
 
 **Local test state**: full suite 2388 passed / 47 skipped, with the same 14 pre-existing failures
 as the pristine tree (unrelated modules, missing optional deps) — zero new failures.
