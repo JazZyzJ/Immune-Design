@@ -51,6 +51,30 @@ failed gate into a positive result.
 >   F_cap=6 frontier per rho. The wide smoke grid resolved separated resume points (.50/.70 crossed
 >   16/16, .85 14–15/16). This is a WIRING canary — scTM/gate-pass are sizing evidence, NOT a
 >   GO/KILL number; the scientific grid/`K_EVAL`/`Q_T0`/cohort remain frozen from §6 before a real T0.
+> - **T0 sizing inputs from Canary C (2 proteins, 100–105 aa; feed §3.1/§6/§7, do NOT over-read).**
+>   - *Cost model.* Per protein per rho: actual `logical_dfe` ≈ 1.9k (root_prefix ~775 + est ~200 +
+>     eval ~200 + full_control ~1.9k... reserved ≈ 1.7k–2.3k), `3*Q_T0=12` structure requests of
+>     which ~11 are real folds (a few deterministic-completion cache hits). Whole run: 23214 DFE +
+>     66 real ESMFold2 folds for 2×3 points, **16m18s gross** (incl. one DPLM+ESMFold2 load).
+>     **Unit costs are still ANCHORS, not this-round measurements**: the oracle ledger recorded
+>     `walltime_s=0` per event (a pre-existing gap; the structure evaluator now times itself, so the
+>     real dev-cohort T0 will measure `seconds_per_refold`/`seconds_per_dfe` cleanly). Use
+>     `seconds_per_refold≈2.9` (RAR 0031, at scale) and `seconds_per_dfe≈0.02` (Canary A actual /
+>     c1_null b4 gen) as the current projection anchors — length-dependent, so a longer cohort costs
+>     more per protein.
+>   - *Outcome-independent maturity telemetry (the §11.5 basis for freezing the scientific rho grid,
+>     NOT a treatment effect).* The reparam-remask sampler makes ρ_edit rise steeply at the end:
+>     rho_target 0.50/0.70/0.85 are captured at ρ_actual **0.52/0.73/0.89**, mean step **94/97/99**
+>     of 100, mean **unresolved editable ≈ 49/27/11** positions. So the three points ARE distinct in
+>     remaining action but all land in the last ~6 steps; a maturity with materially more action
+>     left needs ρ_target well below 0.50. (Only 2 proteins — a hint, not the frozen basis.)
+> - **What Canary C does and does NOT determine for the scientific run.** It confirms the pipeline
+>   runs end to end and gives the cost/feasibility MODEL + the maturity-vs-step relationship above,
+>   so the Thinker can freeze the **T0** config (rho grid, `K_EVAL`, `Q_T0`) from §6. It does NOT
+>   give the **P1 cohort size** — §3.1 sizes that from the T0 *variance*, which needs a real
+>   dev-cohort T0 (2 wiring proteins carry no variance) — nor the frozen statistical tests/margins
+>   (§6.1). Sequence: freeze T0 config → run the dev-cohort T0 (measures unit costs + variance) →
+>   size and freeze P1.
 >
 > Both P1 arms and T0 are implemented, wired and canary-configured; null isolation is verified at
 > the sampler (not only in the config). T0 now emits the standard §9 evidence tables, keeps each

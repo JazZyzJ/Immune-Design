@@ -230,11 +230,13 @@ def _evaluate_target_backbone(
     T0 leaves GO/KILL condition 3 unanswerable.
     """
     import math
+    import time
 
     from inverse_folding.evaluation.refold import refold
     from inverse_folding.evaluation.tmalign import run_tmalign
     from inverse_folding.reference_flow.fusion.v1_admission import StructureOutcome
 
+    started = time.perf_counter()
     try:
         pred = refold(
             sequence, protein_id, "t0", backend=backend, cache_dir=refold_cache_dir, model=model
@@ -250,12 +252,14 @@ def _evaluate_target_backbone(
             cache_status="hit" if cache_hit else "miss",
             model_executed=not cache_hit,
             metrics={"scTM": scTM, "pLDDT": plddt},
+            walltime_s=time.perf_counter() - started,
             evaluated=True,
         )
     except Exception as exc:  # noqa: BLE001 -- an unverifiable structure fails closed, not deferred
         return StructureOutcome(
             feasible=False, cache_status="miss", model_executed=True,
-            failure_reason=f"{type(exc).__name__}: {exc}", evaluated=True,
+            failure_reason=f"{type(exc).__name__}: {exc}",
+            walltime_s=time.perf_counter() - started, evaluated=True,
         )
 
 
