@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-07-27T02:45:00-04:00
+> **Last synced**: 2026-07-29T01:04:17-04:00
 > **Branch**: fusion_rf_refine
 
 ---
@@ -328,9 +328,10 @@
 
 ## RF-Refine Fusion V1-A — pre-terminal entry (PLAN_RF_REFINE_FUSION_V1.md)
 
-> **IMPLEMENTED LOCALLY, NEVER RUN ON A GPU.** Branch `fusion_rf_refine`, worktree
-> `/Users/jerry/Project/MHC-IF-fusion`, **uncommitted**. All evidence is unit/contract tests and
-> local adversarial probes. Do not read any scientific claim out of this row.
+> **LOCAL IMPLEMENTATION COMPLETE; CANARIES A/B + TERMINAL-ARM SMOKE COMPLETE.** Branch
+> `fusion_rf_refine`, worktree `/Users/jerry/Project/MHC-IF-fusion`. The deployment canaries ran
+> on Della on 2026-07-29; no scientific T0/P1 has run. Do not read a treatment claim out of canary
+> data.
 
 **The question.** Same total DFE, different ALLOCATION POINT: does spending the reward signal at a
 partial state (ρ_edit<1) beat spending it at the endpoint? "Matched compute" is the entire claim.
@@ -342,7 +343,36 @@ partial state (ρ_edit<1) beat spending it at the endpoint? "Matched compute" is
 | T0 calibration (3 policy views over ONE root pool + ONE held-out K_EVAL) | implemented, canary-configured |
 | Null-runtime firewall (§2.12), verified at the SAMPLER with a positive control | done |
 | §3.4 fail-closed launch gate, §4.2 content-bound resume | done |
-| Cluster canaries (V1F7) | **not run**; A and B runnable (each + runbook §11.7), C blocked |
+| Cluster canaries (V1F7) | A/B + terminal-arm smoke complete; C blocked |
+
+Canary A entry sizing (2026-07-29; deployment evidence only):
+
+| protein | `B` | unique roots | facade offered to v0 | `C_reserved` |
+|---|---:|---:|---:|---:|
+| `5ZHV_B` | 16 | 14 | 6/6 | 1657 DFE |
+| `9L2Q_A` | 16 | 16 | 6/6 | 1663 DFE |
+
+Across both proteins, logical DFE was `prefix=3168`, `est=128`, `final=14`. Thus the root-yield
+and facade-cap wiring passed (`30/32` unique roots; both full facades), but the maturity evidence
+is scientifically cautionary: `3168/32=99` prefix DFE per attempt and
+`128/(30*4)=1.07` estimator-tail DFE per root-continuation. Under this smoke,
+`rho_target=.85` therefore captured states with only about one denoising step remaining on
+average. This is not a failure of Canary A, but `.85` is not frozen as a meaningful
+pre-terminal scientific handoff until `snapshot_step`, `rho_actual`, absolute unresolved mass and
+descendant diversity are inspected.
+
+Cluster closure (2026-07-29; deployment evidence only):
+
+- Canary A and the terminal-arm smoke each produced 6-row facades per protein; their v0 jobs
+  closed `entry_source_id -> admission verdict -> initial particle` without a sequence join.
+- Canary B used the 24-anchor Q00511 safety manifest. All 24 WT identities were preserved across
+  6 facade rows and 62 continuation rows; `anchor_preservation` remains null and is not a measured
+  field.
+- At `F_cap=6, N=4`, `5ZHV_B` produced an elite in both arms, `9L2Q_A` had `0<4` feasible initial
+  parents in both arms, and Q00511 reached `2<4`. Thus Q00511 did not exercise the anchored v0
+  repair loop, and the scientific P1 run requires a larger frozen `F_cap`.
+- The tested environment requires H100/H200/A100-class compatible CUDA hardware. The Della
+  RTX PRO 6000 Blackwell nodes are incompatible with the current torch 2.5.1+cu121 build.
 
 **Blocking a scientific run** (not a canary): `TEST_SET_PARQUET`, `DEV_IDS`/`HOLDOUT_IDS`, the real
 T0 `rho_grid`/`K_EVAL`/`Q_T0`, and measured `SECONDS_PER_REFOLD`/`SECONDS_PER_DFE` — the gate
@@ -351,7 +381,9 @@ refuses an unverifiable walltime by design, so the last one is a hard stop.
 **Known gaps, stated so no canary over-claims them** (full list in the runbook status block):
 1. no T0→v0 definitive-structure handoff — T0's `3·Q_T0` subset is charged and recorded but
    deferred, so runbook §6.1 GO/KILL condition 3 cannot be closed from a T0 run alone;
-2. `maturity_telemetry.anchor_preservation` is null and is NOT a measurement — root-level
+2. the T0 structure-eligibility law is frozen as policy-faithful B* but the code still uses
+   all independent-full survivors; Canary C must exercise the corrected law;
+3. `maturity_telemetry.anchor_preservation` is null and is NOT a measurement — root-level
    preservation is structurally enforced (so a value there would be 1.0 by construction) and the
    completed-sequence checksum is not computed.
 

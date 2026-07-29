@@ -74,26 +74,29 @@ execution.
 | V1F4 | complete continuations, root value, controls, and fresh facade construction | done (local) |
 | V1F5 | v0 admission mapping, artifacts, resume, and cost ledger | done (local), 2 gaps below |
 | V1F6 | production driver, launcher reuse, docs, and regression closure | done (local) |
-| V1F7 | two real deployment canaries | BLOCKED (not merely cluster-pending) |
+| V1F7 | two real deployment canaries | done on Della (A/B + terminal-arm smoke); T0 Canary C blocked |
 
 No task is complete from code alone. Its named artifact, acceptance/falsification criteria,
 and validation evidence must all exist.
 
 **"done (local)" means exactly this**: the implementation, its artifacts and its unit/contract
-tests exist and pass in one interpreter on a laptop. NOTHING has run on a GPU. No task is
-`done` outright until V1F7's canaries execute on Della, and no scientific claim follows from
-any of it.
+tests exist and pass in one interpreter on a laptop. V1F7's ordinary and anchor-heavy deployment
+canaries, plus the terminal-arm smoke, executed on Della on 2026-07-29; they establish deployment
+contracts only, not a scientific effect. Canary C remains blocked by the missing T0→v0 definitive
+structure handoff and the not-yet-implemented B* structure-eligibility law. See the runbook status
+block.
 
-**V1F7 is blocked by the launch contract itself, not by cluster access**: Canary B's 24-anchor
-manifest is not on this branch (the file here has 8), and Canary C needs a T0→v0 structure handoff
-that does not exist. See the runbook status block.
+**Scientific decision frozen on 2026-07-29 — policy-faithful B\***: the `independent_full`
+ELIGIBLE pool for the `Q_T0` structure subsample is its exact-Head-ranked Terminal frontier,
+`full_pool[:F_cap]`. Selected and random partial pools remain the common `K_EVAL` endpoints of the
+roots each policy holds; they are not terminal-Head-truncated a second time. All three pools then
+use the same frozen sample size and Head-independent subset rule. `Q_T0=N=4` for the active T0
+design; partial subsets are root-balanced (one held-out endpoint per held root, with overlapping
+selected/random roots reusing the same endpoint). The current all-survivors implementation must
+be changed before Canary C or a scientific T0 is accepted. Runbook §6.0 is the binding rationale
+and coder checklist.
 
-**Open scientific decision, blocking a scientific T0**: no authority defines the `independent_full`
-ELIGIBLE pool for the `Q_T0` structure subsample. The implementation uses all survivors (one rule
-for all three policies, PLAN:470); a "frontier" reading would truncate all three by the Terminal
-law instead. Runbook §6.0 records the question. A human must answer it before T0 launches.
-
-**Three V1F5 interfaces are implemented but not closed**, named here so no downstream task
+**Two V1F5 interfaces are implemented but not closed**, named here so no downstream task
 assumes them:
 
 1. **T0 -> v0 definitive structure.** The `3*Q_T0` subset is frozen, recorded and charged, but the
@@ -103,12 +106,10 @@ assumes them:
    Root-level preservation is enforced structurally, so a root-level value would be 1.0 by
    construction; the continuation/facade/elite checksum needs the DPLM alphabet and is not
    computed. Canary B (runbook §11.6) asserts it manually and must report it as manual.
-3. **v0 admission verdicts and round-0 refolds.** `build_initial_population` drops a facade row for
-   a non-canonical sequence, a length mismatch, an anchor mismatch or structure infeasibility with
-   a bare `continue`, persisting no attempt and no reason; and the round-0 refold spend is booked
-   in no artifact (the entry ledger defers it, v0 counts refolds only from round 1). The
-   `facade design_idx -> admission attempt and verdict` edge of §2.11 is therefore still open.
-   §2.11 explicitly authorizes an additive audit seam for exactly this.
+
+The earlier v0-admission gap is closed: every examined facade row now has an admission verdict,
+definitive structure reason/metrics and round-0 fold accounting, and the 2026-07-29 canaries closed
+the `design_idx -> admission verdict -> initial particle` crosswalk without a sequence join.
 
 ### 0.4 Explicit non-goals
 
@@ -478,13 +479,25 @@ Required policies:
 - fresh one-root/one-completion materialization for Pre-terminal.
 
 For T0, also build one deterministic, equal-size structure-subset manifest over exactly three
-policy pools: selected-root `eval` endpoints, random-root `eval` endpoints, and the
-compute-matched independent-full pool. The selected and random pools are views over the same
-per-root `K_EVAL` table. A frozen
-`T0_STRUCTURE_SUBSET_SIZE=Q_T0` and separate stable structure-subsampling seed order eligible IDs
-by a Head-independent content hash; no policy may use another rule or sample size. If any pool
-has fewer than `Q_T0` eligible endpoints, T0 is incomplete rather than silently shrinking a
-denominator.
+policy pools:
+
+- `selected_partial`: held-out `K_EVAL` endpoints of the value-selected roots;
+- `random_partial`: held-out endpoints of the random roots from the same common `K_EVAL` table;
+- `independent_full`: the exact-Head-ranked Terminal frontier `full_pool[:F_cap]`.
+
+Eligibility is policy-faithful: the partial policies must not receive a second terminal Head
+filter, and `independent_full` must not discard the Terminal policy's endpoint Head allocation.
+After eligibility is fixed, all policies use the frozen `T0_STRUCTURE_SUBSET_SIZE=Q_T0` and a
+Head-independent deterministic subset rule. For the active T0 design, freeze `Q_T0=N=4`.
+Partial-policy sampling is root-balanced: choose exactly one held-out endpoint per held root by a
+stable content hash, and reuse the same endpoint when selected/random share a root. The
+independent-full policy chooses `Q_T0` rows by the same Head-independent content ordering within
+its top-`F_cap` frontier.
+
+Fail before generation unless `Q_T0 == N`, `Q_T0 <= F_cap`, and
+`Q_T0 <= N*K_EVAL`. At runtime, require at least `F_cap` valid independent-full survivors before
+forming its frontier. If any pool has fewer than `Q_T0` eligible endpoints, T0 is incomplete
+rather than silently shrinking a denominator or backfilling.
 
 The T0 independent-full control uses the same frozen `c1_null`, `controller=None`, absent h-map,
 backbone, anchors, DPLM checkpoint/tokenizer, sampler semantics, and Head as the partial roots.

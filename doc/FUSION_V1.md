@@ -180,6 +180,16 @@ position-dependent field or written back into denoising. Selected and random all
 membership views over the same partial-root pool and held-out evaluation table, not separate
 generation draws.
 
+For the structure-feasible comparison, each policy keeps its own scientifically defining
+eligibility law. Selected and random partial policies expose held-out continuations of the roots
+they hold. The independent-full control first applies the Terminal policy's exact
+complete-sequence Head ordering and exposes only its top `F_cap` frontier. The common rule is the
+subsequent equal-size, Head-independent definitive-structure sample, not a second terminal Head
+filter applied to every policy. Applying terminal Head selection to partial endpoints would give
+Pre-terminal both early root allocation and an extra terminal selection stage that the P1 method
+does not have. Conversely, evaluating all independent-full survivors would remove the Terminal
+arm's defining endpoint allocation and weaken the control.
+
 The detailed maturity grid, rollout split, reliability statistics, seed contract, and refold
 allocation belong in the runbook. The science-level decision is simple: calibrate one late
 $\rho_{\mathrm{edit}}$ on a development cohort, freeze it, and validate it once. If no tested

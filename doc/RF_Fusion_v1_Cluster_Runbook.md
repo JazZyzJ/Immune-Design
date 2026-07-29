@@ -55,8 +55,9 @@ failed gate into a positive result.
 >    recorded, but the production gate always defers and there is no T0→v0 handoff. A T0 run
 >    reports `t0_structure_deferred` and the driver exits non-zero. GO/KILL condition 3 cannot be
 >    closed from a T0 run at all today. **Canary C is blocked.**
-> 2. **The `independent_full` eligible pool is an OPEN scientific decision** (§6.0). A scientific
->    T0 must not launch until a human answers it.
+> 2. **The `independent_full` eligible pool is scientifically frozen as policy-faithful B\***
+>    (§6.0), but the implementation still uses all survivors. Canary C must exercise the corrected
+>    B* law before it can pass.
 > 3. **The v0 terminal stage is a SECOND job that the runbook now specifies (§11.7).** The entry
 >    driver stops at the facade; without §11.7 no arm reaches v0, and `submit_refine.slurm`'s
 >    default `FUSION_CONFIG` is the SMOKE package, which runs to completion and emits a plausible
@@ -81,14 +82,16 @@ failed gate into a positive result.
 >    oracle must report the cost it burned — and is NOT done. Booking a zero instead would be a
 >    fabricated measurement, so nothing is booked.
 >
-> **Consequence.** Canary A + §11.7 and Canary B + §11.7 are runnable. **Canary C (T0) is still
-> blocked** by gap 1. A passing canary proves deployment, identity, ledger, anchor and replay
+> **Consequence.** Canary A + §11.7, Canary B + §11.7, and the terminal-arm smoke have executed.
+> **Canary C (T0) is still blocked** by gaps 1–2. A passing canary proves deployment, identity,
+> ledger, anchor and replay
 > wiring only — **never HT1/HT2**.
 >
 > **Still blocking a scientific run** (not a canary): the cohort manifests (`DEV_IDS` /
 > `HOLDOUT_IDS` / `TEST_SET_PARQUET`), the T0 `rho_grid`/`K_EVAL`/`Q_T0` values, and the measured
-> `SECONDS_PER_REFOLD` / `SECONDS_PER_DFE` unit costs are not frozen. No SCIENTIFIC run has launched — the canaries executed 2026-07-29 (see
-> the execution block above), but a canary is a contract smoke only; do not read any effect out of it.
+> `SECONDS_PER_REFOLD` / `SECONDS_PER_DFE` unit costs are not frozen. No SCIENTIFIC run has
+> launched — the canaries executed 2026-07-29 (see the execution block above), but a canary is a
+> contract smoke only; do not read any treatment effect out of it.
 
 Authority order:
 
@@ -317,6 +320,29 @@ Freeze in `resolved_t0.yaml` before launch:
 - all seed sets and the estimator definition;
 - refold shortlist size and all decision margins.
 
+Canary A entry sizing provides one important operational constraint but does not freeze the
+scientific grid. On `5ZHV_B` and `9L2Q_A`, `rho_target=.85` produced 32/32 crossings and 30/32
+unique roots, but used `3168/32=99` prefix DFE with `S=100`; the estimator continuations used
+`128/(30*4)=1.07` tail DFE on average. Thus `.85` was a one-step root under this sampler schedule.
+The last forward may still resolve many editable residues, so this does not prove that the state
+is degenerate. It does prove that nominally different late rho targets may collapse onto the same
+final maturity jump.
+
+Before freezing the scientific `RHO_GRID`, run an outcome-independent maturity-only sizing scan
+over a wider diagnostic grid such as `[.50,.60,.70,.80,.85]`. Do not inspect Head treatment
+differences. Select three late targets only if they produce:
+
+- distinct `snapshot_step` / tail-DFE strata rather than the same final jump;
+- distinct `rho_actual` distributions;
+- adequate absolute unresolved editable mass;
+- non-trivial unique-descendant branching;
+- acceptable crossing and unique-root coverage under the frozen `B`.
+
+Prefer three operationally separated states (for example, median tail DFE on the order of
+approximately 20, 10 and 5) over three closely spaced rho decimals. These are sizing targets, not
+new effect gates. If three distinct late states do not exist, stop rather than presenting a
+nominal three-point grid that is one state in practice.
+
 Use the arithmetic mean terminal Head `global_risk` over `K_EST` complete rollouts as
 the root-value estimate; lower is better. Report alternative summaries descriptively but
 do not switch the selector among mean/min/median after observing results.
@@ -343,33 +369,57 @@ For every maturity and protein:
 7. definitively refold equal-size, predeclared terminal subsets from selected-root,
    random-root, and independent-full policies.
 
-### 6.0 OPEN DECISION — the independent-full eligible pool (BLOCKS a scientific T0)
+### 6.0 FROZEN DECISION — policy-faithful B*
 
-Step 7 above refolds "equal-size, predeclared terminal subsets" from the three policies. For the
-two partial policies the eligible set is unambiguous: every `K_EVAL` endpoint of the roots that
-policy holds. **For `independent_full` no authority defines it**, and the two readings differ:
+Step 7 refolds equal-size, predeclared terminal subsets from three different allocation
+policies. The common requirement is the **same definitive sample size and Head-independent
+within-pool sampling rule**. It is not a requirement that all three methods manufacture their
+eligible pool with the same selector.
 
-| Reading | Eligible pool | Argument |
-|---|---|---|
-| **A — all survivors** (implemented) | every surviving complete trajectory | PLAN:466 says "the compute-matched independent-full pool"; PLAN:470 says "no policy may use another rule", and only this reading gives all three the same rule |
-| **B — frontier** | the Terminal law's Head-ranked top `F_cap` (PLAN:622) | step 6 says the control is ranked "under the Terminal law"; `doc/FUSION_V1.md` and §6.1 condition 3 both say **frontier**, not average trajectory |
+Freeze the eligibility law as:
 
-The implementation uses **A**, and says so in `run_t0_protein`. It is not a derived result — it is
-the reading that keeps one rule across three policies.
+| Policy | Eligible structure pool |
+|---|---|
+| `selected_partial` | all common `K_EVAL` endpoints of the `N` value-selected roots |
+| `random_partial` | all common `K_EVAL` endpoints of the `N` random roots |
+| `independent_full` | valid matched full trajectories ordered by exact complete-sequence Head, restricted to `full_pool[:F_cap]` |
 
-Why this matters, sized on the shipped canary config: under B the control would be drawn from its
-best ~25% while the partial views are drawn from 100% of theirs. That inflates the control and
-biases GO/KILL condition 3 (`selected` "not materially worse" than the control) toward a **false
-KILL**. Reading A's risk runs the other way: the control is an average trajectory rather than a
-frontier, which is a weaker comparator and biases toward a false GO.
+This is **B\*** rather than either earlier reading:
 
-**Before a scientific T0 launches, a human must answer:** is the eligible pool (A) all `M`
-survivors, or (B) a Head-ranked top-`K`? If B, `K` must be named AND the same truncation law must
-be applied to `selected_partial` / `random_partial`, or PLAN:470 is violated. If B is chosen, also
-add a `Q_T0 <= K` config gate — today `Q_T0` larger than the pool raises mid-run, after the whole
-generation budget is already spent.
+- all-survivor A removes the Terminal method's defining endpoint Head allocation and weakens the
+  control, biasing condition 3 toward a false GO;
+- applying top-`F_cap` terminal Head truncation to the partial pools would give Pre-terminal an
+  extra endpoint-selection stage after its root-value selection. That is not the P1 method and
+  would confound the question by testing a double-selected partial policy.
 
-A wiring canary is unaffected: it publishes no GO/KILL number.
+After these policy-faithful pools exist, freeze `Q_T0=N=4`. Partial-policy structure selection is
+root-balanced: one held-out endpoint per held root, chosen by a stable Head-independent content
+hash. If selected/random share a root, they reuse the same endpoint. For `independent_full`, use
+the same Head-independent content ordering to choose `Q_T0` rows from the top-`F_cap` frontier.
+The all-survivor full-pool Head/coverage distribution may be reported descriptively, but it is
+not the condition-3 comparator.
+
+Hard gates, evaluated before spending the corresponding generation/structure budget:
+
+- `Q_T0 == N`;
+- `Q_T0 <= F_cap`;
+- `Q_T0 <= N*K_EVAL`;
+- valid `independent_full` survivors `>= F_cap`;
+- every policy produces exactly `Q_T0` definitive structure verdicts, with no shrink or backfill.
+
+**Coder checklist before Canary C:**
+
+1. change `run_t0_protein` so `independent_full` structure eligibility is the mapped
+   `full_pool[:F_cap]`, not `full_survivors`;
+2. make selected/random structure subsets root-balanced and reuse the same endpoint for an
+   overlapping root;
+3. add the config/runtime hard gates above, failing before expensive work where possible;
+4. retain all-survivor rows only as descriptive evidence;
+5. add tests proving that partial endpoints are never terminal-Head-truncated, independent-full
+   is top-`F_cap`, every held partial root is represented once, and undersized pools fail closed.
+
+Canary C remains a wiring canary and publishes no GO/KILL number, but because it has not run yet,
+it should exercise this final B* contract rather than the superseded all-survivor implementation.
 
 Estimator and evaluation rollouts are evidence only. None may become a P1 parent.
 Branch-and-materialize is outside this V1-A runbook and coder scope.
@@ -706,6 +756,23 @@ T0 needs no `PRETERMINAL_RESERVATION`: it has no Terminal counterpart to match, 
 own budget. It writes no `generated.parquet` (it builds no parent); its deliverables are
 `t0_control_membership` / `t0_structure_subset` / `t0_structure_results`.
 
+**Required coder handoff before submission:** Canary C must no longer stop at
+`t0_structure_deferred`. Implement either an integrated evaluator or a second structure-only job
+that:
+
+1. reads every frozen request from `t0_structure_subset.parquet` without changing membership;
+2. preserves `(protein_id, rho_id, policy, request_id, sequence, sequence_md5)` exactly;
+3. calls the same v0 target-backbone structure oracle, cache identity and absolute gates for all
+   three policies;
+4. writes one definitive `t0_structure_results` row plus physical/cache/walltime ledger evidence
+   per request;
+5. requires exactly `Q_T0` definitive verdicts for every `(protein_id, rho_id, policy)` and fails
+   closed on any missing, duplicate or mismatched row;
+6. promotes the grid point to `t0_complete` only after those rows are reconciled.
+
+Do **not** run the eight-round Fusion loop and do not create a parent for T0. This handoff reuses
+only the definitive structure evaluator required by GO/KILL condition 3.
+
 ```bash
 MODE=v1_entry V1_SUBMODE=run \
 OUTPUT_ROOT=${RUN_ROOT}/canary_c_t0 \
@@ -714,9 +781,12 @@ ENTRY_CONFIG=inverse_folding/reference_flow/configs/rf_fusion_v1_entry_canary_t0
 sbatch scripts/submit_if_phase_c.slurm
 ```
 
-The `rho_grid` in the canary config is a SMOKE grid. The scientific T0 grid, `K_EVAL`, `Q_T0` and
-the cohort manifests are frozen from §6 before the calibration launch — a canary answers whether
-the pipeline runs, never where rho should be.
+The `rho_grid` in the canary config is a deliberately wide SMOKE grid. Canary A showed that
+`.85` was captured near step 99 on two proteins, so the Canary C grid spans `.50/.70/.85` to
+exercise meaningfully different resume points if the sampler exposes them. The scientific T0
+grid, `K_EVAL`, `Q_T0` and cohort manifests are frozen from §6 only after the outcome-independent
+maturity sizing rule above — a canary answers whether the pipeline runs, never where rho should
+be.
 
 ### 11.6 Canary B — anchor-heavy Q00511 (PRE-TERMINAL)
 

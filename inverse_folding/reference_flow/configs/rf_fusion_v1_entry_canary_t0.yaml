@@ -7,7 +7,8 @@
 #
 #   selected_partial  — the continuation-value beam
 #   random_partial    — a Head-INDEPENDENT membership draw from the SAME pool
-#   independent_full  — the compute-matched full-trajectory control
+#   independent_full  — the compute-matched full-trajectory control, whose
+#                       structure-eligible pool is Terminal-law Head top-F_cap
 #
 # selected and random differ in exactly one thing: which roots they hold. Switching
 # the label must not redraw a single continuation, or T0 measures sampling noise
@@ -18,9 +19,11 @@
 # Building a parent here would spend the P1 budget and let a calibration outcome
 # leak into the P1 population.
 #
-# The rho_grid below is a SMOKE grid, not the calibration grid. The real grid is
-# frozen from the runbook before the scientific T0 launch; do not read an effect
-# out of a canary.
+# The rho_grid below is a deliberately WIDE smoke grid, not the calibration
+# grid. Canary A showed rho=.85 roots near step 99 on two proteins; .50/.70/.85
+# is used here to exercise separated resume points if the sampler exposes them.
+# The scientific grid is frozen from outcome-independent maturity telemetry;
+# do not read an effect out of this canary.
 # =============================================================================
 
 schema_version: v1cfg-1
@@ -45,8 +48,14 @@ estimator: mean_global_risk
 n_population: 4
 initial_refold_attempt_cap: 6
 
-# T0-only: the held-out evaluation table and the equal-sized structure subsample
-rho_grid: [0.80, 0.85, 0.90]
+# T0-only: the held-out evaluation table and equal-sized B* structure subsets.
+# Q_T0=N=4. selected/random are root-balanced (one Head-independent held-out
+# endpoint per held root); independent_full draws Q_T0 by the same
+# Head-independent content order within its Head-ranked top-F_cap=6 frontier.
+# The rho grid remains a wiring grid. Canary A at rho=.85 captured near step 99
+# on two proteins, so these values MUST NOT be promoted to a scientific grid
+# without inspecting snapshot_step, rho_actual and absolute unresolved mass.
+rho_grid: [0.50, 0.70, 0.85]
 k_eval: 4
 q_t0: 4
 structure_subsample_seed: 20260723
