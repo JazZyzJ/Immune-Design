@@ -1,6 +1,6 @@
 # Princeton Della 使用指南（zc1519 / kaiyijiang）
 
-Snapshot 日期：2026-05-14。PLI 权限更新：2026-06-19。集群配置会变，过期时用文末命令重新生成。
+Snapshot 日期：2026-05-14。PLI 权限更新：2026-06-19。RTX 6000 更新：2026-07-29。集群配置会变，过期时用文末命令重新生成。
 
 ## 1. 账户、配额、权限
 
@@ -34,6 +34,7 @@ Snapshot 日期：2026-05-14。PLI 权限更新：2026-06-19。集群配置会�
 | `pli` | 15 d | 38 | H100×8 | 当前可用：`--account=pli_x --qos=pli-low --partition=pli` |
 | `pli-lc` | 3 d | 9 | H100×8 | 当前 `pli_x/pli-low` dry-run 不通过 |
 | `ailab` | 15 d | 18 | H200×8 | 需 `ailab` group 权限；当前账号可用 |
+| `rtx6000` | 15 d | 1 | RTX PRO 6000 Blackwell×8 | `--partition=rtx6000 --gres=gpu:rtx_pro_6000:1` |
 
 ### `cpu` 分区里的节点类型
 
@@ -73,6 +74,7 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 | `della-h19g*`, `della-h20g*`, `della-h21g*` | `all` / cryoem pool | 4× H100 SXM | 80 GB | 非日常 A100 路线；不要假设可用 |
 | `della-j*` | `pli`, `pli-lc` | 8× H100 | 80 GB | `pli` 用 `--account=pli_x --qos=pli-low`；`pli-lc` 暂未确认可用 |
 | `della-i19g*`–`della-i24g*` | `ailab` | 8× H200 | 141 GB | `--partition=ailab --constraint="h200"` |
+| `della-h23g1` | `rtx6000` | 8× RTX PRO 6000 Blackwell Server Edition | 96 GB | compute capability 12.0; use `immune-design-blackwell` |
 
 ### GPU 提交策略速查
 
@@ -108,12 +110,56 @@ Phase C immunogenicity-only evaluation 可以跑在 CPU 上：`EVAL_MODE=imm DEV
 #SBATCH --partition=pli
 #SBATCH --gres=gpu:h100:1
 
+# RTX PRO 6000 Blackwell (sm_120)
+#SBATCH --partition=rtx6000
+#SBATCH --gres=gpu:rtx_pro_6000:1
+
 # 1g.10gb MIG 切片（只跑极小推理 / smoke）
 #SBATCH --partition=mig
 # 不要写 --constraint="mig"；当前 mig 节点 feature 只有 rh9
 ```
 
 > ⚠️  `--constraint="intel&gpu40"` **只匹配 `della-l01g[3-12]`，这是 MIG 3g.40gb 切片**（显存 40 GB 但算力只有 A100 的 3/7）。`"a100&gpu40&pcie"` 也会匹配这些 MIG 节点；一般不要作为正式任务 constraint。正式训练若需要整卡，优先用 `"a100&gpu40&nomig"` 或 `"a100&gpu80&nomig"`。当前 Della 会拒绝在脚本中显式写 `#SBATCH --partition=gpu` 或 `#SBATCH --partition=gputest`；常规 A100 job 建议只写 `--qos` + `--constraint`，让 Slurm 自动落到可用 partition。
+
+### RTX PRO 6000 Blackwell environment
+
+The legacy `immune-design` environment remains pinned to PyTorch 2.5.1 + CUDA 12.1 and does not
+contain `sm_120` kernels. Keep it unchanged for reproducibility. The isolated
+`immune-design-blackwell` environment is a clone with only the CUDA/PyTorch ABI stack replaced by
+PyTorch 2.7.1 + CUDA 12.8 and the matching PyG `torch_scatter` wheel.
+
+One-time reconstruction:
+
+```bash
+module purge
+module load anaconda3/2025.12
+cd /home/zc1519/src/Immune-Design
+conda create -n immune-design-blackwell --clone immune-design -y
+conda remove -n immune-design-blackwell -y \
+  pytorch-cuda pytorch-mutex torchtriton \
+  cuda-cudart cuda-cupti cuda-libraries cuda-nvrtc cuda-nvtx cuda-opencl cuda-runtime \
+  libcublas libcufft libcufile libcurand libcusolver libcusparse libnpp libnvjitlink libnvjpeg
+/home/zc1519/.conda/envs/immune-design-blackwell/bin/python -m pip install --upgrade \
+  -r requirements-blackwell-cu128.txt
+/home/zc1519/.conda/envs/immune-design-blackwell/bin/python -m pip check
+```
+
+The PyTorch wheel carries its CUDA runtime. Load `cudatoolkit/12.8` only when compiling a local CUDA
+extension. `scripts/submit_if_phase_c.slurm` accepts `CONDA_ENV` and keeps `immune-design` as its
+default. An RTX submission is therefore opt-in:
+
+```bash
+CONDA_ENV=immune-design-blackwell sbatch \
+  --partition=rtx6000 \
+  --gres=gpu:rtx_pro_6000:1 \
+  scripts/submit_if_phase_c.slurm
+```
+
+Validation on 2026-07-29 used driver 610.43.02 and a 97,887 MiB RTX PRO 6000. Native BF16
+forward/backward, `torch.compile`/Triton, and CUDA `torch_scatter` passed. A real DPLM checkpoint
+loaded with zero missing/unexpected keys and generated a 119-residue sequence; a real a1res03 Head
+checkpoint completed GPU inference. Do not use the legacy `requirements.txt` directly to rebuild
+this environment because it intentionally re-pins cu121.
 
 2026-05-14 实测调度规律（1 GPU, 8 CPU, 32G）：
 

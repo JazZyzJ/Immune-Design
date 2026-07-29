@@ -115,7 +115,12 @@ class ConditionalDPLMTrainingTask(TaskLitModule):
         # do not load state dict from ckpt, just use the initialized parameters.
         if not_load:
             return
-        state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+        # Project checkpoints include OmegaConf metadata and are trusted internal artifacts.
+        state_dict = torch.load(
+            ckpt_path,
+            map_location="cpu",
+            weights_only=False,
+        )["state_dict"]
 
         missing, unexpected = self.load_state_dict(state_dict, strict=False)
         print(

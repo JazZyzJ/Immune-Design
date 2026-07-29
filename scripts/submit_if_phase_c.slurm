@@ -25,6 +25,7 @@ export PROJECT_ROOT WORK_DIR RUN_DIR LOG_DIR
 MODE="${MODE:-native}"   # native | reference_flow
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
 DEVICE="${DEVICE:-cuda}"
+CONDA_ENV="${CONDA_ENV:-immune-design}"
 
 if [[ "${ALLELE}" == "HLA-DRB1*07:01" ]]; then
     ALLELE_FILE_TAG="HLA-DRB1_07_01"
@@ -141,7 +142,7 @@ mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
 module purge
 module load anaconda3/2025.12
-conda activate immune-design
+conda activate "${CONDA_ENV}"
 module load proxy/default
 
 export PYTHONHASHSEED=42
@@ -175,6 +176,7 @@ echo "============================================================"
 echo "Phase C generation"
 echo "  Job ID          : ${SLURM_JOB_ID}"
 echo "  Mode            : ${MODE}"
+echo "  Conda env       : ${CONDA_ENV}"
 echo "  Node            : ${SLURM_NODELIST}"
 echo "  GPUs            : ${SLURM_GPUS_ON_NODE:-1}"
 echo "  Project root    : ${PROJECT_ROOT}"

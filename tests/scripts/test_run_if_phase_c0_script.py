@@ -22,6 +22,12 @@ def test_submit_phase_c_defaults_experiment_outputs_to_run_layer():
     assert '${WORK_DIR}/if_phase_c/' not in text
 
 
+def test_submit_phase_c_defaults_to_legacy_env_but_allows_override():
+    text = (ROOT / "scripts/submit_if_phase_c.slurm").read_text()
+    assert 'CONDA_ENV="${CONDA_ENV:-immune-design}"' in text
+    assert 'conda activate "${CONDA_ENV}"' in text
+
+
 def test_generate_rows_for_entries_preserves_protein_ids_and_lengths(tmp_path: Path):
     entries = pd.DataFrame(
         [

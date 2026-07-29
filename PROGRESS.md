@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-07-29T01:04:17-04:00
+> **Last synced**: 2026-07-29T12:53:03-04:00
 > **Branch**: fusion_rf_refine
 
 ---
@@ -371,8 +371,12 @@ Cluster closure (2026-07-29; deployment evidence only):
 - At `F_cap=6, N=4`, `5ZHV_B` produced an elite in both arms, `9L2Q_A` had `0<4` feasible initial
   parents in both arms, and Q00511 reached `2<4`. Thus Q00511 did not exercise the anchored v0
   repair loop, and the scientific P1 run requires a larger frozen `F_cap`.
-- The tested environment requires H100/H200/A100-class compatible CUDA hardware. The Della
-  RTX PRO 6000 Blackwell nodes are incompatible with the current torch 2.5.1+cu121 build.
+- The legacy `immune-design` environment remains incompatible with RTX PRO 6000 Blackwell
+  (`torch 2.5.1+cu121`, no `sm_120`). An isolated `immune-design-blackwell` environment is now
+  validated on `della-h23g1`: `torch 2.7.1+cu128`, `torch_scatter pt27cu128`, BF16 backward,
+  Triton, real DPLM checkpoint + 119-residue generation, and real a1res03 Head inference all pass.
+  Phase C/Fusion can opt in with `CONDA_ENV=immune-design-blackwell` plus
+  `--partition=rtx6000 --gres=gpu:rtx_pro_6000:1`; the default environment is unchanged.
 
 **Blocking a scientific run** (not a canary): `TEST_SET_PARQUET`, `DEV_IDS`/`HOLDOUT_IDS`, the real
 T0 `rho_grid`/`K_EVAL`/`Q_T0`, and measured `SECONDS_PER_REFOLD`/`SECONDS_PER_DFE` — the gate

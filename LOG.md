@@ -3855,3 +3855,16 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - `PLAN_RF_REFINE_FUSION_V1.md`, `doc/FUSION_V1.md`, `doc/RF_Fusion_v1_Cluster_Runbook.md`, `doc/SCRIPTS.md`
   - two known gaps stated in the runbook status block: no T0→v0 definitive-structure handoff, and `maturity_telemetry.anchor_preservation` is null (not a measurement)
+
+### L0138
+- timestamp: 2026-07-29T12:53:03-04:00
+- type: FEATURE
+- module: INFRA
+- trigger: Della's idle RTX PRO 6000 Blackwell node is compute capability 12.0, while the frozen `immune-design` environment uses PyTorch 2.5.1 + CUDA 12.1 and has no `sm_120` kernels. The existing environment must remain reproducible and unmodified.
+- change_summary: Created the isolated `immune-design-blackwell` conda clone and replaced only its CUDA/PyTorch ABI stack with `torch 2.7.1+cu128`, `torchvision 0.22.1+cu128`, `torchaudio 2.7.1+cu128`, Triton 3.3.1, and `torch_scatter 2.1.2+pt27cu128`; old conda cu121 runtimes were removed. Added a reproducible overlay lock and RTX runbook. DPLM's trusted internal checkpoint loader now explicitly uses `weights_only=False`, preserving the pre-PyTorch-2.6 serialization contract without a global unsafe-load environment switch. `submit_if_phase_c.slurm` accepts an opt-in `CONDA_ENV` while defaulting to `immune-design`.
+- evidence: On `della-h23g1` (RTX PRO 6000 Blackwell Server Edition, 97,887 MiB, driver 610.43.02), PyTorch reported `(12, 0)` and compiled arches `sm_120/compute_120`; BF16 GEMM+backward, CUDA `torch_scatter`, and `torch.compile`/Triton passed. The frozen 3.25 GB DPLM checkpoint restored with 0 missing/0 unexpected keys and generated 119/119 residues (3.151 GiB peak); a1res03 fold-0 Head wrote a canonical prediction JSON. Split regression runs passed 127 tests across DPLM checkpoint/runtime, Head inference, GeoEGNN/IPA, refiner, sidecar, and Phase C launcher paths. One aggregate pytest process was killed by the login-node cgroup at 58%; all constituent files passed when run separately.
+- impact: The original `immune-design` environment and default launcher behavior are unchanged. RTX use is explicit through `immune-design-blackwell` and `--partition=rtx6000 --gres=gpu:rtx_pro_6000:1`. No scientific result or checkpoint was changed.
+- status: done
+- refs:
+  - `requirements-blackwell-cu128.txt`, `DELLA_USAGE.md`, `scripts/submit_if_phase_c.slurm`
+  - `inverse_folding/dplm/src/byprot/tasks/lm/dplm_invfold.py`, `tests/inverse_folding/test_dplm_checkpoint_compat.py`

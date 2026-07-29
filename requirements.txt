@@ -10,6 +10,8 @@
 ##
 ## Notes:
 ## - The extra index below is required for the pinned CUDA 12.1 PyTorch wheels.
+## - For RTX PRO 6000 Blackwell (sm_120), clone this environment and apply
+##   requirements-blackwell-cu128.txt instead of changing this legacy lock in place.
 ## - `openfold` and `ByProt` are repo-local packages. They cannot be installed
 ##   in the same first pass because `openfold` needs `torch` available at build time.
 --extra-index-url https://download.pytorch.org/whl/cu121
