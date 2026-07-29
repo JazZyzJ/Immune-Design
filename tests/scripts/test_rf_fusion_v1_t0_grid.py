@@ -326,40 +326,92 @@ def test_a_fully_successful_grid_is_still_reported_complete(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_every_policy_draws_its_q_t0_subset_under_the_same_rule():
-    """PLAN §2.10:469-470 -- "order eligible IDs by a Head-independent content hash; no policy may
-    use another rule or sample size."
-
-    The temptation is to restrict the control to the Terminal law's Head-best top `F_cap`, since
-    that is what the Terminal arm would actually submit. That would be a DIFFERENT rule for one
-    policy: the control would be drawn from its best fraction while the two partial views are drawn
-    from all of theirs, inflating the control and biasing condition 3 toward a false KILL. Each
-    pool is therefore the FULL endpoint set of whatever that policy holds.
+def test_independent_full_subset_is_within_the_top_f_cap_frontier():
+    """B* (runbook §6.0 checklist #2): the independent_full ELIGIBLE pool is the exact-Head-ranked
+    Terminal frontier ``full_pool[:F_cap]``, and the Q_T0 rows are drawn WITHIN it by a
+    Head-independent content hash. F_cap is set strictly between Q_T0 and the survivor count so BOTH
+    the frontier truncation (survivors ranked >= F_cap excluded) and the within-frontier draw are
+    non-vacuous.
     """
-    cfg = _cfg(rho_grid=(0.85,), q_t0=2)
+    cfg = _cfg(rho_grid=(0.85,), q_t0=2, n_population=2, initial_refold_attempt_cap=3,
+               unique_root_capacity=3, prefix_attempts=4)
     world = _World(cfg)
-    # make Head order disagree with generation order, so a Head-based filter would be visible
     for i, seq in enumerate(world.full_seqs[:8]):
-        world.risk[seq] = 0.9 - 0.1 * i
+        world.risk[seq] = 0.9 - 0.1 * i          # Head order disagrees with generation order
     res = _point(cfg, world, 0.85, EntryJournal())
 
-    survivors = {o.replicate_index for o in res.full_trajectories if o.sequence is not None}
-    chosen = {o.replicate_index for o in res.structure_subset["independent_full"]}
-    assert chosen <= survivors
+    survivors = [o for o in res.full_trajectories if o.sequence is not None]
+    assert len(survivors) > cfg.initial_refold_attempt_cap, "fixture must over-supply survivors"
+    frontier = {c.source_id for c in res.full_pool[: cfg.initial_refold_attempt_cap]}
+    beyond = {c.source_id for c in res.full_pool[cfg.initial_refold_attempt_cap:]}
+    chosen = {c.source_id for c in res.structure_subset["independent_full"]}
+    assert chosen <= frontier                    # eligibility IS the top-F_cap frontier
+    assert chosen.isdisjoint(beyond)             # the Head-worst survivors are excluded
     assert len(chosen) == cfg.q_t0
-
-    # the draw must not be the Head-best prefix: that would be the other rule
-    head_best = {
-        int(c.source_id.rsplit(":", 1)[1]) for c in res.full_pool[:cfg.q_t0]
-    }
-    assert len(survivors) > cfg.q_t0, "fixture must over-supply trajectories"
-    assert chosen != head_best or len(survivors) == cfg.q_t0, (
-        "the Q_T0 draw reproduced the Head-best prefix exactly; it is not Head-independent"
-    )
-    # and every policy gets EXACTLY Q_T0 -- equal denominators
     assert {p: len(e) for p, e in res.structure_subset.items()} == {
         "selected_partial": cfg.q_t0, "random_partial": cfg.q_t0, "independent_full": cfg.q_t0,
     }
+
+
+def test_partial_subsets_are_root_balanced_never_head_truncated():
+    """B* (runbook §6.0 checklist #1 + #3): each partial structure subset is exactly one held-out
+    endpoint per held root -- N == Q_T0 endpoints, every held root represented exactly once. This is
+    the anti-Head-truncation property: a top-F_cap terminal-Head filter on the partials would drop
+    some roots and take several endpoints from one, which one-per-root forbids by construction. The
+    per-root pick is content-hash-addressed, never global_risk."""
+    cfg = _cfg(rho_grid=(0.85,), q_t0=2, n_population=2)
+    res = _point(cfg, _World(cfg), 0.85, EntryJournal())
+    for policy in ("selected_partial", "random_partial"):
+        held = set(res.policy_views[policy].root_hashes)
+        roots = [sc.continuation.root_equivalence_hash for sc in res.structure_subset[policy]]
+        assert len(roots) == cfg.q_t0
+        assert set(roots) == held                # every held root ...
+        assert len(roots) == len(set(roots))     # ... exactly once
+
+
+def test_overlapping_selected_random_root_reuses_one_endpoint():
+    """B* (runbook §6.0:397): when selected and random share a root, the root-balanced subset
+    contributes the IDENTICAL endpoint object for that root in both views. Forced with a 2-root pool
+    and N=2 so both views hold both roots -- their subsets must be object-identical."""
+    cfg = _cfg(rho_grid=(0.85,), q_t0=2, n_population=2, unique_root_capacity=2, prefix_attempts=2)
+    world = _World(cfg, n_roots=2)
+    res = _point(cfg, world, 0.85, EntryJournal())
+    sel = set(res.policy_views["selected_partial"].root_hashes)
+    rnd = set(res.policy_views["random_partial"].root_hashes)
+    assert sel & rnd, "fixture must force an overlapping root"
+    assert {id(sc) for sc in res.structure_subset["selected_partial"]} == \
+           {id(sc) for sc in res.structure_subset["random_partial"]}
+
+
+def test_evaluated_gate_surfaces_sctm_metric_and_promotes_to_t0_complete():
+    """The integrated T0 evaluator (runbook §11.5) returns an EVALUATED StructureOutcome carrying
+    scTM. run_t0_protein must surface it as target_backbone_metric on every request, produce exactly
+    3*Q_T0 definitive verdicts, and flip the status to t0_complete."""
+    cfg = _cfg(rho_grid=(0.85,), q_t0=2, n_population=2)
+
+    def gate(endpoint):
+        return StructureOutcome(feasible=True, metrics={"scTM": 0.91, "pLDDT": 80.0}, evaluated=True)
+
+    res = _point(cfg, _World(cfg), 0.85, EntryJournal(), gate=gate)
+    assert res.status == "t0_complete"
+    assert len(res.structure_results) == 3 * cfg.q_t0
+    assert all(r.evaluated and r.feasible for r in res.structure_results)
+    assert all(r.target_backbone_metric == 0.91 for r in res.structure_results)
+
+
+def test_evaluator_failure_is_feasible_false_not_deferred():
+    """An unverifiable structure fails CLOSED (evaluated=True, feasible=False), never a deferral --
+    a deferred T0 leaves GO/KILL condition 3 unanswerable. It still promotes to t0_complete because
+    a definitive 'infeasible' verdict IS an answer."""
+    cfg = _cfg(rho_grid=(0.85,), q_t0=2, n_population=2)
+
+    def gate(endpoint):
+        return StructureOutcome(feasible=False, model_executed=True,
+                                failure_reason="fold failed", evaluated=True)
+
+    res = _point(cfg, _World(cfg), 0.85, EntryJournal(), gate=gate)
+    assert res.status == "t0_complete"
+    assert all(r.evaluated and r.feasible is False for r in res.structure_results)
 
 
 def test_the_full_control_is_still_head_ranked_for_the_complete_entry_pool():

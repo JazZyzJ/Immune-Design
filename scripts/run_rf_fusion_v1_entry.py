@@ -120,7 +120,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # The frozen v0 Fusion config is the AUTHORITY for N / R_parent / n_rounds, exactly as the
     # entry sampler YAML is the authority for S. The matching CLI flags below are cross-checks.
     p.add_argument("--fusion-config", required=True,
-                   help="frozen v0 Fusion config YAML (authoritative N / R_parent / n_rounds)")
+                   help="frozen v0 Fusion config YAML (authoritative N / R_parent / n_rounds; T0 "
+                        "also sources structure.backend / scTM_min from it)")
+    # T0-only definitive structure handoff (runbook §11.5): T0 has no v0 stage, so it folds its own
+    # 3*Q_T0 subset with the SAME esmfold2_live evaluator + on-disk cache identity v0 admission uses.
+    # Unused by the P1 arms (their structure defers to v0). Mirror run_rf_refine_fusion.py.
+    p.add_argument("--refold-cache-dir", default=None,
+                   help="T0 structure handoff: on-disk refold cache (reuse the v0 cache identity)")
+    p.add_argument("--esmfold2-site-packages", default=None,
+                   help="T0 structure handoff: Biohub ESMFold2 esm/transformers overlay")
+    p.add_argument("--esmfold2-model", default="biohub/ESMFold2")
+    p.add_argument("--esmfold2-num-loops", type=int, default=3)
+    p.add_argument("--esmfold2-num-sampling-steps", type=int, default=50)
+    p.add_argument("--esmfold2-num-diffusion-samples", type=int, default=1)
+    p.add_argument("--esmfold2-seed", type=int, default=0)
     # The TERMINAL arm runs as an INDEPENDENT shard that reads the pre-terminal run's persisted
     # per-protein C_reserved (§3.2.1). Co-running the arms would let the terminal budget see
     # pre-terminal outcomes.

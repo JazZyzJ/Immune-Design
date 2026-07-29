@@ -118,6 +118,16 @@ R_PARENT="${R_PARENT:-}"
 N_ROUNDS="${N_ROUNDS:-}"
 SECONDS_PER_REFOLD="${SECONDS_PER_REFOLD:-}"
 SECONDS_PER_DFE="${SECONDS_PER_DFE:-}"
+# T0-only definitive structure handoff (runbook §11.5): T0 folds its own 3*Q_T0 subset with the
+# SAME esmfold2_live evaluator + cache identity v0 uses (P1 arms defer structure to v0, so these
+# are unused there). Defaults mirror submit_refine.slurm.
+REFOLD_CACHE_DIR="${REFOLD_CACHE_DIR:-}"
+ESMFOLD2_SITE_PACKAGES="${ESMFOLD2_SITE_PACKAGES:-}"
+ESMFOLD2_MODEL="${ESMFOLD2_MODEL:-biohub/ESMFold2}"
+ESMFOLD2_NUM_LOOPS="${ESMFOLD2_NUM_LOOPS:-3}"
+ESMFOLD2_NUM_SAMPLING_STEPS="${ESMFOLD2_NUM_SAMPLING_STEPS:-50}"
+ESMFOLD2_NUM_DIFFUSION_SAMPLES="${ESMFOLD2_NUM_DIFFUSION_SAMPLES:-1}"
+ESMFOLD2_SEED="${ESMFOLD2_SEED:-0}"
 # Head epitope-window bounds: they select WHICH sub-sequences are scored, so they
 # are method knobs bound into the run provenance, not driver literals.
 WINDOW_K_MIN="${WINDOW_K_MIN:-12}"
@@ -313,6 +323,13 @@ case "${MODE}" in
             "${WANDB_ARGS[@]+"${WANDB_ARGS[@]}"}"
         ;;
     v1_entry)
+        # T0 (phase=t0) folds its own 3*Q_T0 structure subset (runbook §11.5) with ESMFold2 via the
+        # SAME offline model cache the v0 refold stage uses. The default HF_HOME above holds only the
+        # phase-C models, NOT biohub/ESMFold2, so point HF_HOME/TORCH_HOME at the shared cache (which
+        # also holds airkingbd/dplm_650m, so the entry-stage DPLM load is unaffected). The P1 arms
+        # defer structure and never fold, so this is inert for them.
+        export HF_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/hf"
+        export TORCH_HOME="/scratch/gpfs/KAIYIJIANG/zijie/model_cache/torch"
         # RF-Refine Fusion v1 entry (Arm-C P1; Head-only, NO NMP). Reuses this launcher's
         # DPLM + Head environment. The entry stage emits OUTPUT_ROOT/generated.parquet (the
         # ordered facade); the TERMINAL complete-state stage is a SEPARATE v0 run launched via
@@ -364,6 +381,14 @@ case "${MODE}" in
         if [[ -n "${HEAD_WINDOW_BATCH_SIZE}" ]]; then V1_FLAGS+=(--head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}"); fi
         if [[ -n "${SECONDS_PER_REFOLD}" ]]; then V1_FLAGS+=(--seconds-per-refold "${SECONDS_PER_REFOLD}"); fi
         if [[ -n "${SECONDS_PER_DFE}" ]]; then V1_FLAGS+=(--seconds-per-dfe "${SECONDS_PER_DFE}"); fi
+        # T0 definitive structure handoff (§11.5): forward the refold/ESMFold2 evaluator inputs.
+        if [[ -n "${REFOLD_CACHE_DIR}" ]]; then V1_FLAGS+=(--refold-cache-dir "${REFOLD_CACHE_DIR}"); fi
+        if [[ -n "${ESMFOLD2_SITE_PACKAGES}" ]]; then V1_FLAGS+=(--esmfold2-site-packages "${ESMFOLD2_SITE_PACKAGES}"); fi
+        V1_FLAGS+=(--esmfold2-model "${ESMFOLD2_MODEL}" \
+                   --esmfold2-num-loops "${ESMFOLD2_NUM_LOOPS}" \
+                   --esmfold2-num-sampling-steps "${ESMFOLD2_NUM_SAMPLING_STEPS}" \
+                   --esmfold2-num-diffusion-samples "${ESMFOLD2_NUM_DIFFUSION_SAMPLES}" \
+                   --esmfold2-seed "${ESMFOLD2_SEED}")
         if [[ "${ALLOW_PARTIAL_COHORT}" == "1" ]]; then V1_FLAGS+=(--allow-partial-cohort); fi
         case "${V1_SUBMODE}" in
             print_config) V1_FLAGS+=(--print-config) ;;

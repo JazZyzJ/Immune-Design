@@ -3,7 +3,7 @@
 AGENT TASK SPEC. Execute top-to-bottom. Stop and report on any FAIL. Do not tune a
 failed gate into a positive result.
 
-> **Current status (2026-07-29): Canaries A, B, and the terminal-arm smoke EXECUTED and verified on the cluster (each entry + its §11.7 v0 stage); Canary C BLOCKED; scientific T0/P1 BLOCKED.** Both P1 arms are
+> **Current status (2026-07-29): Canaries A, B, the terminal-arm smoke, AND Canary C (T0, B*+structure-handoff) EXECUTED and verified on the cluster; scientific T0/P1 still BLOCKED on the frozen manifests/grid.** Both P1 arms are
 > implemented and wired end to end (`preterminal` and `terminal`), the null-runtime firewall
 > verifies BOTH reference-flow roles, the launch gate is fail-closed on inputs/cohort/anchors,
 > S and N/R_parent/n_rounds are resolved from the frozen YAMLs with CLI cross-check, structure
@@ -44,6 +44,13 @@ failed gate into a positive result.
 >   the scientific run needs a larger `F_cap`. **Known gap:** because Q00511 never reached `N=4`, the
 >   anchored v0 REPAIR loop was not exercised, so v0-side anchor preservation THROUGH repair is not
 >   yet demonstrated on the cluster.
+> - **Canary C (T0 B* + integrated structure handoff) — 2026-07-29, PLI H100, 16m18s, exit 0.**
+>   Both proteins reached `t0_complete`. All `72` structure requests (2 proteins × 3 rho × 3
+>   policies × Q_T0=4) were REALLY evaluated (real scTM 0.33–0.92, per-policy gate-pass 0.46–0.50),
+>   with exactly Q_T0=4 verdicts per `(protein, rho, policy)` and the `independent_full` pool = the
+>   F_cap=6 frontier per rho. The wide smoke grid resolved separated resume points (.50/.70 crossed
+>   16/16, .85 14–15/16). This is a WIRING canary — scTM/gate-pass are sizing evidence, NOT a
+>   GO/KILL number; the scientific grid/`K_EVAL`/`Q_T0`/cohort remain frozen from §6 before a real T0.
 >
 > Both P1 arms and T0 are implemented, wired and canary-configured; null isolation is verified at
 > the sampler (not only in the config). T0 now emits the standard §9 evidence tables, keeps each
@@ -51,13 +58,17 @@ failed gate into a positive result.
 > and reports `t0_structure_deferred` rather than success when nothing was structurally evaluated.
 >
 > **Known gaps. Every one of these is a reason a canary may NOT be read as evidence:**
-> 1. **T0 structure is deferred, not evaluated.** The `3*Q_T0` subset is frozen, charged and
->    recorded, but the production gate always defers and there is no T0→v0 handoff. A T0 run
->    reports `t0_structure_deferred` and the driver exits non-zero. GO/KILL condition 3 cannot be
->    closed from a T0 run at all today. **Canary C is blocked.**
-> 2. **The `independent_full` eligible pool is scientifically frozen as policy-faithful B\***
->    (§6.0), but the implementation still uses all survivors. Canary C must exercise the corrected
->    B* law before it can pass.
+> 1. ~~T0 structure is deferred, not evaluated~~ — **CLOSED (2026-07-29).** `build_entry_oracles`
+>    now wires an INTEGRATED evaluator for `phase=='t0'` (the same v0 `esmfold2_live` refold +
+>    TMalign + absolute scTM floor, same on-disk cache identity); P1 arms still defer to v0 (§2.11).
+>    Canary C evaluated every `3*Q_T0` request (72/72 `evaluated`, real scTM) and reached
+>    `t0_complete`, so GO/KILL condition 3 is now computable from a T0 run.
+> 2. ~~The `independent_full` eligible pool implementation still uses all survivors~~ — **CLOSED
+>    (2026-07-29).** `run_t0_protein` now uses the policy-faithful B\* law (§6.0): `independent_full`
+>    = exact-Head-ranked frontier `full_pool[:F_cap]`; `selected/random` root-balanced (one held-out
+>    endpoint per held root, content-hash, shared-cache reuse); config gates `Q_T0==N`, `Q_T0<=F_cap`,
+>    `Q_T0<=N*K_EVAL` + runtime `survivors>=F_cap`. Canary C exercised it (independent_full pool =
+>    F_cap=6 per rho; exactly Q_T0=4 verdicts per policy per rho).
 > 3. **The v0 terminal stage is a SECOND job that the runbook now specifies (§11.7).** The entry
 >    driver stops at the facade; without §11.7 no arm reaches v0, and `submit_refine.slurm`'s
 >    default `FUSION_CONFIG` is the SMOKE package, which runs to completion and emits a plausible
@@ -82,10 +93,14 @@ failed gate into a positive result.
 >    oracle must report the cost it burned — and is NOT done. Booking a zero instead would be a
 >    fabricated measurement, so nothing is booked.
 >
-> **Consequence.** Canary A + §11.7, Canary B + §11.7, and the terminal-arm smoke have executed.
-> **Canary C (T0) is still blocked** by gaps 1–2. A passing canary proves deployment, identity,
-> ledger, anchor and replay
-> wiring only — **never HT1/HT2**.
+> **Consequence.** Canary A + §11.7, Canary B + §11.7, the terminal-arm smoke, AND Canary C (T0,
+> 2026-07-29) have all executed. A passing canary proves deployment, identity, ledger, anchor,
+> replay and — for Canary C — the B\*/structure-handoff wiring only; **never HT1/HT2**. Three
+> launcher/env integration gaps surfaced only when T0 first ran on GPU and are fixed: §11.5 now
+> passes `REFOLD_CACHE_DIR`/`ESMFOLD2_SITE_PACKAGES`; the `v1_entry` launcher branch points
+> `HF_HOME`/`TORCH_HOME` at the shared `model_cache/hf` so the offline ESMFold2 worker resolves
+> `biohub/ESMFold2`; and the entry oracle takes the per-request maturity from `rho_id` (a T0 grid
+> varies rho while the oracle is built once — the P1 single-`rho_target` path is unchanged).
 >
 > **Still blocking a scientific run** (not a canary): the cohort manifests (`DEV_IDS` /
 > `HOLDOUT_IDS` / `TEST_SET_PARQUET`), the T0 `rho_grid`/`K_EVAL`/`Q_T0` values, and the measured
@@ -773,10 +788,18 @@ that:
 Do **not** run the eight-round Fusion loop and do not create a parent for T0. This handoff reuses
 only the definitive structure evaluator required by GO/KILL condition 3.
 
+Because T0 has no v0 stage, its integrated evaluator folds the `3*Q_T0` subset itself, so — unlike
+Canary A/B — it REQUIRES the esmfold2_live inputs the v0 stage uses (`REFOLD_CACHE_DIR` and
+`ESMFOLD2_SITE_PACKAGES`). The T0 branch of `build_entry_oracles` fails closed without them when the
+fusion config backend is `esmfold2_live`. T0 is the anchor-free generic cohort (§3.1), so do NOT
+pass `CONSTRAINT_MANIFEST` (the scTM-only T0 gate refuses one).
+
 ```bash
 MODE=v1_entry V1_SUBMODE=run \
 OUTPUT_ROOT=${RUN_ROOT}/canary_c_t0 \
 ENTRY_CONFIG=inverse_folding/reference_flow/configs/rf_fusion_v1_entry_canary_t0.yaml \
+REFOLD_CACHE_DIR=${RUN_ROOT}/canary_c_t0/refold_cache \
+ESMFOLD2_SITE_PACKAGES=/home/zc1519/.conda/envs/esmfold2/lib/python3.12/site-packages \
 ... (same TERMINAL_REPAIR_CONFIG / RF_SAMPLER_CONFIG / FUSION_CONFIG / HEAD_* as §11.2) \
 sbatch scripts/submit_if_phase_c.slurm
 ```

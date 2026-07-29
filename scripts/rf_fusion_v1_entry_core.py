@@ -44,6 +44,7 @@ from inverse_folding.reference_flow.fusion.v1_alloc import (
     build_t0_structure_subset,
     collapse_facade_by_sequence,
     eval_membership_view,
+    root_balanced_eval_endpoints,
     matched_full_trajectory_allocation,
     reserved_t0_dfe,
     select_random_membership,
@@ -768,6 +769,9 @@ class T0StructureResult:
     cache_status: str
     model_executed: bool
     failure_reason: str | None
+    #: The definitive target-backbone metric (scTM) when evaluated; None on a deferral. This is the
+    #: quantity GO/KILL condition 3 reads per policy (runbook §11.5 point 4).
+    target_backbone_metric: float | None = None
 
 
 @dataclass(frozen=True)
@@ -966,30 +970,42 @@ def run_t0_protein(
         ),
     }
 
-    # 5. equal-sized, Head-INDEPENDENT structure subsample per view (3 * Q_T0 total)
+    # 5. equal-sized, Head-INDEPENDENT structure subsample per view (3 * Q_T0 total), under the
+    #    FROZEN policy-faithful B* eligibility law (runbook §6.0). Each policy keeps its own
+    #    scientifically defining eligible pool; the COMMON rule is only the equal Q_T0 sample size
+    #    and the Head-independent within-pool draw, NOT a second terminal-Head filter on everyone.
     #
-    # All three pools are the FULL endpoint set of whatever each policy holds -- every eval endpoint
-    # of the selected roots, every eval endpoint of the random roots, every surviving complete
-    # trajectory -- and the Q_T0 draw within each is by Head-independent content hash. PLAN §2.10
-    # (:469-470) requires exactly that: "order eligible IDs by a Head-independent content hash; no
-    # policy may use another rule or sample size."
+    #    - selected_partial / random_partial: ROOT-BALANCED -- exactly one held-out K_EVAL endpoint
+    #      per held root, chosen by a Head-independent content hash. A root held by BOTH views reuses
+    #      the IDENTICAL endpoint (shared cache). The partials are never terminal-Head-truncated;
+    #      doing so would add an endpoint-selection stage the P1 method does not run and confound
+    #      condition 3.
+    #    - independent_full: the exact-Head-ranked Terminal frontier full_pool[:F_cap], then Q_T0
+    #      rows by the same Head-independent content order WITHIN that top-F_cap frontier. The
+    #      all-survivor rows stay in complete_entry_pool as descriptive evidence only (§6.0), never
+    #      as the condition-3 comparator.
     #
-    # This is deliberately NOT the Terminal law's top-`F_cap`. Truncating only the control to its
-    # Head-best rows would give one policy an eligibility filter the other two do not get: sized
-    # with the shipped canary the control would be drawn from its best ~25% while the partial views
-    # are drawn from 100% of theirs, which inflates the control and biases GO/KILL condition 3
-    # toward a false KILL. `full_pool` stays Head-ranked because `complete_entry_pool` (runbook
-    # §9:451) and the Terminal-law comparison need that order -- not because it gates eligibility.
-    #
-    # OPEN SCIENTIFIC DECISION, NOT SETTLED HERE: no authority defines the independent-full
-    # ELIGIBLE pool. The reading above ("all survivors", one rule for all three) is what PLAN:466
-    # most plainly says, but a "frontier" reading (FUSION_V1:172, runbook:296) would truncate ALL
-    # THREE pools by the same law instead. A scientific T0 must not launch until that is frozen;
-    # the runbook T0 section records the question.
+    # Runtime fail-closed gate (§6.0): the frontier is only a frontier if enough control trajectories
+    # survived. Without this, full_pool[:F_cap] would silently yield a short, non-frontier pool
+    # whenever survivors dip below F_cap, and build_t0_structure_subset (which only checks >= Q_T0)
+    # would pass while the frontier law was violated.
+    if len(full_pool) < config.initial_refold_attempt_cap:
+        raise ValueError(
+            f"{protein_id}: valid independent_full survivors {len(full_pool)} < "
+            f"F_cap={config.initial_refold_attempt_cap} (runbook §6.0: the top-F_cap frontier "
+            f"requires at least F_cap survivors; no shrink or backfill)"
+        )
+    _root_endpoint_cache: dict = {}
     endpoints = {
-        "selected_partial": [sc for h in selected for sc in common_eval_table[h]],
-        "random_partial": [sc for h in random_view for sc in common_eval_table[h]],
-        "independent_full": list(full_survivors),
+        "selected_partial": root_balanced_eval_endpoints(
+            common_eval_table, selected, config.structure_subsample_seed, _t0_endpoint_id,
+            cache=_root_endpoint_cache,
+        ),
+        "random_partial": root_balanced_eval_endpoints(
+            common_eval_table, random_view, config.structure_subsample_seed, _t0_endpoint_id,
+            cache=_root_endpoint_cache,
+        ),
+        "independent_full": list(full_pool[: config.initial_refold_attempt_cap]),
     }
     try:
         structure_subset = build_t0_structure_subset(
@@ -1006,12 +1022,15 @@ def run_t0_protein(
             endpoint_id = _t0_endpoint_id(endpoint)
             request_id = f"{protein_id}:{rho_id}:{policy}:{rank}"
             outcome = _coerce_structure_outcome(structure_gate(endpoint))
+            metric = None
+            if outcome.metrics is not None and "scTM" in outcome.metrics:
+                metric = float(outcome.metrics["scTM"])
             structure_results.append(
                 T0StructureResult(
                     policy=policy, request_id=request_id, source_endpoint_id=endpoint_id,
                     subset_rank=rank, evaluated=outcome.evaluated, feasible=outcome.feasible,
                     cache_status=outcome.cache_status, model_executed=outcome.model_executed,
-                    failure_reason=outcome.failure_reason,
+                    failure_reason=outcome.failure_reason, target_backbone_metric=metric,
                 )
             )
             deferred = not outcome.evaluated
@@ -1023,6 +1042,20 @@ def run_t0_protein(
                 structure_cache_hits=1 if outcome.cache_status == "hit" else 0,
                 walltime_s=float(outcome.walltime_s),
             ))
+
+    # Reconciliation (runbook §6.0/§11.5): every policy must produce EXACTLY Q_T0 definitive
+    # verdicts -- no shrink, no backfill, no duplicate. build_t0_structure_subset already sizes each
+    # pool to Q_T0, but assert the realized verdict count too so a future change to the loop cannot
+    # silently give one policy a different denominator (which would make condition 3 incomparable).
+    per_policy: dict = {}
+    for r in structure_results:
+        per_policy[r.policy] = per_policy.get(r.policy, 0) + 1
+    for policy in structure_subset:
+        if per_policy.get(policy, 0) != config.q_t0:
+            raise ValueError(
+                f"{protein_id}: policy {policy!r} produced {per_policy.get(policy, 0)} structure "
+                f"verdicts != Q_T0={config.q_t0} (no shrink/backfill)"
+            )
 
     # T0's ONLY structure spend is this subsample, and GO/KILL condition 3 is a per-policy pass
     # rate over it. If nothing was evaluated the condition is unanswerable, so the point must not
@@ -1046,11 +1079,17 @@ def run_t0_protein(
 
 
 def _t0_endpoint_id(endpoint) -> str:
-    """Head-INDEPENDENT content id for the Q_T0 subsample: never the risk value."""
+    """Head-INDEPENDENT content id for the Q_T0 subsample: never the risk value.
+
+    Partial endpoints are ``ScoredContinuation`` (id = the shared eval continuation id); frontier
+    endpoints are ``TerminalCandidate`` (id = ``source_id`` = ``{protein}:{arm}:{rho}:full:{idx}``,
+    Head-independent). Both are content ids, so the subset draw and the ``t0_structure_subset`` ->
+    ``t0_structure_results`` join agree.
+    """
     continuation = getattr(endpoint, "continuation", None)
     if continuation is not None:
         return str(continuation.continuation_id)
-    return f"full:{int(endpoint.replicate_index)}:{int(endpoint.seed)}"
+    return str(endpoint.source_id)
 
 
 def _scored_set(payload, set_tag, k, completer, head_fn, expected_length,

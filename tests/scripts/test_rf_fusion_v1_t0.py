@@ -196,11 +196,37 @@ def test_every_view_is_subsampled_to_exactly_q_t0():
     assert res.structure_requests == 6           # 3 * Q_T0, the reserved spend
 
 
-def test_a_view_short_of_q_t0_fails_closed():
-    # Shrinking one view's denominator would make its structure pass-rate incomparable.
-    cfg = _cfg(q_t0=9)
-    with pytest.raises(ValueError, match="Q_T0"):
-        _run(cfg, _World(cfg))
+def test_q_t0_not_equal_n_is_rejected_at_config_time():
+    # Runbook §6.0 hard gate Q_T0 == N: root-balanced partials give exactly N endpoints, so a
+    # Q_T0 != N request is undefined and must fail closed BEFORE any generation/structure budget.
+    from inverse_folding.reference_flow.fusion.v1_config import V1EntryConfigError
+
+    with pytest.raises(V1EntryConfigError, match="Q_T0 == N"):
+        _cfg(q_t0=9, n_population=2)
+
+
+def test_full_survivors_short_of_f_cap_fails_closed():
+    # Runbook §6.0 runtime gate: the exact-Head-ranked top-F_cap frontier needs >= F_cap valid
+    # independent_full survivors. A short survivor pool must fail closed -- no shrink, no backfill --
+    # rather than yield a truncated, non-frontier control that biases GO/KILL condition 3.
+    from scripts.rf_fusion_v1_entry_core import TerminalTrajectoryOutcome
+
+    cfg = _cfg(q_t0=2, n_population=2, initial_refold_attempt_cap=3, unique_root_capacity=3,
+               prefix_attempts=4)
+    world = _World(cfg)
+    orig_full = world.full
+
+    def starved(req):
+        if req.replicate_index >= 2:                # only 2 survive, < F_cap=3
+            return TerminalTrajectoryOutcome(
+                replicate_index=req.replicate_index, seed=req.seed, sequence=None,
+                logical_dfe=_S, physical_forward_calls=_S, status="failed",
+            )
+        return orig_full(req)
+
+    world.full = starved
+    with pytest.raises(ValueError, match="F_cap"):
+        _run(cfg, world)
 
 
 def test_independent_full_is_compute_matched_and_uses_its_own_seed_stream():

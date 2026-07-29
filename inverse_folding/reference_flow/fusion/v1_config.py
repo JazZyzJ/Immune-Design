@@ -201,6 +201,26 @@ class V1EntryConfig:
             _require_int(getattr(self, name), f"t0 {name}")
         if self.k_eval < 1 or self.q_t0 < 1:
             raise V1EntryConfigError("t0 k_eval and q_t0 must be positive integers")
+        # Policy-faithful B* hard gates (runbook §6.0). These size the three structure pools:
+        # Q_T0==N makes the partial policies root-balanced (exactly one held-out endpoint per held
+        # root => exactly Q_T0 endpoints); Q_T0<=F_cap keeps the independent-full frontier draw
+        # inside its top-F_cap eligibility; Q_T0<=N*K_EVAL keeps the partial pools able to supply
+        # Q_T0. Fail closed at config load, before any generation/structure budget is spent.
+        if self.q_t0 != self.n_population:
+            raise V1EntryConfigError(
+                f"t0 requires Q_T0 == N (runbook §6.0): q_t0={self.q_t0} != "
+                f"n_population={self.n_population}"
+            )
+        if self.q_t0 > self.initial_refold_attempt_cap:
+            raise V1EntryConfigError(
+                f"t0 requires Q_T0 <= F_cap (runbook §6.0): q_t0={self.q_t0} > "
+                f"initial_refold_attempt_cap={self.initial_refold_attempt_cap}"
+            )
+        if self.q_t0 > self.n_population * self.k_eval:
+            raise V1EntryConfigError(
+                f"t0 requires Q_T0 <= N*K_EVAL (runbook §6.0): q_t0={self.q_t0} > "
+                f"n_population*k_eval={self.n_population * self.k_eval}"
+            )
         if tuple(self.t0_policies) != T0_POLICIES:
             raise V1EntryConfigError(
                 f"t0_policies must be exactly {T0_POLICIES}, got {tuple(self.t0_policies)!r}"

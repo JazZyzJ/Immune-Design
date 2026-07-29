@@ -478,6 +478,44 @@ def eval_membership_view(
     return view
 
 
+def root_balanced_eval_endpoints(
+    common_eval_table: Mapping[str, tuple[ScoredContinuation, ...]],
+    root_hashes: Sequence[str],
+    subsample_seed: int,
+    content_id: Callable[[object], str],
+    *,
+    cache: dict | None = None,
+) -> list[ScoredContinuation]:
+    """Root-balanced structure endpoints: EXACTLY one held-out endpoint per held root (runbook
+    §6.0 policy-faithful B*), chosen by a stable Head-INDEPENDENT content hash over that root's
+    common ``K_EVAL`` rows.
+
+    A ``cache`` keyed by root hash, shared across the selected and random calls, guarantees a root
+    held by BOTH views contributes the IDENTICAL endpoint object -- the overlap-reuse the frozen B*
+    law requires (§6.0:397). The choice never reads ``global_risk``, so it adds no second
+    endpoint-selection stage to the partial policies; the partials are one-per-root, never
+    terminal-Head-truncated.
+    """
+    if cache is None:
+        cache = {}
+    chosen: list[ScoredContinuation] = []
+    for root_hash in root_hashes:
+        if root_hash not in cache:
+            if root_hash not in common_eval_table:
+                raise ValueError(f"root {root_hash!r} absent from the common eval table")
+            rows = common_eval_table[root_hash]
+            if not rows:
+                raise ValueError(f"root {root_hash!r} has no eval endpoints to balance over")
+            cache[root_hash] = min(
+                rows,
+                key=lambda sc: derive_seed(
+                    "t0_root_endpoint", int(subsample_seed), str(content_id(sc))
+                ),
+            )
+        chosen.append(cache[root_hash])
+    return chosen
+
+
 def build_t0_structure_subset(
     endpoints_by_policy: Mapping[str, Sequence[object]],
     q_t0: int,

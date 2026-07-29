@@ -216,6 +216,49 @@ def _canonical_id_to_aa(alphabet) -> dict:
     return out
 
 
+def _evaluate_target_backbone(
+    *, protein_id, sequence, model, backend, refold_cache_dir, reference_pdb, scTM_min
+):
+    """The T0 definitive structure evaluation for one endpoint (runbook §11.5): fold the sequence
+    with the SAME v0 ``esmfold2_live`` evaluator + on-disk cache identity, TMalign it against the
+    target backbone, and gate on the absolute scTM floor. This is the scTM-only core of the v0
+    ``struct_fn`` (``run_rf_refine_fusion.build_oracles``); the T0 generic cohort is anchor-free
+    (§3.1), so no active-site branch runs.
+
+    Fails CLOSED: a fold/TMalign error or a non-finite scTM is an ``evaluated=True, feasible=False``
+    verdict (a structure that could not be verified is infeasible), never a deferral -- a deferred
+    T0 leaves GO/KILL condition 3 unanswerable.
+    """
+    import math
+
+    from inverse_folding.evaluation.refold import refold
+    from inverse_folding.evaluation.tmalign import run_tmalign
+    from inverse_folding.reference_flow.fusion.v1_admission import StructureOutcome
+
+    try:
+        pred = refold(
+            sequence, protein_id, "t0", backend=backend, cache_dir=refold_cache_dir, model=model
+        )
+        # TMalign arg order is load-bearing: pred first, so tm_score normalizes by predicted length.
+        tm = run_tmalign(pred_pdb=str(pred["pdb_path"]), ref_pdb=str(reference_pdb), cache_dir=None)
+        scTM = float(tm["tm_score"])
+        plddt = float(pred["pLDDT"])
+        cache_hit = bool(pred.get("cache_hit"))
+        feasible = bool(math.isfinite(scTM) and scTM >= float(scTM_min))
+        return StructureOutcome(
+            feasible=feasible,
+            cache_status="hit" if cache_hit else "miss",
+            model_executed=not cache_hit,
+            metrics={"scTM": scTM, "pLDDT": plddt},
+            evaluated=True,
+        )
+    except Exception as exc:  # noqa: BLE001 -- an unverifiable structure fails closed, not deferred
+        return StructureOutcome(
+            feasible=False, cache_status="miss", model_executed=True,
+            failure_reason=f"{type(exc).__name__}: {exc}", evaluated=True,
+        )
+
+
 def build_entry_oracles(args, provenance):
     """Assemble the real pre-terminal oracles from the frozen DPLM checkpoint, entry RF sampler
     and Head scorer (reuses the verified runtime seams from ``run_rf_refine_fusion``). Only the
@@ -351,12 +394,17 @@ def build_entry_oracles(args, provenance):
         ctx_state["protein_id"] = req.protein_id
         prepared, denoiser = _prepared(req.protein_id)
         length = prepared.sequence_length
+        # Maturity is per-REQUEST. P1 pre-terminal has a single rho_target (the closure `rho`), but a
+        # T0 grid varies rho across points while build_entry_oracles is built ONCE, so the closure is
+        # None there. Take the maturity from the request's rho_id (set correctly by
+        # run_entry_protein / run_t0_protein); for P1 this equals the closure rho_target exactly.
+        req_rho = rho if rho is not None else float(req.rho_id.removeprefix("rho"))
         try:
             out = sampler.sample(
                 sequence_length=length, h_values=null_h_values(length),
                 denoiser=denoiser, config=_sample_config(req.seed), controller=None, struct=None,
                 fixed_tokens=_fixed_tokens(req.protein_id),
-                continuation=ContinuationRequest(at_rho_edit=rho, early_stop=True),
+                continuation=ContinuationRequest(at_rho_edit=req_rho, early_stop=True),
                 residue_token_ids=aa_token_ids,
             )
         except MaturityNotReachedError as exc:
@@ -367,8 +415,8 @@ def build_entry_oracles(args, provenance):
             )
         checkpoint = out.continuation_checkpoint
         payload = payload_from_checkpoint(
-            checkpoint, root_id=make_root_id(req.protein_id, arm, rho_id, req.attempt_index),
-            protein_id=req.protein_id, arm_id=arm, rho_id=rho_id, mask_token_id=mask_id,
+            checkpoint, root_id=make_root_id(req.protein_id, arm, req.rho_id, req.attempt_index),
+            protein_id=req.protein_id, arm_id=arm, rho_id=req.rho_id, mask_token_id=mask_id,
             conditioning=_conditioning(req.protein_id),
         )
         return RootAttemptOutcome(
@@ -426,11 +474,65 @@ def build_entry_oracles(args, provenance):
         )
         return [HeadRecord(hs.sequence_md5, global_risk_of(hs)) for hs in batch.scores]
 
-    def structure_gate(candidate):
-        # Definitive structure is rechecked by the UNCHANGED v0 admission (§2.11), so the entry
-        # stage evaluates NONE. Returning feasible=True here would write a structural claim into
-        # every admission row, cohort status and cost total that nothing ever computed.
+    def _deferred_structure_gate(candidate):
+        # P1 arms: definitive structure is rechecked by the UNCHANGED v0 admission (§2.11), so the
+        # entry stage evaluates NONE. Returning feasible=True here would write a structural claim
+        # into every admission row, cohort status and cost total that nothing ever computed.
         return StructureOutcome.deferred("definitive structure rechecked by v0 admission")
+
+    if config.phase == "t0":
+        # T0 has NO v0 stage (it builds no parent), so it MUST evaluate its own 3*Q_T0 subset
+        # (runbook §11.5). Wire the SAME v0 target-backbone structure oracle + cache identity here.
+        if manifest is not None:
+            raise ValueError(
+                "T0 definitive structure is scTM-only over the anchor-free generic cohort (§3.1); a "
+                "constraint manifest is out of scope for T0 -- do not point Canary C at an anchored "
+                "protein"
+            )
+        from inverse_folding.evaluation.refold import load_refold_model
+        from inverse_folding.reference_flow.fusion.config import load_fusion_config
+        from inverse_folding.reference_flow.runtime import resolve_structure_path
+
+        fusion_cfg = load_fusion_config(args.fusion_config)
+        _t0_backend = fusion_cfg.structure.backend
+        _t0_scTM_min = float(fusion_cfg.structure.scTM_min)
+        _t0_backend_options: dict = {}
+        if _t0_backend == "esmfold2_live":
+            if not getattr(args, "esmfold2_site_packages", None):
+                raise ValueError("T0 with esmfold2_live requires --esmfold2-site-packages")
+            if not getattr(args, "refold_cache_dir", None):
+                raise ValueError(
+                    "T0 requires --refold-cache-dir (reuse the v0 on-disk structure cache identity)"
+                )
+            _t0_backend_options = {
+                "site_packages": args.esmfold2_site_packages,
+                "model_name": args.esmfold2_model,
+                "num_loops": args.esmfold2_num_loops,
+                "num_sampling_steps": args.esmfold2_num_sampling_steps,
+                "num_diffusion_samples": args.esmfold2_num_diffusion_samples,
+                "seed": args.esmfold2_seed,
+            }
+        _t0_model = load_refold_model(_t0_backend, device=device, **_t0_backend_options)
+        _t0_ref_cache: dict = {}
+
+        def _t0_reference_pdb(pid):
+            if pid not in _t0_ref_cache:
+                row = dict(test_rows.loc[pid])
+                row["protein_id"] = pid
+                _t0_ref_cache[pid] = resolve_structure_path(row, args.pdb_root)
+            return _t0_ref_cache[pid]
+
+        def structure_gate(candidate):
+            pid = ctx_state["protein_id"]
+            cont = getattr(candidate, "continuation", None)
+            sequence = cont.sequence if cont is not None else candidate.sequence
+            return _evaluate_target_backbone(
+                protein_id=pid, sequence=sequence, model=_t0_model, backend=_t0_backend,
+                refold_cache_dir=args.refold_cache_dir, reference_pdb=_t0_reference_pdb(pid),
+                scTM_min=_t0_scTM_min,
+            )
+    else:
+        structure_gate = _deferred_structure_gate
 
     _ = sequence_md5  # (imported for parity with the audit layer; md5 comes from HeadScore here)
     return EntryOracles(

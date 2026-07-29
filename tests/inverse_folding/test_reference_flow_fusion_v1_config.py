@@ -21,7 +21,7 @@ def test_valid_configs_construct_for_both_arms_and_t0():
     term = V1EntryConfig.from_mapping(p1_terminal_config())
     assert term.entry_arm == "terminal" and term.rho_target is None
     t0 = V1EntryConfig.from_mapping(t0_config())
-    assert t0.phase == "t0" and t0.k_eval == 2 and t0.q_t0 == 4
+    assert t0.phase == "t0" and t0.k_eval == 2 and t0.q_t0 == 2  # Q_T0 == N (runbook §6.0)
 
 
 # ------------------------- arm identity (V1-A has two arms) ------------------------- #

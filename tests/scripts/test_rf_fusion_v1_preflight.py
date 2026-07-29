@@ -226,7 +226,7 @@ def test_t0_budget_has_no_final_term_and_reserves_three_q_of_structure():
     spend is the Q_T0 subsample of each of the THREE policy views; a 4*Q_T0 reservation would
     price in the dropped branch policy and over-reserve every T0 launch."""
     cfg = resolve_entry_config(t0_config(prefix_attempts=4, k_est=2, k_eval=3,
-                                         unique_root_capacity=3, q_t0=11, rho_grid=(0.85,),
+                                         unique_root_capacity=3, q_t0=2, rho_grid=(0.85,),
                                          n_population=2, initial_refold_attempt_cap=2))
     t = TerminalFusionParams(s_steps=10, r_parent=5, n_rounds=6,
                              seconds_per_refold=0.1, seconds_per_dfe=0.001)
@@ -242,14 +242,14 @@ def test_t0_budget_has_no_final_term_and_reserves_three_q_of_structure():
     assert b.reserved_dfe_per_protein == (
         b.dfe_prefix + b.dfe_est + b.dfe_eval + b.dfe_full_control
     )
-    assert b.reserved_refold_per_protein == 33     # 3 * Q_T0, NOT 4 * Q_T0
-    assert b.t0_structure_requests == 33
+    assert b.reserved_refold_per_protein == 6      # 3 * Q_T0 (=3*2), NOT 4 * Q_T0
+    assert b.t0_structure_requests == 6
 
 
 def test_t0_budget_terms_are_reported_individually_not_only_as_a_total():
     # §3.4: a single total hides which term blew the cap, and the two policy families spend on
     # different things.
-    cfg = resolve_entry_config(t0_config(q_t0=4, n_population=2, initial_refold_attempt_cap=2))
+    cfg = resolve_entry_config(t0_config(q_t0=2, n_population=2, initial_refold_attempt_cap=2))
     t = TerminalFusionParams(s_steps=10, r_parent=5, n_rounds=6,
                              seconds_per_refold=0.1, seconds_per_dfe=0.001)
     payload = render_print_config(cfg, n_proteins=1, terminal=t)

@@ -56,7 +56,7 @@ def p1_terminal_config(**over) -> dict:
 def t0_config(**over) -> dict:
     """T0 calibration: the three policy views over one shared pre-terminal root pool."""
     base = dict(_SHARED, phase="t0", split_role="t0_dev", entry_arm="preterminal",
-                rho_grid=(0.7, 0.85, 0.9), k_eval=2, q_t0=4, structure_subsample_seed=13,
+                rho_grid=(0.7, 0.85, 0.9), k_eval=2, q_t0=2, structure_subsample_seed=13,
                 random_membership_seed=17,
                 t0_policies=("selected_partial", "random_partial", "independent_full"),
                 **_PRETERMINAL_ALLOC)

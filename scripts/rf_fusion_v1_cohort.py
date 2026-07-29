@@ -295,8 +295,10 @@ def _t0_checkpoint(points, protein_id: str, config, out_dir, config_digest) -> d
                     key = scored.continuation.continuation_id
                     member_of[policy].add(key)
                     provenance[key] = key  # the SHARED table's own id, identical for both views
-        for i in range(views["independent_full"].n_trajectories):
-            member_of["independent_full"].add(f"full:{i}")
+        # B* (runbook §6.0): the independent_full ELIGIBLE pool is the exact-Head-ranked top-F_cap
+        # frontier, keyed by the same content id the subset uses -- not all n_trajectories survivors.
+        for candidate in point.full_pool[: config.initial_refold_attempt_cap]:
+            member_of["independent_full"].add(_t0_endpoint_key(candidate))
         for policy, keys in member_of.items():
             for key in sorted(keys):
                 membership.append({
@@ -321,7 +323,7 @@ def _t0_checkpoint(points, protein_id: str, config, out_dir, config_digest) -> d
             result_rows.append({
                 "protein_id": protein_id, "policy": res.policy, "request_id": res.request_id,
                 "source_endpoint_id": f"{point.rho_id}:{res.source_endpoint_id}",
-                "target_backbone_metric": None,
+                "target_backbone_metric": res.target_backbone_metric,
                 "gate_pass": res.feasible,
                 "request_status": "deferred_to_v0" if not res.evaluated else "evaluated",
                 "cache_status": res.cache_status,
@@ -445,10 +447,13 @@ def _rho_target_of(rho_id: str) -> float:
 
 
 def _t0_endpoint_key(endpoint) -> str:
+    # Mirror of entry_core._t0_endpoint_id: partial endpoints -> the shared eval continuation id;
+    # frontier endpoints (TerminalCandidate, after B*) -> source_id. Both are Head-independent
+    # content ids, so t0_structure_subset (built here) joins t0_structure_results (built in the core).
     continuation = getattr(endpoint, "continuation", None)
     if continuation is not None:
         return str(continuation.continuation_id)
-    return f"full:{int(endpoint.replicate_index)}"
+    return str(endpoint.source_id)
 
 
 def _realized_seeds(result, config, ctx) -> dict:

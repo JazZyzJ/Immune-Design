@@ -161,3 +161,58 @@ def test_assert_null_amplification_refuses_h_dependent_forms():
         )
         with pytest.raises(ValueError, match="constant_one"):
             assert_null_amplification(bad)
+
+
+# --------------------------------------------------------------------------- #
+# T0 definitive-structure evaluator (runbook §11.5): scTM floor + fail-closed. #
+# The refold/TMalign calls are monkeypatched -- the real fold is a cluster canary. #
+# --------------------------------------------------------------------------- #
+def test_evaluate_target_backbone_gates_on_the_sctm_floor(monkeypatch):
+    import inverse_folding.evaluation.refold as _rf
+    import inverse_folding.evaluation.tmalign as _tma
+    from scripts.rf_fusion_v1_oracles import _evaluate_target_backbone
+
+    monkeypatch.setattr(_rf, "refold", lambda seq, pid, did, **kw: {
+        "pdb_path": "/pred.pdb", "pLDDT": 77.0, "cache_hit": False})
+    monkeypatch.setattr(_tma, "run_tmalign", lambda **kw: {"tm_score": 0.90, "rmsd": 1.1})
+    ok = _evaluate_target_backbone(protein_id="P", sequence="ACDEF", model=None,
+                                   backend="esmfold2_live", refold_cache_dir="/c",
+                                   reference_pdb="/ref.pdb", scTM_min=0.85)
+    assert ok.evaluated is True and ok.feasible is True
+    assert ok.metrics["scTM"] == 0.90 and ok.metrics["pLDDT"] == 77.0
+    assert ok.cache_status == "miss" and ok.model_executed is True
+
+    monkeypatch.setattr(_tma, "run_tmalign", lambda **kw: {"tm_score": 0.70, "rmsd": 4.0})
+    low = _evaluate_target_backbone(protein_id="P", sequence="ACDEF", model=None,
+                                    backend="esmfold2_live", refold_cache_dir="/c",
+                                    reference_pdb="/ref.pdb", scTM_min=0.85)
+    assert low.evaluated is True and low.feasible is False    # below the absolute floor
+
+
+def test_evaluate_target_backbone_cache_hit_reports_no_model_execution(monkeypatch):
+    import inverse_folding.evaluation.refold as _rf
+    import inverse_folding.evaluation.tmalign as _tma
+    from scripts.rf_fusion_v1_oracles import _evaluate_target_backbone
+
+    monkeypatch.setattr(_rf, "refold", lambda seq, pid, did, **kw: {
+        "pdb_path": "/p.pdb", "pLDDT": 80.0, "cache_hit": True})
+    monkeypatch.setattr(_tma, "run_tmalign", lambda **kw: {"tm_score": 0.95, "rmsd": 0.5})
+    out = _evaluate_target_backbone(protein_id="P", sequence="ACDEF", model=None,
+                                    backend="esmfold2_live", refold_cache_dir="/c",
+                                    reference_pdb="/ref.pdb", scTM_min=0.85)
+    assert out.cache_status == "hit" and out.model_executed is False
+
+
+def test_evaluate_target_backbone_fails_closed_on_fold_error(monkeypatch):
+    import inverse_folding.evaluation.refold as _rf
+    from scripts.rf_fusion_v1_oracles import _evaluate_target_backbone
+
+    def _boom(*a, **k):
+        raise RuntimeError("esmfold worker died")
+
+    monkeypatch.setattr(_rf, "refold", _boom)
+    out = _evaluate_target_backbone(protein_id="P", sequence="ACDEF", model=None,
+                                    backend="esmfold2_live", refold_cache_dir="/c",
+                                    reference_pdb="/ref.pdb", scTM_min=0.85)
+    assert out.evaluated is True and out.feasible is False    # unverifiable -> infeasible, not deferred
+    assert "esmfold worker died" in out.failure_reason
