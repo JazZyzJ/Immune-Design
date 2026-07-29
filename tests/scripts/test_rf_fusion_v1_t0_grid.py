@@ -414,6 +414,29 @@ def test_evaluator_failure_is_feasible_false_not_deferred():
     assert all(r.evaluated and r.feasible is False for r in res.structure_results)
 
 
+def test_one_deferred_structure_request_fails_the_whole_t0_point_closed():
+    """Q_T0 is a frozen denominator, not merely a requested row count. One deferred request makes
+    condition 3 unanswerable for that policy and must prevent ``t0_complete`` even when every other
+    request is definitive."""
+    cfg = _cfg(rho_grid=(0.85,), q_t0=2, n_population=2)
+    n_calls = 0
+
+    def gate(endpoint):
+        nonlocal n_calls
+        n_calls += 1
+        if n_calls == 1:
+            return StructureOutcome.deferred("backend unavailable")
+        return StructureOutcome(
+            feasible=True, metrics={"scTM": 0.91}, evaluated=True
+        )
+
+    res = _point(cfg, _World(cfg), 0.85, EntryJournal(), gate=gate)
+    assert len(res.structure_results) == 3 * cfg.q_t0
+    assert any(not r.evaluated for r in res.structure_results)
+    assert any(r.evaluated for r in res.structure_results)
+    assert res.status == "t0_structure_deferred"
+
+
 def test_the_full_control_is_still_head_ranked_for_the_complete_entry_pool():
     """The Head ranking is not eligibility, but it is still REQUIRED: runbook §9:451 wants
     `complete_entry_pool` for the T0 independent-full candidates, and the Terminal-law comparison

@@ -51,6 +51,17 @@ def test_a_t0_canary_is_shipped_with_all_three_policy_views():
     assert t0[0].rho_grid and t0[0].k_eval and t0[0].q_t0
 
 
+def test_scientific_t0_dev_config_matches_the_frozen_runbook_values():
+    path = CONFIG_DIR / "rf_fusion_v1_entry_t0_dev.yaml"
+    cfg = resolve_entry_config(yaml.safe_load(path.read_text()))
+    assert cfg.phase == "t0" and cfg.split_role == "t0_dev"
+    assert cfg.rho_grid == (0.50, 0.70, 0.85)
+    assert (cfg.prefix_attempts, cfg.k_est, cfg.k_eval) == (16, 4, 8)
+    assert (cfg.unique_root_capacity, cfg.initial_refold_attempt_cap) == (12, 12)
+    assert (cfg.n_population, cfg.q_t0) == (4, 4)
+    assert (cfg.max_dfe, cfg.max_refolds, cfg.max_walltime_s) == (800000, 240, 21600.0)
+
+
 def test_the_two_canary_arms_share_the_frozen_common_facade_cap():
     """F_cap is the COMMON frozen cap: both arms attempt at most that many initial refolds. Two
     different caps would hand the arms different refold budgets (§3.2.1)."""

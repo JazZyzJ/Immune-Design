@@ -1,7 +1,8 @@
 # PLAN — RF-Refine Fusion v1-A: Pre-Terminal Continuation-Value Entry
 
-**Status:** implementation contract; ready for coder review, not implemented, and not
-authorized for scientific T0/P1 launch.
+**Status (2026-07-29):** local implementation and deployment Canaries A/B/C are complete.
+The scientific T0 method/config is frozen; launch remains blocked on the frozen 24-protein
+cohort/exclusion manifests and the preregistered T0 analysis gate. P1 is not yet frozen.
 
 **Implementation target:** a descendant of the `fusion_rf_refine` branch. The audited
 baseline is commit `a2427bfd365cee40d0a4b2e279b8778c449118b5` in the Fusion worktree on
@@ -72,19 +73,17 @@ execution.
 | V1F2 | exact replay, disjoint forks, and resumed batch parity | done (local) |
 | V1F3 | typed partial-entry state, config, hashing, and seed contracts | done (local) |
 | V1F4 | complete continuations, root value, controls, and fresh facade construction | done (local) |
-| V1F5 | v0 admission mapping, artifacts, resume, and cost ledger | done (local), 2 gaps below |
+| V1F5 | v0 admission mapping, artifacts, resume, and cost ledger | done (local); anchor-checksum gap below |
 | V1F6 | production driver, launcher reuse, docs, and regression closure | done (local) |
-| V1F7 | two real deployment canaries | done on Della (A/B + terminal-arm smoke); T0 Canary C blocked |
+| V1F7 | real deployment canaries | done on Della (A/B + terminal-arm smoke + T0 Canary C) |
 
 No task is complete from code alone. Its named artifact, acceptance/falsification criteria,
 and validation evidence must all exist.
 
 **"done (local)" means exactly this**: the implementation, its artifacts and its unit/contract
-tests exist and pass in one interpreter on a laptop. V1F7's ordinary and anchor-heavy deployment
-canaries, plus the terminal-arm smoke, executed on Della on 2026-07-29; they establish deployment
-contracts only, not a scientific effect. Canary C remains blocked by the missing T0→v0 definitive
-structure handoff and the not-yet-implemented B* structure-eligibility law. See the runbook status
-block.
+tests exist and pass in one interpreter on a laptop. V1F7's ordinary, anchor-heavy, terminal-arm
+and T0 deployment canaries executed on Della on 2026-07-29; they establish deployment contracts
+only, not a scientific effect. See the runbook status block.
 
 **Scientific decision frozen on 2026-07-29 — policy-faithful B\***: the `independent_full`
 ELIGIBLE pool for the `Q_T0` structure subsample is its exact-Head-ranked Terminal frontier,
@@ -92,16 +91,13 @@ ELIGIBLE pool for the `Q_T0` structure subsample is its exact-Head-ranked Termin
 roots each policy holds; they are not terminal-Head-truncated a second time. All three pools then
 use the same frozen sample size and Head-independent subset rule. `Q_T0=N=4` for the active T0
 design; partial subsets are root-balanced (one held-out endpoint per held root, with overlapping
-selected/random roots reusing the same endpoint). The current all-survivors implementation must
-be changed before Canary C or a scientific T0 is accepted. Runbook §6.0 is the binding rationale
-and coder checklist.
+selected/random roots reusing the same endpoint). The implementation and Canary C now satisfy
+this contract. Runbook §6.0 is the binding rationale.
 
-**Two V1F5 interfaces are implemented but not closed**, named here so no downstream task
-assumes them:
+**V1F5 closure state**, named here so no downstream task over-claims it:
 
-1. **T0 -> v0 definitive structure.** The `3*Q_T0` subset is frozen, recorded and charged, but the
-   gate defers to v0 and there is no T0 -> v0 handoff, so a T0 run reports `t0_structure_deferred`
-   rather than success. Runbook §6.1 GO/KILL condition 3 cannot be closed from a T0 run alone.
+1. **T0 definitive structure — closed.** The integrated T0 evaluator uses the same target-backbone
+   structure path/cache/gate as v0 and Canary C produced all 72 definitive verdicts.
 2. **Completed-sequence anchor checksum.** `maturity_telemetry.anchor_preservation` is null.
    Root-level preservation is enforced structurally, so a root-level value would be 1.0 by
    construction; the continuation/facade/elite checksum needs the DPLM alphabet and is not
@@ -1322,35 +1318,35 @@ appears.
 
 ## 10. Coder Completion Checklist
 
-- [ ] Implemented on a descendant of the audited Fusion branch under reconciled governance.
-- [ ] Reported any PLAN/code mismatch before changing a frozen scientific contract.
-- [ ] Added a true pre-denoiser, post-previous-remask checkpoint boundary.
-- [ ] Checkpoint at step `s` charges exactly `s` prefix DFE and returns without completion.
-- [ ] Legacy snapshot/resume behavior remains explicitly separate and compatible.
-- [ ] Identity replay restores RNG and matches uninterrupted sampling under the frozen runtime.
-- [ ] Fork continuations use deterministic, disjoint, persisted seed namespaces.
-- [ ] Resumed batch lanes match scalar semantics and report logical versus physical cost.
-- [ ] `rho_edit` excludes every fixed token and uses current `x_t`, not unmask history.
-- [ ] Entry generation forces all editable mask, `c1_null`, `controller=None`,
+- [x] Implemented on a descendant of the audited Fusion branch under reconciled governance.
+- [x] Reported any PLAN/code mismatch before changing a frozen scientific contract.
+- [x] Added a true pre-denoiser, post-previous-remask checkpoint boundary.
+- [x] Checkpoint at step `s` charges exactly `s` prefix DFE and returns without completion.
+- [x] Legacy snapshot/resume behavior remains explicitly separate and compatible.
+- [x] Identity replay restores RNG and matches uninterrupted sampling under the frozen runtime.
+- [x] Fork continuations use deterministic, disjoint, persisted seed namespaces.
+- [x] Resumed batch lanes match scalar semantics and report logical versus physical cost.
+- [x] `rho_edit` excludes every fixed token and uses current `x_t`, not unmask history.
+- [x] Entry generation forces all editable mask, `c1_null`, `controller=None`,
       `h_maps_present=false`, and backbone-only DPLM context.
-- [ ] Head receives complete canonical AA20 only; NMP is absent.
-- [ ] Root value is the exact `K_EST` arithmetic mean with a fixed denominator.
-- [ ] Root equivalence prevents duplicate-state beam slots while retaining convergence telemetry.
-- [ ] Est/eval rollouts never enter the Pre-terminal P1 facade.
-- [ ] Final materialization uses fresh seeds and preserves root rank despite terminal Head values.
-- [ ] Terminal complete-Head ranking and Pre-terminal root ranking are implemented distinctly.
-- [ ] Entry and terminal repair roles both resolve to `c1_null`; controller and h-map absence
+- [x] Head receives complete canonical AA20 only; NMP is absent.
+- [x] Root value is the exact `K_EST` arithmetic mean with a fixed denominator.
+- [x] Root equivalence prevents duplicate-state beam slots while retaining convergence telemetry.
+- [x] Est/eval rollouts never enter the Pre-terminal P1 facade.
+- [x] Final materialization uses fresh seeds and preserves root rank despite terminal Head values.
+- [x] Terminal complete-Head ranking and Pre-terminal root ranking are implemented distinctly.
+- [x] Entry and terminal repair roles both resolve to `c1_null`; controller and h-map absence
       are hashed/recorded and spy-tested.
-- [ ] Facade rank maps explicitly to v0 admission slot and terminal lineage.
-- [ ] Common initial-refold attempt cap and insufficient-coverage behavior are visible.
-- [ ] Reserved control budget is frozen before continuation/structure outcomes; actual usage is
+- [x] Facade rank maps explicitly to v0 admission slot and terminal lineage.
+- [x] Common initial-refold attempt cap and insufficient-coverage behavior are visible.
+- [x] Reserved control budget is frozen before continuation/structure outcomes; actual usage is
       reported separately.
-- [ ] Artifacts reconstruct root -> evidence -> selection -> fresh parent -> v0 lineage.
-- [ ] Resume uses content hashes and is invariant to order/batch/shard partition.
-- [ ] New driver/launcher surfaces satisfy reuse-first and are registered in `doc/SCRIPTS.md`.
-- [ ] One `LOG.md` entry is added only when the behavior-changing implementation lands.
-- [ ] `PROGRESS.md` is overwritten with the current V1-A implementation/deployment state.
-- [ ] Targeted, regression, fake-oracle, ordinary-protein, and Q00511 canary gates pass.
+- [x] Artifacts reconstruct root -> evidence -> selection -> fresh parent -> v0 lineage.
+- [x] Resume uses content hashes and is invariant to order/batch/shard partition.
+- [x] New driver/launcher surfaces satisfy reuse-first and are registered in `doc/SCRIPTS.md`.
+- [x] One `LOG.md` entry is added only when the behavior-changing implementation lands.
+- [x] `PROGRESS.md` is overwritten with the current V1-A implementation/deployment state.
+- [x] Targeted, regression, fake-oracle, ordinary-protein, and Q00511 canary gates pass.
 - [ ] Runbook remains blocked until real canaries and all frozen T0 inputs exist.
 
 ---

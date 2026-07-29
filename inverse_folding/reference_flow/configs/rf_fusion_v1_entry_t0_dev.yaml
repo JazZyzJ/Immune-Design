@@ -1,0 +1,50 @@
+# SCIENTIFIC DEVELOPMENT T0 — RF-Refine Fusion V1-A
+#
+# This is the one-shot maturity gate for HT1. It is not a deployment canary and it does not run
+# P1. The 24-protein frozen development cohort is submitted as four predeclared six-protein shards;
+# the caps below are therefore PER SHARD. All shards use this byte-identical config and are
+# aggregated before any maturity is judged.
+#
+# Sources for the frozen values:
+# - rho_grid: Canary C outcome-independent maturity telemetry (distinct unresolved mass at
+#   .50/.70/.85: approximately 49/27/11 positions on 100–105 aa proteins);
+# - B=16, K_EST=4: successful Canary A/C sizing;
+# - K_EVAL=8: held-out evidence is doubled relative to the smoke while late tails remain cheap;
+# - F_cap=12: Canary C structure pass rate 0.46–0.50 implies about 0.88–0.93 probability of
+#   obtaining N=4 feasible rows under an iid sizing approximation; requested-protein coverage is
+#   still reported because protein-level foldability is heterogeneous;
+# - Q_T0=N=4: frozen policy-faithful B* contract in runbook §6.0.
+
+schema_version: v1cfg-1
+campaign_id: fusion_v1_t0_dev_v1
+phase: t0
+split_role: t0_dev
+entry_arm: preterminal
+master_seed: 20260730
+
+entry_rf_config: c1_null.yaml
+backbone_only: true
+controller_enabled: false
+h_maps_present: false
+
+prefix_attempts: 16
+k_est: 4
+unique_root_capacity: 12
+completions_per_ranked_root: 1
+estimator: mean_global_risk
+n_population: 4
+initial_refold_attempt_cap: 12
+
+rho_grid: [0.50, 0.70, 0.85]
+k_eval: 8
+q_t0: 4
+structure_subsample_seed: 20260731
+random_membership_seed: 20260801
+t0_policies: [selected_partial, random_partial, independent_full]
+
+# Worst-case per six-protein shard at S=100:
+# DFE <= 748800; definitive structure requests = 216. The walltime cap is projected from the
+# predeclared launch anchors 0.02 s/DFE and 2.9 s/refold, with additional startup margin.
+max_dfe: 800000
+max_refolds: 240
+max_walltime_s: 21600.0

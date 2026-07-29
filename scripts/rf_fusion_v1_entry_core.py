@@ -1058,11 +1058,12 @@ def run_t0_protein(
             )
 
     # T0's ONLY structure spend is this subsample, and GO/KILL condition 3 is a per-policy pass
-    # rate over it. If nothing was evaluated the condition is unanswerable, so the point must not
-    # report the status the cohort treats as success -- the P1 arms make the same distinction with
-    # `entry_complete_structure_deferred`.
-    evaluated_any = any(r.evaluated for r in structure_results)
-    status = "t0_complete" if evaluated_any else "t0_structure_deferred"
+    # rate over its frozen denominator. EVERY requested row must therefore be definitive. Treating
+    # a mixed evaluated/deferred set as complete would silently shrink one or more policy
+    # denominators while still exposing Q_T0 rows. Preserve the rows for diagnosis, but fail the
+    # point closed exactly as for an all-deferred evaluator.
+    evaluated_all = all(r.evaluated for r in structure_results)
+    status = "t0_complete" if evaluated_all else "t0_structure_deferred"
 
     return T0Result(
         protein_id=protein_id, unique_root_hashes=unique_hashes,
