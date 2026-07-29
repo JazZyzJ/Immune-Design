@@ -485,7 +485,7 @@ first scientific shard starts. Freeze the following values:
 | `Q_T0` | 4 | equals `N`; policy-faithful B* structure denominator |
 | estimator | arithmetic mean Head `global_risk` | frozen scientific definition |
 | shard caps | 800000 DFE, 240 refolds, 21600 s | worst-case six-protein preflight at `S=100`, plus startup margin |
-| launch unit-cost anchors | 0.02 s/DFE, 2.9 s/refold | Canary/RAR feasibility anchors; replace with measured T0 costs before P1 |
+| launch unit-cost anchors | 0.02 s/DFE, 2.9 s/refold | the values the T0 shards launched under; **superseded by the measured T0 costs in §6.1A — use those for P1** |
 
 The 24 IDs must be drawn and frozen under §3.1 before any scientific shard runs. Stratify on
 pre-existing length/coverage only; persist the exclusion list for P2/P3/RAR0031 proteins and four
@@ -584,6 +584,58 @@ If several maturities pass, freeze the earliest (lowest $\rho_{\mathrm{edit}}$) 
 one. If none pass, stop V1-A and report the negative. Do not rescue it by sweeping more
 maturities, increasing `K`, changing the estimator, tuning beam, or moving the gate
 toward $\rho=1$.
+
+### 6.1A T0 EXECUTED — measured costs and the pre-registered verdict (2026-07-29)
+
+The four frozen shards ran to completion on `rtx6000` (RTX PRO 6000 Blackwell, `della-h23g1`) under
+the `immune-design-blackwell` env (torch 2.7.1+cu128); jobs `11771059-62`, 50–57 min each. Every
+shard exited 0.
+
+**Execution evidence (structural, not treatment).** 24/24 proteins `t0_complete`, matching the
+frozen cohort exactly; **864/864** definitive structure requests `evaluated` (= 24 × 3 rho × 3
+policies × `Q_T0`=4) with zero `failure_reason`; all 216 `(protein, rho, policy)` cells hold exactly
+`Q_T0`=4 verdicts — the B\* law held with no shrink or backfill; the `config_digest`
+`570a422b…d589be` is **identical across all four shards**, which is what makes them one experiment.
+
+**Measured unit costs (these supersede the §6.0A launch anchors).**
+
+| Quantity | Measured | Launch anchor |
+|---|---:|---:|
+| seconds per definitive refold | **2.42** (1893 s of self-timed structure walltime / 782 real folds; 82/864 served from cache) | 2.9 |
+| seconds per DFE | **≤0.029** (aggregate 12915 s job walltime − 1893 s structure, over 381686 logical DFE; **includes model startup**, so it is an upper bound) | 0.02 |
+
+The DFE anchor is the optimistic one: P1 walltime projections should use ~0.03 s/DFE, not 0.02.
+Refolds are ~17 % cheaper than assumed. Actual per-shard walltime (≈3.2 ks) came in far under the
+21.6 ks cap because the cap is a worst-case projection at `max_dfe`, while realized DFE was 381686
+for the whole cohort.
+
+**Pre-registered gate output.** `scripts/analysis/rf_fusion_v1_t0_gate.py` was run **once** on the
+four-shard aggregate (`--n-resample 10000 --seed 20260729`); the immutable verdict and the
+24-protein × 3-rho table are at `<run>/t0_dev_v1/analysis/`. Per-rho results:
+
+| rho | coverage | value reliability (median $\rho_s$, Holm $p$) | selected−random (median $\Delta$, Holm $p$) | structure LB vs −0.10 | meaningful action | GO |
+|---|---|---|---|---|---|---|
+| 0.30 | 24/24 | 0.149, 0.0135 ✅ | −0.043, 0.311 ❌ | **−0.156** ❌ | med $|U|$=144, frac 0.683 ✅ | ❌ |
+| 0.50 | 24/24 | 0.287, 0.0003 ✅ | −0.643, 0.0020 ✅ | −0.042 ✅ | med $|U|$=101.5, frac 0.471 ✅ | ✅ |
+| 0.70 | 24/24 | 0.724, 0.0003 ✅ | −1.838, 0.0006 ✅ | 0.000 ✅ | med $|U|$=57.5, frac 0.247 ✅ | ✅ |
+
+Two maturities pass, so §6.1's "freeze the earliest passing" rule selects **`rho=0.50`**. Rho 0.30
+fails on two independent counts (no separable selected-vs-random signal, and its structure lower
+bound breaches the frozen −0.10 margin), i.e. the pre-terminal state is too immature there to carry
+continuation value. Rho 0.70 shows the largest effects but the least remaining action.
+
+**Gate verification (why these numbers are trustworthy).** Before the gate was committed, all five
+rules were re-derived from the raw parquet by an independent implementation and matched exactly:
+coverage 24/24; median Spearman 0.148529/0.286765/0.723529 (cross-checked against
+`scipy.stats.spearmanr`, which also agrees with the script's own tie-averaged ranker to ~1e-16 on
+tie-heavy inputs); median delta −0.042775/−0.643198/−1.837647; observed structure diff
+−0.06250/0.00000/0.03125; median unresolved 144.0/101.5/57.5. Re-running with the same seed
+reproduces a **byte-identical** verdict. Independently, the gate's measured unresolved fractions
+(0.683/0.471/0.247) reproduce the frozen maturity scan's (0.689/0.471/0.251) through a completely
+different code path — the scan read the live sampler, the gate reads the persisted tables.
+
+This freezes T0 only. The P1 cohort size, dev/holdout split sizes and primary practical margin are
+still open and must be set from the measured variance and costs above.
 
 ## 7. P1 — frozen two-arm validation
 
