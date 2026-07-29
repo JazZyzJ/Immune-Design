@@ -55,7 +55,7 @@ def test_scientific_t0_dev_config_matches_the_frozen_runbook_values():
     path = CONFIG_DIR / "rf_fusion_v1_entry_t0_dev.yaml"
     cfg = resolve_entry_config(yaml.safe_load(path.read_text()))
     assert cfg.phase == "t0" and cfg.split_role == "t0_dev"
-    assert cfg.rho_grid == (0.50, 0.70, 0.85)
+    assert cfg.rho_grid == (0.30, 0.50, 0.70)
     assert (cfg.prefix_attempts, cfg.k_est, cfg.k_eval) == (16, 4, 8)
     assert (cfg.unique_root_capacity, cfg.initial_refold_attempt_cap) == (12, 12)
     assert (cfg.n_population, cfg.q_t0) == (4, 4)

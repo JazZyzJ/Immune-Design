@@ -6,8 +6,9 @@
 # aggregated before any maturity is judged.
 #
 # Sources for the frozen values:
-# - rho_grid: Canary C outcome-independent maturity telemetry (distinct unresolved mass at
-#   .50/.70/.85: approximately 49/27/11 positions on 100–105 aa proteins);
+# - rho_grid [.30,.50,.70]: OUTCOME-INDEPENDENT maturity scan (scripts/rho_maturity_scan.py) on 4
+#   length-stratified proteins — separated in unresolved mass (~69/47/25%) AND Head-free fork
+#   branching (~0.37/0.28/0.16); .85 dropped as near-terminal best-of-K (fork ~0.08);
 # - B=16, K_EST=4: successful Canary A/C sizing;
 # - K_EVAL=8: held-out evidence is doubled relative to the smoke while late tails remain cheap;
 # - F_cap=12: Canary C structure pass rate 0.46–0.50 implies about 0.88–0.93 probability of
@@ -35,7 +36,7 @@ estimator: mean_global_risk
 n_population: 4
 initial_refold_attempt_cap: 12
 
-rho_grid: [0.50, 0.70, 0.85]
+rho_grid: [0.30, 0.50, 0.70]
 k_eval: 8
 q_t0: 4
 structure_subsample_seed: 20260731

@@ -354,7 +354,7 @@ generalizes to independent continuations while leaving real basin choice?
 
 Freeze in `resolved_t0.yaml` before launch:
 
-- the frozen maturity grid `RHO_GRID=[.50,.70,.85]`;
+- the frozen maturity grid `RHO_GRID=[.30,.50,.70]`;
 - frozen root-prefix attempt count per protein `B` and minimum valid unique-root
   capacity after equivalence collapse;
 - estimator continuations per root `K_EST`;
@@ -371,20 +371,24 @@ The last forward may still resolve many editable residues, so this does not prov
 is degenerate. It does prove that nominally different late rho targets may collapse onto the same
 final maturity jump.
 
-Canary C supplied the outcome-independent maturity-only sizing evidence used to freeze the
-scientific `RHO_GRID`. It did not inspect or adjudicate Head treatment differences. The three
-targets were accepted because the canary established distinct step/rho/unresolved-mass strata
-and adequate crossing/unique-root coverage. The scientific T0 must additionally verify:
-
-- non-trivial unique-descendant branching;
-- multiple terminal basins under the frozen §6.1 definition.
-
-The sampler's late schedule is steep: the three targets land at approximately steps 94/97/99,
-not at evenly spaced tail DFE. They are nevertheless operationally distinct in the quantity that
-matters for intervention — approximately 49/27/11 unresolved editable positions on the two
-Canary-C proteins. The scientific T0 therefore freezes all three and lets condition 4 reject a
-nominal maturity if this separation does not generalize to the 24-protein cohort. Do not add a
-lower rho after opening T0 outcomes.
+The scientific `RHO_GRID` is frozen from a dedicated OUTCOME-INDEPENDENT maturity scan
+(`scripts/rho_maturity_scan.py`; frozen machine-readable evidence at
+`run/inverse_folding/fusion_v1/rho_maturity_scan/rho_maturity_scan.parquet`), NOT from the
+2-protein canary — the canary only proved the pipeline runs, never where rho should be (§11.5). The scan swept `[.20,.30,.40,.50,.70,.85]` on four
+length-stratified generic proteins (90/150/210/280 aa), reading ONLY crossing/unique-root coverage,
+snapshot step, ρ_actual, unresolved editable mass, and Head-free fork descendant diversity — never
+Head or structure. Findings are length-invariant: every target crosses 8/8 with full unique-root
+coverage (even `.20`), so low rho IS usable; the reparam schedule compresses all crossings into the
+last ~16 steps, but unresolved mass and fork branching separate the targets cleanly —
+unresolved ≈ 79/69/58/47/25/11 % and fork-diversity ≈ 0.38/0.37/0.34/0.28/0.16/0.08 at
+ρ=.20/.30/.40/.50/.70/.85. `.85` (11 % unresolved, fork 0.08) is effectively best-of-K, not
+pre-terminal allocation, and `.70` sits in the low-branching regime. The frozen grid `[.30,.50,.70]`
+therefore spans the fidelity×influence tradeoff with three genuinely-separated states: `.30`
+(69 % unresolved, fork 0.37, genuinely pre-terminal), `.50` (47 %, 0.28, balanced), `.70` (25 %,
+0.16, near-terminal boundary). The scientific T0 must still verify non-trivial unique-descendant
+branching and multiple terminal basins under §6.1, and lets condition 4 reject a target whose
+separation does not generalize to the 24-protein cohort. Do not add a lower rho after opening T0
+outcomes.
 
 Use the arithmetic mean terminal Head `global_risk` over `K_EST` complete rollouts as
 the root-value estimate; lower is better. Report alternative summaries descriptively but
@@ -471,7 +475,7 @@ first scientific shard starts. Freeze the following values:
 |---|---:|---|
 | development proteins | 24, generic anchor-free DRB1*07:01 | gives 24 paired protein units and 96 structure verdicts per policy/rho |
 | execution layout | 4 fixed shards × 6 proteins | bounds one failed job without changing the frozen cohort |
-| `rho_grid` | `[.50, .70, .85]` | Canary C: distinct unresolved mass (~49/27/11), despite late steps 94/97/99 |
+| `rho_grid` | `[.30, .50, .70]` | maturity scan (`scripts/rho_maturity_scan.py`, 4 lengths): separated in unresolved mass (~69/47/25 %) AND fork branching (~0.37/0.28/0.16); `.85` dropped as near-terminal best-of-K (fork ~0.08) |
 | `B=prefix_attempts` | 16 | Canary A/C crossing and unique-root yield |
 | `unique_root_capacity` | 12 | coverage gate; also supports the common `F_cap` |
 | `K_EST` | 4 | frozen estimator budget used by the canaries |
