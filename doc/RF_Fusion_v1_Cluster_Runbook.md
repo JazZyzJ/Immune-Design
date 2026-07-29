@@ -3,12 +3,47 @@
 AGENT TASK SPEC. Execute top-to-bottom. Stop and report on any FAIL. Do not tune a
 failed gate into a positive result.
 
-> **Current status (2026-07-27): Canaries A and B runnable (each + §11.7); Canary C BLOCKED; scientific T0/P1 BLOCKED.** Both P1 arms are
+> **Current status (2026-07-29): Canaries A, B, and the terminal-arm smoke EXECUTED and verified on the cluster (each entry + its §11.7 v0 stage); Canary C BLOCKED; scientific T0/P1 BLOCKED.** Both P1 arms are
 > implemented and wired end to end (`preterminal` and `terminal`), the null-runtime firewall
 > verifies BOTH reference-flow roles, the launch gate is fail-closed on inputs/cohort/anchors,
 > S and N/R_parent/n_rounds are resolved from the frozen YAMLs with CLI cross-check, structure
 > is honestly deferred to v0, and the per-protein matched budget `C_reserved` is persisted.
 > §11 below carries the real dry-run and canary commands.
+>
+> **Cluster canary execution — 2026-07-29 (PLI H100, `--account=pli_x --qos=pli-low --partition=pli`).**
+> Every canary ENTRY job and its §11.7 v0 stage ran and was verified. This proves
+> deployment/identity/ledger/anchor/replay wiring ONLY — no HT1/HT2 and no arm effect (the two entry
+> cohorts overlap; the numbers below are for sizing, not comparison).
+>
+> - **Platform constraint (load-bearing for every future run).** The idle `rtx6000` partition is
+>   RTX PRO 6000 Blackwell (sm_120) and is INCOMPATIBLE with the `immune-design` torch 2.5.1+cu121
+>   build (sm_50..sm_90): DPLM restores on CPU but the first CUDA kernel aborts with `sm_120 not
+>   compatible` → exit 2, 0 proteins. Use a compatible GPU — PLI H100, ailab H200
+>   (`--constraint=h200`), or A100 (sm_80) — and request a SHORT `--time` (entries ~2–3 min, canary
+>   v0 ~8–9 min). The launcher default `--time=12:00:00` did NOT backfill (estimated 11–14 h wait);
+>   `--time=00:20:00` (entry) / `02:00:00` (v0) started immediately. `--partition=gpu` is rejected by
+>   the Della submit filter; the mig default is a 10 GB A100 slice (avoid for generation).
+> - **Entry→v0 chain + §2.11 crosswalk verified.** Canary A (preterminal) and the terminal-arm smoke
+>   each produced a 6-row facade per protein; the §11.7 v0 stage closed the crosswalk end to end —
+>   `fusion_elite.entry_source_id` (e.g. `5ZHV_B:preterminal:rho0.850:r14`) →
+>   `fusion_initial_admission_verdicts` → entry `terminal_parent_facade.source_id`, with NO sequence
+>   join anywhere.
+> - **Anchor path verified (§11.6).** Canary B (Q00511 + 24-anchor safety manifest): `maturity_telemetry`
+>   `n_fixed=24`, `n_editable+n_fixed==length(302)`, and all 24 hard-anchor residues held at their WT
+>   identity across every `terminal_parent_facade` (6) and `continuations` (62) row.
+>   `anchor_preservation` stays NULL (the known §11.6 gap — not a measurement).
+> - **Sizing telemetry (feeds §3/§6/§7 caps; NOT arm effect).** Entry crossing 30/32 and 14/16
+>   (~10 % `no_crossing` — over-provision `prefix_attempts` accordingly); |U|/B ≈ 0.88–1.00; facade
+>   filled `F_cap=6`/6 every run; entry DFE ≈ 1.6 k/protein (root_prefix-dominated), 0 refolds
+>   (structure deferred); persisted `C_reserved` ≈ 1.6 k DFE/protein. v0: ~120–145 refolds per
+>   successful protein over 8 rounds, ~8–9 min walltime for a 2-protein canary.
+> - **Feasibility / coverage finding (sizing).** At `F_cap=6`, `N=4`: 5ZHV_B produced an elite in
+>   BOTH arms; 9L2Q_A hit `insufficient_feasible_initial_population 0<4` in BOTH arms (a per-protein
+>   foldability outcome, NOT an arm effect); Q00511 (anchored) reached `2<4`. These are legitimate
+>   §10 coverage outcomes — the null pre-terminal feasibility rate at ρ_edit≈0.85 is low enough that
+>   the scientific run needs a larger `F_cap`. **Known gap:** because Q00511 never reached `N=4`, the
+>   anchored v0 REPAIR loop was not exercised, so v0-side anchor preservation THROUGH repair is not
+>   yet demonstrated on the cluster.
 >
 > Both P1 arms and T0 are implemented, wired and canary-configured; null isolation is verified at
 > the sampler (not only in the config). T0 now emits the standard §9 evidence tables, keeps each
@@ -52,8 +87,8 @@ failed gate into a positive result.
 >
 > **Still blocking a scientific run** (not a canary): the cohort manifests (`DEV_IDS` /
 > `HOLDOUT_IDS` / `TEST_SET_PARQUET`), the T0 `rho_grid`/`K_EVAL`/`Q_T0` values, and the measured
-> `SECONDS_PER_REFOLD` / `SECONDS_PER_DFE` unit costs are not frozen, and nothing has yet run on
-> the cluster. A canary run is a contract smoke only — do not read any effect out of it.
+> `SECONDS_PER_REFOLD` / `SECONDS_PER_DFE` unit costs are not frozen. No SCIENTIFIC run has launched — the canaries executed 2026-07-29 (see
+> the execution block above), but a canary is a contract smoke only; do not read any effect out of it.
 
 Authority order:
 
