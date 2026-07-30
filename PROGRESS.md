@@ -328,10 +328,9 @@
 
 ## RF-Refine Fusion V1-A — pre-terminal entry (PLAN_RF_REFINE_FUSION_V1.md)
 
-> **LOCAL IMPLEMENTATION COMPLETE; CANARIES A/B/C + TERMINAL-ARM SMOKE COMPLETE.** Branch
+> **LOCAL IMPLEMENTATION COMPLETE; CANARIES COMPLETE; SCIENTIFIC T0 GO AT `rho=0.50`.** Branch
 > `fusion_rf_refine`, worktree `/Users/jerry/Project/MHC-IF-fusion`. The deployment canaries ran
-> on Della on 2026-07-29; no scientific T0/P1 has run. Do not read a treatment claim out of canary
-> data.
+> on Della on 2026-07-29, followed by the frozen 24-protein scientific T0. P1 has not run.
 
 **The question.** Same total DFE, different ALLOCATION POINT: does spending the reward signal at a
 partial state (ρ_edit<1) beat spending it at the endpoint? "Matched compute" is the entire claim.
@@ -340,7 +339,7 @@ partial state (ρ_edit<1) beat spending it at the endpoint? "Matched compute" is
 |---|---|
 | P1 `preterminal` arm (continuation-value allocation) | implemented, canary-configured |
 | P1 `terminal` arm (complete trajectories, exact terminal Head rank) | implemented, canary-configured |
-| T0 calibration (3 policy views over ONE root pool + ONE held-out K_EVAL) | implemented; B*/definitive-structure Canary C complete; scientific config frozen |
+| T0 calibration (3 policy views over ONE root pool + ONE held-out K_EVAL) | **scientific T0 complete; GO; frozen `rho=0.50`** |
 | Null-runtime firewall (§2.12), verified at the SAMPLER with a positive control | done |
 | §3.4 fail-closed launch gate, §4.2 content-bound resume | done |
 | Cluster canaries (V1F7) | A/B/C + terminal-arm smoke complete |
@@ -382,15 +381,17 @@ Cluster closure (2026-07-29; deployment evidence only):
   Its outcome-independent maturity telemetry separated `.50/.70/.85` at approximately
   49/27/11 unresolved editable positions.
 
-**Scientific T0 frozen values:** 24 generic anchor-free development proteins in four fixed
-six-protein shards; `rho_grid=[.50,.70,.85]`, `B=16`, `K_EST=4`, `K_EVAL=8`,
-`unique_root_capacity=F_cap=12`, `N=Q_T0=4`. Config:
-`inverse_folding/reference_flow/configs/rf_fusion_v1_entry_t0_dev.yaml`.
+**Scientific T0 result (2026-07-29):** 24/24 complete proteins and 864/864 definitive structure
+requests. The frozen grid was `[.30,.50,.70]`; `.50` and `.70` passed every gate, so the
+pre-registered earliest-pass law freezes **`.50`**. At `.50`, median value Spearman was `0.287`,
+selected-minus-random held-out Head delta was `-0.643`, the structure non-inferiority lower bound
+was `-0.042` against the frozen `-0.10` margin, and median unresolved editable fraction was
+`0.471`. Measured costs were `2.42 s/refold` and at most `0.029 s/DFE`.
 
-**Blocking the scientific T0 launch:** freeze/persist the 24-ID cohort, prior-cohort exclusions
-and four shard manifests; implement and commit the preregistered
-`scripts/analysis/rf_fusion_v1_t0_gate.py` from runbook §6.1. P1 cohort size, split sizes,
-winning maturity and primary margin remain intentionally unfrozen until T0 variance/cost exists.
+**P1 next state:** freeze disjoint outcome-independent 24-protein dev and 80-protein holdout
+manifests under runbook §7.0, implement/freeze the P1 gate, run dev first, then open holdout once.
+The method is frozen at `rho=.50`, `B=16`, `K_EST=4`, `unique_root_capacity=F_cap=12`, `N=4`,
+`S=100`, null entry/repair runtimes, and the eight-round repair+beam terminal package.
 
 **Known gap, stated so no canary over-claims it** (full list in the runbook status block):
 `maturity_telemetry.anchor_preservation` is null and is NOT a measurement — root-level

@@ -3,7 +3,12 @@
 AGENT TASK SPEC. Execute top-to-bottom. Stop and report on any FAIL. Do not tune a
 failed gate into a positive result.
 
-> **Current status (2026-07-29): Canaries A, B, the terminal-arm smoke, AND Canary C (T0, B*+structure-handoff) EXECUTED and verified on the cluster; the scientific T0 CONFIG is frozen in §6.0A, while launch remains BLOCKED on the cohort/exclusion manifests and the preregistered analysis gate.** Both P1 arms are
+> **Current status (2026-07-29): the scientific T0 is complete and the frozen gate is GO at
+> `rho_target=0.50`.** Canaries A/B/C, the Terminal-arm smoke, the 24-protein T0 cohort, all four
+> T0 shards, and the pre-registered analysis have executed. T0 authorizes P1 preparation; it does
+> not establish that Pre-terminal beats the stronger Terminal arm after the eight-round v0
+> package. P1 development is next, under the freeze in §7.0. The untouched P1 holdout must not be
+> opened until the development run and P1 analysis command are complete and frozen. Both P1 arms are
 > implemented and wired end to end (`preterminal` and `terminal`), the null-runtime firewall
 > verifies BOTH reference-flow roles, the launch gate is fail-closed on inputs/cohort/anchors,
 > S and N/R_parent/n_rounds are resolved from the frozen YAMLs with CLI cross-check, structure
@@ -128,13 +133,11 @@ failed gate into a positive result.
 > `biohub/ESMFold2`; and the entry oracle takes the per-request maturity from `rho_id` (a T0 grid
 > varies rho while the oracle is built once — the P1 single-`rho_target` path is unchanged).
 >
-> **Still blocking a scientific run** (not a canary): the 24-protein T0 development cohort,
-> prior-cohort exclusion manifest, four fixed six-protein shard manifests, and the preregistered
-> T0 analysis command/output do not yet exist. The scientific T0 knobs are frozen in §6.0A and
-> `rf_fusion_v1_entry_t0_dev.yaml`; `SECONDS_PER_REFOLD=2.9` and `SECONDS_PER_DFE=0.02` remain
-> conservative launch anchors and must be replaced by measured T0 values before P1. No SCIENTIFIC run has
-> launched — the canaries executed 2026-07-29 (see the execution block above), but a canary is a
-> contract smoke only; do not read any treatment effect out of it.
+> **Still blocking P1 development:** freeze the outcome-independent P1 dev/holdout manifests under
+> §3.1 and commit the P1 analysis command before opening either arm's outcomes. The scientific T0
+> itself is no longer blocked: its four shards and frozen gate executed under commit `1ed89d4`,
+> and §6.1A records the result. Use the measured P1 planning anchors `0.03 s/DFE` and
+> `2.42 s/definitive refold`; the former is deliberately rounded up from the T0 upper bound.
 
 Authority order:
 
@@ -613,6 +616,13 @@ for the whole cohort.
 four-shard aggregate (`--n-resample 10000 --seed 20260729`); the immutable verdict and the
 24-protein × 3-rho table are at `<run>/t0_dev_v1/analysis/`. Per-rho results:
 
+Artifact integrity:
+
+- `t0_gate_verdict.json`: SHA256
+  `d4354db6e14f360709bfff189dc24c7ee181ea57d73fb71af1b9c1036e4faf37`;
+- `t0_gate_protein_table.csv`: SHA256
+  `1d199ac2c8d2cb0aa9d954cd280d355864fadc0e886b23b8b4328f6b6b59cb92`.
+
 | rho | coverage | value reliability (median $\rho_s$, Holm $p$) | selected−random (median $\Delta$, Holm $p$) | structure LB vs −0.10 | meaningful action | GO |
 |---|---|---|---|---|---|---|
 | 0.30 | 24/24 | 0.149, 0.0135 ✅ | −0.043, 0.311 ❌ | **−0.156** ❌ | med $|U|$=144, frac 0.683 ✅ | ❌ |
@@ -634,13 +644,99 @@ reproduces a **byte-identical** verdict. Independently, the gate's measured unre
 (0.683/0.471/0.247) reproduce the frozen maturity scan's (0.689/0.471/0.251) through a completely
 different code path — the scan read the live sampler, the gate reads the persisted tables.
 
-This freezes T0 only. The P1 cohort size, dev/holdout split sizes and primary practical margin are
-still open and must be set from the measured variance and costs above.
+**Protocol deviation (traceability, not a changed test).** The four shard manifests bind the
+execution to commit `1ed89d4`. That commit already contains the exact five rules, resample count,
+family-wise corrections, margins and earliest-pass law above, but it does not contain the
+executable `rf_fusion_v1_t0_gate.py`; the script entered Git with result commit `55588ec`.
+Therefore the numerical decision rule was pre-registered, but the runbook's stricter operational
+requirement that the executable itself be committed before launch was not met. The independent
+re-derivation, byte-identical rerun and artifact hashes above make the T0 verdict usable, but this
+deviation must remain disclosed. P1 analysis code must be committed and hashed before P1-dev, not
+reconstructed after either P1 arm runs.
+
+This freezes T0 only. The resulting P1 freeze is recorded below.
 
 ## 7. P1 — frozen two-arm validation
 
 Run development first. Freeze the complete P1 config and analysis code, then execute
 once on the untouched holdout.
+
+### 7.0 T0-to-P1 freeze decision — 2026-07-29
+
+T0 answers the mechanism gate, not the P1 arm contrast. At the winning maturity, the selected-root
+versus random-root held-out Head delta has median `-0.643`, mean `-0.668`, standard deviation
+`1.094`, and direction `15/24` proteins favorable. The corresponding standardized mean effect is
+about `0.61`, but Terminal is a stronger control than random allocation and the common eight-round
+v0 package may attenuate the entry difference. P1 sizing therefore assumes only half of that
+standardized effect (`~0.31`) and does not use the T0 effect as an expected P1 result.
+
+Freeze the following method values for P1:
+
+| Quantity | P1 value | Source |
+|---|---:|---|
+| `rho_target` | **0.50** | earliest maturity passing every pre-registered T0 gate |
+| `B=prefix_attempts` | 16 | frozen T0 method constant; 16/16 unique roots at the winning rho |
+| `K_EST` | 4 | frozen T0 estimator |
+| `unique_root_capacity` | 12 | frozen T0/P1 capacity gate |
+| `N` | 4 | frozen v0 population |
+| `F_cap` | 12 | frozen common initial-refold-attempt cap |
+| entry sampler | `S=100`, `c1_null`, `controller=None`, no h-map | shared null substrate |
+| terminal package | `rf_refine_fusion_final_repair_beam.yaml` + repair `c1_null` | frozen v0 package |
+| planning unit costs | `0.03 s/DFE`, `2.42 s/refold` | rounded-conservative T0 measurements |
+
+The configs for the development stage are
+`rf_fusion_v1_entry_p1_dev_preterminal.yaml` and
+`rf_fusion_v1_entry_p1_dev_terminal.yaml`. Do not change the method values after seeing P1-dev.
+
+**Cohorts.** Freeze both manifests before P1-dev starts, but keep holdout outcomes sealed:
+
+- P1-dev: 24 requested proteins, six fixed four-protein shards;
+- P1-holdout: 80 requested proteins, twenty fixed four-protein shards;
+- both are generic, anchor-free DRB1*07:01 proteins, balanced as 6 and 20 proteins per WT-length
+  quartile respectively;
+- exclude all T0 proteins and every prior B1/P2/P3/RAR0031/canary/maturity-scan protein;
+- cluster eligible WT sequences with
+  `/home/zc1519/.conda/envs/immune-design/bin/mmseqs` at 30% identity and 80% coverage, exclude every
+  cluster touching a prior cohort, and draw at most one protein per cluster across dev plus
+  holdout. The binary is present on Della; stop on clustering failure rather than silently
+  reverting the load-bearing P1 holdout to exact-sequence deduplication;
+- require `head_train_overlap_flag=false` for the load-bearing holdout. Record the eligible-count
+  loss and stop if this prevents the frozen length balance.
+
+The holdout size is a planning compromise, not a guarantee: T0 had structure-feasible evidence in
+both compared policies for 20/24 proteins, so 80 requested proteins project to about 67 paired
+common-feasible proteins. Under a one-sided paired normal approximation, that gives about 80%
+power for a standardized effect near `0.31`, i.e. roughly half the T0 mechanism effect. Report the
+actual requested/common-feasible denominators; never replace failed proteins.
+
+**P1-dev role.** Development verifies the complete two-arm entry→v0→evaluation chain and estimates
+attenuation/coverage. It may stop an obviously failed program, but it must not change rho, `B`,
+`K_EST`, `N`, `F_cap`, the null substrate, the terminal package, or the frozen holdout cohort.
+Before opening holdout, commit one `rf_fusion_v1_p1_gate.py` command and its resolved parameters.
+
+**Frozen holdout reading.** For each common-feasible protein define
+`Delta_elite = Head_Pre-terminal - Head_Terminal`; lower is better. Use a fixed-sequence reading:
+
+1. **system superiority:** one-sided paired sign-flip `p<0.05` and median
+   `Delta_elite <= -0.25`;
+2. if superiority fails, **trajectory-positive / terminal-absorbed:** the one-sided 95% upper
+   protein-bootstrap bound for the median `Delta_elite` is below `+0.25`, while the analogous best
+   pre-Fusion feasible-parent delta has one-sided paired `p<0.05` and median `<=-0.25`;
+3. otherwise V1-A is negative.
+
+The `0.25` Head-unit practical margin is deliberately smaller than half of T0's median mechanism
+gain (`0.643`) but larger than a merely numerical tie. Both positive readings additionally require:
+
+- at least 64/80 requested proteins are common-feasible;
+- the one-sided 95% protein-bootstrap lower bound for Pre-terminal minus Terminal entry-feasible
+  requested-protein rate exceeds `-0.10`, and the analogous bound for the independent-repeat final
+  elite structure gate-pass rate also exceeds `-0.10`;
+- no anchor or complete-AA20 failure, no null-runtime violation, and exact logical DFE matching;
+- aggregate Pre-terminal physical GPU-hours do not exceed Terminal by more than 25%.
+
+The first reading supports a final system-value claim. The second supports a narrower claim that
+pre-terminal allocation improves the entry population but the frozen terminal package absorbs the
+advantage. Do not merge these interpretations.
 
 P1 must report both the parent frontier **before** the terminal Fusion loop and the final
 elite frontier **after** it. This separates a failed continuation-value estimator from a

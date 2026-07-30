@@ -1,0 +1,38 @@
+# SCIENTIFIC P1 DEVELOPMENT — PRE-TERMINAL ENTRY
+#
+# Method values are frozen from the pre-registered 24-protein T0 (runbook §6.1A/§7.0).
+# This is development, not holdout. It verifies the complete two-arm entry -> v0 -> evaluation
+# chain and may not be used to tune rho, B, K_EST, N, F_cap, the null substrate, or the terminal
+# package. Paths and cohort IDs are supplied by the launcher.
+#
+# Caps are PER FOUR-PROTEIN SHARD. At S=100 the conservative reserved upper bounds are:
+#   DFE <= 4 * (B*S + K_EST*B*S + F_cap*S) = 36,800
+#   refold requests <= 4 * (F_cap + N*R_parent*n_rounds) = 1,072
+# At the T0 planning anchors (0.03 s/DFE, 2.42 s/refold), the bound is about 3,700 s before
+# startup margin; the 7,200 s walltime cap is intentionally conservative.
+
+schema_version: v1cfg-1
+campaign_id: fusion_v1_p1_dev_v1
+phase: p1
+split_role: p1_dev
+entry_arm: preterminal
+master_seed: 20260802
+
+entry_rf_config: c1_null.yaml
+backbone_only: true
+controller_enabled: false
+h_maps_present: false
+
+prefix_attempts: 16
+k_est: 4
+unique_root_capacity: 12
+completions_per_ranked_root: 1
+estimator: mean_global_risk
+n_population: 4
+initial_refold_attempt_cap: 12
+
+rho_target: 0.50
+
+max_dfe: 45000
+max_refolds: 1200
+max_walltime_s: 7200.0

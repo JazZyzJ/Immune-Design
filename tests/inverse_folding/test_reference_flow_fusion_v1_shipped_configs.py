@@ -62,6 +62,27 @@ def test_scientific_t0_dev_config_matches_the_frozen_runbook_values():
     assert (cfg.max_dfe, cfg.max_refolds, cfg.max_walltime_s) == (800000, 240, 21600.0)
 
 
+def test_p1_dev_configs_match_the_post_t0_freeze():
+    pre = resolve_entry_config(yaml.safe_load(
+        (CONFIG_DIR / "rf_fusion_v1_entry_p1_dev_preterminal.yaml").read_text()
+    ))
+    term = resolve_entry_config(yaml.safe_load(
+        (CONFIG_DIR / "rf_fusion_v1_entry_p1_dev_terminal.yaml").read_text()
+    ))
+
+    assert pre.phase == term.phase == "p1"
+    assert pre.split_role == term.split_role == "p1_dev"
+    assert {pre.entry_arm, term.entry_arm} == {"preterminal", "terminal"}
+    assert pre.campaign_id == term.campaign_id == "fusion_v1_p1_dev_v1"
+    assert pre.master_seed == term.master_seed == 20260802
+    assert pre.rho_target == 0.50
+    assert (pre.prefix_attempts, pre.k_est, pre.unique_root_capacity) == (16, 4, 12)
+    assert pre.initial_refold_attempt_cap == term.initial_refold_attempt_cap == 12
+    assert pre.n_population == term.n_population == 4
+    assert (pre.max_dfe, pre.max_refolds, pre.max_walltime_s) == (45000, 1200, 7200.0)
+    assert (term.max_dfe, term.max_refolds, term.max_walltime_s) == (45000, 1200, 7200.0)
+
+
 def test_the_two_canary_arms_share_the_frozen_common_facade_cap():
     """F_cap is the COMMON frozen cap: both arms attempt at most that many initial refolds. Two
     different caps would hand the arms different refold budgets (§3.2.1)."""

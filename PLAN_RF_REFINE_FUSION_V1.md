@@ -1,8 +1,9 @@
 # PLAN — RF-Refine Fusion v1-A: Pre-Terminal Continuation-Value Entry
 
 **Status (2026-07-29):** local implementation and deployment Canaries A/B/C are complete.
-The scientific T0 method/config is frozen; launch remains blocked on the frozen 24-protein
-cohort/exclusion manifests and the preregistered T0 analysis gate. P1 is not yet frozen.
+The frozen 24-protein scientific T0 executed and returned GO; the earliest passing maturity
+freezes `rho_target=0.50`. P1 method values and development configs are frozen in the runbook
+§7.0. P1 cohort manifests and the P1 analysis gate remain blocking; no P1 outcome exists.
 
 **Implementation target:** a descendant of the `fusion_rf_refine` branch. The audited
 baseline is commit `a2427bfd365cee40d0a4b2e279b8778c449118b5` in the Fusion worktree on
@@ -1347,7 +1348,8 @@ appears.
 - [x] One `LOG.md` entry is added only when the behavior-changing implementation lands.
 - [x] `PROGRESS.md` is overwritten with the current V1-A implementation/deployment state.
 - [x] Targeted, regression, fake-oracle, ordinary-protein, and Q00511 canary gates pass.
-- [ ] Runbook remains blocked until real canaries and all frozen T0 inputs exist.
+- [x] Real canaries and all frozen T0 inputs exist; the 24-protein scientific T0 executed and
+      froze `rho_target=0.50`. P1 remains a separate post-T0 experiment gate.
 
 ---
 

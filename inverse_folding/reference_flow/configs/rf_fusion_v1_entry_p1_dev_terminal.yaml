@@ -1,0 +1,24 @@
+# SCIENTIFIC P1 DEVELOPMENT — TERMINAL ENTRY
+#
+# Matched comparator for rf_fusion_v1_entry_p1_dev_preterminal.yaml. Per-protein M_T is derived
+# from the completed Pre-terminal reservation; it is never configured or rematched to outcomes.
+# The method/runtime identity, facade cap and per-shard resource ceilings are shared across arms.
+
+schema_version: v1cfg-1
+campaign_id: fusion_v1_p1_dev_v1
+phase: p1
+split_role: p1_dev
+entry_arm: terminal
+master_seed: 20260802
+
+entry_rf_config: c1_null.yaml
+backbone_only: true
+controller_enabled: false
+h_maps_present: false
+
+n_population: 4
+initial_refold_attempt_cap: 12
+
+max_dfe: 45000
+max_refolds: 1200
+max_walltime_s: 7200.0
