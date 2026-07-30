@@ -148,9 +148,14 @@ ESMFOLD_CACHE_DIR="${ESMFOLD_CACHE_DIR:-${REFOLD_CACHE_DIR}}"  # deprecated env 
 mkdir -p "${OUT_DIR}" "${REFOLD_CACHE_DIR}" "${LOG_DIR}"
 
 # ── Environment (mirrors submit_if_phase_c.slurm) ────────────────────────
+# CONDA_ENV is overridable for the same reason submit_if_phase_c.slurm exposes it: the RTX PRO 6000
+# (Blackwell, sm_120) partition needs `immune-design-blackwell` (torch 2.7.1+cu128), while
+# `immune-design` (torch 2.5.1+cu121, sm<=90) is correct for ailab/H200, PLI/H100 and A100. A
+# hardcoded env silently aborts on Blackwell AFTER the allocation is granted.
+CONDA_ENV="${CONDA_ENV:-immune-design}"
 module purge
 module load anaconda3/2025.12
-conda activate immune-design
+conda activate "${CONDA_ENV}"
 
 export PYTHONHASHSEED=42
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
