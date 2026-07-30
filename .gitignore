@@ -45,6 +45,7 @@ scripts/analysis/*
 !scripts/analysis/tier1_structural_analysis.py
 !scripts/analysis/planner_h1_pareto.py
 !scripts/analysis/rf_fusion_v1_t0_gate.py
+!scripts/analysis/rf_fusion_v1_p1_gate.py
 scripts/add_positions.py
 scripts/collect_accessions.py
 scripts/identify_sources.py
