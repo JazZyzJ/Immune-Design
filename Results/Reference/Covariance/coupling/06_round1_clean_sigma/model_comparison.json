@@ -1,0 +1,60 @@
+{
+  "old_iterations": 100,
+  "old_opt_status": "MAXIMUMITERATION",
+  "new_iterations": 500,
+  "new_opt_status": "ROUNDING_ERROR",
+  "new_runtime_sec": 895.8,
+  "effective_samples": 3232.3,
+  "neff_per_L": 10.702980132450332,
+  "sigma_raw_spearman_mature": 0.9970199425972187,
+  "sigma_raw_spearman_p": 0.0,
+  "top_L_EC_pair_overlap": {
+    "a_n": 302,
+    "b_n": 302,
+    "intersection_n": 299,
+    "union_n": 305,
+    "jaccard": 0.980327868852459
+  },
+  "thresholds": {
+    "0.9": {
+      "raw_old_vs_new": {
+        "a_n": 31,
+        "b_n": 31,
+        "intersection_n": 31,
+        "union_n": 31,
+        "jaccard": 1.0
+      },
+      "clean_old_vs_new": {
+        "a_n": 20,
+        "b_n": 20,
+        "intersection_n": 20,
+        "union_n": 20,
+        "jaccard": 1.0
+      },
+      "new_clean_n": 20,
+      "new_robust_clean_n": 8,
+      "new_removed_by_C_n": 11,
+      "new_removed_by_gap_n": 0
+    },
+    "0.8": {
+      "raw_old_vs_new": {
+        "a_n": 61,
+        "b_n": 61,
+        "intersection_n": 60,
+        "union_n": 62,
+        "jaccard": 0.967741935483871
+      },
+      "clean_old_vs_new": {
+        "a_n": 37,
+        "b_n": 38,
+        "intersection_n": 37,
+        "union_n": 38,
+        "jaccard": 0.9736842105263158
+      },
+      "new_clean_n": 38,
+      "new_robust_clean_n": 26,
+      "new_removed_by_C_n": 16,
+      "new_removed_by_gap_n": 7
+    }
+  }
+}

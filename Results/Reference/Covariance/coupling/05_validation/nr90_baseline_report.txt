@@ -1,0 +1,49 @@
+========================================================================
+PHASE 4 VALIDATION
+========================================================================
+
+[1] EC precision vs structure
+    structure          : 1r4u_assembly1.cif
+    residues resolved  : 294 (mature 2-295)
+    contacts <= 5.0 A   : monomer 1463, tetramer 1668  (+205 from inter-chain)
+
+       top-N   vs monomer   vs tetramer   scored  skipped
+         L/2        0.603         0.742      151        0
+           L        0.474         0.566      302        4
+          2L        0.325         0.391      604       12
+
+    top-L ECs that ONLY the tetramer explains: 28  (9.3% of scored)
+      e.g. 62-169, 90-166, 69-269, 66-268, 69-276, 4-293, 112-217, 52-161, 118-155, 18-154, 93-163, 66-167
+      These are the inter-subunit couplings a monomer-based mask cannot see.
+
+    GATE: top-L precision vs tetramer = 0.566 (threshold 0.60) -> FAIL
+
+[2] Functional-site recovery
+     mature  aa  C_nogap  C_rank    sigma  s_rank  origin
+          8   Y    0.847      29    3.567      52  CROSS-SUBUNIT
+         10   K    0.948       7    0.736     224  CROSS-SUBUNIT
+         54   I    0.637      85    4.085      34  CROSS-SUBUNIT
+         55   V    0.613      91    1.491     177  CROSS-SUBUNIT
+         56   A    0.657      73    4.971      17  CROSS-SUBUNIT
+         57   T    0.950       5    1.521     175  CROSS-SUBUNIT
+         58   D    0.949       6    0.000     275  CROSS-SUBUNIT
+        159   F    0.895      17    1.955     139  same-chain
+        170   L    0.948       8    0.741     223  same-chain
+        176   R    0.972       2    0.695     232  same-chain
+        226   S    0.791      42    1.956     137  same-chain
+        227   V    0.621      88    0.000     275  same-chain
+        228   Q    0.975       1    0.650     238  same-chain
+        254   N    0.945       9    2.392     107  same-chain
+        256   H    0.939      10    1.648     158  same-chain
+    median rank (       all 15): C    10/302   sigma   175/302
+    median rank (cross-subunit): C    29/302   sigma   175/302
+    median rank (   same-chain): C    10/302   sigma   190/302
+
+    residues each score would MISS at its top-25% cut:
+       C_nogap: [54, 55, 227]
+         sigma: [10, 55, 57, 58, 159, 170, 176, 226, 227, 228, 254, 256]
+         union: [55, 227]   <- what dual masking still misses
+
+[3] Alignment depth
+    baseline (nr90)  N_eff/L = 3.59
+    (this run's N_eff/L is reported by 13_run_plmc.py / 14_scores.py)

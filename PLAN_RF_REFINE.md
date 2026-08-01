@@ -75,8 +75,7 @@ single mutations kill cores readily so most candidates drop the count. v0 theref
 **head-pruned from the start** (`topB≈64`) with a per-round **`refold_cap≈16`**; the NMP-all
 ceiling probe (E0) is kept only on a few EASY (few-core) seeds where it is affordable, to
 calibrate what the prune/cap cost. head proxy = target-window risk, so top-B surfaces
-count-droppers by construction (the load-bearing E0 measurement). The structural fix that
-removes the explosion (not just caps it) is block-decomposition — §12.
+count-droppers by construction (the load-bearing E0 measurement).
 
 **Block-structured enumeration is the primary proposer.** Search unit = connected-component
 hotspot **block** (overlapping strong windows), not a single core. Per block: exhaustive
@@ -734,30 +733,3 @@ within budget) collapses or NMP-calls-per-eliminated-core explodes. (3) ONE stru
 is reused at admission (seed headroom `scTM₀ − floor > δ`, δ ≈ expected edits × per-edit scTM
 cost) and as the per-candidate output gate. (4) The structure headroom δ and the immune band are
 themselves calibrated from round-1 telemetry.
-
----
-
-## 12. Deferred v0.1: block-decomposition search (removes the explosion at the root)
-
-The `refold_cap` / `topB` / `beam_width` caps (§7) make the beam search *feasible* but only
-*cap* the `beam × pool × rounds` explosion. The principled fix exploits hotspot-block
-independence — the same factorization that grounds §1 tractability:
-
-- Blocks are connected components of overlapping strong windows → **non-overlapping in
-  sequence** → editing block A cannot change block B's windows.
-- Empirically (H2ETE7: 2003/2208 candidates dropped the count) **single mutations kill cores
-  readily** (matches depth≠difficulty, §11 note 0).
-
-So instead of a beam over rounds:
-1. Extract cores → `hotspot_blocks`.
-2. **Per block, independently:** enumerate singles (+ pairs/triples only if singles fail),
-   NMP-score, pick the edit(s) that eliminate that block's core(s) without creating a new one.
-3. **Compose:** union the per-block killer edits → one (or a few) candidate(s) that address all
-   blocks at once; NMP the composed candidate to catch cross-block surprises.
-4. **Refold only the few composed candidates**; structure-gate → shortlist.
-
-Cost drops from `O(beam × pool × rounds)` to `O(Σ block-editable)` NMP + `O(few)` refold. It also
-makes the hard-seed limit explicit: the ceiling is the **maximal subset of block-edits whose
-union stays within the structure budget** (`max_path_mutations` / scTM floor) — how many blocks
-can be killed before the fold breaks, not a search-budget limit. Implement after the capped beam
-validates the method on E1.

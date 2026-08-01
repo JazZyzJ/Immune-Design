@@ -1,0 +1,36 @@
+# PROPOSED v2 ADDITION: interface registration/assembly hard anchors for Q00511.
+# Rationale: v1 locks the composite active-site pocket IDENTITY but zero quaternary
+# registration residues. The cross-protomer active site (Thr58*/Lys11* donated across
+# the A:B interface) mis-registers when interface packing is redesigned -> activity lost
+# (observed: 4/4 Q00511 designs activity=0, assembled TM~0.98, xprot catalytic drift).
+# Numbering: index_0b = UniProt position - 1 = PDB author (validated vs Q00511 md5 37bdca69).
+# expected_aa validated == Q00511 canonical at every position (0 mismatches).
+# Append these to the existing hard_anchors list (they are disjoint from v1's 24).
+
+    # --- Tier R1: A:B catalytic-dimer interface (protects ACTIVE-SITE REGISTRATION) ---
+      - {index_0b:  46, expected_aa: Y, label: Y47 , biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=5.69 REU; Results/Reference/1R51"}
+      - {index_0b: 163, expected_aa: L, label: L164, biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=3.08 REU; Results/Reference/1R51"}
+      - {index_0b: 232, expected_aa: Y, label: Y233, biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=2.86 REU; Results/Reference/1R51"}
+      - {index_0b: 290, expected_aa: C, label: C291, biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=2.77 REU; Results/Reference/1R51"}
+      - {index_0b:  62, expected_aa: N, label: N63 , biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=2.44 REU; Results/Reference/1R51"}
+      - {index_0b:  37, expected_aa: L, label: L38 , biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=2.23 REU; Results/Reference/1R51"}
+      - {index_0b:  51, expected_aa: N, label: N52 , biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=2.03 REU; Results/Reference/1R51"}
+      - {index_0b:   3, expected_aa: V, label: V4  , biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=2.01 REU; Results/Reference/1R51"}
+      - {index_0b: 285, expected_aa: N, label: N286, biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=1.91 REU; Results/Reference/1R51"}
+      - {index_0b: 292, expected_aa: V, label: V293, biological_role: AB_dimer_interface_registration_hotspot, source: "Rosetta ref2015 A:B alanine scan ddG_bind=1.56 REU; Results/Reference/1R51"}
+    # --- Tier R2: A:D tetramer interface (protects TETRAMER ASSEMBLY) ---
+      - {index_0b: 106, expected_aa: W, label: W107, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=5.78 REU; Results/Reference/1R51"}
+      - {index_0b: 277, expected_aa: V, label: V278, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=5.25 REU; Results/Reference/1R51"}
+      - {index_0b:  16, expected_aa: Y, label: Y17 , biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=5.15 REU; Results/Reference/1R51"}
+      - {index_0b: 109, expected_aa: M, label: M110, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=4.80 REU; Results/Reference/1R51"}
+      - {index_0b: 257, expected_aa: Y, label: Y258, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=4.55 REU; Results/Reference/1R51"}
+      - {index_0b:  66, expected_aa: I, label: I67 , biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=4.52 REU; Results/Reference/1R51"}
+      - {index_0b: 111, expected_aa: I, label: I112, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=3.75 REU; Results/Reference/1R51"}
+      - {index_0b: 268, expected_aa: L, label: L269, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=3.62 REU; Results/Reference/1R51"}
+      - {index_0b: 262, expected_aa: L, label: L263, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=3.37 REU; Results/Reference/1R51"}
+      - {index_0b:  31, expected_aa: E, label: E32 , biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=3.23 REU; Results/Reference/1R51"}
+      - {index_0b: 260, expected_aa: I, label: I261, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=3.06 REU; Results/Reference/1R51"}
+      - {index_0b:  69, expected_aa: K, label: K70 , biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=2.95 REU; Results/Reference/1R51"}
+      - {index_0b:  65, expected_aa: Y, label: Y66 , biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=2.60 REU; Results/Reference/1R51"}
+      - {index_0b: 264, expected_aa: W, label: W265, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=2.41 REU; Results/Reference/1R51"}
+      - {index_0b: 121, expected_aa: I, label: I122, biological_role: AD_tetramer_interface_assembly_hotspot, source: "Rosetta ref2015 A:D alanine scan ddG_bind=2.35 REU; Results/Reference/1R51"}

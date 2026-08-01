@@ -1,0 +1,80 @@
+tag: q00511_drb0401_tetramer_deimm_20260713
+date: 2026-07-13
+goal: >-
+  Screen the Q00511 safety-v1 n600 redesign run for wet-lab order 2: a structure-ceiling
+  tetramer list (immune-agnostic) plus a de-immunized refinement product line, both
+  active-site-reliable.
+protocol: PROTOCOL/shortlist_and_refine_seed_selection.md
+runner: PROTOCOL/shortlist_and_refine_seed_selection.runner.md
+status: ordered
+
+inputs:
+  run_dir: Results/RF/HLA-DRB1_04_01/q00511_safetyv1_drb0401_b1open_n600_seed42__20260713T061730Z
+  constraint_manifest: >-
+    Results/RF/HLA-DRB1_04_01/q00511_safetyv1_drb0401_b1open_n600_seed42__20260713T061730Z/meta/constraint_manifest.yaml
+  allele: HLA-DRB1*04:01
+  protein_id: Q00511
+  n_designs: 600
+  n_hard_anchors: 24
+
+config:
+  generation: >-
+    Results/RF/HLA-DRB1_04_01/q00511_safetyv1_drb0401_b1open_n600_seed42__20260713T061730Z/meta/generation_run_config.yaml
+  controller: d2_d3_full_stageB_aopen_beta5p0 (hash 2c39f229e92dd58f4beb4b5e2a4eb4ac7657ece79f0489a412123a4b579e3373)
+cli_overrides: "--cat-max 2.0 --min-plddt 85 --sctm-min 0.94"
+
+models:
+  head: a1res03 drb0401 cv5 fold0
+  immune_oracle: NetMHCIIpan-4.3 (strong = rank_EL < 2%)
+  refolder_monomer: esmfold2
+  predictor_assembly: Protenix (tetramer, urate-aware)
+
+criteria:
+  list1_floor:
+    cat_max_scRMSD_max: 2.0
+    active_site_min_pLDDT_min: 85
+    scTM_min: 0.94
+  list1_rank: [cat_max_scRMSD asc, predicted_active_site_min_pLDDT desc, active_site_sidechain_RMSD asc, global_ca_RMSD asc]
+  list2_seeds: T1 pristine (scTM>=0.95, pLDDT>=92, global_ca_RMSD<=2.0, min_pLDDT>=85, agg<=1.1, cat_max<=1.5, shell_max<=2.5)
+  catalytic_firewall_1based: [11, 58, 59, 160, 177, 228, 229, 255, 257]
+  post_refine_keep: core_count_after == 0 AND structure re-evaluated (not seed structure)
+  predictor: Protenix
+  immune_role: reported only; never a ranker for List 1
+
+outputs:
+  list1:
+    file: >-
+      Results/RF/HLA-DRB1_04_01/q00511_safetyv1_drb0401_b1open_n600_seed42__20260713T061730Z/selection/list1_tetramer_shortlist.parquet
+    n: 225
+    n_T1: 42
+  list2:
+    file: >-
+      Results/RF/HLA-DRB1_04_01/q00511_safetyv1_drb0401_b1open_n600_seed42__20260713T061730Z/selection/list2_refine_seeds.parquet
+    n: 42
+  refine_dir: >-
+    Results/RF/HLA-DRB1_04_01/q00511_safetyv1_drb0401_b1open_n600_seed42__20260713T061730Z/refinement/q00511_safetyv1_drb0401_b1open_refine_esmfold2_protocol_mpm16_A11149146
+  tetramer_list1:
+    file: >-
+      Results/RF/HLA-DRB1_04_01/q00511_safetyv1_drb0401_b1open_n600_seed42__20260713T061730Z/tetramer_protenix_ordered_merged_dedup/tetramer_gate.parquet
+    n: 29
+  tetramer_refined:
+    file: >-
+      Results/RF/HLA-DRB1_04_01/q00511_safetyv1_drb0401_b1open_n600_seed42__20260713T061730Z/tetramer_protenix_refined_deimm/tetramer_protenix_results.parquet
+    n: 254
+    all_core_count_0: true
+    all_n_strong_0: true
+    iptm_median: 0.920
+    scTM_median: 0.9625
+    cat_max_scRMSD_median: 1.295
+    true_muts_median: 10
+  ordered:
+    - Results/Wetlab/order2/q00511_order2_top_recommend_20.csv   # 20 sequences
+    - Results/Wetlab/order2/q00511_refinement_plus_4.csv         # 4 refinement additions
+
+notes:
+  - Global fold saturated (scTM 0.911-0.980, foldability 100%), so scTM was NOT the discriminator;
+    the floor is active-site reliability (catalytic sidechain geometry + local pLDDT).
+  - Gly287 is a glycine anchor with no sidechain -> matched_anchor_count is 23/24 for every
+    design. Not a defect and not a discriminator.
+  - No design reached zero NMP strong binders at generation (min 10); reaching 0 required the
+    refinement stage, which succeeded (254/254 at core_count 0).

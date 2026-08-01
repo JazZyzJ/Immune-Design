@@ -8,8 +8,20 @@ from `PLAN_*.md` (one-off task blueprints) and `LOG.md` (history): a PROTOCOL is
 Add one line per protocol below (`- [Title](file.md) — when to use`). Keep protocol bodies
 in their own files; this index is only for locating them.
 
+## Three layers
+
+| layer | file | holds | changes |
+|---|---|---|---|
+| PROTOCOL | `<pipeline>.md` | **why** — decision logic + scientific rationale | rarely |
+| RUNNER | `<pipeline>.runner.md` | **how** — the fixed agent procedure, variables left as `{{slots}}` | rarely |
+| CASE | `cases/<tag>.yaml` | **this one decision** — inputs, criteria applied, outputs | one per decision |
+
+A case points at configs, never copies them; `scripts/validate_case.py` is the runner's
+mandatory Step 0. See `cases/SCHEMA.md`.
+
 ## Protocols
 
 - [New redesign target → RF-ready data](new_target_data_pipeline.md) — data-prep only: WT seq + collaborator active sites → the IF-ready parquet + PDB_ROOT structures + active-site manifest a constrained RF/refine/inpainting run consumes; AF3 structure (not crystal), numbering verification, manifest validation; stops at RF-ready (no redesign/eval)
-- [Monomer shortlist & refine-seed selection](shortlist_and_refine_seed_selection.md) — constrained single-protein RF redesign runs (hard active-site anchors) feeding AF3 tetramer + de-immunization refinement; how to pick List 1 (tetramer feeder) and List 2 (refine seeds)
+- [Monomer shortlist & refine-seed selection](shortlist_and_refine_seed_selection.md) — constrained single-protein RF redesign runs (hard active-site anchors) feeding tetramer + de-immunization refinement; how to pick List 1 (tetramer feeder) and List 2 (refine seeds)
 - [Monomer structure-rank refine seeds (no tetramer)](monomer_structure_rank_refine_seeds.md) — monomeric targets ranked by monomer structure alone; class-specific refolder (AF3 for FP β-barrels) + rank (enzyme/fp/gated); one refine-seed list per (protein, allele), separate per Head
+- [LuxSit parent/variant holo selection](luxsit_parent_variant_holo_selection.md) — LuxSit parent-background redesigns with R60/A96/M110 free; five-sample Protenix-DTZ gating using invariant-19 sidechain fidelity, identity-aware free-3 packing, dual parent/LuxSit-i references, and genotype-stratified refinement selection

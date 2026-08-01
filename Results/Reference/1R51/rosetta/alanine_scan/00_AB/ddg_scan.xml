@@ -1,0 +1,22 @@
+<ROSETTASCRIPTS>
+  <SCOREFXNS>
+    <ScoreFunction name="scan_score" weights="ref2015"/>
+  </SCOREFXNS>
+  <TASKOPERATIONS>
+    <ReadResfile name="scan_positions" filename="/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/rosetta/alanine_scan/00_AB/scan.resfile"/>
+  </TASKOPERATIONS>
+  <MOVERS>
+    <ddG name="binding_dg" scorefxn="scan_score" chain_num="2"
+         repack_unbound="false" repack_bound="false"
+         relax_unbound="false" relax_bound="false"/>
+  </MOVERS>
+  <FILTERS>
+    <DdGScan name="alanine_scan" task_operations="scan_positions"
+             repeats="1" scorefxn="scan_score" report_diffs="1"
+             write2pdb="0" ddG_mover="binding_dg"/>
+  </FILTERS>
+  <PROTOCOLS>
+    <Add filter_name="alanine_scan"/>
+  </PROTOCOLS>
+  <OUTPUT scorefxn="scan_score"/>
+</ROSETTASCRIPTS>

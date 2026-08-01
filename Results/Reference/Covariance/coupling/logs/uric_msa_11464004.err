@@ -1,0 +1,21 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1784664101.844242 1863358 cuda_dnn.cc:8310] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1784664101.873159 1863358 cuda_blas.cc:1418] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+INFO:colabfold.mmseqs.search:Running mmseqs createdb /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/colabfold/query.fas /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/colabfold/qdb --shuffle 0
+INFO:colabfold.mmseqs.search:Running mmseqs search /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/colabfold/qdb /scratch/gpfs/KAIYIJIANG/databases/colabfold/uniref30_2302_db /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/colabfold/res /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/colabfold/tmp --threads 8 --num-iterations 3 --db-load-mode 2 -a -e 0.1 --max-seqs 10000 --prefilter-mode 0 --k-score 'seq:96,prof:80'
+Invalid database read for database data file=/scratch/gpfs/KAIYIJIANG/databases/colabfold/uniref30_2302_db.idx, database index=/scratch/gpfs/KAIYIJIANG/databases/colabfold/uniref30_2302_db.idx.index
+getData: local id (4294967295) >= db size (19)
+Traceback (most recent call last):
+  File "/projects/MOLBIO/local/src/localcolabfold-1.5.5/localcolabfold/colabfold-conda/bin/colabfold_search", line 8, in <module>
+    sys.exit(main())
+  File "/projects/MOLBIO/local/src/localcolabfold-1.5.5/localcolabfold/colabfold-conda/lib/python3.10/site-packages/colabfold/mmseqs/search.py", line 450, in main
+    mmseqs_search_monomer(
+  File "/projects/MOLBIO/local/src/localcolabfold-1.5.5/localcolabfold/colabfold-conda/lib/python3.10/site-packages/colabfold/mmseqs/search.py", line 126, in mmseqs_search_monomer
+    run_mmseqs(mmseqs, ["search", base.joinpath("qdb"), dbbase.joinpath(uniref_db), base.joinpath("res"), base.joinpath("tmp"), "--threads", str(threads)] + search_param)
+  File "/projects/MOLBIO/local/src/localcolabfold-1.5.5/localcolabfold/colabfold-conda/lib/python3.10/site-packages/colabfold/mmseqs/search.py", line 45, in run_mmseqs
+    subprocess.check_call([mmseqs] + params)
+  File "/projects/MOLBIO/local/src/localcolabfold-1.5.5/localcolabfold/colabfold-conda/lib/python3.10/subprocess.py", line 369, in check_call
+    raise CalledProcessError(retcode, cmd)
+subprocess.CalledProcessError: Command '[PosixPath('mmseqs'), 'search', PosixPath('/scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/colabfold/qdb'), PosixPath('/scratch/gpfs/KAIYIJIANG/databases/colabfold/uniref30_2302_db'), PosixPath('/scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/colabfold/res'), PosixPath('/scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/colabfold/tmp'), '--threads', '8', '--num-iterations', '3', '--db-load-mode', '2', '-a', '-e', '0.1', '--max-seqs', '10000', '--prefilter-mode', '0', '--k-score', "'seq:96,prof:80'"]' returned non-zero exit status 1.
+srun: error: della-h16n12: task 0: Exited with exit code 1
+srun: Terminating StepId=11464004.0

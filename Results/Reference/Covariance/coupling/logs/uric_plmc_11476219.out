@@ -1,0 +1,34 @@
+[plmc] host=della-h16n2  cpus=8
+[plmc] alignment=01_msa/deep_focus.fasta
+[plmc] prefix=02_couplings/deep
+alignment : 01_msa/deep_focus.fasta
+focus seq : UniRef100_Q00511	423	1.00	8.292E-130	0	301	302	0	301	302
+L         : 302
+theta     : 0.8  (plmc receives -t 0.20)
+lambda_h  : 0.01
+lambda_J  : 60.2  (= 0.01 * 20 * 301)
+iterations: 100
+plmc      : /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/plmc/bin/plmc
+
+=== plmc summary ===
+  alignment          01_msa/deep_focus.fasta
+  focus_seq          UniRef100_Q00511	423	1.00	8.292E-130	0	301	302	0	301	302
+  L                  302
+  theta              0.8
+  lambda_h           0.01
+  lambda_J_scaled    60.2
+  iterations         100
+  runtime_sec        253.0
+  num_total_seqs     12261
+  num_valid_seqs     12223
+  num_total_sites    302
+  num_valid_sites    302
+  focus_seq_index    1
+  region_start       1
+  effective_samples  3232.3
+  opt_status         MAXIMUMITERATION
+
+  N_eff/L = 10.70   (good)
+
+wrote 02_couplings/deep.model, 02_couplings/deep_ECs.txt, 02_couplings/deep_plmc_summary.json
+[plmc] COMPLETE

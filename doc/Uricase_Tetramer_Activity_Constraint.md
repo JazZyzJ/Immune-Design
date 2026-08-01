@@ -7,13 +7,13 @@ about the activity/assembly constraint.
 
 **TL;DR.** Uricase is an obligate homotetramer whose active site is *built across a subunit interface*
 (catalytic residues donated by the neighbouring monomer). Locking the active-site pocket **identity** alone
-(config `v1`) is provably insufficient: 46/46 true-`v1` designs are experimentally inactive while still
-assembling into near-native tetramers, because the redesign is free to mutate the **interface** that holds the
-two active-site halves in register, and the **intra-chain fold-core network** that maintains stability. Three
-*independent* signals — structural burial, interface energetics, and evolutionary conservation/coevolution —
-converge on a constraint scaffold of ~46–57% of the monomer. Recommended strategy: lock aggressively (~57%),
-then run a **subtractive** (relax-from-max) experiment, because no active redesign exists yet to anchor an
-additive search.
+(config `v1`) is insufficient at the current assay sensitivity: **29/29 assayed `v1` designs are below the
+activity call threshold while WT is strong**. There is no experimental oligomeric-state measurement for these
+designs, so the present data do not distinguish failed tetramerization, active-site mis-registration, and
+folding/expression loss. Round 1 therefore uses a deliberately conservative **3×2 structure × sigma hard-lock
+matrix plus a full-structure/sigma-off control**. Every cell also fixes the eight strongly conserved positions
+that the full structural mask misses. Its purpose is activity rescue and threshold mapping, not a claim that
+every retained WT identity is ultimately necessary.
 
 ---
 
@@ -45,8 +45,9 @@ config. Example cross-check: config `index_0b: 57 → Thr58`; 1R51 author Thr57;
 | Rosetta run metadata | `Results/Reference/1R51/metadata.json` | Rosetta release-408 (`InterfaceAnalyzer`, `rosetta_scripts`), `ref2015`, contact 8 Å, interface-residue 5 Å, ddG sign = mutant−wildtype. Author: Kaiyi. |
 | WT Protenix refold (holo tetramer) | `Results/Reference/protenix_wt_set0_AF/` | Q00511 WT prediction (`set0_AF`), 5 samples. Oracle calibration. |
 | Design gate metrics (Q00511 rows) | `Results/Reference/gate/q00511_gate_metrics.csv` | WT + 4 order1 designs: activity/expression + iptm + `complex_TM_vs_*` + `xprot_*_dev`. |
-| order2 inactive designs (n=46) | `Results/Wetlab/order2/q00511_merged29_plus_refinement17_all_metrics.csv` | True-`v1` designs, all experimentally inactive (per user). 445 metric columns incl. sequence, xprot dev, active-site RMSD. |
+| order2 designs (46 computed; 29 assayed) | `Results/Wetlab/order2/q00511_merged29_plus_refinement17_all_metrics.csv` | True-`v1` designs. The currently assayed 29/29 are below the activity call threshold; no oligomeric-state assay. 445 metric columns incl. sequence, xprot dev, active-site RMSD. |
 | EVcouplings per-residue scores | `Results/Reference/Covariance/EVCoupling_covariance_per_residue_scores.csv` | Conservation `C_i` + coevolution `sigma` (+ percentiles/ranks), per position. Author: Kaiyi. |
+| Round-1 sigma-v2 artifacts | `Results/Reference/Covariance/coupling/{02_couplings,03_scores,05_validation,06_round1_sigma_v2}/` | 500-iteration PLMC summary/ECs, per-residue scores, model-stability comparison, gap sensitivity, conservation add-on, exact matrix counts, and generation/preflight scripts. |
 | v1 design constraint (24 anchors) | `inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml` | Current (failed) active-site lock. |
 | Literature synthesis | `viz/1R51/uricase_oligomerization_literature.md` | 29 cited refs on uricase oligomerisation→activity. |
 | Interface/active-site figures + BSA tiers | `viz/1R51/` (`analyze_interface.py`, `interface/design_priority.csv`) | Local per-residue BSA + tier assignment, composite-site views. |
@@ -116,25 +117,28 @@ chain-pair iptm 0.944, `complex_TM_vs_crystal` 0.999, all `xprot_*_dev` = 0. The
 | design_0014 | 0 | 0.985 | 0.851 | 0.26 | 18/24 |
 | design_0003 | 0 | 0.980 | 0.847 | **8.54** | 15/24 |
 
-Interpretation: designs **still assemble** (complex_TM 0.98–0.99) but the **cross-protomer catalytic residues
-drift** (`xprot_*_dev` elevated vs WT 0.0) → **H2 (mis-registration)**, not gross H1 (dissociation). These
-predate the v1 active-site lock (only 15–20/24 kept), so they do not cleanly test v1.
+Interpretation: predicted complexes retain high global similarity (complex_TM 0.98–0.99), while one design has
+large predicted cross-protomer catalytic drift. This motivates an H2 mis-registration hypothesis but does not
+establish experimental assembly. These designs predate the v1 active-site lock (only 15–20/24 kept), so they do
+not cleanly test v1.
 
-### 3.2 order2 (n=46, true `v1`) — falsifies "lock the pocket only"
+### 3.2 order2 (46 computed; 29 assayed, true `v1`) — falsifies "lock the pocket only" at the current assay sensitivity
 
-[`Results/Wetlab/order2/…csv`; all inactive per user]
+[`Results/Wetlab/order2/…csv`; 29/29 assayed below the activity call threshold per user]
 
-- **v1 active-site lock enforced perfectly: 46/46 keep all 24 v1 positions** (this is the clean v1 test order1 lacked).
+- **v1 active-site lock enforced perfectly: 46/46 computed designs keep all 24 v1 positions** (this is the clean
+  v1 constraint test order1 lacked); 29 currently have wet-lab activity measurements.
 - Yet designs **mutate the interface heavily**: mean **69 of 130** interface positions changed (~53%), mean **17.2
   of 25** Rosetta interface hot spots, **0/46** preserve all hot spots; sequence identity to Q00511 ≈ 0.49.
 - Expression collapses vs WT (design 5–14k vs WT 78,636; `expression` column) — a **stability**, not merely
   activity, signal.
 
 **Conclusion (the central result): locking the active-site pocket identity is necessary but not sufficient.**
-With the pocket fixed and the interface free, 46/46 designs are inactive. Two failure modes operate together:
-(i) **registration** — the composite active site drifts (H2); (ii) **stability/expression** — the fold is
-destabilised. No within-batch gradient exists to exploit (all 46 broke the interface similarly); the signal is
-the WT (0 interface mutations, active) vs all-46 (heavy interface mutation, all dead) contrast.
+With the pocket fixed and the interface free, 29/29 assayed designs are below the activity call threshold.
+The computational metrics are consistent with two candidate failure modes: (i) **registration/assembly** of the
+composite active site and (ii) **stability/expression**. They do not establish oligomeric state. No positive
+within-batch anchor exists yet; the usable contrast is WT (active) versus heavily redesigned `v1` sequences
+(currently no called-active case).
 
 ---
 
@@ -156,96 +160,85 @@ Three *independent* ways to ask "must this position stay WT", and their practica
      Gln229 C_rank 2).
    - `sigma` = **coevolution / covariance** = a position's *marginal* coupling strength (a per-residue summary of
      the pairwise couplings J_ij). Top ECs correspond to **side-chain contacts / epistatic pairs** (Hopf/Marks;
-     Marks 2011). **Correction (per Codex, adopted):** high `sigma` does **not** mean "must be WT". A Potts/DCA
-     model expresses J_ij(a,b) = whether two residue *states* are compatible in the current background; a
-     high-coupling position usually means "**can vary, but a partner must co-vary to compensate**" — a
-     *compatibility* constraint, not an *identity* constraint. Decomposing the Potts statistical energy makes this
-     precise: the **independent field** h_i(a) is the identity/conservation term (legitimate hard-lock), the
-     **coupling** Σ_j J_ij(a,b_j) is the compatibility term (must be *scored*, not frozen). Only positions that are
-     high-`sigma` **and** high-`C` are effectively must-WT (via the conservation channel). Therefore `sigma` alone
-     can only **propose candidate coupled pairs**; it must **not** enter a hard-lock union. Proper use: (i) a Potts
-     ΔE filter on candidate designs, (ii) the causal pair-swap test in §9.
+     Marks 2011). High `sigma` does **not** prove that WT identity is intrinsically required: a Potts/DCA model
+     encodes compatibility between residue states. **Round 1 nevertheless hard-locks the raw high-`sigma` node
+     sets to WT as a deliberately blunt rescue intervention.** No conservation filter is applied to sigma: a
+     residue supported by both signals is retained, because the current objective is rescue rather than signal
+     attribution. This does not prove identity-level necessity or pairwise covariance causality; those require
+     Potts ΔE scoring and the pair-swap test in §9.
 
 ### 4.2 Intersection (this session's key comparison)
 
 | Comparison | Result | Reading |
 |---|---|---|
-| **C (conservation)** top-10% (30) vs active site v1 (24) | overlap-coef **0.58**; 23/30 already inside the structural scaffold | **C is largely redundant** — it re-derives the active site we already lock. |
-| **sigma (coevolution)** top-10% (31) vs inter-chain interface (130) | only **4** overlap; **27/31 lie outside the structural scaffold** | **sigma is nearly orthogonal** — it captures **intra-chain fold-core contacts** our inter-chain interface analysis structurally cannot see. |
-| EV top-10% (61) vs structural scaffold (137) | **Jaccard 0.16** (84% of the union is non-overlapping) | The two schemes are mostly complementary. |
+| **C (conservation)** `C_i_nogap ≥ 0.8` (36) vs full structural scaffold (137) | 28/36 inside; **8 outside** | The eight full-structure blind spots become a universal round-1 add-on. |
+| **C (conservation)** `C_i_nogap ≥ 0.5` (122) vs full structural scaffold (137) | 72/122 inside; **50 outside** | Adding all 50 would be a separate maximum-conservation intervention, not the present base. |
+| **sigma (coevolution)** raw top-10% (31) vs full structural scaffold (137) | **4** overlap; Jaccard **0.024** | The raw sigma node set is nearly orthogonal to the structural scaffold. |
+| **sigma (coevolution)** raw top-20% (61) vs full structural scaffold (137) | **10** overlap; Jaccard **0.053** | Lowering the sigma threshold adds mostly non-structural positions. |
 | EV `active_site` flag (15) | 10 are high-C, **0 are high-sigma** | Catalytic residues are conserved but *not* coevolving (invariant ⇒ nothing to covary with). |
 
-**Interpretation.** "Structural-contact" and "covariance" are orthogonal *in principle* and, empirically, overlap
-only through the conservation channel. The **distinctive** evolutionary contribution is `sigma` (the intra-chain
-epistatic/fold-core network), and it does map onto the *second* failure mode (stability/expression, §3.2). **But
-`sigma` is a compatibility signal, not an identity signal (§4.1 correction), so it enters as a Potts ΔE score plus
-the §9 causal test — not as a hard-lock.** The legitimate hard-lock signals are structure (geometry) and
-conservation / field h_i (identity); see §5.1. (Note: this intersection table used the percentile column `C_pct`;
-the constraint masks in §5/§8 use Kaiyi's absolute `C_i_nogap ≥ 0.5` conservation net — the orthogonality
-conclusion for `sigma` is unchanged, and stronger, since the broader conservation net overlaps structure more.)
+**Interpretation.** "Structural-contact" and raw `sigma` node sets are empirically complementary. The earlier
+Jaccard 0.16 mixed conservation and sigma into one EV set and must not be attributed to sigma alone. Round 1 uses
+raw sigma as an *operational rescue axis* and does not remove conserved sigma nodes. Separately, it fixes only the
+eight `C_i_nogap ≥ 0.8` positions that lie outside the full structural scaffold. Structure-linked conserved
+positions remain in their original structure tiers so that the structure ladder is not erased. Later rounds must
+separate WT identity from pair compatibility (§9).
 
 ---
 
 ## 5. Unified constraint framework
 
-### 5.1 Monomer lock ladder (cumulative; 301-residue mature monomer)
+### 5.1 Round-1 monomer lock ladder (301-residue mature monomer)
 
 | Lock level | Contents | positions | % monomer | evidence source |
 |---|---|---|---|---|
-| `v1` | active-site pocket + 2nd shell (curated) | 24 | 8% | config |
-| `v1 + R1+R2` | + Rosetta interface **hot spots** (AB registration + AD assembly) | 49 | 17% | Ala scan |
-| `v1 + all interface` | + full AB∪AD interface (structural scaffold) | 137 | 46% | BSA/contacts + Ala scan |
-| **`+ conservation`** | ∪ field-h_i net (`C_i_nogap ≥ 0.5`, 122 pos; +50 beyond structure) | **187** | **62%** | EVcouplings conservation |
-| `(+ coevolution)` | **not a hard-lock** — `sigma` is a compatibility signal (§4.1); via Potts ΔE + §9 test | — | — | — |
+| loose base | v1 active-site/pocket (24) + eight high-C full-structure blind spots | **32** | **10.6%** | config + EV conservation |
+| mid base | v1∪AB catalytic-dimer structure (79) + the same eight high-C positions | **87** | **28.9%** | structure + EV conservation |
+| full base | v1∪AB∪AD full interface (137) + the same eight high-C positions | **145** | **48.2%** | structure + EV conservation |
+| deferred maximum-conservation base | full structure ∪ all 50 outside-full `C_i_nogap ≥ 0.5` positions | **187** | **62.1%** | not used in round 1 |
+| `+ sigma` | raw high-`sigma` positions with only a `gap_frac ≤ 0.5` majority-nongap guard | see §8 | — | EVcouplings |
 
-**Corrected mask numbers (definition fixed).** Kaiyi's masks are `(C_i_nogap ≥ 0.5) OR (sigma_pct ≥ t)`:
-**S0.90 = 142, S0.85 = 154, S0.80 = 166** (an earlier draft mis-used the percentile column `C_pct` and reported
-61/118 — wrong). Conservation net alone = 122; **structure + conservation = 187 (62%) is the defensible
-hard-lock**. Folding in the high-`sigma`/low-`C` positions would push structure∪S0.90 to 203 (67%); those marginal
-**16 high-`sigma` low-`C` non-structural positions** [UniProt 34,37,54,77,83,102,128,132,148,165,175,190,206,215,
-224,243] are **candidate coupled positions for §9, not hard-lock members**.
+Kaiyi's original grid masks use `C OR sigma` and therefore are not the round-1 sigma source: with `C0=0`, every
+position is selected. Round 1 selects sigma directly from the per-residue score table with no `C_i` exclusion.
+Conservation enters only through the predefined eight-position full-structure blind-spot add-on in §8; the 50
+moderately conserved outside-full positions are not universal round-1 anchors.
 
-### 5.2 Recommendation — subtractive experiment from a high lock
+### 5.2 From rescue mapping to a usable design threshold
 
-Because `v1` (lock 8%) is falsified by 46/46 designs, an *additive* search from v1 is unpromising. Start from a
-**maximal** lock and **relax**:
+The full structure mask is not a proposed final product: it deliberately compresses immune design space. Round 1
+first asks whether any structure/sigma cell restores detectable activity. If more than one cell is active, select
+the lowest-lock active cell as the starting bound. If only the most conservative cell is active, hold its sigma
+level and lower the structure threshold in the next round. This establishes an empirical activity boundary
+before optimizing immune score.
 
-- **L0 (start) = structure + conservation hard-lock = 187 positions (62%)** (geometry + identity signals only;
-  `sigma` excluded per §4.1), leaving 114 (38%) free for de-immunisation. This matches the working hypothesis
-  that >50% may need to be fixed.
-- **Relax priority (peel first → last), by evidence strength:**
-  1. EV-only positions with high `sigma`, low `C`, non-structural (indirect / possibly phylogenetic) — relax first.
-  2. A:C diagonal / A:D non-hotspot interface.
-  3. A:D hot spots / interface core.
-  4. A:B catalytic face + R1 registration hot spots.
-  5. **Never relax:** active site (`v1`) + high-conservation (`C`) + cross-subunit catalytic (Thr58\*, Lys11\*).
-- **Fast screen before wet-lab:** at each rung, design → Protenix refold → read `xprot_Thr58_dev` /
-  `min_pp_chain_pair_iptm` / active-site RMSD (all already computed by the gate). Wet-lab-test only the 2–3
-  rungs bracketing where `xprot_*_dev` returns toward 0. The WT Protenix refold is a validated oracle (iptm 0.97,
-  protein–protein chain-pair iptm 0.94–0.96, no clash) [`Results/Reference/protenix_wt_set0_AF/`].
+Refold metrics (`xprot_Thr58_dev`, `min_pp_chain_pair_iptm`, active-site RMSD) are retained as explanatory
+telemetry. They do not replace wet-lab activity and should not be used to discard an entire matrix cell before the
+first rescue experiment.
 
-### 5.3 A cheaper causal-isolation experiment
+### 5.3 Deferred alternative: direct rescue edits
 
-Take one order2 inactive design and **restore WT at interface positions in decreasing-ΔΔG order**, refolding at
-each step; watch `xprot_Thr58_dev` collapse toward 0. This directly measures the *minimal interface WT set*
-needed to recover native active-site geometry, without a full ladder.
+One can take an inactive design and restore WT at interface positions in decreasing-ΔΔG order. This directly
+tests rescue on a fixed parent but is not the current round-1 route, which is intended to observe the RF inverse
+folding process itself under controlled mask thresholds.
 
 ---
 
 ## 6. Caveats / open questions
 
-- **No experimental oligomeric-state data yet** (SEC/MALS/native-MS). In-silico metrics indicate H2
-  (assembled-but-mis-registered) + stability loss; a "correct-MW tetramer that binds but is catalytically dead"
-  has no clean precedent in the literature [synthesis §3] — this project could be the first to demonstrate it
-  (retained inhibitor binding by ITC/Ki on an intact-SEC, inactive design ⇒ H2).
-- **`sigma` is a compatibility, not identity, signal (central correction, §4.1/§9).** Coevolution reflects
-  pairwise compatibility J_ij(a,b); a high-`sigma` position may vary if a partner co-varies. It is therefore
-  **excluded from the hard-lock** and handled as a Potts ΔE score + the §9 causal pair-swap test. Hard-locking it
-  to WT is a blunt over-constraint that conflates compatibility with identity and cannot explain *why* a design
-  worked.
-- **EV MSA scope.** `sigma` here appears to derive from a monomer uricase-family MSA (intra-chain couplings),
-  which is why it is disjoint from the inter-chain interface. A *complex* (concatenated) EVcouplings run would
-  additionally recover inter-chain couplings and is worth checking against the Rosetta interface set.
+- **No experimental oligomeric-state data yet** (SEC/MALS/native-MS). Current structural predictions and
+  expression data generate registration/assembly and stability hypotheses, but cannot determine whether an
+  inactive design formed a tetramer.
+- **`sigma` is a compatibility, not identity, signal (central correction, §4.1/§9).** Round 1 intentionally uses
+  WT hard-locking only as a rescue proxy. A positive result supports retaining the high-`sigma` network in this
+  RF regime; it does not establish which identities or pairs are necessary.
+- **Conservation add-on scope and numbering.** The universal add-on contains only the eight `C_i_nogap ≥ 0.8`
+  positions outside the original full structural mask: `index_0b/pos_mature = 40,50,77,145,157,186,224,301`,
+  corresponding to UniProt `G41,D51,E78,S146,S158,W187,S225,L302`. It is not a universal union of every high-C
+  position. L302 has `gap_frac=0.911` and belongs to the terminal SKL/PTS1 context; it is retained as a
+  rescue-first exact-WT anchor, not classified as activity-specific evidence.
+- **EV MSA scope.** A same-sequence homomer family MSA mixes intra-chain and inter-chain constraints. Concatenating
+  identical monomers does not create an independent paired-sequence signal. The appropriate QC is the observed
+  monomer-versus-tetramer contact classification of EC pairs; pair-state causality remains a later experiment.
 - **Design-level enforcement.** order1 shows the active-site lock was only partially honoured pre-v1; confirm any
   new (larger) lock is actually enforced 24/24 → N/N at generation time, not just intended.
 
@@ -260,6 +253,8 @@ needed to recover native active-site geometry, without a full ladder.
 pymol -cq viz/1R51/analyze_interface.py            # -> viz/1R51/interface/{interface_pairs,active_site_composition,design_priority}.csv
 # monomer tier ladder, EV intersection, order2 forensics: ad-hoc python over the CSVs cited in §1
 #   (v1/R1/R2 index_0b sets and EV thresholds as defined in §5; numbering per §0)
+# round-1 sigma/conservation sets and matrix counts:
+python Results/Reference/Covariance/coupling/06_round1_sigma_v2/uricase_sigma_rescue_v2_audit.py --help
 ```
 
 Key hard numbers and their sources are tagged inline above; all derived from files under `Results/Reference/`,
@@ -270,63 +265,115 @@ framework (Hopf et al. 2019, *Bioinformatics*; Marks et al. 2011, *PLoS ONE*).
 
 ## 8. Round-1 experiment plan (activity rescue)
 
-**Design: a 3×2 hypothesis matrix (structure × coevolution), read as two ladders + a diagonal.** Because structure
-and coevolution are near-orthogonal (§4.2, Jaccard 0.16), each axis's marginal effect is readable if the other is
-held constant. **Coevolution (`sigma`) is the signal of interest**; **conservation (`C`) is ~redundant with
-structure** (only 8 of 36 `C≥0.8` and 50 of 122 `C≥0.5` positions lie outside structure) so it is **not locked** —
-carried by structure. This is "make coevolution the driver" (§4.2): keep geometry, let `sigma` act beyond it.
+**Design: one 3×2 structure × sigma matrix plus a full-structure/sigma-off control.** The two hypotheses are
+partially testable in the same plate using the same RF seed IDs:
 
-**Signals + provenance.** structure = Rosetta ref2015 interface + Ala scan (`Results/Reference/1R51`); levels are
-nested — V1 active-site (24) ⊂ V1∪AB catalytic dimer (79) ⊂ V1∪AB∪AD **full interface (137 = 46%)** (Rosetta
-hotspots R1/R2 are subsumed inside AB/full). `sigma` = EVcouplings **deep** Potts model
-(`Results/Reference/Covariance/coupling`), **validated**: N_eff/L 10.7, EC-vs-tetramer top-L precision 0.685 (gate
-≥0.60 **PASS**); the shallow nr90 baseline (3.6, 0.566) **FAILED** and is discarded. `sigma` = `pairs.enrichment`
-(port of Skopintsev et al. *Science* 2026); pairwise chain = `…/coupling/02_couplings/deep_ECs.txt` (45 451 pairs).
+1. **Structure rescue:** at σ80, increasing loose → mid → full structure increases the probability or
+   magnitude of activity.
+2. **Sigma rescue:** at full structure, increasing OFF → σ90 → σ80 increases the probability or
+   magnitude of activity.
 
-**The matrix** (positions; % of 301). configs `inverse_folding/reference_flow/configs/uricase_q00511_r1_S{loose,mid,full}_sig{90,80}.yaml`; numbering §0; `wt_aa` == Q00511 verified:
+These are operational intervention hypotheses. The matrix can locate an activity-rescue threshold and describe a
+structure × sigma interaction. It cannot prove that the locked WT identities are biologically necessary or that
+the effect is specifically pair compatibility. Full structure is a positive-rescue anchor, not the intended final
+de-immunized setting; if it rescues, later rounds lower the structure threshold to recover immune design space.
 
-| structure ↓ \ σ → | **σ≥0.90** | **σ≥0.80** |
+**Signals + provenance.** Structure = Rosetta ref2015 interface + Ala scan
+(`Results/Reference/1R51`); nested levels are V1 active-site (24) ⊂ V1∪AB catalytic dimer (79) ⊂
+V1∪AB∪AD full interface (137). Every level receives the same eight-position `C_i_nogap ≥ 0.8` add-on outside
+the full interface, giving effective bases 32 ⊂ 87 ⊂ 145. Sigma = EVcouplings `pairs.enrichment` from the deep
+Q00511 family MSA (N_eff/L 10.7). The final `deep_iter500` PLMC run stopped with `ROUNDING_ERROR` rather than a
+formal convergence flag. Its rankings are stable relative to the original 100-iteration run: mature-position
+sigma Spearman = 0.997, top-L EC-pair Jaccard = 0.980, raw σ90 Jaccard = 1.000, and raw σ80 Jaccard = 0.968.
+Tetramer-contact precision is 0.682 at top L. Exact source hashes and optimization status are recorded in each
+config and the accompanying Reference artifacts listed in §1.
+
+**Sigma definition.** Starting from the top-L long-range `sigma_pct`, select:
+
+`sigma_pct >= t AND gap_frac <= 0.5`
+
+There is **no conservation exclusion**. A site selected by both conservation and sigma stays fixed, which matches
+the rescue-first objective. The 0.5 gap cap is only a majority-nongap sanity guard: all 31 σ90 and all 61 σ80
+positions pass it, so the masks equal the raw top-10% and top-20% sets. Relative to the old 0.2 cap, σ80 retains
+seven additional positions in the mature 190–202 segment (`gap_frac=0.216–0.483`). The σ90 set is a strict subset
+of σ80. Alternative gap caps and 0.5L/2L pair definitions remain sensitivity telemetry and do not alter the mask.
+
+**Universal conservation add-on.** Fix the eight `C_i_nogap ≥ 0.8` positions outside the original full
+structure in every cell: `index_0b=[40,50,77,145,157,186,224,301]`, corresponding to UniProt
+`G41,D51,E78,S146,S158,W187,S225,L302`. These eight do not overlap σ90 or σ80. This is deliberately the
+full-structure blind-spot set, not a global union of every high-C position; otherwise conserved interface
+positions would be removed from the structure ladder itself. The 50 outside-full positions at `C_i_nogap ≥ 0.5`
+are deferred: adding them would make the full/σ80 cell 223/301 fixed and absorb 15 raw σ80 positions into the
+common base.
+
+**The matrix** (fixed positions; percent of 301-residue mature protein). Configs:
+`inverse_folding/reference_flow/configs/uricase_q00511_r1_S{loose,mid,full}_sig{90,80}.yaml`.
+
+| original structure ↓ + universal C8 \ σ → | **σ≥0.90** | **σ≥0.80** |
 |---|---|---|
-| **loose** = V1 (24) | 55 (18%) | 84 (28%) |
-| **mid** = V1∪AB (79) | 107 (36%) | 134 (45%) |
-| **full** = V1∪AB∪AD (137) | 164 (54%) | 188 (62%) |
+| **loose** = V1 (24) + C8 → base 32 | **63 (20.9%)** | **92 (30.6%)** |
+| **mid** = V1∪AB (79) + C8 → base 87 | **115 (38.2%)** | **142 (47.2%)** |
+| **full** = V1∪AB∪AD (137) + C8 → base 145 | **172 (57.1%)** | **196 (65.1%)** |
 
-Plus one **control**: `…_r1_Sfull_sigOFF.yaml` = full structure, **σ OFF = 137 (46%)** — pure geometry, tests
-whether structure alone rescues activity. **7 configs total.**
+The σ90 and σ80 sets contain 31 and 61 positions, respectively; overlap with each base is counted once.
 
-**Three views into the matrix (75 seqs, ≥10/tier):**
-- **Structure hypothesis ladder** = the σ≥0.80 column, vary structure: 84 → 134 → 188 (28→45→62%). σ held
-  conservative. Marginal value of quaternary geometry. **30 seqs.**
-- **Coevolution hypothesis ladder** = the full-structure row, vary σ: **137 (σ-off) → 164 (σ90) → 188 (σ80)**
-  (46→54→62%). Structure held conservative; the σ-off control is the baseline. Marginal value of the coevolution
-  network beyond structure (narrow span — `sigma` is sparse; a flat response = "coevolution adds little"). **30 seqs.**
-- **Union (both vary)** = the two cells that complete the matrix: 55 and 107 (loose/mid × σ90). Fills the joint /
-  interaction term. **15 seqs.**
-- Shared corner: (full, σ80) = 188 sits in both hypothesis ladders.
+Control: `…_r1_Sfull_sigOFF.yaml` = full structure + C8, σ OFF = **145 (48.2%)**. Seven configs total.
 
-**Readout / gate.** Refold every design (Protenix, WT `set0_AF` oracle: iptm 0.97, chain-pair 0.94–0.96,
-`xprot_*_dev` 0); advance only near-WT `xprot_Thr58/Lys11/His257_dev`, active-site RMSD, `min_pp_chain_pair_iptm`.
-Structure column → how much interface is required; coevolution row (incl. σ-off) → whether `sigma` adds anything
-beyond full structure; the two σ90 cells → interaction. Lowest active cell per ladder sets the round-2 relax target (§5.2).
+**RF sampler contract.** Run all seven cells with the unchanged standard
+`inverse_folding/reference_flow/configs/c1_null.yaml` (SHA256 `51563e79571f…`; default remask
+`fraction_scale=1.0`). Checkpoint, backbone, temperature, number of steps, batch/scalar mode, seed IDs, and all
+other runtime inputs remain identical; only the constraint manifest changes. Anchor count can change realized
+commit/remask trajectories under this sampler. That mediated dynamics change is part of the production-RF
+constraint intervention being measured, not normalized away as in a pure position-set causality experiment.
+The provenance fields inside a constraint manifest do not select the sampler at runtime: submission must pass
+`--config inverse_folding/reference_flow/configs/c1_null.yaml` and the cell-specific `--constraint-manifest`
+explicitly.
+
+**Plate allocation (75 unique sequences; seed-indexed replicate blocks).** Use the same 10 RF seed IDs in all
+seven configs, giving a 70-sequence reproducible core. Add five extra RF seeds only to the most conservative
+full/σ80 cell, so that cell has 15 total and the plate has 75 unique sequences. A shared seed ID defines a
+deterministic whole-run outcome `Y_cell(seed)`, but it does **not** create a positionwise common-random-number
+trajectory: changing the hard-anchor mask changes the number and order of categorical draws and desynchronizes
+the random streams. The extra five estimate the positive-anchor hit rate and are not used in seed-blocked
+contrasts.
+
+**Primary wet-lab readout.** Activity rescue is primary. Preserve the continuous raw assay signal, background,
+replicates, detection/quantification limits, and binary activity call; do not reduce sub-threshold wells to an
+undifferentiated zero. Report the within-seed cross-cell association before claiming variance reduction from the
+seed blocks; include seed ID as a blocking factor only when supported, and retain cell-level effect estimates and
+active fraction as the primary robust summaries. Record expression/yield for every construct and, where the assay
+permits, activity per expressed protein: an expression increase without a specific-activity increase is
+folding/abundance rescue, not complete catalytic rescue. Without SEC/MALS/native-MS, no result should be labeled
+tetramerization rescue.
+
+**Computational telemetry (not a wet-lab gate).** Refold every design and retain
+`xprot_Thr58/Lys11/His257_dev`, active-site RMSD, `min_pp_chain_pair_iptm`, global/tetramer confidence, WT
+recovery, mutation count, and immune score. These metrics explain gradients after activity is known; they must not
+replace the activity readout. If every cell remains below the assay detection limit, the result is "no rescue
+detected under this assay," not evidence that structure or sigma has no effect.
 
 ---
 
 ## 9. Coevolution: causal validation and required artifacts
 
-**Why a separate test.** The §8 coevolution ladder asks whether `sigma`-locking helps in aggregate; it cannot say
+**Why a separate test.** The §8 coevolution ladder asks whether high-`sigma` WT locking helps in aggregate; it cannot say
 **why** (identity vs compatibility): a design that frees a coupled position and fails may have failed by making an
 *incompatible* combination, not by leaving WT. Distinguishing them needs a design that is **non-WT but
 Potts-compatible** — which requires the pairwise
 model, not the per-residue `sigma`.
 
 **Required artifacts — NOW IN HAND** (`Results/Reference/Covariance/coupling/`, ported from Kaiyi's pipeline):
-1. **Pairwise ECs** — `02_couplings/deep_ECs.txt` (45 451 pairs; `i aa_i j aa_j seg score`).
-2. **Potts model** h_i(a), J_ij(a,b) — `02_couplings/deep.model` (309 MB, on cluster; pull when running ΔE).
-3. **N_eff — RESOLVED.** deep model N_eff/L = **10.7** (`01_msa/deep_stats.tsv`), passes the EC-vs-tetramer gate
-   (top-L 0.685 ≥ 0.60, `05_validation/report.txt`). The nr90 baseline (N_eff/L 3.6) **fails** (0.566) and is
-   discarded. So the coevolution premise is validated, not suspect — for the deep model only.
-4. **Traceable config** — `scripts/11–16` + `02_couplings/deep_plmc_summary.json` (theta 0.8, λ_h 0.01, λ_J 60.2,
-   12 223 valid seqs). Method = port of Skopintsev et al. *Science* 2026 (`science.aed6123.pdf`).
+1. **Pairwise ECs** — `02_couplings/deep_iter500_ECs.txt` (45 451 pairs; `i aa_i j aa_j seg score`).
+2. **Potts model** h_i(a), J_ij(a,b) — `deep_iter500.model` remains in the Della run directory; transfer it only
+   when running ΔE because it is not needed by the round-1 hard-lock configs.
+3. **N_eff — RESOLVED.** Deep-model N_eff/L = **10.7** and the pair model passes the structural QC gate
+   (top-L tetramer-contact precision 0.682 ≥ 0.60, `05_validation/deep_iter500_validation.txt`). This establishes
+   usable structural signal in the EC ranking; it does not by itself validate activity relevance, the sigma
+   threshold, or WT hard-locking.
+4. **Traceable run** — `02_couplings/deep_iter500_plmc_summary.json`, `03_scores/deep_iter500_scores.tsv`, and
+   `06_round1_sigma_v2/` record theta 0.8, λ_h 0.01, λ_J 60.2, 12 223 valid sequences, gap sensitivity,
+   conservation-base membership, final matrix counts, and exact scripts. The optimizer status is retained as `ROUNDING_ERROR` rather than
+   being relabeled as convergence. Method = port of Skopintsev et al. *Science* 2026 (`science.aed6123.pdf`).
 
 **Causal pair-swap experiment** (per strong-coupling pair (i,j); 6 conditions):
 

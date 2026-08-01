@@ -1,0 +1,68 @@
+{
+  "command": "/home/zc1519/.conda/envs/immune-design/bin/python /home/zc1519/src/Immune-Design/scripts/eval_tetramer_reference.py --structure /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/refs/1R51_tetramer_ABCD.pdb --name 1R51 --out-dir /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51 --rosetta-interface-analyzer /tigress/MOLBIO/local/src/rosetta.source.release-408/main/source/bin/InterfaceAnalyzer --rosetta-scripts /tigress/MOLBIO/local/src/rosetta.source.release-408/main/source/bin/rosetta_scripts --alanine-scan-pair A:B --alanine-scan-pair A:D --rosetta-timeout-seconds 1800",
+  "generated_at_utc": "2026-07-21T21:14:49.877914+00:00",
+  "name": "1R51",
+  "outputs": [
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_protein_standardized.pdb",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_chain_summary.parquet",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_chain_summary.csv",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_interface_pairs.parquet",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_interface_pairs.csv",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_alanine_scan_chain_residue.parquet",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_alanine_scan_chain_residue.csv",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_alanine_scan_by_position.parquet",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_alanine_scan_by_position.csv",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_interface_summary.parquet",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_interface_summary.csv",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/1R51_interface_summary.json",
+    "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/reference_metrics/1R51/metadata.json"
+  ],
+  "parameters": {
+    "alanine_scan_pairs": [
+      [
+        "A",
+        "B"
+      ],
+      [
+        "A",
+        "D"
+      ]
+    ],
+    "alanine_scan_repack_bound": false,
+    "alanine_scan_repack_unbound": false,
+    "chains": [
+      "A",
+      "B",
+      "C",
+      "D"
+    ],
+    "contact_cutoff_a": 8.0,
+    "ddg_sign_convention": "mutant_minus_wildtype",
+    "interface_residue_cutoff_a": 5.0,
+    "interpretable_sidechain_scan_excludes": [
+      "ALA",
+      "GLY",
+      "PRO"
+    ],
+    "rosetta_score_function": "ref2015",
+    "salt_bridge_cutoff_a": 4.0,
+    "sasa_point_number": 1000,
+    "sasa_probe_radius_a": 1.4
+  },
+  "row_counts": {
+    "alanine_scan_by_position": 133,
+    "alanine_scan_chain_residue": 266,
+    "chain_summary": 4,
+    "interface_pairs": 6
+  },
+  "schema_version": "tetramer_reference_metrics_v1",
+  "software": {
+    "biotite": "1.6.0",
+    "numpy": "2.4.2",
+    "pandas": "3.0.1",
+    "rosetta_interface_analyzer": "/tigress/MOLBIO/local/src/rosetta.source.release-408/main/source/bin/InterfaceAnalyzer",
+    "rosetta_scripts": "/tigress/MOLBIO/local/src/rosetta.source.release-408/main/source/bin/rosetta_scripts"
+  },
+  "source_sha256": "fd5575a5fe251d030e1487884427d3befb97d98b998e4482c45579770351cfe6",
+  "source_structure": "/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/tetramer_gate/refs/1R51_tetramer_ABCD.pdb"
+}

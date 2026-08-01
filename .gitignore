@@ -13,6 +13,9 @@ __pycache__/
 .ruff_cache/
 
 # Virtual environments
+.env
+.env.*
+!.env.example
 .venv/
 venv/
 env/
@@ -74,4 +77,8 @@ report/
 reader.md
 # Others
 DRAKES/
-Results/
+Results/*
+!Results/Analysis/
+Results/Analysis/*
+!Results/Analysis/index.jsonl
+!Results/Reference/

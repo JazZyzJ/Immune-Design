@@ -1,0 +1,7 @@
+name,chain_1,chain_2,chain_pair,bsa_total_a2,bsa_per_partner_a2,n_residue_contacts_8a,n_salt_bridges_4a,interface_class,interface_class_rank,interface_copy,d2_matching,d2_matching_mean_bsa_total_a2,is_biological_interface,rosetta_job_id,rosetta_dsasa_int_a2,rosetta_dg_separated_reu,rosetta_dg_per_sasa_x100,rosetta_packstat,rosetta_hbonds_int,rosetta_hbond_energy_fraction,rosetta_delta_unsat_hbonds,rosetta_shape_complementarity,rosetta_nres_int,rosetta_dg_per_sasa_reu_per_a2
+1R51,A,B,A:B,5779.69140625,2889.845703125,218,2,interface_1,1,1,A:B|C:D,5779.8671875,True,ifc_000000,5803.741,-155.368,-2.677,0.674,34.0,0.242,36.0,0.717,210.0,-0.026770000000000002
+1R51,A,C,A:C,738.49609375,369.248046875,11,0,diagonal,3,1,A:C|B:D,739.0234375,False,,,,,,,,,,,
+1R51,A,D,A:D,5214.13671875,2607.068359375,153,4,interface_2,2,1,A:D|B:C,5216.4609375,True,ifc_000001,5284.578,-58.205,-1.101,0.656,20.0,0.363,14.0,0.74,172.0,-0.011009999999999999
+1R51,B,C,B:C,5218.78515625,2609.392578125,153,4,interface_2,2,2,A:D|B:C,5216.4609375,True,ifc_000002,5330.089,-58.205,-1.092,0.636,20.0,0.363,16.0,0.739,172.0,-0.010920000000000001
+1R51,B,D,B:D,739.55078125,369.775390625,11,0,diagonal,3,2,A:C|B:D,739.0234375,False,,,,,,,,,,,
+1R51,C,D,C:D,5780.04296875,2890.021484375,218,2,interface_1,1,2,A:B|C:D,5779.8671875,True,ifc_000003,5878.795,-155.368,-2.643,0.668,34.0,0.242,35.0,0.721,210.0,-0.02643

@@ -1,0 +1,120 @@
+/home/kj6118/anaconda3/lib/python3.12/argparse.py:2006: FutureWarning: `remote_definition` is deprecated and will be removed in 25.9. Use `conda env create --file=URL` instead.
+  action(self, namespace, argument_values, option_string)
+Retrieving notices: ...working... done
+Channels:
+ - conda-forge
+ - bioconda
+ - defaults
+Platform: linux-64
+Collecting package metadata (repodata.json): ...working... done
+Solving environment: ...working... done
+
+Downloading and Extracting Packages: ...working... done
+Preparing transaction: ...working... done
+Verifying transaction: ...working... done
+Executing transaction: ...working...  
+For Linux 64, Open MPI is built with CUDA awareness but this support is disabled by default.
+To enable it, please set the environment variable OMPI_MCA_opal_cuda_support=true before
+launching your MPI processes. Equivalently, you can set the MCA parameter in the command line:
+mpiexec --mca opal_cuda_support 1 ...
+ 
+In addition, the UCX support is also built but disabled by default.
+To enable it, first install UCX (conda install -c conda-forge ucx). Then, set the environment
+variables OMPI_MCA_pml="ucx" OMPI_MCA_osc="ucx" before launching your MPI processes.
+Equivalently, you can set the MCA parameters in the command line:
+mpiexec --mca pml ucx --mca osc ucx ...
+Note that you might also need to set UCX_MEMTYPE_CACHE=n for CUDA awareness via UCX.
+Please consult UCX's documentation for detail.
+ 
+
+done
+Installing pip dependencies: ...working... Ran pip subprocess with arguments:
+['/scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/uricase-ec/bin/python', '-m', 'pip', 'install', '-U', '-r', '/scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt', '--exists-action=b']
+Pip subprocess output:
+Collecting evcouplings==0.2.1 (from -r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Using cached evcouplings-0.2.1-py2.py3-none-any.whl.metadata (10 kB)
+Collecting billiard (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading billiard-4.2.4-py3-none-any.whl.metadata (4.8 kB)
+Requirement already satisfied: biopython>=1.84 in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (1.87)
+Collecting bokeh (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading bokeh-3.9.1-py3-none-any.whl.metadata (10 kB)
+Requirement already satisfied: click in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (8.4.2)
+Collecting filelock (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading filelock-3.31.1-py3-none-any.whl.metadata (2.0 kB)
+Collecting jinja2 (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+Requirement already satisfied: matplotlib in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (3.11.1)
+Collecting msgpack (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading msgpack-1.2.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (8.3 kB)
+Requirement already satisfied: numba in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (0.66.0)
+Requirement already satisfied: numpy in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (2.0.2)
+Requirement already satisfied: pandas in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (3.0.3)
+Collecting psutil (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl.metadata (22 kB)
+Requirement already satisfied: requests in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (2.34.2)
+Collecting ruamel-yaml<0.18 (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading ruamel.yaml-0.17.40-py3-none-any.whl.metadata (19 kB)
+Requirement already satisfied: scikit-learn in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (1.9.0)
+Requirement already satisfied: scipy in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (1.17.1)
+Requirement already satisfied: seaborn in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (0.13.2)
+Requirement already satisfied: setuptools>=18.2 in ./uricase-ec/lib/python3.11/site-packages (from evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (83.0.0)
+Collecting ruamel.yaml.clib>=0.2.7 (from ruamel-yaml<0.18->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading ruamel_yaml_clib-0.2.15-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (3.5 kB)
+Requirement already satisfied: contourpy>=1.2 in ./uricase-ec/lib/python3.11/site-packages (from bokeh->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (1.3.3)
+Requirement already satisfied: narwhals>=1.13 in ./uricase-ec/lib/python3.11/site-packages (from bokeh->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (2.24.0)
+Requirement already satisfied: packaging>=16.8 in ./uricase-ec/lib/python3.11/site-packages (from bokeh->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (26.2)
+Requirement already satisfied: pillow>=7.1.0 in ./uricase-ec/lib/python3.11/site-packages (from bokeh->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (12.3.0)
+Collecting PyYAML>=3.10 (from bokeh->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+Requirement already satisfied: tornado>=6.2 in ./uricase-ec/lib/python3.11/site-packages (from bokeh->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (6.5.7)
+Collecting xyzservices>=2021.09.1 (from bokeh->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading xyzservices-2026.3.0-py3-none-any.whl.metadata (4.1 kB)
+Collecting MarkupSafe>=2.0 (from jinja2->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1))
+  Downloading markupsafe-3.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)
+Requirement already satisfied: cycler>=0.10 in ./uricase-ec/lib/python3.11/site-packages (from matplotlib->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (0.12.1)
+Requirement already satisfied: fonttools>=4.28.2 in ./uricase-ec/lib/python3.11/site-packages (from matplotlib->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (4.63.0)
+Requirement already satisfied: kiwisolver>=1.3.1 in ./uricase-ec/lib/python3.11/site-packages (from matplotlib->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (1.5.0)
+Requirement already satisfied: pyparsing>=3 in ./uricase-ec/lib/python3.11/site-packages (from matplotlib->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (3.3.2)
+Requirement already satisfied: python-dateutil>=2.7 in ./uricase-ec/lib/python3.11/site-packages (from matplotlib->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (2.9.0.post0)
+Requirement already satisfied: six>=1.5 in ./uricase-ec/lib/python3.11/site-packages (from python-dateutil>=2.7->matplotlib->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (1.17.0)
+Requirement already satisfied: llvmlite<0.49,>=0.48.0dev0 in ./uricase-ec/lib/python3.11/site-packages (from numba->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (0.48.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in ./uricase-ec/lib/python3.11/site-packages (from requests->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (3.4.9)
+Requirement already satisfied: idna<4,>=2.5 in ./uricase-ec/lib/python3.11/site-packages (from requests->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (3.18)
+Requirement already satisfied: urllib3<3,>=1.26 in ./uricase-ec/lib/python3.11/site-packages (from requests->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (2.7.0)
+Requirement already satisfied: certifi>=2023.5.7 in ./uricase-ec/lib/python3.11/site-packages (from requests->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (2026.6.17)
+Requirement already satisfied: joblib>=1.4.0 in ./uricase-ec/lib/python3.11/site-packages (from scikit-learn->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (1.5.3)
+Requirement already satisfied: threadpoolctl>=3.5.0 in ./uricase-ec/lib/python3.11/site-packages (from scikit-learn->evcouplings==0.2.1->-r /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/condaenv.p1d0bvp3.requirements.txt (line 1)) (3.6.0)
+Using cached evcouplings-0.2.1-py2.py3-none-any.whl (263 kB)
+Downloading ruamel.yaml-0.17.40-py3-none-any.whl (113 kB)
+Downloading ruamel_yaml_clib-0.2.15-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (777 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 777.6/777.6 kB 36.7 MB/s  0:00:00
+Downloading billiard-4.2.4-py3-none-any.whl (87 kB)
+Downloading bokeh-3.9.1-py3-none-any.whl (6.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.4/6.4 MB 189.2 MB/s  0:00:00
+Downloading jinja2-3.1.6-py3-none-any.whl (134 kB)
+Downloading markupsafe-3.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)
+Downloading pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (806 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 806.6/806.6 kB 80.8 MB/s  0:00:00
+Downloading xyzservices-2026.3.0-py3-none-any.whl (94 kB)
+Downloading filelock-3.31.1-py3-none-any.whl (97 kB)
+Downloading msgpack-1.2.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (423 kB)
+Downloading psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl (155 kB)
+Installing collected packages: xyzservices, ruamel.yaml.clib, PyYAML, psutil, msgpack, MarkupSafe, filelock, billiard, ruamel-yaml, jinja2, bokeh, evcouplings
+
+Successfully installed MarkupSafe-3.0.3 PyYAML-6.0.3 billiard-4.2.4 bokeh-3.9.1 evcouplings-0.2.1 filelock-3.31.1 jinja2-3.1.6 msgpack-1.2.1 psutil-7.2.2 ruamel-yaml-0.17.40 ruamel.yaml.clib-0.2.15 xyzservices-2026.3.0
+
+done
+#
+# To activate this environment, use
+#
+#     $ conda activate /scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/env/uricase-ec
+#
+# To deactivate an active environment, use
+#
+#     $ conda deactivate
+
+
+Channel "pkgs/main" has the following notices:
+  [info] -- Tue Jun  9 00:00:00 2026
+  PyTorch 2.12 with CUDA support is now available to install with your current channel (Anaconda Main). Learn more: https://anaconda.org/main/pytorch?utm_source=channel_notices
+

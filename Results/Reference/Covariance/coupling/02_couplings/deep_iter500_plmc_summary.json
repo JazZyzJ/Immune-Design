@@ -1,0 +1,18 @@
+{
+  "alignment": "/scratch/gpfs/KAIYIJIANG/kaiyi/Uricase/coupling/01_msa/deep_focus.fasta",
+  "focus_seq": "UniRef100_Q00511\t423\t1.00\t8.292E-130\t0\t301\t302\t0\t301\t302",
+  "L": 302,
+  "theta": 0.8,
+  "lambda_h": 0.01,
+  "lambda_J_scaled": 60.2,
+  "iterations": 500,
+  "runtime_sec": 895.8,
+  "num_total_seqs": 12261,
+  "num_valid_seqs": 12223,
+  "num_total_sites": 302,
+  "num_valid_sites": 302,
+  "focus_seq_index": 1,
+  "region_start": 1,
+  "effective_samples": 3232.3,
+  "opt_status": "ROUNDING_ERROR"
+}

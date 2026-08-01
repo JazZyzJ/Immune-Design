@@ -304,3 +304,29 @@ def test_structure_floor_blocks_fold_breaking_elimination_and_beam():
                           struct_fn=struct, anchors=set(), topB=None, beam_width=4,
                           max_rounds=5, scTM_eps=0.05, target_window_idx_fn=lambda cores: [0])
     assert res.best_core_count == 1 and res.n_accepts == 0    # rejected; never admitted to the beam
+
+
+def test_refold_cap_bounds_refolds_per_round():
+    # Two independent single-mutation-killable cores (pos 10 & 20): MANY candidates drop the
+    # count each round (single mutations kill cores readily — the runtime-explosion root cause).
+    # refold_cap must bound refolds/round while the search still peels both cores to 0.
+    seq = "A" * 40
+    def nmp(pid, seqs):
+        def one(s):
+            rows = []
+            if s[10] == "A":
+                rows.append({"pos": 10, "pep_length": 9, "peptide": s[10:19], "core": s[10:19], "rank_EL": 0.001})
+            if s[20] == "A":
+                rows.append({"pos": 20, "pep_length": 9, "peptide": s[20:29], "core": s[20:29], "rank_EL": 0.001})
+            return rows
+        return [one(s) for s in seqs]
+    def head(pid, seqs):
+        return np.array([[-(int(s[10] != "A") + int(s[20] != "A"))] for s in seqs])
+    def struct(pid, s):
+        return _OK
+    res = refine_sequence("P", seq, propose_fn=_propose_singles, head_fn=head, nmp_fn=nmp,
+                          struct_fn=struct, anchors=set(), topB=None, beam_width=4,
+                          max_rounds=6, refold_cap=2, scTM_eps=0.05,
+                          target_window_idx_fn=lambda cores: [0])
+    assert all(t["n_refold"] <= 2 for t in res.trace)     # cap respected every round
+    assert res.best_core_count == 0                        # still peels both cores to 0

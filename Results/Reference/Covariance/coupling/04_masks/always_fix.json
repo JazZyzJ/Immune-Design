@@ -1,0 +1,46 @@
+{
+  "note": "NOT merged into the grid masks - kept separate so you can see what the scores recovered on their own.",
+  "source": "residues within 4.5 A of the OXC ligand in 1R4U assembly 1",
+  "mature_1indexed": [
+    8,
+    10,
+    54,
+    55,
+    56,
+    57,
+    58,
+    159,
+    170,
+    176,
+    226,
+    227,
+    228,
+    254,
+    256
+  ],
+  "same_chain": [
+    159,
+    170,
+    176,
+    226,
+    227,
+    228,
+    254,
+    256
+  ],
+  "cross_subunit": [
+    8,
+    10,
+    54,
+    55,
+    56,
+    57,
+    58
+  ],
+  "pts1_mature": [
+    299,
+    300,
+    301
+  ],
+  "pts1_note": "peroxisomal targeting signal; relevant only if peroxisomal import matters for your construct"
+}

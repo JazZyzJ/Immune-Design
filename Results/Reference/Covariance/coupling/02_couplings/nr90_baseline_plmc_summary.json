@@ -1,0 +1,18 @@
+{
+  "alignment": "01_msa/nr90_baseline_focus.fasta",
+  "focus_seq": "Q00511|Aspergillus_flavus|Uricase|taxid:5059|len:302",
+  "L": 302,
+  "theta": 0.8,
+  "lambda_h": 0.01,
+  "lambda_J_scaled": 60.2,
+  "iterations": 100,
+  "runtime_sec": 96.5,
+  "num_total_seqs": 3030,
+  "num_valid_seqs": 3018,
+  "num_total_sites": 302,
+  "num_valid_sites": 302,
+  "focus_seq_index": 1,
+  "region_start": 1,
+  "effective_samples": 1078.8,
+  "opt_status": "MAXIMUMITERATION"
+}
