@@ -1,0 +1,185 @@
+tag: p56658_ada_drb0401_conservlock_rescue_20260803
+date: 2026-08-03
+goal: >-
+  Ask whether bovine ADA (P56658) can still be fully de-immunised for HLA-DRB1*04:01 when the
+  design is locked not just to its 25 functional/catalytic anchors (the round-1 setting) but to a
+  conservation + coevolution tier, and if not, find WHY and what the minimum release is. The
+  answer turned out to be a single epitope core whose four MHC-II pockets are all coevolution-
+  locked; releasing two of them restores complete de-immunisation.
+protocol: PROTOCOL/holo_catalytic_gate_calibration.md
+supersedes_context: cases/p56658_ada_drb0401_holo_deimm_20260720.yaml
+status: selected
+runner: >-
+  /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_r3/run_holo_r3.sh
+
+inputs:
+  protein_id: P56658_ADA_BOVIN
+  allele: HLA-DRB1*04:01
+  test_set_parquet: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/therapeutic_enzymes_caseset_if_ready.parquet
+  pdb_root: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/pdbs_if_ready
+  design_input_parquet: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/design_inputs/P56658_ADA_BOVIN_if_ready.parquet
+  wt_holo_baseline_dir: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_baseline
+  constraint_manifest: >-
+    inverse_folding/reference_flow/configs/ada_p56658_conservation_C60_sig70_open283286.yaml
+  controller: d2_d3_full_stageB_aopen_beta5p0 (resolved controller_config_hash 2c39f229, identical to round-1)
+  sampler: inverse_folding/reference_flow/configs/c1_null.yaml
+  head: cnn_himp_a1_res03_drb0401_seed42_cv5_fold0 (LC1, allele_idx 0)
+  immune_oracle: NetMHCIIpan-4.3 accelerated (strong = rank_EL < 2%)
+  refolder_monomer: esmfold2_live
+  n_designs_per_protein: 200
+  seed: 10
+
+rounds:
+  - id: round-2
+    manifest: inverse_folding/reference_flow/configs/ada_p56658_conservation_C60_sig60.yaml
+    tier: maximum_protection
+    n_fixed: 194
+    n_designable: 169
+    n_seeds: 80
+    seeds_reaching_0NMP: 0
+    seeds_reaching_core1: 22
+  - id: round-3
+    manifest: inverse_folding/reference_flow/configs/ada_p56658_conservation_C60_sig70.yaml
+    tier: primary
+    n_fixed: 169
+    n_designable: 194
+    n_seeds: 80
+    seeds_reaching_0NMP: 0
+    seeds_reaching_core1: 57
+  - id: rescue-v1
+    manifest: inverse_folding/reference_flow/configs/ada_p56658_conservation_C60_sig70_open868890.yaml
+    unlocked_uniprot_1b: [86, 88, 90]
+    n_seeds: 75
+    result: >-
+      NO-OP. All 75 seeds returned unchanged (n_mutations=0). Disproved the inference that the
+      blocking core lived in the 86-99 window; that window was merely where ROUND-1 happened to
+      mutate most often.
+  - id: rescue-v2
+    manifest: inverse_folding/reference_flow/configs/ada_p56658_conservation_C60_sig70_open283286.yaml
+    unlocked_uniprot_1b: [283, 286]
+    n_seeds: 79
+    seeds_reaching_0NMP: 78
+    designs_core0: 1042
+
+mechanism:
+  finding: >-
+    All 79 core_count_after==1 designs from rounds 2 and 3 carried the SAME single residual
+    DRB1*04:01 core: the 9-mer FK?DQVNYS at UniProt 283-291.
+  why_refinement_stalled: >-
+    refine.extract_target_cores only mutates a core's MHC-II pocket positions
+    (core_start + 0/3/5/8 = 283/286/288/291) minus anchors. All four were locked, so
+    editable_positions was EMPTY and the beam loop could not start a single round -- which is
+    exactly what rescue-v1 demonstrated (75/75 seeds, 0 mutations, 6 minutes).
+  pocket_lock_criteria:
+    "283": sigma_L coevolution only
+    "286": sigma_L coevolution only
+    "288": sigma_L coevolution only
+    "291": sigma_L coevolution only
+  none_in_conservation_set: true
+  none_in_functional_hard25: true
+  distance_to_Zn_coordinating_Asp295_residues: {"283": 12, "286": 9, "288": 7, "291": 4}
+  minimum_release: >-
+    Only P1 (283) and P4 (286) were released -- the two furthest from Asp295. 288 and 291 were
+    never touched, so the high-risk position 4 residues from the Zn site stayed locked.
+  substitutions_used: F283W/C/Q/H/P/G/R/E... and D286H/C/E/L... (98 distinct combinations)
+
+criteria:
+  # Gate residue sets are pinned to the round-1 sets so every number is cross-round comparable.
+  cat_max_residue_set: >-
+    annotation_provenance.direct_functional_union_uniprot_1b == the 25 functional anchors of
+    therapeutic_enzymes_active_site_v0 (verified position-by-position identical).
+  cat9_ranking_set_uniprot_1b: [15, 17, 19, 184, 214, 217, 238, 295, 296]
+  refine_gate: {scTM_min: 0.94, cat_max_scRMSD_max: 1.0, active_site_min_pLDDT_min: 79.0}
+  active_site_min_pLDDT_note: >-
+    Lowered 90 -> 79.0 ONLY because structural_metrics_v2 computes
+    predicted_active_site_min_pLDDT as min CA pLDDT over ALL manifest anchors; over the 194/169
+    anchor sets the exact-WT fold itself scores 86.44, so a gate of 90 fails the positive control
+    and empties the run. 79.0 = 86.44 - round-1's WT margin of 7.36. Derivation:
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/round2/gate_calibration_round2.json. The protocol's ACTUAL criterion (min pLDDT >= 90 over the
+    25 functional anchors) was re-applied post-refinement instead, and all 1042 designs pass it.
+  post_refinement_protocol_check: {minpLDDT25_min: 90.0, cat25_max: 1.0, sctm_min: 0.94}
+  holo_T1: {atoms: "His15/17/214 NE2, Asp295 OD1 -> Zn", band: [1.9, 2.5], min_samples: 4, n_samples: 5}
+  holo_T3: {metric: "adenosine 4A contact Jaccard vs WT consensus", min_median: 0.6}
+  holo_T2: {metric: "PRH contact Jaccard vs WT consensus", min: 0.75, intra_min: 0.8, wt_ceiling: 0.89}
+
+holo_cohort:
+  design: >-
+    A de-immunising-mutation DOSE LADDER on matched lineages, not an unpaired candidate list.
+    Rationale (user): a monomer predictor is largely insensitive to a single point substitution,
+    so a catastrophic mutation can pass unnoticed when each design is judged alone; the paired
+    ladder would expose it as monotonic degradation.
+  levels:
+    C_pre:   {n: 6,   deimm_mutations: 0,   head_core: 3, note: "generation designs, core<=3 only"}
+    B_core1: {n: 40,  deimm_mutations: "1-2", head_core: 1}
+    A_core0: {n: 156, deimm_mutations: "2-4", head_core: 0, distinct_283_286_combos: 98}
+  paired_A_vs_parent_B: 80
+  predictor: Protenix v2.0.0-blackwell, local ColabFold MSA, 5 samples, seed default
+
+results:
+  refinement:
+    designs_all_protocol_pass: 1042
+    seeds_covered: 78
+    nmp_n_strong_binders: 0
+    minpLDDT25: [93.45, 98.20]
+    cat25: [0.432, 0.975]
+    scTM: [0.969, 0.997]
+    deimm_mutations_total: [2, 4]
+    mutations_vs_WT: [72, 100]
+  holo_T1_T3:
+    n_predictions_completed: 202
+    n_cif: 1010
+    pass_by_level: "C 6/6, B 40/40, A 156/156"
+    zn_median_by_level: {C: 2.326, B: 2.328, A: 2.323}
+    paired_delta_Asp295_Zn_median: -0.002
+    paired_delta_adenosine_jaccard_median: 0.000
+  holo_T2:
+    n_pass: 202
+    n_total: 202
+    prh_jaccard_5th_percentile_by_level: {C: 0.895, B: 0.880, A: 0.880}
+    prh_intra_median_by_level: {C: 0.945, B: 0.940, A: 0.950}
+  verdict: >-
+    No dose-dependent degradation on any of the three independent holo criteria. The 17/156
+    A-layer designs below PRH_J 0.9 or intra 0.9 do not cluster on any 283/286 substitution
+    chemistry, i.e. noise rather than a chemical liability.
+
+outputs:
+  final_ranked_note: "156 designs, rank-sum of cat9 + adenosine pose dispersion + PRH Jaccard + PRH intra-stability"
+  final_ranked: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_r3/FINAL_ranked_A.parquet
+  ladder_verdict: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_r3/ladder_verdict.parquet
+  t2_verdict: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_r3/t2_verdict.parquet
+
+notes:
+  - >-
+    THE ASSAY IS SATURATED, WHICH IS NOT THE SAME AS "THE MUTATIONS ARE SAFE". Across 202 designs
+    T3's Jaccard took only 3 distinct values and zn_in_band was 5/5 for every single design; the
+    adenosine 4 A contact set is dominated by pocket residues that are hard-locked to WT by
+    construction, and 283/286 sit 9-12 residues away. T1/T3 therefore have almost no resolving
+    power in this cohort. T2 was better (6 and 12 distinct values) but still found no trend. The
+    honest statement is "no catalytic damage was DETECTED", not "no damage exists".
+  - >-
+    Adenosine pose dispersion was initially computed on raw sample coordinates and came out at
+    12.9 A against a WT reference of 0.10 A. Protenix emits each sample in its own frame, so that
+    number measured rigid-body offset. Superposing on protein CA first reproduces the round-1 WT
+    value exactly (0.103 vs 0.10) -- that positive control is what validates the fix. Dispersion
+    is the ONE continuous metric here with real spread (48/202 above 0.15, 12 above 0.2).
+  - >-
+    The blocking-core position was first inferred INDIRECTLY, from which positions round-1
+    mutated most often (86/88/90/91/94/97/99), and that inference was WRONG -- rescue-v1 produced
+    zero mutations on 75/75 seeds. The correct answer came from running NMP on the stalled designs
+    and reading the surviving core's pocket positions directly. Prefer the direct measurement.
+  - >-
+    rank_EL is stored as a PERCENT (0-100) in imm_nmp_peptides.parquet but the refine driver's
+    strong_rank is a FRACTION (0.02 = 2%). Mixing them silently reports "0 cores" for designs that
+    have one.
+  - >-
+    Evidence boundary: COMPUTATIONAL candidates only (NMP n_strong = 0 plus retained Zn
+    coordination, adenosine pose and PRH closed-pocket fingerprint). Neither de-immunisation nor
+    catalytic activity is experimentally confirmed; donor PBMC / CD4 T-cell assays and an
+    enzyme-activity assay are still required.
+  - >-
+    ADI (P23793) was NOT run in this campaign; its round-1 result stands unchanged.

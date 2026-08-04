@@ -1,0 +1,1637 @@
+schema_version: ada_joint_evolution_wtlock_v1
+description: 'P56658 ADA epitope-rescue v2: C60/sigma70 primary tier with UniProt 283 and 286 released -- the P1/P4
+  pockets of the single residual DRB1*04:01 core at 283-291.'
+numbering_contract: index_0b == UniProt_P56658_position_1b-1; canonical sequence length 363
+annotation_provenance:
+  uniprot:
+    accession: P56658
+    entry: ADA_BOVIN
+    sequence_length: 363
+    sequence_md5: d139a37e7fe8d483c76b2723b509f4a4
+  tier_role: primary_epitope_rescue_v2
+  analysis_record: Results/Analysis/0036-p56658-ada-msa-conservation-and-constrai/record.md
+  source_analysis_records:
+  - Results/Analysis/0036-p56658-ada-msa-conservation-and-constrai/record.md
+  - Results/Analysis/0042-p56658-ada-fixed-threshold-conservation-/record.md
+  baseline_manifest: inverse_folding/reference_flow/configs/therapeutic_enzymes_active_site_v0.yaml
+  baseline_manifest_source_revision: fusion_rf_refine@e091b36
+  baseline_manifest_sha256: e65ed88bf360c93a597938be82cd7c1084e1fc75c081cc98221782ab9577c0cd
+  score_table: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/therapeutic_enzymes/ada_coupling_p56658_v1/03_scores/ada_per_residue_evolution.tsv
+  score_table_sha256: 0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  focus_alignment: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/therapeutic_enzymes/ada_coupling_p56658_v1/01_msa/deep_focus.fasta
+  focus_alignment_sha256: 454393e504a230d4e9484004d924f4c7b141e7e5503d99037fab26402c4c7934
+  sequence_weight_identity_threshold: 0.8
+  coverage_filters:
+  - 0.6
+  - 0.7
+  - 0.8
+  coverage_effective_samples:
+    cov60: 4830.75273866329
+    cov70: 4409.1182148537655
+    cov80: 4185.521205562245
+  gap_fraction_cap: 0.5
+  gap_eligible_n: 328
+  conservation_definition: C_i = 1 - H_i/log2(20), weighted over nongap amino-acid states
+  conservation_selection_rule: min(C_i_nogap_cov60,cov70,cov80)>=0.60 AND max(gap_frac_cov60,cov70,cov80)<=0.50
+  conservation_threshold: 0.6
+  conservation_n: 70
+  conservation_fraction_gap_eligible: 0.21341463414634146
+  conservation_coverage_counts:
+    cov60: 70
+    cov70: 70
+    cov80: 70
+  conservation_positions_index_0b:
+  - 9
+  - 10
+  - 13
+  - 14
+  - 16
+  - 17
+  - 18
+  - 19
+  - 25
+  - 29
+  - 30
+  - 38
+  - 57
+  - 60
+  - 61
+  - 64
+  - 84
+  - 93
+  - 94
+  - 96
+  - 98
+  - 100
+  - 103
+  - 135
+  - 139
+  - 150
+  - 155
+  - 176
+  - 178
+  - 180
+  - 181
+  - 182
+  - 183
+  - 185
+  - 200
+  - 203
+  - 211
+  - 213
+  - 214
+  - 215
+  - 216
+  - 223
+  - 226
+  - 232
+  - 234
+  - 235
+  - 236
+  - 237
+  - 238
+  - 244
+  - 256
+  - 258
+  - 259
+  - 261
+  - 262
+  - 264
+  - 265
+  - 268
+  - 277
+  - 278
+  - 286
+  - 292
+  - 293
+  - 294
+  - 295
+  - 296
+  - 306
+  - 328
+  - 333
+  - 339
+  conservation_positions_uniprot_1b:
+  - 10
+  - 11
+  - 14
+  - 15
+  - 17
+  - 18
+  - 19
+  - 20
+  - 26
+  - 30
+  - 31
+  - 39
+  - 58
+  - 61
+  - 62
+  - 65
+  - 85
+  - 94
+  - 95
+  - 97
+  - 99
+  - 101
+  - 104
+  - 136
+  - 140
+  - 151
+  - 156
+  - 177
+  - 179
+  - 181
+  - 182
+  - 183
+  - 184
+  - 186
+  - 201
+  - 204
+  - 212
+  - 214
+  - 215
+  - 216
+  - 217
+  - 224
+  - 227
+  - 233
+  - 235
+  - 236
+  - 237
+  - 238
+  - 239
+  - 245
+  - 257
+  - 259
+  - 260
+  - 262
+  - 263
+  - 265
+  - 266
+  - 269
+  - 278
+  - 279
+  - 287
+  - 293
+  - 294
+  - 295
+  - 296
+  - 297
+  - 307
+  - 329
+  - 334
+  - 340
+  conservation_hard25_overlap_n: 18
+  conservation_selected_score_ranges:
+    C_i_min:
+    - 0.60064048
+    - 0.99403589
+    C_i_coverage_range_max: 0.00987977
+  coupling_definition: sigma_L = EVcouplings per-position enrichment over the top L APC-corrected long-range (|i-j|>=6)
+    EC pairs
+  coupling_model: /scratch/gpfs/KAIYIJIANG/zijie/run/ada/coupling_p56658_v1/02_couplings/deep_iter500_rtx.model
+  coupling_model_sha256: 83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf
+  coupling_ecs: /scratch/gpfs/KAIYIJIANG/zijie/run/ada/coupling_p56658_v1/02_couplings/deep_iter500_rtx_ECs.txt
+  coupling_ecs_sha256: 631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  coupling_fit:
+    iterations: 500
+    effective_samples: 4802.7
+    neff_per_length: 13.23
+    top_L_contact_precision_AF_P56658: 0.6997
+    optimizer_status: ROUNDING_ERROR
+  sigma_selection_rule: sigma_L_pct>=0.70 AND max(gap_frac_cov60,cov70,cov80)<=0.50
+  sigma_L_pct_threshold: 0.7
+  sigma_threshold_interpretation: rank percentile over all P56658 sites; gap cap is applied after ranking
+  sigma_n: 103
+  sigma_fraction_gap_eligible: 0.31402439024390244
+  sigma_cumulative_load_fraction_gap_eligible: 0.6587102028586631
+  sigma_positions_index_0b:
+  - 15
+  - 22
+  - 25
+  - 27
+  - 45
+  - 58
+  - 75
+  - 77
+  - 79
+  - 80
+  - 81
+  - 82
+  - 83
+  - 85
+  - 86
+  - 87
+  - 88
+  - 89
+  - 92
+  - 96
+  - 97
+  - 99
+  - 101
+  - 104
+  - 105
+  - 118
+  - 119
+  - 120
+  - 123
+  - 125
+  - 126
+  - 132
+  - 133
+  - 134
+  - 136
+  - 138
+  - 139
+  - 140
+  - 142
+  - 143
+  - 146
+  - 147
+  - 148
+  - 149
+  - 151
+  - 162
+  - 164
+  - 165
+  - 169
+  - 171
+  - 179
+  - 184
+  - 191
+  - 202
+  - 204
+  - 209
+  - 210
+  - 212
+  - 217
+  - 224
+  - 227
+  - 228
+  - 231
+  - 232
+  - 233
+  - 239
+  - 241
+  - 242
+  - 248
+  - 250
+  - 251
+  - 252
+  - 257
+  - 258
+  - 260
+  - 262
+  - 263
+  - 268
+  - 274
+  - 279
+  - 280
+  - 282
+  - 283
+  - 285
+  - 287
+  - 288
+  - 289
+  - 290
+  - 291
+  - 299
+  - 307
+  - 309
+  - 310
+  - 314
+  - 316
+  - 320
+  - 324
+  - 326
+  - 327
+  - 329
+  - 330
+  - 331
+  - 343
+  sigma_positions_uniprot_1b:
+  - 16
+  - 23
+  - 26
+  - 28
+  - 46
+  - 59
+  - 76
+  - 78
+  - 80
+  - 81
+  - 82
+  - 83
+  - 84
+  - 86
+  - 87
+  - 88
+  - 89
+  - 90
+  - 93
+  - 97
+  - 98
+  - 100
+  - 102
+  - 105
+  - 106
+  - 119
+  - 120
+  - 121
+  - 124
+  - 126
+  - 127
+  - 133
+  - 134
+  - 135
+  - 137
+  - 139
+  - 140
+  - 141
+  - 143
+  - 144
+  - 147
+  - 148
+  - 149
+  - 150
+  - 152
+  - 163
+  - 165
+  - 166
+  - 170
+  - 172
+  - 180
+  - 185
+  - 192
+  - 203
+  - 205
+  - 210
+  - 211
+  - 213
+  - 218
+  - 225
+  - 228
+  - 229
+  - 232
+  - 233
+  - 234
+  - 240
+  - 242
+  - 243
+  - 249
+  - 251
+  - 252
+  - 253
+  - 258
+  - 259
+  - 261
+  - 263
+  - 264
+  - 269
+  - 275
+  - 280
+  - 281
+  - 283
+  - 284
+  - 286
+  - 288
+  - 289
+  - 290
+  - 291
+  - 292
+  - 300
+  - 308
+  - 310
+  - 311
+  - 315
+  - 317
+  - 321
+  - 325
+  - 327
+  - 328
+  - 330
+  - 331
+  - 332
+  - 344
+  sigma_selected_score_range:
+  - 2.80423345
+  - 7.90513179
+  joint_selection_rule: functional_hard25 OR robust_C60 OR sigma_L_percentile
+  C_sigma_overlap_n: 7
+  evolution_union_n: 166
+  evolution_union_fraction_gap_eligible: 0.5060975609756098
+  direct_functional_union_uniprot_1b:
+  - 15
+  - 17
+  - 19
+  - 58
+  - 61
+  - 62
+  - 65
+  - 101
+  - 102
+  - 103
+  - 106
+  - 153
+  - 155
+  - 183
+  - 184
+  - 185
+  - 186
+  - 214
+  - 217
+  - 238
+  - 262
+  - 269
+  - 295
+  - 296
+  - 300
+  functional_hard25_n: 25
+  functional_hard25_positions_index_0b:
+  - 14
+  - 16
+  - 18
+  - 57
+  - 60
+  - 61
+  - 64
+  - 100
+  - 101
+  - 102
+  - 105
+  - 152
+  - 154
+  - 182
+  - 183
+  - 184
+  - 185
+  - 213
+  - 216
+  - 237
+  - 261
+  - 268
+  - 294
+  - 295
+  - 299
+  hard25_evolution_overlap_n: 22
+  n_fixed: 167
+  n_designable: 196
+  pct_fixed: 46.5565
+  legacy_monitored_n: 30
+  threshold_promoted_from_monitored_n: 10
+  threshold_promoted_from_monitored_index_0b:
+  - 58
+  - 75
+  - 79
+  - 80
+  - 83
+  - 126
+  - 134
+  - 138
+  - 142
+  - 264
+  remaining_monitored_n: 20
+  pWT_is_selection_gate: false
+  pWT_policy: Audit only. C_i does not require P56658 WT to be the family-majority residue, and sigma_L is a coupling-load
+    criterion rather than a single-site WT-frequency criterion. Exact-WT locking preserves the validated P56658
+    combination.
+  conservation_pWT_below_0p50_n: 16
+  conservation_pWT_below_0p50_positions_index_0b:
+  - 29
+  - 30
+  - 60
+  - 139
+  - 178
+  - 200
+  - 223
+  - 232
+  - 235
+  - 256
+  - 258
+  - 265
+  - 286
+  - 295
+  - 296
+  - 306
+  evolution_union_pWT_below_0p50_n: 103
+  strong_core_actionability_audit:
+    allele: DRB1_0401
+    n_strong_cores: 5
+    n_actionable_cores: 5
+    mutable_counts_by_core_rank:
+    - 1
+    - 5
+    - 4
+    - 4
+    - 1
+  threshold_selection_basis: fixed C60 and sigma percentile cutoffs selected from ADA's own C_i and sigma_L distributions;
+    fixed-position count is an outcome only
+  fixed_count_used_for_threshold_selection: false
+  fixed_count_fill: false
+  uses_structure_membership: false
+  structure_membership_scope: No additional monomer, tetramer, or full-structure mask; only the pre-existing functional
+    hard25 is retained.
+  uses_contact_or_coupling_membership: true
+  uses_monitored_shell_blanket_promotion: false
+  enforcement_policy: hard_fix_exact_wt
+  required_sampler_config: inverse_folding/reference_flow/configs/c1_null.yaml
+  required_sampler_sha256: 51563e79571f87447413709df0c80ab75c353efff2657f4400e065a9875b2542
+  derived_from: ada_p56658_conservation_C60_sig70.yaml (169 anchors)
+  deliberately_unlocked_uniprot_1b:
+  - 283
+  - 286
+  unlock_rationale: 'DIRECT evidence, not inference. All 79 core_count_after==1 designs from rounds 2 and 3 carry
+    the SAME single residual DRB1*04:01 core: the 9-mer FK?DQVNYS at 283-291. refine.extract_target_cores only mutates
+    a core''s MHC-II pocket positions (core_start + 0/3/5/8 = 283/286/288/291) minus anchors; all four are locked,
+    so editable_positions is EMPTY and the beam loop cannot start -- which is exactly what the 86/88/90 rescue showed
+    (75/75 seeds returned unchanged, 0 mutations). All four pockets are flagged ONLY by sigma_L coevolution: none
+    is in the C>=0.60 conservation set and none is in the functional hard25 catalytic set. P1(283) and P4(286) are
+    released first because they sit 9-12 residues from the Zn-coordinating Asp295, whereas P9(291) is only 4 residues
+    away; 288 and 291 stay locked unless this step fails.'
+  unlock_evidence:
+    residual_core_1b: 283-291 FK?DQVNYS (identical in 79/79 core==1 designs)
+    pocket_positions_1b:
+    - 283
+    - 286
+    - 288
+    - 291
+    all_pockets_locked_before: true
+    criterion: sigma_L coevolution only (no C>=0.60, no functional hard25)
+    distance_to_catalytic_Asp295:
+      '283': 12
+      '286': 9
+      '288': 7
+      '291': 4
+    failed_prior_attempt: 86/88/90 unlock produced 0 mutations on 75/75 seeds
+entries:
+- protein_id: P56658_ADA_BOVIN
+  sequence_md5: d139a37e7fe8d483c76b2723b509f4a4
+  source_sequence: UniProt P56658 canonical; length 363; one-based labels
+  hard_anchors:
+  - index_0b: 9
+    expected_aa: P
+    label: P10
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 10
+    expected_aa: K
+    label: K11
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 13
+    expected_aa: L
+    label: L14
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 14
+    expected_aa: H
+    label: H15
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 15
+    expected_aa: V
+    label: V16
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 16
+    expected_aa: H
+    label: H17
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 17
+    expected_aa: L
+    label: L18
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 18
+    expected_aa: D
+    label: D19
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 19
+    expected_aa: G
+    label: G20
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 22
+    expected_aa: K
+    label: K23
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 25
+    expected_aa: T
+    label: T26
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322;
+      P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 27
+    expected_aa: L
+    label: L28
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 29
+    expected_aa: Y
+    label: Y30
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 30
+    expected_aa: G
+    label: G31
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 38
+    expected_aa: P
+    label: P39
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 45
+    expected_aa: L
+    label: L46
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 57
+    expected_aa: L
+    label: L58
+    biological_role: pdb_direct_contact_extension|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 58
+    expected_aa: P
+    label: P59
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 60
+    expected_aa: F
+    label: F61
+    biological_role: pdb_direct_contact_extension|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 61
+    expected_aa: L
+    label: L62
+    biological_role: pdb_direct_contact_extension|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 64
+    expected_aa: F
+    label: F65
+    biological_role: five_angstrom_pocket_extension|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'; P56658 deep_focus MSA;
+      theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 75
+    expected_aa: R
+    label: R76
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 77
+    expected_aa: A
+    label: A78
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 79
+    expected_aa: K
+    label: K80
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 80
+    expected_aa: R
+    label: R81
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 81
+    expected_aa: I
+    label: I82
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 82
+    expected_aa: A
+    label: A83
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 83
+    expected_aa: Y
+    label: Y84
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 84
+    expected_aa: E
+    label: E85
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 85
+    expected_aa: F
+    label: F86
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 86
+    expected_aa: V
+    label: V87
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 87
+    expected_aa: E
+    label: E88
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 88
+    expected_aa: M
+    label: M89
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 89
+    expected_aa: K
+    label: K90
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 92
+    expected_aa: D
+    label: D93
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 93
+    expected_aa: G
+    label: G94
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 94
+    expected_aa: V
+    label: V95
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 96
+    expected_aa: Y
+    label: Y97
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322;
+      P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 97
+    expected_aa: V
+    label: V98
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 98
+    expected_aa: E
+    label: E99
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 99
+    expected_aa: V
+    label: V100
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 100
+    expected_aa: R
+    label: R101
+    biological_role: five_angstrom_pocket_extension|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'; P56658 deep_focus MSA;
+      theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 101
+    expected_aa: Y
+    label: Y102
+    biological_role: five_angstrom_pocket_extension|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'; P56658 PLMC deep_iter500_rtx;
+      sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 102
+    expected_aa: S
+    label: S103
+    biological_role: five_angstrom_pocket_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'
+  - index_0b: 103
+    expected_aa: P
+    label: P104
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 104
+    expected_aa: H
+    label: H105
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 105
+    expected_aa: L
+    label: L106
+    biological_role: pdb_direct_contact_extension|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'; P56658 PLMC deep_iter500_rtx;
+      sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 118
+    expected_aa: Q
+    label: Q119
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 119
+    expected_aa: A
+    label: A120
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 120
+    expected_aa: E
+    label: E121
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 123
+    expected_aa: L
+    label: L124
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 125
+    expected_aa: P
+    label: P126
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 126
+    expected_aa: D
+    label: D127
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 132
+    expected_aa: V
+    label: V133
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 133
+    expected_aa: N
+    label: N134
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 134
+    expected_aa: Q
+    label: Q135
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 135
+    expected_aa: G
+    label: G136
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 136
+    expected_aa: L
+    label: L137
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 138
+    expected_aa: E
+    label: E139
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 139
+    expected_aa: G
+    label: G140
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322;
+      P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 140
+    expected_aa: E
+    label: E141
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 142
+    expected_aa: D
+    label: D143
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 143
+    expected_aa: F
+    label: F144
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 146
+    expected_aa: K
+    label: K147
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 147
+    expected_aa: V
+    label: V148
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 148
+    expected_aa: R
+    label: R149
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 149
+    expected_aa: S
+    label: S150
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 150
+    expected_aa: I
+    label: I151
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 151
+    expected_aa: L
+    label: L152
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 152
+    expected_aa: C
+    label: C153
+    biological_role: five_angstrom_pocket_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'five_angstrom_pocket_extension'
+  - index_0b: 154
+    expected_aa: M
+    label: M155
+    biological_role: pdb_direct_contact_extension
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'
+  - index_0b: 155
+    expected_aa: R
+    label: R156
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 162
+    expected_aa: S
+    label: S163
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 164
+    expected_aa: V
+    label: V165
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 165
+    expected_aa: V
+    label: V166
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 169
+    expected_aa: K
+    label: K170
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 171
+    expected_aa: Y
+    label: Y172
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 176
+    expected_aa: V
+    label: V177
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 178
+    expected_aa: A
+    label: A179
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 179
+    expected_aa: I
+    label: I180
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 180
+    expected_aa: D
+    label: D181
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 181
+    expected_aa: L
+    label: L182
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 182
+    expected_aa: A
+    label: A183
+    biological_role: pdb_direct_contact_extension|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'pdb_direct_contact_extension'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 183
+    expected_aa: G
+    label: G184
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 184
+    expected_aa: D
+    label: D185
+    biological_role: ligand_enclosing_lid_extension|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'ligand_enclosing_lid_extension'; P56658 PLMC deep_iter500_rtx;
+      sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 185
+    expected_aa: E
+    label: E186
+    biological_role: ligand_enclosing_lid_extension|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'ligand_enclosing_lid_extension'; P56658 deep_focus MSA;
+      theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 191
+    expected_aa: S
+    label: S192
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 200
+    expected_aa: Y
+    label: Y201
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 202
+    expected_aa: E
+    label: E203
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 203
+    expected_aa: A
+    label: A204
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 204
+    expected_aa: V
+    label: V205
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 209
+    expected_aa: H
+    label: H210
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 210
+    expected_aa: R
+    label: R211
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 211
+    expected_aa: T
+    label: T212
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 212
+    expected_aa: V
+    label: V213
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 213
+    expected_aa: H
+    label: H214
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 214
+    expected_aa: A
+    label: A215
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 215
+    expected_aa: G
+    label: G216
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 216
+    expected_aa: E
+    label: E217
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 217
+    expected_aa: V
+    label: V218
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 223
+    expected_aa: V
+    label: V224
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 224
+    expected_aa: K
+    label: K225
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 226
+    expected_aa: A
+    label: A227
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 227
+    expected_aa: V
+    label: V228
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 228
+    expected_aa: D
+    label: D229
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 231
+    expected_aa: K
+    label: K232
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 232
+    expected_aa: T
+    label: T233
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322;
+      P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 233
+    expected_aa: E
+    label: E234
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 234
+    expected_aa: R
+    label: R235
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 235
+    expected_aa: L
+    label: L236
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 236
+    expected_aa: G
+    label: G237
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 237
+    expected_aa: H
+    label: H238
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 238
+    expected_aa: G
+    label: G239
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 239
+    expected_aa: Y
+    label: Y240
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 241
+    expected_aa: T
+    label: T242
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 242
+    expected_aa: L
+    label: L243
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 244
+    expected_aa: D
+    label: D245
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 248
+    expected_aa: Y
+    label: Y249
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 250
+    expected_aa: R
+    label: R251
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 251
+    expected_aa: L
+    label: L252
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 252
+    expected_aa: R
+    label: R253
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 256
+    expected_aa: M
+    label: M257
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 257
+    expected_aa: H
+    label: H258
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 258
+    expected_aa: F
+    label: F259
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322;
+      P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 259
+    expected_aa: E
+    label: E260
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 260
+    expected_aa: V
+    label: V261
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 261
+    expected_aa: C
+    label: C262
+    biological_role: high_priority_second_shell|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'high_priority_second_shell'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 262
+    expected_aa: P
+    label: P263
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322;
+      P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 263
+    expected_aa: W
+    label: W264
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 264
+    expected_aa: S
+    label: S265
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 265
+    expected_aa: S
+    label: S266
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 268
+    expected_aa: T
+    label: T269
+    biological_role: high_priority_second_shell|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'high_priority_second_shell'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322;
+      P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 274
+    expected_aa: D
+    label: D275
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 277
+    expected_aa: H
+    label: H278
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 278
+    expected_aa: P
+    label: P279
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 279
+    expected_aa: V
+    label: V280
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 280
+    expected_aa: V
+    label: V281
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 283
+    expected_aa: K
+    label: K284
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 286
+    expected_aa: Q
+    label: Q287
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 287
+    expected_aa: V
+    label: V288
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 288
+    expected_aa: N
+    label: N289
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 289
+    expected_aa: Y
+    label: Y290
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 290
+    expected_aa: S
+    label: S291
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 291
+    expected_aa: L
+    label: L292
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 292
+    expected_aa: N
+    label: N293
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 293
+    expected_aa: T
+    label: T294
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 294
+    expected_aa: D
+    label: D295
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 295
+    expected_aa: D
+    label: D296
+    biological_role: mechanistic_and_uniprot|entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'mechanistic_and_uniprot'; P56658 deep_focus MSA; theta=0.8;
+      intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 296
+    expected_aa: P
+    label: P297
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 299
+    expected_aa: F
+    label: F300
+    biological_role: high_priority_second_shell|coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: safety_max; P56658_ADA_BOVIN evidence group 'high_priority_second_shell'; P56658 PLMC deep_iter500_rtx;
+      sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 306
+    expected_aa: D
+    label: D307
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 307
+    expected_aa: Y
+    label: Y308
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 309
+    expected_aa: M
+    label: M310
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 310
+    expected_aa: T
+    label: T311
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 314
+    expected_aa: M
+    label: M315
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 316
+    expected_aa: F
+    label: F317
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 320
+    expected_aa: E
+    label: E321
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 324
+    expected_aa: L
+    label: L325
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 326
+    expected_aa: I
+    label: I327
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 327
+    expected_aa: N
+    label: N328
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 328
+    expected_aa: A
+    label: A329
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 329
+    expected_aa: A
+    label: A330
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 330
+    expected_aa: K
+    label: K331
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 331
+    expected_aa: S
+    label: S332
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  - index_0b: 333
+    expected_aa: F
+    label: F334
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 339
+    expected_aa: K
+    label: K340
+    biological_role: entropy_conservation_C_i_min_cov60_80>=0.60_gap_frac_max_cov60_80<=0.50
+    source: P56658 deep_focus MSA; theta=0.8; intersection across coverage filters 0.60/0.70/0.80; score_table_sha256=0eb3463500ec201dce025aba81d05f3debfb8a925e5f5ed6375ffacfe69dc322
+  - index_0b: 343
+    expected_aa: L
+    label: L344
+    biological_role: coevolution_sigma_L_pct>=0.70_gap_frac_max_cov60_80<=0.50
+    source: P56658 PLMC deep_iter500_rtx; sigma_L over top-L APC-corrected long-range EC pairs; model_sha256=83ec45f5f3a8fd2aa0b4f2bcf772f853d34f1f22d9abdbd7aead58068fea51bf;
+      ECs_sha256=631ef11747c3f68af524c1cc7ed217c7296ecd3a7d410ee4a17dbd1e0a02f0fc
+  monitored_shell:
+  - index_0b: 56
+    expected_aa: S
+    label: S57
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 59
+    expected_aa: E
+    label: E60
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 62
+    expected_aa: A
+    label: A63
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 63
+    expected_aa: K
+    label: K64
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 65
+    expected_aa: D
+    label: D66
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 66
+    expected_aa: Y
+    label: Y67
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 67
+    expected_aa: Y
+    label: Y68
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 68
+    expected_aa: M
+    label: M69
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 69
+    expected_aa: P
+    label: P70
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 70
+    expected_aa: A
+    label: A71
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 71
+    expected_aa: I
+    label: I72
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 72
+    expected_aa: A
+    label: A73
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 76
+    expected_aa: E
+    label: E77
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 124
+    expected_aa: T
+    label: T125
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 127
+    expected_aa: E
+    label: E128
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 137
+    expected_aa: Q
+    label: Q138
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 141
+    expected_aa: R
+    label: R142
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 174
+    expected_aa: Q
+    label: Q175
+    enforcement: monitored_posthoc
+    rationale: DPP4/CD26-binding moonlighting surface; monitor only if that interaction is a product requirement
+  - index_0b: 186
+    expected_aa: T
+    label: T187
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
+  - index_0b: 187
+    expected_aa: I
+    label: I188
+    enforcement: monitored_posthoc
+    rationale: conformational gate segment (open/closed transition)
