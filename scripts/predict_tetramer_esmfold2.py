@@ -9,7 +9,7 @@ carries fair-esm). ESMFold2 natively supports all three (source-verified, PLAN_T
 
 Writes, under <out-dir>/<name>/: <name>.cif (full complex incl. ligand hetero atoms) and
 <name>_confidence.json (plddt mean/per-res, ptm, iptm, pair_chains_iptm). Mirrors enough of the
-Protenix output that eval_tetramer_gate.py can read it (an `--esmfold2` reader is added there).
+Protenix output that eval_complex_gate.py can read it (an `--esmfold2` reader is added there).
 
 CAVEAT (per feasibility review): ESMFold2 has no published ligand-pose benchmark — treat the
 ligand placement as a hypothesis and cross-check top designs against Protenix/AF3.

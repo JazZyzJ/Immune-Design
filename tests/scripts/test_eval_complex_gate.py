@@ -1,4 +1,4 @@
-"""Tests for post-prediction uricase tetramer interface metrics."""
+"""Tests for post-prediction protein-complex interface metrics (D2 tetramer + hetero-dimer)."""
 
 from __future__ import annotations
 
@@ -6,10 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from inverse_folding.evaluation.tetramer_interfaces import (
+from inverse_folding.evaluation.complex_interfaces import (
     aggregate_homomer_alanine_scan,
     canonical_protein_atoms,
     classify_d2_interface_pairs,
+    classify_interface_pairs,
+    interface_pair_metrics,
     interface_residue_candidates,
     pair_residue_contacts,
     pair_salt_bridges,
@@ -17,7 +19,7 @@ from inverse_folding.evaluation.tetramer_interfaces import (
     parse_rosetta_scorefile,
     summarize_interface_pairs,
 )
-from scripts.eval_tetramer_gate import add_interface_wt_normalization
+from scripts.eval_complex_gate import add_interface_wt_normalization, tier1_from_summary
 from scripts.eval_tetramer_reference import _paths_overlap, main as reference_main
 
 
@@ -108,6 +110,81 @@ def test_interface_summary_uses_worst_copy_in_the_correct_direction():
     assert summary["interface_2_rosetta_dg_separated_max_reu"] == -10.0
     assert summary["interface_2_rosetta_delta_unsat_hbonds_max"] == 5.0
     assert summary["interface_topology_bsa_gap_a2"] == 4300.0
+
+
+def test_hetero_dimer_classification_marks_the_single_pair_biological():
+    """A binder:target complex has one interface and no symmetry copy or diagonal."""
+    pairs = pd.DataFrame([{
+        "chain_1": "A", "chain_2": "B", "bsa_total_a2": 1800.0,
+        "bsa_per_partner_a2": 900.0, "n_residue_contacts_8a": 60, "n_salt_bridges_4a": 3,
+    }])
+    out = classify_interface_pairs(pairs)
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["interface_class"] == "interface_1"
+    assert row["interface_class_rank"] == 1
+    assert row["interface_copy"] == 1
+    assert bool(row["is_biological_interface"]) is True
+    # the D2 columns exist for schema stability but carry no meaning without a D2 graph
+    assert row["d2_matching"] == ""
+    assert np.isnan(row["d2_matching_mean_bsa_total_a2"])
+
+
+def test_hetero_dimer_summary_degenerates_to_the_single_copy_and_omits_topology():
+    """With no symmetry copy the 'worst copy' statistic equals the mean; no diagonal to compare."""
+    pairs = classify_interface_pairs(pd.DataFrame([{
+        "chain_1": "A", "chain_2": "B", "bsa_total_a2": 1800.0,
+        "bsa_per_partner_a2": 900.0, "n_residue_contacts_8a": 60, "n_salt_bridges_4a": 3,
+    }]))
+    pairs["rosetta_dg_separated_reu"] = [-31.5]
+    summary = summarize_interface_pairs(pairs)
+
+    assert summary["interface_1_bsa_total_mean_a2"] == 1800.0
+    assert summary["interface_1_bsa_total_min_a2"] == 1800.0
+    assert summary["interface_1_rosetta_dg_separated_max_reu"] == -31.5
+    assert not any(k.startswith("interface_2_") for k in summary)
+    assert not any(k.startswith("diagonal_") for k in summary)
+    assert "interface_topology_bsa_gap_a2" not in summary
+
+
+def test_d2_summary_is_unchanged_when_the_hetero_path_exists():
+    """Regression guard: the four-chain uricase summary must be byte-identical to before."""
+    pairs = classify_interface_pairs(_pair_table())
+    assert pairs.equals(classify_d2_interface_pairs(_pair_table()))
+    pairs["rosetta_dg_separated_reu"] = [-20, np.nan, -12, -10, np.nan, -25]
+    summary = summarize_interface_pairs(pairs)
+    assert summary["interface_1_bsa_total_min_a2"] == 5900.0
+    assert summary["diagonal_bsa_total_max_a2"] == 700.0
+    assert summary["interface_topology_bsa_gap_a2"] == 4300.0
+
+
+def test_interface_pair_metrics_supports_two_chains_and_rejects_unsupported_counts():
+    rows = []
+    rows += _residue("A", 1, "LEU", (0.0, 0.0, 0.0))
+    rows += _residue("B", 1, "ASP", (0.0, 4.0, 0.0))
+    rows += _residue("C", 1, "LYS", (0.0, 8.0, 0.0))
+    arr2 = _atom_array(rows[:10])
+    out = interface_pair_metrics(arr2, ["A", "B"])
+    assert list(out["chain_pair"]) == ["A:B"]
+    assert bool(out.iloc[0]["is_biological_interface"]) is True
+
+    with pytest.raises(ValueError, match="two or four protein chains"):
+        interface_pair_metrics(_atom_array(rows), ["A", "B", "C"])
+
+
+def test_tier1_confidence_clamps_to_the_available_chain_count():
+    """A two-chain complex must not index a 4x4 slice out of a 2x2 confidence matrix."""
+    j = {
+        "iptm": 0.95, "ptm": 0.95, "plddt": 0.9, "ranking_score": 0.9, "has_clash": False,
+        "chain_pair_iptm": [[0.98, 0.95], [0.95, 0.97]],
+        "chain_pair_gpde": [[0.5, 1.2], [1.2, 0.6]],
+        "chain_plddt": [0.93, 0.88],
+    }
+    t1 = tier1_from_summary(j, n_protein=4)
+    assert t1["min_pp_chain_pair_iptm"] == pytest.approx(0.95)
+    assert t1["mean_pp_chain_pair_gpde"] == pytest.approx(1.2)
+    assert t1["min_prot_chain_plddt"] == pytest.approx(0.88)
 
 
 def test_contacts_and_salt_bridges_count_residue_pairs_not_atom_pairs():

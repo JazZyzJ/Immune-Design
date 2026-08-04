@@ -1,0 +1,232 @@
+tag: pd1b2_binder_deimm_20260731
+date: 2026-07-31
+goal: >-
+  De-immunize PD1_b2, a validated 114-aa de novo BindCraft binder against human PD-1, without
+  losing target binding. FRAMING CASE ONLY - the selection criteria are NOT settled. This file
+  records what is already fixed (data prep, parent baselines, the first RF cohort and what it
+  taught us) and leaves the decision criteria deliberately blank, so the numbers are agreed once
+  and in one place rather than re-derived per run. Fill `criteria` and flip status to `run`
+  before executing anything downstream.
+protocol: PROTOCOL/new_target_data_pipeline.md
+runner: PROTOCOL/new_target_data_pipeline.md
+status: planned
+
+inputs:
+  protein_id: PD1_b2_BINDER
+  parent_provenance: >-
+    BindCraft design against human PD-1; the collaborator table reports Binding=1 and Affinity_nM "1*".
+    Very likely one of the 13 confirmed PD-1 binders in the BindCraft Nature 2025 campaign
+    (53 ordered / 53 tested / 13 binders = 24.5%, best Kd <1 nM*).
+  target: PD-1 ectodomain, UniProt Q15116 residues 33-150 (IgV domain 35-145 plus flanks; C54-C123 contained)
+  allele: HLA-DRB1*04:01 and HLA-DRB1*15:01 (HLA-DRB1*07:01 dropped - parent already has 0 strong binders there)
+  test_set_parquet: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/pd1_binder_caseset_if_ready.parquet
+  pdb_root: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/pdbs_if_ready
+  constraint_manifest: inverse_folding/reference_flow/configs/pd1_binder_interface_v0.yaml
+  n_hard_anchors: 24
+  n_monitored_shell: 33
+  run_dir_0401: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/phase_d/pd1_binder/HLA-DRB1_04_01/pd1b2_drb0401_b1aopen_beta5p0_n200_seed10
+  run_dir_1501: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/phase_d/pd1_binder/HLA-DRB1_15_01/pd1b2_drb1501_b1aopen_beta5p0_n200_seed10
+  n_designs_per_allele: 200
+  parent_structural_baseline: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder/parent_baseline
+  parent_immune_baseline: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/nmp_baseline
+
+config:
+  controller: d2_d3_full_stageB_aopen_beta5p0 (hash 2c39f229e92dd58f4beb4b5e2a4eb4ac7657ece79f0489a412123a4b579e3373)
+  interface_derivation: scripts/analysis/binder_interface_fingerprint.py
+cli_overrides: "generation: N_DESIGNS_PER_PROTEIN=200 SEED=10 RF_BATCH_SIZE=1 H_MAPS_PARQUET= ; CONDA_ENV=immune-design-blackwell on --partition=rtx6000"
+
+models:
+  head: cnn_himp_a1_res03_drb0401_seed42_cv5_fold0 and cnn_himp_a1_res03_drb1501_seed42 (LC1, seed 42)
+  immune_oracle: NetMHCIIpan-4.3 accelerated, peptide lengths 12-25 (strong = rank_EL < 2%)
+  refolder_monomer: esmfold2
+  predictor_complex: Protenix (local ColabFold MSA, 5 samples, independent MSA per chain)
+
+# ---------------------------------------------------------------------------------------------
+# WHAT IS ALREADY FIXED (measured, not proposed)
+# ---------------------------------------------------------------------------------------------
+established:
+  parent_interface:
+    n_contact_anchors: 24
+    consensus_from: 5 Protenix complex samples, 4.0 A heavy-atom
+    pairwise_jaccard_median: 0.88
+    complex_iptm: 0.951
+    complex_ptm: 0.953
+    target_side_face: PD-1 62-66 / 75-78 / 83-88 / 126-136 - the PD-L1-binding surface (PD-L1-competitive)
+  parent_bindcraft_metrics:
+    pLDDT: 0.930
+    i_pTM: 0.790
+    i_pAE_normalized: 0.180
+    i_pAE_raw_ang: 5.6
+    ShapeComplementarity: 0.640
+    n_InterfaceUnsatHbonds: 1.0
+    Surface_Hydrophobicity: 0.330
+    Binder_RMSD: 1.21
+    dG: -60.15
+    dSASA: 2233.4
+    n_InterfaceResidues: 26
+  parent_structural_selfconsistency:
+    sctm: 0.976
+    core_anchor_max_scrmsd_ang: 4.00
+    core_anchor_median_scrmsd_ang: 1.70
+    core_anchor_min_plddt: 77.7
+    max_anchor_scrmsd_ang: 7.84
+  parent_immune_nmp_strong:
+    drb0401: 6
+    drb0701: 0
+    drb1501: 15
+  epitope_cores:
+    drb0401: LDPDSTDPG at idx0b 7-15; pockets P1=7 P4=10 P6=12 P9=15; only P9 is an interface anchor
+    drb1501_a: LVKYLGISR at idx0b 52-60; no pocket overlaps the interface
+    drb1501_b: PAAYAALAA at idx0b 78-86; no pocket overlaps the interface
+
+criteria:
+  # ============================ NOT SETTLED - DO NOT EXECUTE ON THESE ============================
+  status_of_this_block: PROPOSED, awaiting agreement; see open_questions
+  lock_set: >-
+    TBD - v1 (24 interface anchors, 21% of the chain) was used for the cohort above and left a
+    median of 41 mutations; v2 (interface + the 33-residue 8A shell = 57 residues, 50%) is proposed
+  immune_gate: >-
+    TBD - candidate rule is "no strong-binder window covers any interface anchor" (the parent
+    itself FAILS this, with 6 anchors covered), plus a reduction in total strong-binder count
+  structure_gate_monomer: >-
+    TBD - monomer metrics are a foldability floor only, never evidence of binding
+  complex_gate: >-
+    TBD - proposed i_pAE and i_pTM on a re-predicted complex, normalized to the parent
+  ddg_bind: >-
+    TBD - whether to add FlexddG / SSIPe as an orthogonal point-mutation-sensitive arm
+  mutation_budget: >-
+    TBD - the literature that preserved function used 1-9 simultaneous mutations
+  # ==============================================================================================
+
+open_questions:
+  - >-
+    LOCK SET. Does RF re-run under lock v2 (interface + shell = 50% of the chain)? Evidence for:
+    every successful redesign-preserving-function campaign in the literature worked by a hard
+    POSITIONAL constraint, not a score gate (CoDAH forbade CDR mutations, 25/25 retained binding;
+    Roguska resurfacing kept only RSA>30% surface; Salvat froze the active site, 18/18 functional).
+    Roguska 1996 also calibrates the radius: replacing all three murine surface residues within 5 A
+    of the CDRs LOST affinity, retaining any one restored it - our 8 A shell is more conservative.
+    Our own cohort agrees: shell mutations correlate with structural degradation on all four
+    metrics for 0401 (rho -0.17 to -0.26, p<=0.015) while non-shell non-interface mutations
+    correlate with none (p>0.3). Cost: locking the shell removes ~16 of the ~41 median edits.
+    Check that survives it: each epitope still retains 2-3 free MHC-II anchor pockets under v2.
+  - >-
+    COMPLEX GATE THRESHOLDS. BindCraft's defaults (i_pTM >= 0.50, i_pAE <= 0.35 == raw PAE 10.85 A)
+    are the authors' own admitted defaults, "refined over the course of this work", with no
+    ablation. Two independent optimizations say ~10 A is too loose: AlphaProteo's grid search over
+    640k experimentally characterized designs put the optimum at pae_interaction < 7.0 with
+    pLDDT > 90, and RFdiffusion used per-target cutoffs of 5-8 A. On BindCraft's own released
+    data, tightening i_pAE 0.35 -> 0.20 raises the hit rate 42.8% -> 60.8% while retaining a third
+    of designs. Our parent already sits at i_pAE 0.18 (raw 5.6 A).
+  - >-
+    WHICH PREDICTOR. BindCraft's validated thresholds are bound to AF2-monomer-single-sequence with
+    templates; the authors report that AF3-class models gave a large proportion of false positives
+    in the same role. Our complex gate currently uses Protenix, an AF3 reproduction. Either add an
+    AF2-monomer reprediction to inherit the calibrated thresholds, or accept self-calibrated ones
+    with no experimental anchor.
+  - >-
+    DROP THE STATIC ROSETTA DESCRIPTORS? AUROC computed from BindCraft's own 152 labelled designs
+    (65 binders / 87 non-binders, target-stratified): i_pAE 0.769, Binder_RMSD 0.752, i_pTM 0.746,
+    i_pLDDT 0.741 - but ShapeComplementarity 0.532, n_InterfaceHbonds 0.523, n_InterfaceResidues
+    0.509, dSASA 0.508, Hotspot_RMSD 0.548, every CI spanning 0.5. Cao 2022 independently sees all
+    Rosetta metrics collapse to 0.55-0.61 within-target.
+  - >-
+    ...BUT THAT IS A DIFFERENT TASK FROM OURS, WHICH IS THE UNSOLVED ONE. Those AUROCs discriminate
+    binder from non-binder. Ours is parent vs mutant, and on that task the ranking inverts: on
+    SKEMPI (475 mutants) delta-AF2 mean_pae gives AUC 0.54 (random) and delta-AF3 ipTM 0.72, while
+    FoldX 0.74, FlexddG 0.77 and SSIPe 0.78 do better. AF2 is also structurally blind to
+    destroying mutations - hHR23a L198A is experimentally disordered yet gives Ca RMSD 0.1 A and
+    pLDDT 84 for both WT and mutant. No published Delta-metric acceptance rule for "this mutant
+    still binds" exists in any form.
+  - >-
+    STAGING. Start with 1501 only (both epitope cores are entirely off-interface) or both alleles
+    at once? Zhao 2015 removed all 16 DR4 epitopes from lysostaphin simultaneously and got no
+    folded, functional enzyme - four rounds of directed evolution were needed to recover.
+  - >-
+    ORDER SIZE. Budget for attrition from comparable campaigns: Blazanovic 7/14 expressed at >=30%
+    WT, King 3/5 retained PE38 activity, Onda screened >50 mutants to land 8.
+
+outputs:
+  cohort_0401:
+    file: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder/HLA-DRB1_04_01/joint_gate.parquet
+    n: 200
+    n_zero_strong: 106
+    n_no_epitope_on_interface: 125
+    n_structure_loose_vs_parent: 54
+    n_joint_loose: 39
+    n_joint_strict: 3
+  cohort_1501:
+    file: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder/HLA-DRB1_15_01/joint_gate.parquet
+    n: 200
+    n_zero_strong: 92
+    n_no_epitope_on_interface: 100
+    n_structure_loose_vs_parent: 60
+    n_joint_loose: 29
+    n_joint_strict: 5
+  interface_consensus:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/analysis/cplx_interface_consensus.parquet
+    n: 57
+  parent_nmp_baseline:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/analysis/nmp_wt_baseline_summary.parquet
+    n: 3
+  selection: none - no sequence has been selected, and none should be until `criteria` is filled
+
+notes:
+  - >-
+    THE COHORT ABOVE IS A TOLERANCE MAP, NOT A CANDIDATE POOL. Its 68 joint-loose survivors carry
+    33-50 mutations. Every literature campaign that de-immunized a protein and kept its function
+    did so with 1-9 simultaneous mutations. These 400 designs are the empirical answer to "which
+    positions of this binder tolerate change", which is what should inform the lock set - they are
+    not sequences to order.
+  - >-
+    A BINDER IS AN ENZYME WHOSE ACTIVE SITE IS ITS ENTIRE SURFACE PATCH. The analogy to the
+    ADA/ADI cases holds for the architecture (manifest of frozen functional residues -> RF ->
+    refinement) and breaks on two axes. Proportion: uricase freezes 8/300 = 3%, this binder needs
+    21-50%. Verification: an enzyme's catalytic geometry is checkable in a monomer refold because
+    it is buried and rigid; a binder's interface is solvent-exposed and its partner is absent, so
+    NO amount of monomer evidence bears on binding. The gate must move into the complex - the
+    binder analogue of cofolding Zn/PRH/adenosine is a 2-chain complex prediction.
+  - >-
+    MONOMER ANCHOR METRICS HAVE ALMOST NO RESOLVING POWER HERE, and an absolute threshold borrowed
+    from the enzyme cases would have failed all 400 designs. The parent's OWN worst core-anchor
+    sidechain RMSD is 4.00 A (vs 0.265-0.341 A for the ADA finals) because the statistic is a
+    max over a set containing (a) an N-terminal segment disordered when free and ordered on
+    binding, and (b) surface Arg/Gln rotamers a monomer apo refold cannot pin down. Anchors 0-4
+    sit in that mobile segment; anchor 15 is a Gly with no sidechain. This is the same exact-parent
+    normalization principle as the ADA case, reached through a different mechanism.
+  - >-
+    THE INTERFACE-OVERLAP CRITERION SHOULD BE EVALUATED AT THE BINDING-CORE ANCHOR POCKETS, NOT THE
+    COVERED SPAN. A 15-mer strong window covering interface residues is not itself a conflict; what
+    matters is whether the P1/P4/P6/P9 pockets - the positions you must actually mutate - overlap
+    the interface. For 0401 the covered span touches 6 anchors but only P9 (G15) is an anchor,
+    leaving P1/P4/P6 free; for both 1501 cores no pocket touches the interface at all. Both alleles
+    are therefore separable. The 200 designs confirm the mechanism empirically: among the 106
+    epitope-free 0401 designs, the positions consistently changed are P4 (idx 10, 69/106) and
+    P6 (idx 12, 97/106) - the canonical anchor pockets.
+  - >-
+    FIRST-IN-FIELD, WITH NO THRESHOLD TO BORROW. No published study de-immunizes a de novo designed
+    binder and re-measures target binding. The nearest work (Yachnin 2021, Rosetta MHCEpitopeEnergy)
+    uses a designed HA-binding protein as a case study but never leaves the computer. Every
+    experimentally validated MHC-II epitope removal (sfGFP, PE38, P99 beta-lactamase, EPO,
+    staphylokinase, human ZF junctions) used a non-binding readout.
+  - >-
+    THE PREMISE IS ALSO WEAKLY EVIDENCED, IN BOTH DIRECTIONS. "de novo miniproteins are immune
+    silent" rests on two unlabeled bar charts (Chevalier 2017 Fig 5c, n=5 mice; Silva 2019 ED Fig 5,
+    n=10, "performed once"). But every study reporting per-animal ADA found positives: 1/10 for
+    LCB1v1.3, and 5/30 for the de novo IL-21 mimic 21h10 with incidence rising over repeat dosing.
+    No human ADA data exists for any de novo binder. So the work is justified, and its motivation
+    should be stated as such rather than as a solved fact.
+  - >-
+    KNOWN DATA-PREP DEFECT, NOT YET FIXED: the binder chain was extracted from the Protenix complex
+    CIF into PDB_ROOT without carrying B-factors, so the structural eval reports
+    reference_pLDDT = 0.00. Coordinates are unaffected and no gate consumed it, but the reference
+    confidence baseline is missing. Rewrite the PDB with B-factors before the next round.
+  - >-
+    No selection PROTOCOL exists for binder targets yet; `protocol` and `runner` point at the
+    data-prep SOP, which is what actually governed the completed stage. Writing
+    PROTOCOL/binder_interface_deimm_selection.md is the deliverable that closes this case.

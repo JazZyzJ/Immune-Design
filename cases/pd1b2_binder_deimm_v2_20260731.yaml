@@ -1,0 +1,285 @@
+tag: pd1b2_binder_deimm_v2_20260731
+date: 2026-07-31
+goal: >-
+  De-immunize PD1_b2 (114-aa BindCraft binder vs PD-1) under the RIGOROUS construction: freeze the
+  interface AND its 8 A support shell at generation time (57 of 114 positions), then decide binding
+  on a re-predicted COMPLEX rather than on a monomer. Supersedes the v1 framing, whose lock set
+  (24 positions, 21%) left a median of 41 mutations per design and whose binding evidence was
+  monomer-only. The v1 cohort is retained as the empirical mutation-tolerance map that motivated
+  this lock set.
+protocol: PROTOCOL/binder_interface_deimm_selection.md
+runner: PROTOCOL/binder_interface_deimm_selection.md
+status: selected
+supersedes: pd1b2_binder_deimm_20260731
+
+inputs:
+  protein_id: PD1_b2_BINDER
+  allele: HLA-DRB1*04:01 and HLA-DRB1*15:01 (DRB1*07:01 excluded - parent already has 0 strong binders)
+  target: PD-1 ectodomain, UniProt Q15116 residues 33-150
+  test_set_parquet: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/pd1_binder_caseset_if_ready.parquet
+  pdb_root: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/pdbs_if_ready
+  constraint_manifest_v1: inverse_folding/reference_flow/configs/pd1_binder_interface_v0.yaml
+  constraint_manifest_v2: inverse_folding/reference_flow/configs/pd1_binder_interface_v2.yaml
+  tolerance_map_0401: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder/HLA-DRB1_04_01/joint_gate.parquet
+  tolerance_map_1501: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder/HLA-DRB1_15_01/joint_gate.parquet
+  parent_structural_baseline: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder/parent_baseline
+  parent_immune_baseline: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/nmp_baseline
+  parent_interface_consensus: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/analysis/cplx_interface_consensus.parquet
+
+config:
+  controller: d2_d3_full_stageB_aopen_beta5p0 (hash 2c39f229e92dd58f4beb4b5e2a4eb4ac7657ece79f0489a412123a4b579e3373)
+  interface_derivation: scripts/analysis/binder_interface_fingerprint.py
+cli_overrides: >-
+  unchanged from v1 except the constraint manifest; generation on rtx6000 with
+  CONDA_ENV=immune-design-blackwell
+
+models:
+  head: cnn_himp_a1_res03_drb0401_seed42_cv5_fold0 and cnn_himp_a1_res03_drb1501_seed42 (LC1, seed 42)
+  immune_oracle: NetMHCIIpan-4.3 accelerated, peptide lengths 12-25 (strong = rank_EL < 2%)
+  refolder_monomer: esmfold2
+  predictor_complex: Protenix (local ColabFold MSA, independent MSA per chain, 5 samples)
+
+criteria:
+  # ============================ STAGE 1 - LOCK SET (the core of v2) ============================
+  lock_n_contact_anchors: 24
+  lock_n_support_shell: 33
+  lock_total: 57
+  lock_fraction_of_chain: 0.50
+  n_designable_positions: 57
+  contact_cutoff_ang: 4.0
+  shell_cutoff_ang: 8.0
+  consensus_frac: 0.6
+
+  # --- lock-set admissibility: free MHC-II anchor pockets remaining per epitope (>=1 required) ---
+  admissibility_drb0401_LDPDSTDPG: P4 (idx0b 10) and P6 (idx0b 12) free; P1 (7) in shell, P9 (15) is a contact anchor
+  admissibility_drb1501_LVKYLGISR: P6 (idx0b 57) and P9 (idx0b 60) free; P1 (52) and P4 (55) in shell
+  admissibility_drb1501_PAAYAALAA: P1 (idx0b 78), P4 (81) and P6 (83) free; P9 (86) in shell
+  admissibility_verdict: all three epitopes retain >= 2 free anchor pockets - lock set is ADMISSIBLE
+
+  # ============================ STAGE 2 - TIERS ============================
+  # B0 monomer foldability -- FLOOR ONLY, never binding evidence
+  b0_sctm_min: 0.956
+  b0_parent_sctm: 0.976
+  b0_anchor_scrmsd_role: monitor only - the parent's own worst structured-anchor value is 4.00 A, so this metric has no resolving power on this target
+  b0_anchor_min_plddt_role: monitor only - dominated by the mobile N-terminal segment (parent value 40.1 at idx0b 0)
+
+  # B1 complex formation -- HARD. Protenix-only path is SELF-CALIBRATED (see notes)
+  b1_predictor_primary: Protenix complex, 5 samples, RTX PRO 6000 Blackwell (sm_120) with the
+    v2.0.0-blackwell env - the parent baseline is re-measured on the SAME architecture as the designs
+  b1_parent_iptm: 0.9552
+  b1_parent_iptm_sample_spread: 0.0004
+  b1_parent_iptm_h200_superseded: 0.9507
+  b1_cross_architecture_iptm_shift: 0.0046
+  b1_iptm_absolute_floor: 0.90
+  b1_has_clash_required: false
+  b1_af2_repredict_optional_i_pae_max: 0.20
+  b1_af2_repredict_optional_i_pae_max_raw_ang: 6.2
+  b1_parent_af2_i_pae: 0.18
+  b1_parent_af2_i_pae_raw_ang: 5.6
+  b1_parent_af2_i_ptm: 0.790
+
+  # B2 interface identity -- HARD. CORRECTED after the v2 cohort: retention, not symmetric Jaccard
+  b2_statistic: parent-contact retention |C_design & C_parent| / |C_parent|
+  b2_parent_contact_retention_min: 0.952
+  b2_parent_contact_retention_min_as_counts: 'lose at most 1 of the parent consensus contacts'
+  b2_parent_consensus_n_contacts: 21
+  b2_parent_consensus_n_contacts_h200_superseded: 24
+  b2_symmetric_jaccard_role: monitor only - see notes, it is 95% a measure of contacts GAINED
+  b2_symmetric_jaccard_min_superseded: 0.85
+  b2_parent_consensus_leave_one_out_jaccard: 1.0
+  b2_parent_sample_pairwise_jaccard_median: 0.808
+  b2_parent_sample_pairwise_jaccard_min: 0.731
+
+  # B3 ddG_bind -- OPTIONAL orthogonal arm
+  b3_method: FlexddG or SSIPe (NOT static Rosetta interface descriptors)
+  b3_no_effect_band_kcal_per_mol: 1.0
+  b3_status: optional; decide before the run, not after
+
+  # dropped as gates (AUROC at chance on BindCraft's own labelled data)
+  dropped_gates: ShapeComplementarity, dSASA, n_InterfaceHbonds, n_InterfaceResidues, Hotspot_RMSD
+
+  # ============================ STAGE 3 - IMMUNE ============================
+  immune_hard_strong_windows_covering_contact_anchors: 0
+  immune_parent_strong_windows_covering_contact_anchors: 6
+  immune_target_strong_count_drb0401_below: 6
+  immune_target_strong_count_drb1501_below: 15
+  immune_guard: no NEW epitope whose anchor pockets fall in the contact or shell set
+  immune_role: objective ranked WITHIN the B0-B2 survivors, never a filter applied before them
+
+  # ============================ MUTATION BUDGET ============================
+  budget_rf_stage_expected: 25
+  budget_refined_target_max: 10
+  budget_literature_range: 1-9 simultaneous mutations in every campaign that preserved function
+
+outputs:
+  tolerance_map_0401:
+    file: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder/HLA-DRB1_04_01/joint_gate.parquet
+    n: 200
+  tolerance_map_1501:
+    file: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder/HLA-DRB1_15_01/joint_gate.parquet
+    n: 200
+  parent_interface_consensus:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/pd1_binder/analysis/cplx_interface_consensus.parquet
+    n: 57
+  v2_manifest:
+    file: inverse_folding/reference_flow/configs/pd1_binder_interface_v2.yaml
+    schema_version: pd1_binder_interface_v2
+    manifest_hash: 'aaaa5388b948'
+    n_hard_anchors: 57
+    validate_against_sequence: 'PASS'
+    admissibility_recomputed: 'PASS - all three epitopes keep >= 2 free anchor pockets'
+    annotation_provenance_direct_functional: the 24 CONTACT indices only, so refine's cat_max_scRMSD
+      is read over the functional set and not over the 33 safety-frozen shell residues
+  v2_generation:
+    run_dir_0401: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/phase_d/pd1_binder/HLA-DRB1_04_01/pd1b2v2_drb0401_b1aopen_beta5p0_n200_seed10
+    run_dir_1501: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/phase_d/pd1_binder/HLA-DRB1_15_01/pd1b2v2_drb1501_b1aopen_beta5p0_n200_seed10
+    n_per_allele: 200
+    all_anchors_preserved: 'true, 0 mismatches, both alleles'
+    n_mutations_median: '24 (0401) and 24 (1501); v1 was 41 and 40'
+    n_mutations_range: '[19, 33] (0401) and [16, 31] (1501); v1 was [32, 50] and [33, 49]'
+    shell_mutations_median: '0; v1 was 16 in BOTH alleles - this is the measurement v2 exists to produce'
+    budget_check: 'budget_rf_stage_expected was pre-registered at 25; realized median is 24'
+    free_pocket_usage_0401_LDPDSTDPG: 'P4 mutated in 140/200, P6 in 179/200'
+    free_pocket_usage_1501_LVKYLGISR: 'P9 mutated in 164/200, P6 (idx 57, a Gly) in 0/200'
+    free_pocket_usage_1501_PAAYAALAA: 'P1 200/200, P4 107/200, P6 156/200'
+  v2_complex_gate:
+    predictions: '401 Protenix complexes (400 designs + parent WT), 5 samples, rtx6000/Blackwell, 8 tasks x 6m22s'
+    gate_table: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder_v2/complex_gate/complex_gate.parquet
+    b2_table: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder_v2/complex_gate/b2_contact_jaccard.parquet
+    joint_table: /scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/pd1_binder_v2/complex_gate/v2_joint_b0b1b2.parquet
+    b0_pass: '219/400 (scTM >= 0.956)'
+    b1_pass: '397/400 (i_pTM >= 0.90, 0 clashes)'
+    b2_pass: '392/400 (lose <= 1 of 21 parent contacts); 370/400 lose NONE'
+    b0_b1_b2_pass: '217/400 - i.e. the interface tiers remove 2 designs beyond B0'
+    tier_independence: 'among the 181 B0 failures, B1 still passes 99% and B2 97% - the tiers are
+      near-vacuous by construction, which is what a working lock set looks like'
+    iptm_designs: 'min 0.847 / p5 0.932 / median 0.951 / max 0.957 vs parent 0.9554'
+    complex_tm_vs_wt: 'min 0.772 / p5 0.952 / median 0.983 / max 0.995'
+    bsa_ratio_to_wt_median: 1.052
+  v2_immune:
+    parent_strong_drb0401: 6
+    parent_strong_drb1501: 15
+    zero_strong_drb0401: '93/200 (v1: 106/200)'
+    zero_strong_drb1501: '48/200 (v1: 92/200)'
+    epitope_removal_mechanism_1501_LVKYLGISR: 'P9 (idx 60) mutated in 44/48 zero-strong designs;
+      P1/P4/P6 mutated in 0/48 - the single-free-pocket risk flagged before the run resolved
+      favourably, but it WAS effectively one pocket, not the two admissibility credited'
+  v2_final:
+    drb0401_full_survivors: 40
+    drb1501_full_survivors: 34
+    criteria: 'B0 & B1 & B2 & zero strong binders'
+    n_mutations_median: '23 (0401), 24 (1501)'
+    shell_positions_mutated: 0
+    best_drb0401: 'weak binders 3 vs parent 53; scTM 0.959-0.972; i_pTM 0.949-0.954; 0 contacts lost'
+    best_drb1501: 'weak binders 24-74 vs parent 115; scTM 0.960-0.970; i_pTM 0.942-0.955; 0 contacts lost'
+  selection: none - nothing selected until the v2 cohort exists and the parent clears its own gate
+
+notes:
+  - >-
+    WHY v2 EXISTS, IN ONE MEASUREMENT. The v1 cohort's strictest structural survivors still mutate
+    17/33 (0401) and 15/33 (1501) shell positions and still carry 40 and 37 total mutations - the
+    same as the cohort median. Testing whether the strict gate selected for shell preservation:
+    Mann-Whitney p = 0.827 for 0401 (no relationship at all) and p = 0.003 for 1501 but with an
+    effect of one position. So selection did NOT deliver the constraint. A gate picks the
+    best-scoring member of a heavily perturbed pool; it cannot make the pool less perturbed.
+  - >-
+    EVIDENCE FOR FREEZING THE SHELL, from three independent directions. (1) Literature: Roguska 1996
+    replaced all three murine surface residues within 5 A of the CDRs and lost affinity; retaining
+    any one restored it. (2) Our own v1 cohort: shell mutation count correlates with degradation on
+    all four structural metrics for 0401 (rho -0.17 to -0.26, p <= 0.015) while non-shell
+    non-interface mutations correlate with none (p > 0.3) - a within-experiment control, which is
+    what makes a rho of 0.2 worth acting on. (3) The admissibility check passes: all three epitopes
+    keep >= 2 free anchor pockets, so the de-immunization capability is not reduced by the lock.
+  - >-
+    B2 WAS SPECIFIED WITH THE WRONG STATISTIC, AND THE COHORT SHOWED IT. A symmetric Jaccard punishes
+    gaining interface contacts as hard as losing the parent's, but only loss is damage. Across the
+    400 designs, Spearman of Jaccard against contacts LOST was -0.381 and against contacts GAINED
+    -0.954: the metric was 95% a measure of extra buried surface. The original Jaccard >= 0.85 rule
+    would have rejected 81/400, nearly all for gaining contacts, while 370/400 lost NONE of the
+    parent's 21. Replaced by retention (lose <= 1). The gains are additive rather than a relocated
+    interface - complex TM vs parent stays at 0.983 median and BSA rises to 1.052x.
+  - >-
+    B2'S BAR CAME FROM THE WRONG REFERENCE CLASS TOO. A design's number is consensus-vs-consensus,
+    so the parent's SAMPLE-level pairwise Jaccard (median 0.808, min 0.731) is not the bar - it
+    measures raw noise the 60% occupancy filter already removes. The apples-to-apples reference is
+    the parent's leave-one-out CONSENSUS stability, which is 1.000. Caveat on that estimate: with 5
+    samples and frac 0.6, ceil(0.6*4) = ceil(0.6*5) = 3, so part of the stability is threshold
+    arithmetic rather than measured robustness.
+  - >-
+    THE HONEST v1-vs-v2 COMPARISON IS A TRADE, NOT A WIN. On the same "folds AND zero strong
+    binders" criterion the LOOSER v1 lock set produced MORE joint winners: 48 vs 41 on DRB1*04:01
+    and 43 vs 34 on DRB1*15:01. v2 bought a median of 23-24 mutations instead of 40, 0 of 33
+    support-shell positions mutated instead of 16, and measured complex-level interface retention
+    where v1 had no binding evidence at all. Whether ~20% fewer candidates is worth that depends on
+    accepting mutation count as a risk variable (principle 6); the numbers do not settle it.
+  - >-
+    ROSETTA'S INTERFACE ENERGY WAS NOISE ON THIS TARGET, MEASURED. The parent's own dG_separated is
+    +133.12 REU on the Blackwell prediction and +9.45 REU on the H200 one - same sequence, same
+    seed, 124 REU apart - and 368/400 designs "beat" the parent. A metric 92% of mutants outperform
+    the wild type on is not measuring binding. Spearman against mutation count: i_pTM -0.201,
+    complex TM -0.175, but BSA ratio -0.004, packstat +0.023, shape complementarity -0.050. This
+    reproduces the B3 AUROC table's conclusion on our own target rather than by citation.
+  - >-
+    THE PREDICTOR'S GPU ARCHITECTURE IS PART OF "THE IDENTICAL PROTOCOL". The same parent JSON, the
+    same seed 101 and the same 5 samples give i_pTM 0.9552 on RTX PRO 6000 Blackwell (torch
+    2.7.1+cu128) and 0.9507 on ailab H200 (torch 2.x+cu126) - a shift of 0.0046, which is ELEVEN
+    TIMES the 0.0004 within-ensemble spread that the same metric has to resolve. Neither number is
+    more correct; they are the same weights under different kernels. The consequence is operational:
+    a parent baseline measured on one architecture cannot normalize designs predicted on another.
+    This run is self-consistent because the Blackwell smoke wrote the WT prediction into the same
+    pred root the designs use, so the gate's _ratio_to_wt columns compare like with like. pTM
+    (+0.0012) and pLDDT (-0.086 on a ~93.5 scale) shift far less and are not at risk.
+  - >-
+    THE i_pTM NON-INFERIORITY TRAP. Protenix's i_pTM across the five parent samples spans 0.0004
+    (0.950319-0.950733). A parent-normalized tolerance built from that spread would be a zero-width
+    gate that rejects essentially everything. B1 must therefore rest on an ABSOLUTE floor for this
+    predictor, which is exactly the situation the protocol's principle 3 warns about - measure the
+    parent's dispersion first, then decide the metric's role.
+  - >-
+    THE PROTENIX PATH IS SELF-CALIBRATED AND SHOULD BE LABELLED AS SUCH. BindCraft's thresholds
+    (i_pTM >= 0.50, i_pAE <= 0.35) are bound to AF2-monomer single-sequence with a templated target,
+    and its authors report AF3-class models producing a large fraction of false positives in the
+    same filtering role. Protenix is an AF3 reproduction. Adding an AF2-monomer reprediction is the
+    only way to inherit thresholds that have an experimental anchor; the b1_af2_repredict_* values
+    above are written for that path and are inert until it is run.
+  - >-
+    THE ORTHOGONAL ARM MUST BE ddG, NOT SHAPE COMPLEMENTARITY. The two tasks invert. For
+    binder-vs-non-binder the AF confidence metrics win (i_pAE AUROC 0.769) and the Rosetta static
+    descriptors are at chance (SC 0.532, n_InterfaceHbonds 0.523, dSASA 0.508, all CIs spanning 0.5).
+    For parent-vs-mutant - which is OUR task - it reverses: delta-AF2 mean_pae is random at 0.54 and
+    delta-AF3 ipTM 0.72, while SSIPe 0.78, FlexddG 0.77 and FoldX 0.74 do better. This is why B3 is
+    ddG and why the static descriptors are dropped outright.
+  - >-
+    STAGING RECOMMENDATION: run 1501 first. Both of its epitope cores are entirely off-interface
+    (no anchor pocket touches a contact residue), so it is the clean test of whether the v2 lock set
+    still permits de-immunization. 0401 is the harder case - its single core sits at idx0b 7-15 with
+    P9 = G15 a contact anchor and P1 = idx 7 in the shell, leaving only P4 and P6.
+  - >-
+    OPEN BEFORE EXECUTION: (a) DONE - the v2 manifest is authored and round-trip validated;
+    (b) decide the Protenix-only vs AF2-repredict path; (c) decide whether B3 is in; (d) fix the
+    mutation budget as a hard cap or a reported target. The last three still need a decision, not
+    a script.
+  - >-
+    ONE FREE POCKET IS NOT BEING USED. In 200 DRB1*15:01 designs the LVKYLGISR P6 pocket (idx0b 57,
+    a GLYCINE) is mutated exactly 0 times, so that epitope is being attacked through P9 alone
+    (164/200). Admissibility said it had two free pockets; the sampler is effectively using one.
+    This is the brittle-single-position case the protocol warns about, arrived at empirically rather
+    than by construction - if the P9 substitutions turn out not to clear the epitope, P6 is a Gly
+    the DPLM prior refuses to move and there is no third option under this lock set.
+  - >-
+    ROSETTA dG ON AN UNREPACKED BINDER COMPLEX IS NOT A BINDING ENERGY. Under the pipeline's
+    settings (-pack_input false -pack_separated false) the PARENT's own dG_separated is +9.45 REU on
+    a 2486 A2 interface - positive, i.e. Rosetta scores the true complex as unfavorable, because the
+    predicted side chains are never repacked. Uricase's buried tetramer interfaces hid this behind
+    large favorable terms (-155 REU). Only the _delta_vs_wt form is interpretable here, which is
+    also what the B3 evidence table independently concludes.
+  - >-
+    KNOWN DEFECT CARRIED OVER FROM v1: the binder chain in PDB_ROOT was extracted from the Protenix
+    complex CIF without B-factors, so reference_pLDDT reads 0.00. Coordinates are correct and no gate
+    consumed it. Fix before the v2 run.

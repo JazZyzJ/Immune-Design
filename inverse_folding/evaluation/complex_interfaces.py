@@ -1,4 +1,16 @@
-"""Reusable post-prediction metrics for D2-symmetric protein tetramers.
+"""Reusable post-prediction interface metrics for predicted protein complexes.
+
+Two complex topologies are supported, dispatched on chain count by ``classify_interface_pairs``:
+
+  * **four chains** — a D2-symmetric homotetramer (uricase). The six pair edges form three
+    perfect matchings, ranked by matching-level BSA into two repeated biological interface
+    classes plus the diagonal non-interface.
+  * **two chains** — a hetero-dimer (a de novo binder and its target). There is one interface,
+    no symmetry copy, and no diagonal, so the "conservative copy" statistics degenerate to the
+    single measurement and the topology-separation block is omitted rather than fabricated.
+
+Everything below the classifier — BSA, residue contacts, salt bridges, and the Rosetta
+InterfaceAnalyzer dimer layer — is topology-agnostic and shared by both.
 
 This module is predictor-independent and torch-free. Coordinate metrics require Biotite only when
 called; Rosetta InterfaceAnalyzer is an optional subprocess layer for final-selection scoring.
@@ -303,6 +315,44 @@ def classify_d2_interface_pairs(pair_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def classify_hetero_dimer_pairs(pair_df: pd.DataFrame) -> pd.DataFrame:
+    """Classify the single edge of a two-chain hetero-complex (e.g. a binder and its target).
+
+    There is no symmetry copy and no diagonal: the one pair IS the biological interface. The D2
+    columns are still emitted so the long table keeps one schema across complex topologies, but
+    they carry no meaning here and are left empty/NaN rather than filled with a fabricated value.
+    """
+    if len(pair_df) != 1:
+        raise ValueError(
+            f"hetero-dimer classification requires exactly one chain pair, got {len(pair_df)}"
+        )
+    out = pair_df.copy()
+    out["interface_class"] = D2_INTERFACE_CLASSES[0]
+    out["interface_class_rank"] = 1
+    out["interface_copy"] = 1
+    out["d2_matching"] = ""
+    out["d2_matching_mean_bsa_total_a2"] = np.nan
+    out["is_biological_interface"] = True
+    return out
+
+
+def classify_interface_pairs(pair_df: pd.DataFrame) -> pd.DataFrame:
+    """Dispatch chain-pair classification on complex topology.
+
+    Four chains -> the uricase D2 homotetramer path (unchanged). Two chains -> a single
+    hetero-interface. Anything else has no agreed interface semantics and fails fast rather than
+    being silently scored under the wrong topology.
+    """
+    n_chains = len(set(pair_df["chain_1"]) | set(pair_df["chain_2"]))
+    if n_chains == 4:
+        return classify_d2_interface_pairs(pair_df)
+    if n_chains == 2:
+        return classify_hetero_dimer_pairs(pair_df)
+    raise ValueError(
+        f"interface classification supports two or four protein chains, got {n_chains}"
+    )
+
+
 def interface_pair_metrics(
     arr,
     pchains,
@@ -312,11 +362,17 @@ def interface_pair_metrics(
     contact_cutoff: float = 8.0,
     salt_bridge_cutoff: float = 4.0,
 ) -> pd.DataFrame:
-    """Calculate coordinate-only interface metrics for all six tetramer chain pairs."""
+    """Coordinate-only interface metrics for every chain pair of the complex.
+
+    Four chains gives the six uricase tetramer pairs; two chains gives the single
+    binder:target pair.
+    """
     import biotite.structure as struc
 
-    if len(pchains) != 4:
-        raise ValueError(f"expected exactly four protein chains, got {pchains}")
+    if len(pchains) not in (2, 4):
+        raise ValueError(
+            f"expected two or four protein chains, got {pchains}"
+        )
     protein = protein_heavy_atoms(arr)
     chain_atoms = {ch: protein[protein.chain_id == ch] for ch in sorted(pchains)}
     chain_sasa = {
@@ -347,7 +403,7 @@ def interface_pair_metrics(
                     arr_a, arr_b, cutoff=salt_bridge_cutoff
                 ),
             })
-    return classify_d2_interface_pairs(pd.DataFrame(rows))
+    return classify_interface_pairs(pd.DataFrame(rows))
 
 
 def n_interchain_contacts(arr, pchains, cutoff=8.0) -> int:
@@ -388,12 +444,22 @@ def _summary_column(prefix: str, stem: str, stat: str, unit: str) -> str:
 
 
 def summarize_interface_pairs(pair_df: pd.DataFrame) -> dict:
-    """Return mean and conservative summaries while retaining copy rows in the long table."""
+    """Return mean and conservative summaries while retaining copy rows in the long table.
+
+    A D2 tetramer (a diagonal class is present) keeps the strict two-symmetry-copy contract and
+    the topology-separation block. A hetero-dimer has one interface and no diagonal, so the
+    'conservative copy' statistic degenerates to the single measurement and the topology block is
+    omitted rather than computed against an absent baseline.
+    """
     rec = {}
+    is_d2 = bool((pair_df["interface_class"] == "diagonal").any())
     for class_name in D2_INTERFACE_CLASSES[:2]:
         sub = pair_df[pair_df["interface_class"] == class_name]
-        if len(sub) != 2:
-            raise ValueError(f"{class_name} must contain two symmetry-related chain pairs")
+        if is_d2:
+            if len(sub) != 2:
+                raise ValueError(f"{class_name} must contain two symmetry-related chain pairs")
+        elif sub.empty:
+            continue
         for source, stem, conservative_stat, unit in SUMMARY_METRICS:
             if source not in sub.columns:
                 continue
@@ -402,6 +468,8 @@ def summarize_interface_pairs(pair_df: pd.DataFrame) -> dict:
             rec[_summary_column(class_name, stem, conservative_stat, unit)] = float(
                 getattr(values, conservative_stat)()
             )
+    if not is_d2:
+        return rec
 
     diagonal = pair_df[pair_df["interface_class"] == "diagonal"]
     for source, stem, _, unit in SUMMARY_METRICS[:4]:

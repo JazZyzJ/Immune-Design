@@ -1,8 +1,16 @@
 #!/usr/bin/env python
-"""Post-prediction tetramer-gate metrics for uricase structure predictions.
+"""Post-prediction complex-gate metrics for predicted protein assemblies.
 
-Second-layer benchmark supplement: for each predicted uricase tetramer, compute whether it folds
-BACK into the native tetramer. Two tiers + advisory, one row per variant:
+Second-layer benchmark supplement. Two complex topologies share this driver:
+
+  * **D2 homotetramer** (uricase): does a design fold BACK into the native tetramer with its
+    inter-protomer catalytic pocket intact?
+  * **hetero-dimer** (a de novo binder and its target): does a de-immunized design still form
+    the parent's interface? A binder's function is only readable on a COMPLEX -- an apo monomer
+    refold places its interface side chains with no partner to order them, so it cannot testify
+    about binding (PROTOCOL/binder_interface_deimm_selection.md).
+
+Two tiers + advisory, one row per variant:
 
   Tier 1 (self-confidence, from the Protenix summary_confidence JSON; cheap pre-filter):
     iptm, ptm, plddt, min protein-protein chain_pair_iptm, min protein chain_plddt,
@@ -15,10 +23,12 @@ BACK into the native tetramer. Two tiers + advisory, one row per variant:
                   deviation vs the WT-predicted reference. Only for parents whose numbering
                   matches the Q00511 manifest (index_0b); NaN otherwise (per-parent projection
                   is a v1 extension).
-  Assembly (all parents): six chain-pair rows are split into the two repeated D2-interface
-                  classes and the diagonal non-interface. Coordinate-only metrics include
-                  buried surface area (BSA), residue contacts, and salt bridges.
-  Rosetta (optional): InterfaceAnalyzer scores each of the four biological-interface dimers,
+  Assembly (all parents): a tetramer's six chain-pair rows are split into the two repeated
+                  D2-interface classes and the diagonal non-interface; a hetero-dimer's single
+                  pair IS the interface. Coordinate-only metrics include buried surface area
+                  (BSA), residue contacts, and salt bridges.
+  Rosetta (optional): InterfaceAnalyzer scores every biological-interface dimer (four for a
+                  tetramer, one for a hetero-dimer),
                   adding dSASA, binding dG and dG/dSASA, packstat, interface H-bonds,
                   H-bond energy fraction, shape complementarity, and buried unsatisfied
                   H-bonds. Rosetta runs after prediction and never inside the GPU predictor.
@@ -47,7 +57,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from inverse_folding.evaluation.tetramer_interfaces import (
+from inverse_folding.evaluation.ligand_pocket import (
+    CrystalPocketReference,
+    ligand_site_metrics,
+)
+from inverse_folding.evaluation.complex_interfaces import (
     interface_pair_metrics,
     run_rosetta_interface_analyzer,
     summarize_interface_pairs,
@@ -60,6 +74,8 @@ XPROT_W1 = {"Asn255": 254}
 FUNC_ATOM = {"Lys11": "NZ", "Thr58": "OG1", "His257": "NE2", "Asn255": "ND2"}
 # parents whose residue numbering matches the Q00511 manifest exactly
 Q00511_NUMBERING_PARENTS = {"Q00511"}
+# NOTE: manifest index_0b == crystal resSeq == predicted res_id in the NATIVE mature frame, so the
+# residue panels below are shifted by --crystal-offset (0 = native/mature, 1 = legacy leading-Met).
 
 
 # ---------- Protenix output discovery ----------
@@ -81,11 +97,18 @@ def find_pred_samples(pred_root: Path, name: str):
 
 
 def tier1_from_summary(j: dict, n_protein: int = 4) -> dict:
-    """Self-confidence metrics; protein chains are the first n_protein entries (A..D before ligands)."""
-    pp = list(range(n_protein))
+    """Self-confidence metrics; protein chains are the first n_protein entries (A..D before ligands).
+
+    n_protein is clamped to the matrix size so a complex with fewer chains than the tetramer
+    default (e.g. a two-chain binder:target) reads its real protein block instead of raising.
+    """
     cpi = np.asarray(j.get("chain_pair_iptm", []), dtype=float)
     cpg = np.asarray(j.get("chain_pair_gpde", []), dtype=float)
     cpl = np.asarray(j.get("chain_plddt", []), dtype=float)
+    n_chain = next((int(m.shape[0]) for m in (cpi, cpg) if m.ndim == 2 and m.shape[0]), None)
+    if n_chain is None and cpl.size:
+        n_chain = int(cpl.size)
+    pp = list(range(min(n_protein, n_chain) if n_chain else n_protein))
     prot_pairs = [(i, k) for i in pp for k in pp if i < k]
     min_cpi = float(min(cpi[i, k] for i, k in prot_pairs)) if cpi.size else np.nan
     mean_cpg = float(np.mean([cpg[i, k] for i, k in prot_pairs])) if cpg.size else np.nan
@@ -97,6 +120,53 @@ def tier1_from_summary(j: dict, n_protein: int = 4) -> dict:
         min_pp_chain_pair_iptm=min_cpi, mean_pp_chain_pair_gpde=mean_cpg,
         min_prot_chain_plddt=min_cpl,
     )
+
+
+def pae_metrics_from_summary(j: dict, n_protein: int = 4) -> dict:
+    """Chain-pair PAE/PDE/ipTM blocks from the summary-confidence JSON.
+
+    Protenix writes chain_pair_gpde / chain_pair_iptm / chain_pair_iptm_global / chain_pair_plddt
+    as (n_chain, n_chain) matrices covering protein AND ligand entities, so the protein-ligand
+    off-diagonal blocks are available without the huge per-token full-data dump (that dump, from
+    `pred --need_atom_confidence true`, is only needed for per-token PAE maps). Protein chains are
+    the first n_protein entries; any remaining entries are ligand copies.
+    """
+    out: dict = {}
+    n_chain = None
+    mats = {}
+    for key, mat_name in (("chain_pair_gpde", "gpde"), ("chain_pair_iptm", "iptm"),
+                          ("chain_pair_iptm_global", "iptm_global"),
+                          ("chain_pair_plddt", "plddt")):
+        v = j.get(key)
+        if v is None:
+            continue
+        m = np.asarray(v, dtype=float)
+        if m.ndim != 2 or m.shape[0] != m.shape[1]:
+            continue
+        mats[mat_name] = m
+        n_chain = m.shape[0]
+    if n_chain is None:
+        return out
+    prot = list(range(min(n_protein, n_chain)))
+    lig = list(range(len(prot), n_chain))
+    pp = [(i, k) for i in prot for k in prot if i < k]
+    pl = [(i, k) for i in prot for k in lig]
+    for name, m in mats.items():
+        if pp:
+            vals = np.array([m[i, k] for i, k in pp], dtype=float)
+            out[f"pp_chain_pair_{name}_mean"] = float(np.nanmean(vals))
+            out[f"pp_chain_pair_{name}_min"] = float(np.nanmin(vals))
+            out[f"pp_chain_pair_{name}_max"] = float(np.nanmax(vals))
+        if pl:
+            vals = np.array([m[i, k] for i, k in pl], dtype=float)
+            out[f"pl_chain_pair_{name}_mean"] = float(np.nanmean(vals))
+            out[f"pl_chain_pair_{name}_min"] = float(np.nanmin(vals))
+            out[f"pl_chain_pair_{name}_max"] = float(np.nanmax(vals))
+    cpl = np.asarray(j.get("chain_plddt", []), dtype=float)
+    if cpl.size >= n_chain and lig:
+        out["ligand_chain_plddt_mean"] = float(np.nanmean(cpl[lig]))
+        out["ligand_chain_plddt_min"] = float(np.nanmin(cpl[lig]))
+    return out
 
 
 def best_sample(samples) -> tuple:
@@ -190,12 +260,18 @@ def _atom_coord(arr, chain, res_id, atom, fallback="CA"):
     return None
 
 
-def xprot_as_distances(arr, pchains) -> dict:
+def xprot_as_distances(arr, pchains, resid_offset: int = 0) -> dict:
     """For each protein chain's catalytic core, distance to the NEAREST neighbour-chain Asn255-ND2.
-    Returns per-core median over chains (the interfacial catalytic geometry)."""
-    asn_id = XPROT_W1["Asn255"]
+    Returns per-core median over chains (the interfacial catalytic geometry).
+
+    ``resid_offset`` maps manifest ``index_0b`` to the predicted ``res_id``; it is 0 when the
+    prediction uses the native mature frame (index_0b == res_id == crystal resSeq, the standard),
+    and 1 for a legacy leading-Met prediction that shifts every residue by one.
+    """
+    asn_id = XPROT_W1["Asn255"] + resid_offset
     per_core = {}
-    for core_lab, core_id in CATALYTIC_CORE.items():
+    for core_lab, core_id0 in CATALYTIC_CORE.items():
+        core_id = core_id0 + resid_offset
         dists = []
         for ch in pchains:
             c = _atom_coord(arr, ch, core_id, FUNC_ATOM[core_lab])
@@ -310,6 +386,30 @@ def main() -> None:
         "--interface-pairs-out", default=None,
         help="chain-pair long-table parquet (default: <out stem>_interface_pairs.parquet)",
     )
+    ap.add_argument(
+        "--crystal-offset", type=int, default=0,
+        help="added to crystal residue ids to reach prediction residue ids. 0 when the prediction "
+             "uses the same frame as the crystal (the standard: uricase predicted at its native "
+             "Met-excluded length); 1 only for legacy leading-Met predictions against a "
+             "Met-excluded crystal.",
+    )
+    ap.add_argument(
+        "--crystal-ligand-resname", default=None,
+        help="restrict the crystal pocket shell to this ligand residue name (e.g. AZA for 1R51); "
+             "default uses every non-standard residue in the reference",
+    )
+    ap.add_argument("--pocket-shell-radius", type=float, default=8.0,
+                    help="crystal pocket shell radius around the reference ligand (A)")
+    ap.add_argument("--ligand-contact-cutoff", type=float, default=4.5,
+                    help="heavy-atom cutoff for ligand pocket contacts (A)")
+    ap.add_argument(
+        "--ligand-sites-out", default=None,
+        help="per-ligand-copy long-table parquet (default: <out stem>_ligand_sites.parquet)",
+    )
+    ap.add_argument(
+        "--no-ligand-metrics", action="store_true",
+        help="skip the ligand/pocket layer entirely (apo predictions)",
+    )
     ap.add_argument("--sasa-probe-radius", type=float, default=1.4)
     ap.add_argument("--sasa-point-number", type=int, default=1000)
     ap.add_argument("--contact-cutoff", type=float, default=8.0)
@@ -397,8 +497,24 @@ def main() -> None:
         if str(row.get("kind", "")).upper() == "WT" and row["name"] in best:
             wt_name_by_parent[row["parent"]] = row["name"]
 
+    # crystal pocket reference (built once; needs a holo reference with its ligand)
+    crystal_ref = None
+    if args.crystal_ref and not args.no_ligand_metrics:
+        try:
+            crystal_ref = CrystalPocketReference(
+                _load_arr(Path(args.crystal_ref)),
+                ligand_resname=args.crystal_ligand_resname,
+                shell_radius=args.pocket_shell_radius,
+            )
+            print(f"[eval] crystal pocket shell ({args.pocket_shell_radius} A): "
+                  f"{ {k: len(v) for k, v in crystal_ref.sites.items()} }, "
+                  f"offset={args.crystal_offset}")
+        except Exception as exc:
+            print(f"[eval] WARNING: crystal pocket reference unavailable: {exc}")
+
     rows = []
     pair_frames = []
+    ligand_frames = []
     for manifest_row_index, (_, row) in enumerate(man.iterrows()):
         name, parent, kind = row["name"], row["parent"], row.get("kind")
         rec = dict(
@@ -420,7 +536,7 @@ def main() -> None:
             arr = get_arr(name)
             pchains = protein_chains(arr)
             rec["n_protein_chains"] = len(pchains)
-            if len(pchains) == 4:
+            if len(pchains) in (2, 4):
                 pairs = interface_pair_metrics(
                     arr,
                     pchains,
@@ -449,7 +565,7 @@ def main() -> None:
                 rec["n_interchain_contacts"] = int(pairs["n_residue_contacts_8a"].sum())
             else:
                 rec["interface_metrics_error"] = (
-                    f"expected_4_protein_chains_got_{len(pchains)}"
+                    f"expected_2_or_4_protein_chains_got_{len(pchains)}"
                 )
             # complex TM vs parent WT (relative)
             wt = wt_name_by_parent.get(parent)
@@ -462,9 +578,52 @@ def main() -> None:
                 )
             # cross-protomer active-site distances (Q00511-numbering parents only)
             if parent in Q00511_NUMBERING_PARENTS:
-                xd = xprot_as_distances(arr, pchains)
+                xd = xprot_as_distances(arr, pchains, resid_offset=args.crystal_offset)
                 for lab, v in xd.items():
                     rec[f"xprot_{lab}_dist"] = v
+            # chain-pair PAE / gPDE / ipTM blocks, incl. the protein-ligand off-diagonal
+            if args.backend == "protenix":
+                try:
+                    rec.update(pae_metrics_from_summary(json.loads(js.read_text()),
+                                                        n_protein=len(pchains) or 4))
+                except Exception as exc:  # confidence JSON shape drift must not kill the run
+                    rec["pae_metrics_error"] = str(exc)[:200]
+            # ligand pocket geometry (prediction-intrinsic) + crystal-referenced pocket RMSD
+            if not args.no_ligand_metrics:
+                try:
+                    sites = ligand_site_metrics(
+                        arr, pchains,
+                        core_residues={k: v + args.crystal_offset
+                                       for k, v in CATALYTIC_CORE.items()},
+                        partner_residues={k: v + args.crystal_offset
+                                          for k, v in XPROT_W1.items()},
+                        contact_cutoff=args.ligand_contact_cutoff,
+                    )
+                except Exception as exc:
+                    sites = pd.DataFrame()
+                    rec["ligand_metrics_error"] = str(exc)[:200]
+                if len(sites):
+                    if crystal_ref is not None and parent == args.crystal_parent:
+                        try:
+                            rec.update(crystal_ref.evaluate(arr, pchains,
+                                                            offset=args.crystal_offset))
+                        except Exception as exc:
+                            rec["crystal_pocket_error"] = str(exc)[:200]
+                    rec["n_ligand_sites"] = int(len(sites))
+                    for col in [c for c in sites.columns
+                                if c.startswith(("lig_min_dist_", "n_pocket_contacts",
+                                                 "lig_centroid_to_core"))]:
+                        v = pd.to_numeric(sites[col], errors="coerce")
+                        rec[f"{col}_med"] = float(v.median())
+                        rec[f"{col}_worst"] = float(v.max())
+                    if "site_is_interprotomer" in sites:
+                        rec["frac_sites_interprotomer"] = float(sites.site_is_interprotomer.mean())
+                    sites = sites.copy()
+                    for c, v in (("manifest_row_index", manifest_row_index), ("id", row["id"]),
+                                 ("name", name), ("parent", parent), ("kind", kind),
+                                 ("allele", row.get("allele")), ("sample", k)):
+                        sites.insert(0, c, v)
+                    ligand_frames.append(sites)
         rows.append(rec)
 
     df = pd.DataFrame(rows)
@@ -536,6 +695,13 @@ def main() -> None:
     pairs_out_path.parent.mkdir(parents=True, exist_ok=True)
     df.drop(columns=["manifest_row_index"]).to_parquet(out_path, index=False)
     pair_df.to_parquet(pairs_out_path, index=False)
+    if ligand_frames:
+        lig_out = (Path(args.ligand_sites_out) if args.ligand_sites_out else
+                   out_path.with_name(f"{out_path.stem}_ligand_sites.parquet"))
+        lig_out.parent.mkdir(parents=True, exist_ok=True)
+        lig_df = pd.concat(ligand_frames, ignore_index=True)
+        lig_df.to_parquet(lig_out, index=False)
+        print(f"[eval] {len(lig_df)} ligand-site rows -> {lig_out}")
     n_pred = int(df["predicted"].sum())
     print(f"[eval] {len(df)} variants, {n_pred} predicted -> {out_path}")
     print(f"[eval] {len(pair_df)} chain-pair rows -> {pairs_out_path}")
