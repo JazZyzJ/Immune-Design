@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=protenix_refold
 #SBATCH --partition=ailab
-#SBATCH --constraint="h200"
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -11,6 +10,8 @@
 #SBATCH --array=0-7
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/protenix/refold_%A_%a.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/protenix/refold_%A_%a.err
+
+# The ailab default selects H200. RTX jobs also set PROTENIX_ENV to v2.0.0-blackwell.
 
 # Protenix v2 refold-cache precompute — GPU fold + normalize (single-stage, local MSA).
 #

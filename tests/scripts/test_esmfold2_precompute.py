@@ -104,3 +104,16 @@ def test_benchmark_and_precompute_slurm_default_to_canonical_esmfold2_cache():
     assert 'REFOLD_CACHE_DIR="${REFOLD_CACHE_DIR:-' in benchmark
     assert "STRUCTURAL_METRICS_V2=" not in benchmark
     assert 'CACHE_LAYOUT="${CACHE_LAYOUT:-${OUT_DIR}/cache}"' in precompute
+
+
+def test_structure_predictor_launchers_allow_blackwell_partition_override():
+    launchers = [
+        "scripts/submit_esmfold2_gt.slurm",
+        "scripts/submit_protenix_refold.slurm",
+        "scripts/submit_tetramer_predict.slurm",
+    ]
+
+    for launcher in launchers:
+        text = (_ROOT / launcher).read_text()
+        assert "#SBATCH --partition=ailab" in text
+        assert "#SBATCH --constraint" not in text

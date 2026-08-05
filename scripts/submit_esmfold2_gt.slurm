@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=esmfold2_gt
 #SBATCH --partition=ailab
-#SBATCH --constraint="h200"
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -11,6 +10,8 @@
 #SBATCH --array=0-7
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/esmfold2/gt_%A_%a.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/esmfold2/gt_%A_%a.err
+
+# The ailab default selects H200. RTX PRO 6000 jobs override --partition and --gres at sbatch time.
 
 set -euo pipefail
 : "${PS1:=}"

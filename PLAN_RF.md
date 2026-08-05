@@ -28,7 +28,7 @@
 - Allele selection
 
 **Outputs** (per run)
-- `work/immune-design/if_phase_c/c0/<allele_tag>/<run_id>/generated.parquet` (columns: `protein_id`, `design_idx`, `sequence`, `seed`, `wall_seconds`)
+- `run/inverse_folding/if_phase_c/native/<allele_tag>/<run_id>/generated.parquet` (columns: `protein_id`, `design_idx`, `sequence`, `seed`, `wall_seconds`)
 - `generated.fasta`
 - `run_config.yaml` (resolved)
 - `manifest.json` (git SHA, checkpoint digest, timestamp)
@@ -150,7 +150,7 @@ return x
 - YAML config matching the schema above
 
 **Outputs** (per run)
-- `work/immune-design/if_phase_c/c1/<allele_tag>/<run_id>/generated.parquet` (columns: `protein_id`, `design_idx`, `sequence`, `seed`, `wall_seconds`)
+- `run/inverse_folding/if_phase_c/reference_flow/<allele_tag>/<run_id>/generated.parquet` (columns: `protein_id`, `design_idx`, `sequence`, `seed`, `wall_seconds`)
 - `generated.fasta`
 - `run_config.yaml` (resolved — every default materialized)
 - `manifest.json` (git SHA, checkpoint digest, h_maps source path, h_source choice, schedule form, amplification params, timestamp)

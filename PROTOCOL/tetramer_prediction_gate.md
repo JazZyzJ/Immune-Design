@@ -42,9 +42,23 @@ Use whenever a design list needs a **quaternary** structural read that the monom
    the exp2 dead-design set they were **orthogonal to activity** (all dead across the whole range) —
    i.e. those failures were likely *catalytic*, not *assembly*. **Do not hard-gate on tetramer
    metrics until wet-lab (gel for assembly, activity assay) anchors what a passing tetramer means.**
-5. **Numbering.** Predict **Met-excluded** (drop a leading Met): predicted `res_id` = 1R51 crystal
-   `resSeq` = manifest `index_0b`, so anchors/interfaces align across prediction, crystal, and the
-   active-site manifest. A 1-off here silently corrupts every interface/distance number.
+5. **Numbering — the frozen three-frame contract.** Generation, structure comparison, and
+   ordering do **not** use the same frame, and conflating them has already destroyed one campaign.
+   The rule below is mandatory for every uricase parent; see "Frame contract" below for the
+   per-parent Met-excision table and the exact conversion.
+
+   | Stage | Frame | Rationale |
+   |---|---|---|
+   | RF generation + constraint manifest | UniProt full length, initiator Met **hard-locked** at `index_0b: 0` | matches the AFDB structure the sampler conditions on; locking position 0 is what stops RF from rewriting the N-terminus |
+   | Structure prediction + crystal comparison | **mature** (Met-excised parents: `sequence[1:]`) | predicted `res_id` = 1R51 crystal `resSeq`, so `--crystal-offset 0` |
+   | Wet-lab ordering / expression construct | UniProt full length **with** Met | the in-house assay needs an initiator Met to express |
+
+   The conversion is **numerically identity**: for a Met-excised parent, manifest `index_0b`
+   (full-length, 0-based) equals the mature-frame 1-based author residue id. Q00511 check:
+   Lys11 → `index_0b` 10, Thr58 → 57, Asp59 → 58, Phe160 → 159, Arg177 → 176, Val228 → 227,
+   Gln229 → 228, Asn255 → 254, His257 → 256 — exactly the values in `eval_complex_gate.py`'s
+   `CATALYTIC_CORE`, so no offset bookkeeping is ever needed. A 1-off here silently corrupts every
+   interface/distance number.
 6. **Interface scoring is post-prediction CPU analysis.** BSA, contacts, salt bridges, Rosetta
    binding energy, packstat, H-bonds, and buried unsatisfied polar atoms depend only on the final
    coordinates. Do not put Rosetta inside the ESMFold2/Protenix GPU jobs. Preserve the complete
@@ -57,6 +71,31 @@ Use whenever a design list needs a **quaternary** structural read that the monom
    non-interface. Selection uses the weaker copy of **both** interface classes. Never collapse all
    six pairs into one total and never infer interface identity from fixed predictor chain labels.
 
+## Frame contract (mandatory for every uricase; do not re-derive per run)
+
+Methionine aminopeptidase excises the initiator Met **only** when residue 2 is small
+(A/C/G/P/S/T/V). `sequence[1:]` is therefore correct for most uricases but **wrong for two
+members of the Active-15 panel**. Check this table — never blanket-strip a leading Met.
+
+| Parent | Residue 2 | Met excised | Prediction / crystal-comparison frame |
+|---|---|---|---|
+| A0A100I4D7, D0VWQ1, H2ETE7, O74409, P04670, P09118, P16164, P25688, P25689, **Q00511**, Q0CXR4, Q6P700, Q7SBV5 | S / T / A | yes | `sequence[1:]` (mature, L−1) |
+| **A0A9P8P4R1** | L | **no** | full length, unchanged (328) |
+| **Q9RV70** | M | **no** | full length, unchanged (298) |
+
+Operational consequences, in order:
+
+1. **Never leave `index_0b: 0` in `free_positions`.** RF treats every non-anchor position as
+   editable; an unlocked N-terminal Met gets rewritten (this happened, ~40% of one cohort).
+   The constraint builder must hard-lock it.
+2. **Predict and compare in the mature frame** with `--crystal-offset 0`. Only a legacy
+   full-length prediction needs `--crystal-offset 1`; do not create new ones.
+3. **Order the full-length sequence with Met** (assay requirement). If the expression host
+   is *E. coli* and residue 2 is small, MAP removes it post-translationally — the purified
+   protein is the mature form, so subtract 131 Da when checking MS against the ordered sequence.
+4. Only Q00511 has a crystal (1R51). For the other parents "fair compare" means WT-vs-design
+   under the **identical** frame and backend, never a cross-frame comparison.
+
 ## Outputs (COMPLETE — structure + raw arrays, not just metrics)
 
 Per variant, under `<pred-root>/tetra_<id>/`:
@@ -67,7 +106,7 @@ Per variant, under `<pred-root>/tetra_<id>/`:
   metrics (e.g. inter-chain PAE at the active-site interface, per-site ligand-pocket geometry).
 - `tetra_<id>_confidence.json` — scalars (plddt_mean, ptm, iptm, pair_chains_iptm) + array shapes.
 
-`scripts/eval_tetramer_gate.py --backend {protenix,esmfold2}` writes two complete tables:
+`scripts/eval_complex_gate.py --backend {protenix,esmfold2}` writes two complete tables:
 
 - `--out` — one row per variant: **Tier 1** self-confidence; **Tier 2** complex TM and
   cross-protomer active-site geometry; conservative/mean summaries for `interface_1` and
@@ -82,8 +121,8 @@ Per variant, under `<pred-root>/tetra_<id>/`:
 
 ## Interface metric contract
 
-The torch-free reusable layer is `inverse_folding/evaluation/tetramer_interfaces.py`. Coordinate
-metrics are always available in `immune-design` (Biotite). `submit_tetramer_eval.slurm` enables
+The torch-free reusable layer is `inverse_folding/evaluation/complex_interfaces.py`. Coordinate
+metrics are always available in `immune-design` (Biotite). `submit_complex_eval.slurm` enables
 Rosetta 3.15 by default; a direct CLI run can enable it with `--rosetta-interface-analyzer` after
 loading the same module.
 
@@ -216,14 +255,14 @@ sbatch --array=0-$((N-1))%12 --output="$LOG_BASE/esmf2_%A_%a.out" --error="$LOG_
 
 # 4a) coordinate gate metrics for all predictions (backend-selectable; no Rosetta required)
 #     The final-selection manifest MUST include a real same-backend WT row for every parent.
-python scripts/eval_tetramer_gate.py --backend esmfold2 \
+python scripts/eval_complex_gate.py --backend esmfold2 \
   --pred-root "$RUN_BASE/pred_esmfold2" --manifest <manifest-with-wt.parquet> --usalign <bin>/USalign \
   --crystal-ref "$WORK_BASE/refs/1R51_tetramer_ABCD.pdb" --crystal-parent Q00511 \
   --require-interface-wt --out "$RUN_BASE/tetramer_gate.parquet"
 
 # 4b) final-selection run with Rosetta 3.15 (CPU Slurm; RUN_ROSETTA=1 by default)
 sbatch --output="$LOG_BASE/gate_%j.out" --error="$LOG_BASE/gate_%j.err" \
-  scripts/submit_tetramer_eval.slurm --backend esmfold2 \
+  scripts/submit_complex_eval.slurm --backend esmfold2 \
   --pred-root "$RUN_BASE/pred_esmfold2" --manifest <final-cohort-plus-wt.parquet> --usalign <bin>/USalign \
   --crystal-ref "$WORK_BASE/refs/1R51_tetramer_ABCD.pdb" --crystal-parent Q00511 \
   --rosetta-run-dir "$RUN_BASE/tetramer_gate_rosetta" \
@@ -251,7 +290,7 @@ python scripts/eval_tetramer_reference.py \
 Optional Protenix arm (orthogonal, esp. ligand pose): `build_protenix_jsons.py` (splits the local
 ColabFold a3m into paired/unpaired + adds the ligand → `<name>-update-msa.json`) →
 `submit_tetramer_predict.slurm` (small array; one persistent Protenix model per H200/H100 task) →
-`eval_tetramer_gate.py --backend protenix`. The H200 default is `ailab`; PLI H100 submissions add
+`eval_complex_gate.py --backend protenix`. The H200 default is `ailab`; PLI H100 submissions add
 `--account=pli_x --qos=pli-low --partition=pli --gres=gpu:h100:1`. Do not submit one array task per
 design for a large cohort: use a small array so each task strides over multiple JSONs and amortizes
 checkpoint loading.

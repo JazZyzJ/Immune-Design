@@ -1,0 +1,141 @@
+tag: p56658_ada_drb0401_holo_deimm_20260720
+date: 2026-07-20
+goal: >-
+  Select de-immunized bovine adenosine deaminase (ADA / P56658) candidates that are also
+  catalytically plausible, by running the full holo tier stack T0-T3 on the 0-NMP refinement
+  shortlist. ADA is the MAXIMAL instantiation of the holo protocol: a required metal cofactor
+  (Zn2+), a transition-state analogue (PRH) reporting the closed pocket, and a physiological
+  substrate (adenosine) - three ligand states, each gating a different tier.
+protocol: PROTOCOL/holo_catalytic_gate_calibration.md
+runner: >-
+  /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_validation/run_cand_holo.sh
+status: selected
+
+inputs:
+  protein_id: P56658_ADA_BOVIN
+  allele: HLA-DRB1*04:01
+  run_dir: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/phase_d/therapeutic_enzymes/HLA-DRB1_04_01/therapeutic_p56658_drb0401_b1aopen_beta5p0_n200_seed10_20260719T045615Z
+  n_designs: 200
+  refine_dir: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/refine/therapeutic_enzymes/ada_p56658_drb0401
+  n_refined: 4326
+  refine_seed_table: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/refine_seeds/refine_seeds_P56658_ADA_BOVIN.parquet
+  n_refine_seeds: 64
+  constraint_manifest: inverse_folding/reference_flow/configs/therapeutic_enzymes_active_site_v0.yaml
+  n_hard_anchors: 25
+  test_set_parquet: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/therapeutic_enzymes_caseset_if_ready.parquet
+  pdb_root: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/pdbs_if_ready
+  wt_holo_baseline_dir: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_baseline
+
+config:
+  generation: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/phase_d/therapeutic_enzymes/HLA-DRB1_04_01/therapeutic_p56658_drb0401_b1aopen_beta5p0_n200_seed10_20260719T045615Z/run_config.yaml
+  controller: d2_d3_full_stageB_aopen_beta5p0 (hash 2c39f229e92dd58f4beb4b5e2a4eb4ac7657ece79f0489a412123a4b579e3373)
+  ligand_states: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_baseline/ligand_states.yaml
+cli_overrides: "refine gate: --gate-sctm-min 0.94 --gate-cat-max-scrmsd-max 1.0 --gate-active-site-min-plddt-min 90"
+
+models:
+  head: cnn_himp_a1_res03_drb0401_seed42_cv5_fold0 (LC1, seed 42)
+  immune_oracle: NetMHCIIpan-4.3 accelerated (strong = rank_EL < 2%)
+  refolder_monomer: esmfold2
+  predictor_holo: Protenix (local ColabFold MSA, 5 samples per candidate, seed 101)
+
+criteria:
+  # --- ligand states, all from the ligand_states.yaml pointer above (never inlined) ---
+  ligand_state_ids: [ZN_COFACTOR, PRH_CCD_QP1, ADO_NEUTRAL]
+
+  # --- T0 apo (hard) -- the refinement structure gate, calibrated on WT self-consistency ---
+  t0_sctm_min: 0.94
+  t0_cat_max_scrmsd_max: 1.0
+  t0_active_site_min_plddt_min: 90.0
+  t0_wt_selfconsistency_active_site_scrmsd: 0.27
+
+  # --- immune, applied before holo (holo is expensive) ---
+  immune_core_count_after: 0
+
+  # --- T1 Zn coordination (hard, two arms) ---
+  t1_coordinating_atoms: His15 NE2, His17 NE2, His214 NE2, Asp295 OD1
+  t1_zn_band_ang_implemented: [1.9, 2.5]
+  t1_min_samples_in_band: 4
+  t1_n_samples: 5
+
+  # --- T2 closed pocket via PRH transition-state analogue (rank/soft, WT-normalized) ---
+  t2_prh_jaccard_vs_wt_consensus_ceiling: 0.89
+  t2_wt_recovery_of_1krm_contacts: 0.72
+
+  # --- T3 physiological substrate (PROMOTED to discriminator: WT dispersion cleared the bar) ---
+  t3_ado_jaccard_median_min: 0.6
+  t3_wt_pairwise_ligand_rmsd_median: 0.10
+  t3_wt_contact_jaccard: 0.95
+
+  reference_normalization: every geometric criterion is a deviation from the exact-WT prediction under the identical predictor/ligand-set/sampling; only T1(b) uses a crystal absolute
+  immune_role: hard prefilter (core_count_after == 0), never a ranker inside the holo tiers
+
+outputs:
+  holo_shortlist:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_shortlist/holo_candidates_ADA_P56658_ADA_BOVIN.parquet
+    n: 38
+  t1_t3_verdict:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_validation/holo_verdict_ADA.parquet
+    n: 16
+    n_pass: 15
+  t2_verdict:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_validation/holo_verdict_ADA_T2.parquet
+    n: 15
+    n_pass: 15
+    prh_jaccard_range: [0.88, 1.00]
+    prh_intra_stability_range: [0.92, 0.97]
+  final:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_validation/FINAL_candidates_25.parquet
+    n: 25
+    n_this_target: 15
+    n_mutations_range: [1, 2]
+    sctm_range: [0.979, 0.993]
+    active_site_scrmsd_range: [0.265, 0.341]
+    min_plddt_range: [95.3, 98.2]
+  returned: >-
+    returned to the Mac via mhc-if-local as
+    Results / TherapeuticEnzymes_deimmunized_20260720 (11 files, 628K)
+
+notes:
+  - >-
+    THIS IS THE PROTOCOL'S WORTH, IN ONE DATA POINT. Candidate d0219 passed T0 (apo structure)
+    and had n_strong_NMP = 0, i.e. it was indistinguishable from the survivors on every monomer
+    and immune metric. It was rejected only because cofolding the Zn pulled Asp295 OD1 to 2.52 A,
+    outside the coordination band, in 3 of 5 samples. Without the holo tier it would have been
+    ordered.
+  - >-
+    IMPLEMENTATION IS STRICTER THAN THE PROTOCOL TEXT for Asp295. The protocol states an operational
+    band of 1.9-2.6 A for Asp295 OD1 (1.9-2.5 for the three His NE2), but analyze_cand_holo.py
+    applies 1.9-2.5 to all four atoms. d0219's 2.52 A therefore fails the implemented gate while
+    sitting inside the protocol's stated Asp295 band. Reconcile before the next campaign - the
+    single rejection of this cohort turns on it.
+  - >-
+    T2 must be WT-normalized, not crystal-normalized: exact-WT itself recovers only 13/15 of the
+    1KRM experimental contacts (Jaccard 0.72), so a crystal-absolute T2 bar would fail the positive
+    control. The achievable ceiling is the intra-WT Jaccard 0.89.
+  - >-
+    T3 was PROMOTED from monitor to discriminator for this campaign only, because the WT adenosine
+    dispersion (pairwise ligand RMSD median 0.10 A, contact Jaccard 0.95 over 10 samples) cleared
+    the pre-registered admissibility bar. This promotion is per-campaign and must be re-decided
+    whenever the predictor, MSA source, or ligand set changes.
+  - >-
+    Gly is an anchor with no sidechain, so matched_anchor_count reads 24/25 for every design
+    (match_status = no_sidechain). Expected, not a defect, not a discriminator.
+  - >-
+    No PROTOCOL/holo_catalytic_gate_calibration.runner.md exists yet; the `runner` field points at
+    the shell script that was actually executed. Writing the runner is the open item that would let
+    this protocol be re-run without re-deriving the procedure.
+  - >-
+    Evidence boundary: these are COMPUTATIONAL candidates (NMP = 0 plus retained catalytic geometry).
+    Neither de-immunization nor activity is experimentally confirmed; donor PBMC / CD4 T-cell assays
+    and an enzyme-activity assay are still required.

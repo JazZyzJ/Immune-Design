@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import math
 import os
+import tempfile
 
 import numpy as np
 
@@ -139,8 +140,33 @@ def normalize_to_cache(
 
     pdb_path = os.path.join(cache_dir, f"{key}.pdb")
     plddt_path = os.path.join(cache_dir, f"{key}.plddt")
-    with open(pdb_path, "w") as handle:
-        handle.write(pdb_text)
-    with open(plddt_path, "w") as handle:
-        handle.write(f"{plddt_100:.4f}")
+    # Written atomically because the cache key is content-derived: independent jobs sharing
+    # one cache dir legitimately fold the same sequence concurrently, and a plain open(...,"w")
+    # lets their writes interleave into a truncated PDB that only fails much later, at read
+    # time, as a parse error or a silently wrong structure.
+    _atomic_write_text(pdb_path, pdb_text)
+    _atomic_write_text(plddt_path, f"{plddt_100:.4f}")
     return {"pdb_path": pdb_path, "plddt_path": plddt_path}
+
+
+def _atomic_write_text(path: str, text: str) -> None:
+    """Write ``text`` to ``path`` via a same-directory temp file + ``os.replace``.
+
+    ``os.replace`` is atomic within a filesystem, so a concurrent reader sees either the
+    previous complete file or the new complete file, never a partial one.
+    """
+    directory = os.path.dirname(path) or "."
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", dir=directory, prefix=f".{os.path.basename(path)}.", delete=False
+    )
+    try:
+        with handle:
+            handle.write(text)
+        os.replace(handle.name, path)
+    except BaseException:
+        # Never leave a dot-file behind for the cache's own globs to trip over.
+        try:
+            os.unlink(handle.name)
+        except FileNotFoundError:
+            pass
+        raise

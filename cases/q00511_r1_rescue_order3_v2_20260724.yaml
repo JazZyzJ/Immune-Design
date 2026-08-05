@@ -1,0 +1,152 @@
+tag: q00511_r1_rescue_order3_v2_20260724
+date: 2026-07-24
+goal: >-
+  Select a 70-sequence wet-lab activity-rescue panel from the Q00511 round-1
+  structure-by-covariance matrix, prioritizing ligand and tetramer fidelity
+  while retaining interface contact quality as a soft supporting signal.
+protocol: PROTOCOL/shortlist_and_refine_seed_selection.md
+runner: PROTOCOL/final_tetramer_wetlab_order.runner.md
+status: selected
+
+inputs:
+  run_dir: >-
+    Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z
+  candidate_table: >-
+    Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/analysis/final_selection/03_candidates_scored.csv
+  tetramer_table: >-
+    Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/tetramer_gate/tetramer_gate.parquet
+  interface_pairs: >-
+    Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/tetramer_gate/tetramer_gate_interface_pairs.parquet
+  ligand_sites: >-
+    Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/tetramer_gate/tetramer_gate_ligand_sites.parquet
+  crystal_interface_reference: Results/Reference/1R51/1R51_interface_pairs.csv
+  crystal_hotspot_reference: >-
+    Results/Reference/1R51/1R51_alanine_scan_by_position.csv
+  prior_order_audit: Results/Wetlab/order3
+  allele: HLA-DRB1*07:01
+  protein_id: Q00511
+  generation_designs: 1500
+  refined_designs: 35433
+  holo_design_variants: 920
+  strict_eligible_variants: 391
+  strict_source_unique_candidates: 232
+
+config:
+  constraint_manifests:
+    - >-
+      Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/meta/constraint_manifests/uricase_q00511_r1_Sfull_sig80.yaml
+    - >-
+      Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/meta/constraint_manifests/uricase_q00511_r1_Sfull_sig90.yaml
+    - >-
+      Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/meta/constraint_manifests/uricase_q00511_r1_Sfull_sigOFF.yaml
+    - >-
+      Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/meta/constraint_manifests/uricase_q00511_r1_Smid_sig80.yaml
+    - >-
+      Results/RF/HLA-DRB1_07_01/q00511_r1_matrix_0701__20260724T180748Z/meta/constraint_manifests/uricase_q00511_r1_Smid_sig90.yaml
+  controller: d2_d3_full_stageB_aopen_beta5p0 (hash 2c39f229)
+
+models:
+  head: a1res03 drb0701 cv5 fold0
+  immune_oracle: NetMHCIIpan-4.3 (reported only)
+  refolder_monomer: esmfold2
+  predictor_assembly: Protenix tetramer with four urate ligands
+  interface_physics: Rosetta InterfaceAnalyzer ref2015
+
+criteria:
+  hard_gates:
+    existing_holo_gate: strict_holo_gate == true
+    active_site_complete_after: true
+    scTM_after_min: 0.96
+    pLDDT_after_min: 94.0
+    scRMSD_after_max_A: 1.35
+    active_site_sidechain_RMSD_after_max_A: 2.60
+    active_site_min_pLDDT_after_min: 65.0
+  normalization:
+    cohort: all strict eligible variants
+    method: percentile badness
+    lower_score_is_better: true
+  ligand_primary_axis:
+    pocket_ca_pct: 15.0
+    pocket_sidechain_pct: 20.0
+    pocket_worst_site_pct: 10.0
+    ligand_centroid_pct: 15.0
+    pocket_identity_pct: 10.0
+    catalytic_contact_distance_pct: 20.0
+    pocket_contact_count_pct: 10.0
+  tetramer_primary_axis:
+    global_ca_pct: 20.0
+    complex_tm_crystal_pct: 10.0
+    interface_1_bsa_pct: 10.0
+    interface_2_bsa_pct: 10.0
+    interface_1_contacts_pct: 10.0
+    interface_2_contacts_pct: 10.0
+    copy_balance_pct: 10.0
+    topology_pct: 10.0
+    pp_uncertainty_pct: 10.0
+  contact_quality_auxiliary:
+    crystal_hotspot_definition: >-
+      interpretable sidechain alanine scan with ddg_bind_mean_reu > 2.0
+    per_interface_hotspot_retention_pct: 40.0
+    per_interface_shape_complementarity_pct: 30.0
+    per_interface_packstat_pct: 20.0
+    per_interface_dg_per_sasa_pct: 10.0
+    cross_interface_aggregation: worse of Interface I and Interface II
+    excluded_from_score: [delta_unsat_hbonds, H-bond count, H-bond energy fraction]
+  cross_axis_rank:
+    pareto_axes: [ligand, tetramer]
+    pareto_scope: within arm after source-lineage deduplication
+    primary_worst_weight: 0.70
+    primary_mean_weight: 0.20
+    contact_quality_weight: 0.10
+    formula: >-
+      0.70*max(ligand,tetramer) + 0.20*mean(ligand,tetramer) +
+      0.10*contact_quality
+    monomer_role: tie-break only after hard admission
+  arm_quotas:
+    Sfull_sig80: 20
+    Sfull_sig90: 15
+    Smid_sig80: 15
+    Sfull_sigOFF: 10
+    Smid_sig90: 10
+  diversity:
+    source_lineage_max_variants: 1
+    pairwise_sequence_identity_max: 0.95
+    hamming_distance_min_for_302aa: 16
+  immune_role: reported only; not an order3_v2 ranker
+  evidence_boundary: >-
+    Computational tetramer, ligand, and contact metrics define structural
+    plausibility and ordering only; activity rescue is the wet-lab endpoint.
+
+outputs:
+  selection:
+    file: Results/Wetlab/order3_v2/q00511_order3_v2_selection_70_all_metrics.csv
+    n: 70
+  fasta:
+    file: Results/Wetlab/order3_v2/q00511_order3_v2_selection_70.fasta
+    n: 70
+  candidate_pool:
+    file: Results/Wetlab/order3_v2/q00511_order3_v2_candidate_pool_scored.csv
+    n: 232
+  policy:
+    file: Results/Wetlab/order3_v2/q00511_order3_v2_selection_policy.csv
+  arm_summary:
+    file: Results/Wetlab/order3_v2/q00511_order3_v2_arm_summary.csv
+    n: 5
+  v1_v2_comparison:
+    file: Results/Wetlab/order3_v2/q00511_order3_v1_v2_comparison.csv
+    n: 101
+  readme:
+    file: Results/Wetlab/order3_v2/README.md
+
+notes:
+  - Order 3 v1 is retained unchanged as an audit artifact; v2 retains 39/70
+    candidate IDs and replaces 31 after removing the equal-third energy bias.
+  - The selected set contains 70 unique IDs, source lineages, and sequences;
+    minimum pairwise Hamming distance is 36.
+  - Rosetta values are finite, but source status flags remain
+    rosetta_interface_requested=false and rosetta_interface_metrics_ok=false.
+    Contact quality is therefore a soft 10% auxiliary and never a hard gate.
+  - The three Sfull arms retain all >2 REU crystal hotspots on both interfaces.
+    Smid arms preserve Interface I but only about 47% weighted retention at
+    Interface II, as intended by the structure-lock contrast.
+  - Status remains selected until the sequences are actually purchased.

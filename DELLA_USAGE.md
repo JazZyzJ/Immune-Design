@@ -161,6 +161,36 @@ loaded with zero missing/unexpected keys and generated a 119-residue sequence; a
 checkpoint completed GPU inference. Do not use the legacy `requirements.txt` directly to rebuild
 this environment because it intentionally re-pins cu121.
 
+### ESMFold2 and Protenix on RTX PRO 6000
+
+ESMFold2 does not need another clone. The existing `/home/zc1519/.conda/envs/esmfold2` environment
+uses PyTorch 2.12.0 + CUDA 13.0, advertises `sm_120`, and passed BF16 backward,
+`torch.compile`/Triton, and a full `biohub/ESMFold2` model smoke on RTX PRO 6000. Submit the
+supported monomer/refold launcher by overriding its default H200 resources:
+
+```bash
+sbatch --partition=rtx6000 --gres=gpu:rtx_pro_6000:1 \
+  scripts/submit_esmfold2_gt.slurm
+```
+
+The default Protenix v2 environment (`envs/v2.0.0`, CUDA 12.6) does not contain `sm_120` kernels
+and fails on RTX PRO 6000. For `zc1519`, use the owner-only isolated CUDA 12.8 environment instead:
+
+```bash
+PROTENIX_ENV=/scratch/gpfs/KAIYIJIANG/tools/protenix/envs/v2.0.0-blackwell \
+  sbatch --partition=rtx6000 --gres=gpu:rtx_pro_6000:1 \
+  scripts/submit_tetramer_predict.slurm READY_LIST PRED_ROOT
+```
+
+The same `PROTENIX_ENV` override applies to `scripts/submit_protenix_refold.slurm` and the shared
+`/scratch/gpfs/KAIYIJIANG/tools/protenix/slurm/protenix_pred.slurm` entry point. H100/H200 jobs
+continue to use `envs/v2.0.0` by default. The Blackwell environment preserves Protenix v2 package
+versions except for the PyTorch/CUDA runtime stack and passed `pip check`, upstream installation
+tests, BF16 backward, Triton compilation, cuequivariance imports, and real 464.44M-checkpoint
+inference. The shared default `local_gpu` MSA path also passed end to end in Slurm job `11853601`
+(exit `0:0`): MSA depth 191, five CIF/confidence samples, 18.72-second model forward, and
+7 minutes 50 seconds including database search.
+
 2026-05-14 实测调度规律（1 GPU, 8 CPU, 32G）：
 
 - `gpu-short`, `00:30:00`, `--nodelist=della-i12g1`, `a100&gpu40&nomig`: 可立刻 backfill 到 `della-i12g1`，适合短 smoke/debug。

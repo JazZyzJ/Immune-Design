@@ -119,7 +119,7 @@
   - Enzyme-mode RF manifest `inverse_folding/reference_flow/configs/uricase_q00511_active_site_perprotein_v0.yaml` covers **24/26 characterized** proteins with validated hard anchors (incl. Pegloticase); `C5HDG5` and `W8X3B8` are intentionally excluded by `uricase_characterized_special_overrides.yaml`. Q00511 B1 highrisk-open inpainting smoke passed on A100 (`run/inverse_folding/phase_d/uricase_smoke/HLA-DRB1_07_01/uricase_q00511_b1_aopen_inpaint_smoke_seed42_gpu80_r4_20260630T013544Z`): 8/8 anchors preserved, 158 non-anchor edits.
   - **`Uricases_RF/`** (design_viable subset) — **5492** design_viable = 5489 Q00511-triad-projected + 2 own-annotated PucL fusions (O32141/Q45697) + Pegloticase; 24/26 characterized in-set (894 gated + C5HDG5/W8X3B8 excluded). Deterministically derived from the 6388 unified set (triad gate {10,57,256}). Holds `uricase_rf_designviable_if_ready.parquet` (IF-ready + viability labels), `.fasta`, `uricase_caseset_if_ready_dedup_labeled.parquet` (6388 labeled), `manifest.json`. RF-ready: structure / h_maps(0701+0401) / constraint-manifest all cover 5492/5492 (0 missing, 0 md5 mismatch). Original `uricases/` unchanged.
   - **WT immune baseline — a1res03 heads, 3 alleles** — the uricase design baseline (WT uricase sequences scored; what the uricase-RF designs are compared against). **Cluster** `run/benchmark/wt_v2/HLA-DRB1_{07_01,04_01,15_01}/wt_uricase_a1res03_HLA-DRB1_<tag>_imm_full/` (`imm_head`/`imm_nmp` + `_residues`/`_peptides` long tables; 0401/1501 also keep 48 per-allele shards). **Local (Mac)** `mhc-if-local:/Users/jerry/Project/MHC-IF/Results/IFStandalone/uricase_a1res03_immune/HLA-DRB1_{07_01,04_01,15_01}/` (imm-only; the uricase WT structures are the input PDBs, no separate struct baseline). **6388 each** — Pegloticase concatenated 2026-07-03: head global_risk/NMP strong_frac by allele 0701 −8.95/0.012 (pct 5/24), 0401 −9.25/0.020 (18/53), 1501 −8.72/0.008 (52/67); low-immune, strongly allele-dependent). Heads: 0701 = a1res03 cv5 fold0 best.pt (NMP reused from prior 6387 DRB1\*07:01 run — head-independent); 0401 = a1res03 epoch_34; 1501 = a1res03 best.pt. NMP strong_frac median **0701 0.021 / 0401 0.019 / 1501 0.005** (uricases far less 1501-immunogenic); a1res03-head↔NMP Spearman **0.70 / 0.38 / 0.46**; 1501 head healthy (left-skewed, std 2.58). Immune landscape strongly allele-dependent (e.g. Q9RV70 0701 pct 2 ↔ 1501 pct 93).
-  - **Tetramer interface gate (2026-07-21, code + 1R51 reference data ready)** — torch-free reusable metrics in `inverse_folding/evaluation/tetramer_interfaces.py`; `eval_tetramer_gate.py`/`submit_tetramer_eval.slurm` score prediction cohorts, while new `eval_tetramer_reference.py` scores a static crystal/prediction and optionally runs per-residue Rosetta `DdGScan`. Complete-polymer standardization now removes 1R51's incomplete/free amino-acid crystal records and maps N-terminal `SAC→SER` before coordinate/Rosetta scoring. Corrected 1R51 coordinate BSA: interface_1 AB/CD 5.780k Å² total (2.890k/partner), interface_2 AD/BC 5.214–5.219k (2.607–2.609k/partner), diagonal 0.738–0.740k. InterfaceAnalyzer: AB/CD dSASA 5803.7/5878.8 Å², dG −155.37 REU; AD/BC dSASA 5284.6/5330.1 Å², dG −58.21 REU; full packing/H-bond/BUNS/SC fields retained. A-B/A-D fixed-backbone alanine scan is complete: 266 chain-side rows / 133 index rows (70 AB + 63 AD), exact chain symmetry and Ala→Ala zero controls; strongest interpretable side-chain truncations are Y46A on AB (+5.686 REU) and W106A on AD (+5.780 REU). Gly/Ala/Pro values remain available but are excluded from side-chain ranking. Persistent data = `work/immune-design/tetramer_gate/reference_metrics/1R51/`; Rosetta runtime = `run/benchmark/tetramer_gate/reference_metrics/1R51/rosetta/`; stdout/stderr = `logs/benchmark/tetramer_gate/reference_metrics/1R51/rosetta/`. The five Parquet tables are exactly unchanged after path separation. Threshold calibration remains pending assembly/activity anchors; protocol = `PROTOCOL/tetramer_prediction_gate.md`.
+  - **Tetramer interface gate (2026-07-21, code + 1R51 reference data ready)** — torch-free reusable metrics in `inverse_folding/evaluation/complex_interfaces.py`; `eval_complex_gate.py`/`submit_complex_eval.slurm` score prediction cohorts, while new `eval_tetramer_reference.py` scores a static crystal/prediction and optionally runs per-residue Rosetta `DdGScan`. Complete-polymer standardization now removes 1R51's incomplete/free amino-acid crystal records and maps N-terminal `SAC→SER` before coordinate/Rosetta scoring. Corrected 1R51 coordinate BSA: interface_1 AB/CD 5.780k Å² total (2.890k/partner), interface_2 AD/BC 5.214–5.219k (2.607–2.609k/partner), diagonal 0.738–0.740k. InterfaceAnalyzer: AB/CD dSASA 5803.7/5878.8 Å², dG −155.37 REU; AD/BC dSASA 5284.6/5330.1 Å², dG −58.21 REU; full packing/H-bond/BUNS/SC fields retained. A-B/A-D fixed-backbone alanine scan is complete: 266 chain-side rows / 133 index rows (70 AB + 63 AD), exact chain symmetry and Ala→Ala zero controls; strongest interpretable side-chain truncations are Y46A on AB (+5.686 REU) and W106A on AD (+5.780 REU). Gly/Ala/Pro values remain available but are excluded from side-chain ranking. Persistent data = `work/immune-design/tetramer_gate/reference_metrics/1R51/`; Rosetta runtime = `run/benchmark/tetramer_gate/reference_metrics/1R51/rosetta/`; stdout/stderr = `logs/benchmark/tetramer_gate/reference_metrics/1R51/rosetta/`. The five Parquet tables are exactly unchanged after path separation. Threshold calibration remains pending assembly/activity anchors; protocol = `PROTOCOL/tetramer_prediction_gate.md`.
   - **Cluster path-layer debt (2026-07-21 audit)** — canonical policy is now enforced in `AGENTS.md`: experiments/runtime/predictions/MSAs/caches → `run/`, datasets/static/persistent products → `work/`, stdout/stderr → `logs/`. Future defaults were corrected in the tetramer, Phase C, and IF-IMP launchers. Legacy runtime trees still physically under `work/` include `af3_colab_test/`, `esmfold2_refold/`, `if_imp/`, `if_phase_c/`, `protenix_barrel_refold/`, `protenix_prasnase_docking/`, and tetramer `pred*/msa*` trees; they are retained in place because active jobs/manifests may reference absolute paths and must be migrated case-by-case, never by blind bulk move.
   - `missing_structure_list.{csv,fasta}` — uricases still without structure.
   - Phase C: `TEST_SET_PARQUET=uricases/uricase_caseset_if_ready_unified.parquet`, `H_MAPS_PARQUET=uricases/h_maps/h_maps_uricase_<tag>.parquet`, `PDB_ROOT=uricases/pdbs_if_ready`.
@@ -376,6 +376,15 @@ Cluster closure (2026-07-29; deployment evidence only):
   Triton, real DPLM checkpoint + 119-residue generation, and real a1res03 Head inference all pass.
   Phase C/Fusion can opt in with `CONDA_ENV=immune-design-blackwell` plus
   `--partition=rtx6000 --gres=gpu:rtx_pro_6000:1`; the default environment is unchanged.
+- **Structure-predictor Blackwell status (2026-07-31):** the existing owner-only `esmfold2` env
+  (`torch 2.12.0+cu130`) already supports `sm_120`; BF16/Triton and a real `biohub/ESMFold2`
+  27-aa fold passed, so no duplicate env was created. Protenix `v2.0.0` (`cu126`) fails its first
+  CUDA kernel on `sm_120`; owner-only `tools/protenix/envs/v2.0.0-blackwell` (`torch
+  2.7.1+cu128`) now replaces only the CUDA/PyTorch stack. The public default
+  `local_gpu MSA -> Protenix` path completed as Slurm `11853601` (`0:0`, MSA depth 191, five
+  structure samples, model forward 18.72 s, total 7m50s). H100/H200 defaults and ESMFold2
+  tetramer launchers remain unchanged; RTX selection is explicit through partition/GRES plus
+  `PROTENIX_ENV` for Protenix.
 - Canary C completed on a PLI H100 in 16m18s: both proteins reached `t0_complete`; 72/72
   B* structure requests were definitive, with exact `Q_T0=4` denominators per policy/rho.
   Its outcome-independent maturity telemetry separated `.50/.70/.85` at approximately
@@ -402,6 +411,72 @@ completed-sequence checksum is not computed.
 as the pristine tree (unrelated modules, missing optional deps) — zero new failures.
 
 ---
+
+## Active-15 uricase core-release v2 — 44-cell B1Aopen generation (2026-08-03)
+
+15 experimentally active single-domain uricases × 3 DR alleles. Search space = the union of every
+**safe P1/P4/P6/P9 anchor** across every openable WT core; the exact WT complement is hard-fixed.
+Bundle: `work/.../uricase_active15_ev_structure_v1/05_core_release_v2/` (44 constraint manifests +
+per-parent cohorts + decision ledgers + launch manifest). Runs:
+`run/inverse_folding/therapeutic_enzymes/uricase_active15_core_release_v2/`.
+
+- **Gate** = `C80 | eligible_sigma80 | full_contact_5of5 | functional_analog | ddG>=1 REU | scanned_AGP`.
+  273 strong WT cores → **186 openable (68%)**, 87 fully blocked; 44/45 cells emitted
+  (`D0VWQ1×15:01` has a single core with all four anchors blocked). Fixed fraction: median 0.9670,
+  min 0.9329, **none below 0.90**. 424 released positions, 0 stray, 0 openable core without a
+  released anchor.
+- **Why this gate, not a looser one**: `ddG>0` was demoted to `ddG>=1` because the WT alanine scan on
+  the un-relaxed predicted ensemble reaches **−371 REU at 1.0–1.2 Å cross-chain heavy-atom distances**
+  (clash blow-ups, not WT instability); it buys only +2 cores because `full_contact_5of5` already
+  subsumes 97.9% of `gt0` anchor hits. `full→mid_contact_5of5` is the real lever (**184→207 cores**,
+  fixed-fraction median only 0.9689→0.9636, all 38 newly-released positions have negative assembly
+  ddG and zero catalytic-5of5 membership) — **deliberately deferred until a design shows activity**.
+- **Generation** (array `11971273`, 44 tasks, rtx6000 `%6`, `immune-design-blackwell`): **44/44
+  COMPLETED, 0 failures, 9.55 GPU-h**. Controller `d2_d3_full_stageB_aopen_beta5p0` hash `2c39f229`
+  (identical to PD1/ADA/ADI/Q00511 cases), per-allele a1res03 LC1 head, no h-map (`constant_one`
+  never consumes h). **5610 designs → 4910 unique (87.5%)**; all anchors preserved in every design
+  (independently re-verified per sequence, not just the runtime flag).
+- **Diversity is set by commit rate, not by free-position count**: controller touches a median
+  **92.9%** of free positions, so headroom is not the constraint. `mut_per_design` (median 4.21,
+  range 0.35–9.77) is what predicts unique output — two `free=11` cells with `mut_per_design≈2.05`
+  produced only 89/98 unique while `free=8` cells at `≈4.0` produced 142. **`n_designs = 20×n_free`
+  is the wrong scaling law**; next round should size on expected mutations per design.
+- **Degenerate cells**: `Q7SBV5×15:01` (free=1, `mut_per_design` 0.35) yielded **2 unique from 20** —
+  ~65% of its designs are literally WT. `free<=2` cells (4 of them) all returned <14 unique.
+- **Frame**: generated full-length with the initiator Met hard-locked at `index_0b: 0`. Prediction and
+  crystal comparison use the mature frame at `--crystal-offset 0`; ordering uses full-length with Met.
+  Met excision is NOT universal — `A0A9P8P4R1` (res2=L) and `Q9RV70` (res2=M) keep theirs. Frozen in
+  `PROTOCOL/tetramer_prediction_gate.md`.
+- **Evaluation** (4910 unique designs): fold 6/6 shards, cache 4906/4906, pLDDT median 0.963.
+  **Immune: 59.9% (3361/5610) beat their WT**, best-drop median 41%/43%/49% for 04:01/07:01/15:01,
+  38 designs reach zero (all `Q9RV70×15:01`). Structure: scTM 100% ≥0.90, recovery median 0.983,
+  `active_site_complete` and `foldability` both 100%. Immune gain is uncorrelated with structural
+  cost (|ρ| ≤ 0.071 against CA RMSD, active-site RMSD, and recovery).
+- **Structure metrics are predictor-dominated in this near-WT regime** — established against a
+  same-path WT floor (`run/.../wt_floor/`, 44 cells, WT folds reused as cache hits):
+  - the WT floor itself spans `scTM` 0.922–0.992, `cat_max_scRMSD` **0.556–12.937 Å**,
+    `predicted_active_site_min_pLDDT` 58.3–86.4, so **any absolute cross-parent gate rejects some
+    parent's own wild type** (`cat≤2.5` kills A0A9P8P4R1; `pLDDT≥70` kills four parents);
+  - design/WT ratios for `cat_max_scRMSD` are 0.91–1.64, median ≈1.00;
+  - per-parent WT-vs-AFDB TM and design median scTM agree to three decimals → **scTM has no
+    discriminating power here**, only collapse-guard value.
+  - `A0A9P8P4R1`'s apparent 12.5 Å catalytic displacement is an artifact of the untrimmed
+    full-residue Kabsch fit: its ~26-residue N-terminal extension sits 30–60 Å off AFDB **more in
+    the WT than in the designs**. Refit on residues 20+: catalytic RMSD **0.55 Å** vs AFDB,
+    **0.23 Å** vs WT-ESMFold2. Its designs are structurally fine.
+- **Refinement — RUNNING** (44 cells → 109 shards, rtx6000, submitted 2026-08-04). Full-cohort per
+  `PROTOCOL/shortlist_and_refine_seed_selection.md`: all **4910 cell-specific unique seeds** enter
+  (dedup on `protein_id+allele+sequence`; the global-dedup table drops the allele dimension and
+  gives 4906), no immune/structure pre-shortlist, same constraint manifests as generation. Gate =
+  each parent's own WT floor + cohort-wide margins (−0.03 scTM / +1.0 Å cat / −15 pLDDT), leaving
+  95.5% of seeds inside and no cell under 50%. Three contract fixes were required first: the
+  manifests needed `direct_functional_union_uniprot_1b` (else the gate cannot resolve
+  `cat_max_scRMSD` and fails closed), the refold cache needed atomic writes (44 jobs share one
+  content-addressed cache), and `STRONG_RANK` must stay **0.02** — refine's `nmp_fn` emits
+  `rank_EL` as a fraction while `evaluate`'s table stores 0–100 percent. Measured ≈6 min/seed at
+  6-way concurrency (NMP-bound; rtx6000 is a single 64-core node, so more GPUs would not help).
+- **Next**: on completion, `merge_refine_shards.py` → `verify_refine.py` full pass → paired
+  WT → seed → refined cohort into the tetramer gate.
 
 ## Backup Collection — wet-lab targets (NEW, 2026-07-13)
 

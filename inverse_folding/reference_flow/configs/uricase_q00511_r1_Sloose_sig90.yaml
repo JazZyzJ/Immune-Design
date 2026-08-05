@@ -1,0 +1,107 @@
+# Q00511 round-1 rescue-first constraint — cell Sloose_sig90
+# Matrix cell: original structure=loose plus the universal C>=0.8 outside-full add-on, with sigma>=0.9.
+# Only the constraint manifest changes across cells; run every cell with the unchanged c1_null sampler.
+# Sigma uses no conservation exclusion; gap_frac<=0.5 is a majority-nongap sanity guard.
+schema_version: uricase_round1_rescue_v2
+description: >-
+  Matrix cell: original structure=loose plus the universal C>=0.8 outside-full add-on, with
+  sigma>=0.9.
+numbering_contract: index_0b == UniProt_position-1 == PDB_author == mature == EV_pos_mature
+annotation_provenance:
+  uniprot: {accession: Q00511, sequence_length: 302, sequence_md5: 37bdca69e4f1ddd590d6d54618ef9152}
+  direct_functional_union_uniprot_1b: [11, 58, 59, 160, 177, 228, 229, 255, 257]
+  cell: Sloose_sig90
+  original_structure_level: loose
+  original_structure_n: 24
+  conservation_base_scope: C_i_nogap>=0.8_outside_original_full_structure_only
+  conservation_base_n: 8
+  conservation_base_positions_index_0b: [40, 50, 77, 145, 157, 186, 224, 301]
+  conservation_base_positions_uniprot_1b: [41, 51, 78, 146, 158, 187, 225, 302]
+  conservation_terminal_note: >-
+    L302/index_0b=301 has gap_frac=0.911 and is the terminal SKL/PTS1 context; it is retained
+    as a rescue-first exact-WT anchor, not classified as activity-specific evidence.
+  structure_plus_conservation_base_n: 32
+  n_fixed: 63
+  pct_fixed: 20.9
+  sigma_pct_threshold: 0.9
+  required_sampler_config: inverse_folding/reference_flow/configs/c1_null.yaml
+  required_sampler_sha256: 51563e79571f87447413709df0c80ab75c353efff2657f4400e065a9875b2542
+  required_remask_fraction_scale: 1.0
+  sigma_selection_rule: sigma_pct >= threshold AND gap_frac <= 0.5
+  sigma_uses_conservation_filter: false
+  sigma_gap_fraction_cap: 0.5
+  sigma_n_positions: 31
+  sigma_model: deep_iter500
+  sigma_model_opt_status: ROUNDING_ERROR
+  sigma_scores_source: Results/Reference/Covariance/coupling/03_scores/deep_iter500_scores.tsv
+  sigma_ecs_source: Results/Reference/Covariance/coupling/02_couplings/deep_iter500_ECs.txt
+  sigma_scores_sha256: 7ac0e648e0ceb8249c64d517590196bddf068baca88709b3dd3f635eb309e883
+  sigma_ecs_sha256: 9d1a52f4e452813d35427507678ed4419551509a9e75d83a54642de8ad71bb1f
+  enforcement_policy: hard_fix_exact_wt
+entries:
+  - protein_id: Q00511
+    sequence_md5: 37bdca69e4f1ddd590d6d54618ef9152
+    hard_anchors:
+      - {index_0b: 8, expected_aa: Y, label: Y9, biological_role: active_site|iface_AB}
+      - {index_0b: 10, expected_aa: K, label: K11, biological_role: active_site|iface_AB}
+      - {index_0b: 16, expected_aa: Y, label: Y17, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 33, expected_aa: T, label: T34, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 36, expected_aa: V, label: V37, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 40, expected_aa: G, label: G41, biological_role: conservation_C_i_nogap>=0.8_outside_full_structure}
+      - {index_0b: 45, expected_aa: S, label: S46, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 50, expected_aa: D, label: D51, biological_role: conservation_C_i_nogap>=0.8_outside_full_structure}
+      - {index_0b: 53, expected_aa: V, label: V54, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 54, expected_aa: I, label: I55, biological_role: active_site|iface_AB}
+      - {index_0b: 56, expected_aa: A, label: A57, biological_role: active_site|iface_AB}
+      - {index_0b: 57, expected_aa: T, label: T58, biological_role: active_site|iface_AB}
+      - {index_0b: 58, expected_aa: D, label: D59, biological_role: active_site|iface_AB}
+      - {index_0b: 61, expected_aa: K, label: K62, biological_role: active_site|iface_AB}
+      - {index_0b: 64, expected_aa: I, label: I65, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 76, expected_aa: P, label: P77, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 77, expected_aa: E, label: E78, biological_role: conservation_C_i_nogap>=0.8_outside_full_structure}
+      - {index_0b: 79, expected_aa: F, label: F80, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 80, expected_aa: G, label: G81, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 82, expected_aa: I, label: I83, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 88, expected_aa: I, label: I89, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 94, expected_aa: I, label: I95, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 101, expected_aa: I, label: I102, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 127, expected_aa: K, label: K128, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 130, expected_aa: V, label: V131, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 131, expected_aa: Q, label: Q132, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 132, expected_aa: V, label: V133, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 144, expected_aa: S, label: S145, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 145, expected_aa: S, label: S146, biological_role: conservation_C_i_nogap>=0.8_outside_full_structure}
+      - {index_0b: 147, expected_aa: S, label: S148, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 152, expected_aa: L, label: L153, biological_role: active_site|iface_AD}
+      - {index_0b: 154, expected_aa: S, label: S155, biological_role: active_site|iface_AD}
+      - {index_0b: 157, expected_aa: S, label: S158, biological_role: conservation_C_i_nogap>=0.8_outside_full_structure}
+      - {index_0b: 159, expected_aa: F, label: F160, biological_role: active_site|iface_AB}
+      - {index_0b: 160, expected_aa: W, label: W161, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 163, expected_aa: L, label: L164, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 164, expected_aa: R, label: R165, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 170, expected_aa: L, label: L171, biological_role: active_site|iface_AB}
+      - {index_0b: 172, expected_aa: E, label: E173, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 174, expected_aa: W, label: W175, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 176, expected_aa: R, label: R177, biological_role: active_site}
+      - {index_0b: 186, expected_aa: W, label: W187, biological_role: conservation_C_i_nogap>=0.8_outside_full_structure}
+      - {index_0b: 188, expected_aa: W, label: W189, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 189, expected_aa: K, label: K190, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 205, expected_aa: D, label: D206, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 214, expected_aa: V, label: V215, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 223, expected_aa: N, label: N224, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 224, expected_aa: S, label: S225, biological_role: conservation_C_i_nogap>=0.8_outside_full_structure}
+      - {index_0b: 226, expected_aa: S, label: S227, biological_role: active_site|iface_AB}
+      - {index_0b: 227, expected_aa: V, label: V228, biological_role: active_site}
+      - {index_0b: 228, expected_aa: Q, label: Q229, biological_role: active_site|iface_AB}
+      - {index_0b: 238, expected_aa: I, label: I239, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 242, expected_aa: Q, label: Q243, biological_role: coevo_sigma_pct>=0.9_gap<=0.5}
+      - {index_0b: 253, expected_aa: P, label: P254, biological_role: active_site}
+      - {index_0b: 254, expected_aa: N, label: N255, biological_role: active_site}
+      - {index_0b: 255, expected_aa: K, label: K256, biological_role: active_site}
+      - {index_0b: 256, expected_aa: H, label: H257, biological_role: active_site|iface_AB}
+      - {index_0b: 258, expected_aa: F, label: F259, biological_role: active_site}
+      - {index_0b: 259, expected_aa: E, label: E260, biological_role: active_site}
+      - {index_0b: 284, expected_aa: P, label: P285, biological_role: active_site|iface_AB}
+      - {index_0b: 286, expected_aa: G, label: G287, biological_role: active_site|iface_AB}
+      - {index_0b: 288, expected_aa: I, label: I289, biological_role: active_site|iface_AB}
+      - {index_0b: 301, expected_aa: L, label: L302, biological_role: conservation_C_i_nogap>=0.8_outside_full_structure|Q00511_C_terminal_SKL_context}

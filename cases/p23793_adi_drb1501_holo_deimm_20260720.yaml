@@ -1,0 +1,132 @@
+tag: p23793_adi_drb1501_holo_deimm_20260720
+date: 2026-07-20
+goal: >-
+  Select de-immunized arginine deiminase (ADI / P23793) candidates that retain substrate
+  recognition, by running the holo protocol's REDUCED form on the 0-NMP refinement shortlist.
+  ADI is the ORDINARY instantiation: no metal cofactor and no transition-state analogue, so only
+  T0 plus a single-ligand substrate check applies - T1 and T2 are structurally absent, not skipped.
+  The discriminating metric is a group-aware interaction fingerprint, not a pose RMSD.
+protocol: PROTOCOL/holo_catalytic_gate_calibration.md
+runner: >-
+  /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_validation/run_cand_holo.sh
+status: selected
+
+inputs:
+  protein_id: P23793_ARCA_MYCAR
+  allele: HLA-DRB1*15:01
+  run_dir: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/phase_d/therapeutic_enzymes/HLA-DRB1_15_01/therapeutic_p23793_drb1501_b1aopen_beta5p0_n200_seed10_20260719T045615Z
+  n_designs: 200
+  refine_dir: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/refine/therapeutic_enzymes/adi_p23793_drb1501
+  n_refined: 5079
+  refine_seed_table: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/refine_seeds/refine_seeds_P23793_ARCA_MYCAR.parquet
+  n_refine_seeds: 64
+  constraint_manifest: inverse_folding/reference_flow/configs/therapeutic_enzymes_active_site_v0.yaml
+  n_hard_anchors: 30
+  test_set_parquet: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/therapeutic_enzymes_caseset_if_ready.parquet
+  pdb_root: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/pdbs_if_ready
+  wt_holo_baseline_dir: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_baseline
+
+config:
+  generation: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/phase_d/therapeutic_enzymes/HLA-DRB1_15_01/therapeutic_p23793_drb1501_b1aopen_beta5p0_n200_seed10_20260719T045615Z/run_config.yaml
+  controller: d2_d3_full_stageB_aopen_beta5p0 (hash 2c39f229e92dd58f4beb4b5e2a4eb4ac7657ece79f0489a412123a4b579e3373)
+  ligand_states: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_baseline/ligand_states.yaml
+cli_overrides: "refine gate: --gate-sctm-min 0.94 --gate-cat-max-scrmsd-max 3.3 --gate-active-site-min-plddt-min 81"
+
+models:
+  head: cnn_himp_a1_res03_drb1501_seed42 (LC1, seed 42)
+  immune_oracle: NetMHCIIpan-4.3 accelerated (strong = rank_EL < 2%)
+  refolder_monomer: esmfold2
+  predictor_holo: Protenix (local ColabFold MSA, 5 samples per candidate, seed 101)
+
+criteria:
+  # --- ligand state: the PRIMARY physiological zwitterion; the neutral form is a control only ---
+  ligand_state_id_primary: L_ARG_PHYS_QP1
+  ligand_state_id_sensitivity_control: L_ARG_NEUTRAL_PUBCHEM
+  ligand_formal_charge: 1
+
+  # --- T0 apo (hard); the ADI floor is looser than ADA's because WT self-consistency is looser ---
+  t0_sctm_min: 0.94
+  t0_cat_max_scrmsd_max: 3.3
+  t0_active_site_min_plddt_min: 81.0
+  t0_wt_selfconsistency_active_site_scrmsd: 0.82
+
+  # --- T1 / T2 do not exist for this target ---
+  t1_metal_coordination: not applicable - ADI is metal-independent
+  t2_transition_state_analogue: not applicable - no TS analogue reagent (PRH is ADA-only)
+
+  # --- substrate recognition: group-aware fingerprint (groups by CONNECTIVITY, not atom names) ---
+  guanidinium_partners: D161, D271
+  carboxylate_partners: R180, R232
+  alpha_ammonium_partners: L44, N155, G392
+  contact_cutoff_ang: 4.0
+  min_samples_per_partner: 4
+  n_samples: 5
+  catalytic_c398_sg_to_guanidinium_cz_median_max_ang: 4.0
+  wt_c398_sg_to_cz_ang: 2.98
+
+  raw_rmsd_role: monitor only - report the symmetry-aware value (guanidinium NH1/NH2 and carboxylate O/OXT exchange permitted)
+  immune_role: hard prefilter (core_count_after == 0), never a ranker
+
+outputs:
+  holo_shortlist:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_shortlist/holo_candidates_ADI_P23793_ARCA_MYCAR.parquet
+    n: 10
+  substrate_verdict:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_validation/holo_verdict_ADI.parquet
+    n: 10
+    n_pass: 10
+    all_partners_5of5: true
+    c398_cz_range: [2.91, 3.04]
+  final:
+    file: >-
+      /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_validation/FINAL_candidates_25.parquet
+    n: 25
+    n_this_target: 10
+    n_mutations_range: [1, 2]
+    sctm_range: [0.978, 0.991]
+    active_site_scrmsd_range: [0.529, 0.890]
+    min_plddt_range: [87.0, 92.2]
+  returned: >-
+    returned to the Mac via mhc-if-local as
+    Results / TherapeuticEnzymes_deimmunized_20260720 (11 files, 628K)
+
+notes:
+  - >-
+    THIS IS THE TEMPLATE FOR AN ORDINARY TARGET. Compared with the ADA case, T1 (metal) and T2 (TS
+    analogue) are absent because the chemistry has neither, leaving T0 plus one substrate complex.
+    Copy this file, not the ADA one, for a metal-independent single-substrate enzyme.
+  - >-
+    All 10 candidates passed - a 100% pass rate is a WEAK result, not a strong one. It means this
+    gate did not discriminate within this cohort, either because the shortlist was already
+    structurally excellent or because a 4.0 A contact criterion on 5 samples is too permissive to
+    separate candidates. Do not read it as validation of the gate's power.
+  - >-
+    RAW RMSD IS AN ARTIFACT DETECTOR, NOT A METRIC. In the neutral-state run the raw pairwise ligand
+    RMSD median was 0.94 A but the symmetry-aware value was 0.11 A - the apparent spread was entirely
+    guanidinium NH1/NH2 and carboxylate O/OXT atom-naming symmetry. Always report symmetry-aware.
+  - >-
+    Protonation robustness was established AT THE WT LEVEL ONLY: the +1 and neutral states give
+    identical group consensus sets (Jaccard 1.00 each), salt bridges within 0.06 A, catalytic
+    distances within 0.05 A. The decision rule's remaining clause - candidate RANKING stability
+    between the two states - was unevaluable when the baseline was run (no candidates existed) and
+    has still not been checked on these 10. It is the open item for this target.
+  - >-
+    ASSEMBLY CAVEAT: the native state is an A2 homodimer whose interface borders the substrate
+    channel, so monomer-only refolding is EXPLORATORY. An assembly-return check and an experimental
+    oligomeric-state assay are required before claiming retained activity.
+  - >-
+    The looser T0 floor (cat_max 3.3 A, pLDDT 81 vs ADA's 1.0 / 90) is not a relaxation of standards
+    - it is calibrated on this protein's own WT self-consistency (0.82 A vs ADA's 0.27 A). Holding
+    ADI to ADA's numbers would fail the positive control.
+  - >-
+    Evidence boundary: computational candidates only. Donor PBMC / CD4 T-cell assays and an
+    arginine-deiminase activity assay are still required.

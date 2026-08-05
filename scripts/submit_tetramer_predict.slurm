@@ -13,6 +13,10 @@
 #   sbatch --account=pli_x --qos=pli-low --partition=pli --gres=gpu:h100:1 --array=0-21 \
 #     --output=<logs>/tetra_%A_%a.out --error=<logs>/tetra_%A_%a.err \
 #     scripts/submit_tetramer_predict.slurm <READY_LIST> <PRED_ROOT> [protenix flags]
+# RTX PRO 6000 Blackwell:
+#   PROTENIX_ENV=/scratch/gpfs/KAIYIJIANG/tools/protenix/envs/v2.0.0-blackwell \
+#     sbatch --partition=rtx6000 --gres=gpu:rtx_pro_6000:1 --array=0-21 \
+#     scripts/submit_tetramer_predict.slurm <READY_LIST> <PRED_ROOT> [protenix flags]
 #SBATCH --job-name=tetra_pred
 #SBATCH --account=kaiyijiang
 #SBATCH --partition=ailab

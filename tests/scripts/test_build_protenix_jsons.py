@@ -38,3 +38,39 @@ def test_msa_paths_attach_to_protein_chain_only():
     assert b[0]["proteinChain"]["pairedMsaPath"] == "p.a3m"
     assert b[0]["proteinChain"]["unpairedMsaPath"] == "np.a3m"
     assert "pairedMsaPath" not in b[1]["ligand"]
+
+
+# --- hetero-complex partner chains (binder : target) ---------------------------------------
+
+
+def test_partner_becomes_a_second_distinct_protein_chain():
+    partner = {"sequence": "CCCC", "count": 1, "paired": "tp.a3m", "unpaired": "tnp.a3m"}
+    b = build_sequences_block("AAAA", 1, apo=True, paired="p.a3m", unpaired="np.a3m",
+                              partners=[partner])
+    assert len(b) == 2
+    assert b[0]["proteinChain"]["sequence"] == "AAAA"
+    assert b[1]["proteinChain"] == {
+        "sequence": "CCCC", "count": 1,
+        "pairedMsaPath": "tp.a3m", "unpairedMsaPath": "tnp.a3m",
+    }
+
+
+def test_partner_chains_precede_ligand_entities():
+    partner = {"sequence": "CCCC", "count": 2}
+    b = build_sequences_block("AAAA", 1, ligands=[ZN], partners=[partner])
+    assert list(b[0]) == ["proteinChain"]
+    assert list(b[1]) == ["proteinChain"]
+    assert b[1]["proteinChain"]["count"] == 2
+    assert list(b[2]) == ["ligand"]
+
+
+def test_multiple_partners_keep_order():
+    b = build_sequences_block("AAAA", 1, apo=True,
+                              partners=[{"sequence": "CCCC"}, {"sequence": "DDDD"}])
+    assert [s["proteinChain"]["sequence"] for s in b] == ["AAAA", "CCCC", "DDDD"]
+    assert all(s["proteinChain"]["count"] == 1 for s in b[1:])  # count defaults to 1
+
+
+def test_no_partners_is_byte_for_byte_the_old_behaviour():
+    assert build_sequences_block("AAAA", 4) == build_sequences_block("AAAA", 4, partners=None)
+    assert build_sequences_block("AAAA", 4, partners=[]) == build_sequences_block("AAAA", 4)
