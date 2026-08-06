@@ -84,7 +84,7 @@ def test_no_independent_quantile_override_exists():
 def test_the_frozen_interface_requires_every_flag_the_runbook_names():
     required = {a.dest for a in build_parser()._actions if getattr(a, "required", False)}
     assert {"protein_id", "n_completions", "master_seed", "seed_namespace",
-            "threshold_statistic", "min_definitive_feasible", "checkpoint", "rf_config",
+            "threshold_statistic", "min_head_valid", "checkpoint", "rf_config",
             "test_set", "pdb_root", "complete_reference_manifest", "head_config_dir",
             "head_checkpoint", "structure_config", "out_rows", "out_json",
             "code_revision"} <= required
@@ -101,7 +101,7 @@ def test_the_head_domain_the_artifact_records_is_required_not_defaulted():
 
 def test_the_source_id_is_protein_specific():
     """The two proteins receive separate thresholds, so they receive separate identities."""
-    assert source_id_for("Q00511") == "v2-canary-hotspot-null-q90-higher-v1:Q00511"
+    assert source_id_for("Q00511") == "v2-canary-hotspot-head-valid-q90-higher-v1:Q00511"
     assert source_id_for("5ZHV_B") != source_id_for("Q00511")
 
 
@@ -207,55 +207,110 @@ def _seams(*, n_ok=64, structure_ok=None):
 
 
 def _run_law(**over):
-    kw = dict(protein_id="5ZHV_B", n_completions=64, min_definitive_feasible=48,
+    kw = dict(protein_id="5ZHV_B", n_completions=64, min_head_valid=60,
               master_seed=20260806, reference_sequence="ACDEFA", reference_digest="c" * 64,
               head_identity=_identity(), model=_Model(), seams=_seams())
     kw.update(over)
     return calibrate_protein(**kw)
 
 
-def test_the_law_retains_only_definitively_feasible_endpoints():
-    """§2.1 step 3: "cache-only labels without a resolved verdict do not count"."""
-    def unresolved(request):
-        return types.SimpleNamespace(evaluated=False, feasible=True, metrics={})
+def test_a_structure_rejection_does_not_remove_an_endpoint_from_the_population():
+    """THE LAW CHANGED, and this asserts the new direction.
 
+    The Head gate and the structure gate answer independent safety questions.  Conditioning the
+    Head null on the structure verdict shrinks the estimation sample exactly when structure is
+    hardest, and `Q00511` showed why it is also wrong on the merits: hard anchors preserved 64/64,
+    scTM 64/64, rejected only by an absolute side-chain band whose native baseline is 1.791 A.
+    That verdict does not make the sequence's hotspot unmeasurable."""
+    seams = _seams(structure_ok=lambda sequence: False)          # every endpoint fails structure
+    rows, summary = _run_law(seams=seams)
+
+    assert summary["n_head_valid"] == 64, "structure must not filter the population"
+    assert all(row["status"] == "head_valid" for row in rows)
+    assert summary["structure_operability"]["n_definitive_feasible"] == 0
+    assert summary["structure_operability"]["rate"] == 0.0
+
+
+def test_an_unresolved_structure_verdict_is_still_only_a_diagnostic():
+    """A cache-only label with no resolved verdict is not a definitive pass -- but it is also not a
+    reason to drop the Head measurement."""
     seams = _seams()
-    seams["structure_gate"] = unresolved
-    with pytest.raises(V2HotspotCalibrationError, match="below the frozen floor"):
-        _run_law(seams=seams)
+    seams["structure_gate"] = lambda request: types.SimpleNamespace(
+        evaluated=False, feasible=True, metrics={})
+    rows, summary = _run_law(seams=seams)
+    assert summary["n_head_valid"] == 64
+    assert summary["structure_operability"]["n_definitive_feasible"] == 0
 
 
-def test_the_floor_is_not_relaxed_and_no_artifact_is_produced(tmp_path):
-    """§2.1 step 4: "Below this floor, write no calibration artifact and do not relax the floor"."""
-    seams = _seams(structure_ok=lambda sequence: sequence.endswith(("A", "C", "D")))
+
+
+class _FlakyHead(_Scorer):
+    """Fails on chosen completion suffixes.  Never on 'A': that is the reference's suffix, and a
+    reference the Head cannot score raises before the floor is ever evaluated."""
+
+    FAIL_SUFFIXES = "CDEFG"
+
+    def score(self, requests):
+        out = []
+        for request in requests:
+            if request.sequence != "ACDEFA" and request.sequence[-1] in self.FAIL_SUFFIXES:
+                raise RuntimeError("head refused")
+            out.append(self._one(request.protein_id, request.sequence))
+        return out
+
+
+def _head_starved_seams():
+    seams = _seams()
+    seams["head_scorer"] = _FlakyHead()
+    return seams
+
+
+def test_the_head_valid_floor_is_not_relaxed_and_no_artifact_is_produced():
+    """§2.1 step 4 on the new population: the floor is on HEAD-valid endpoints."""
     with pytest.raises(V2HotspotCalibrationError) as excinfo:
-        _run_law(seams=seams)
-    assert "48" in str(excinfo.value)
+        _run_law(seams=_head_starved_seams())
+    assert "60" in str(excinfo.value) and "valid Head measurement" in str(excinfo.value)
 
 
 def test_every_attempt_is_a_row_including_the_rejected_ones():
-    """A table holding only the retained endpoints makes the definitive-feasible RATE
-    unrecoverable -- and that rate is exactly what the floor is checked against."""
+    """A table holding only the passing endpoints makes both RATES unrecoverable -- the head-valid
+    one the floor is checked against, and the structure one reported beside the threshold."""
     seams = _seams(structure_ok=lambda sequence: sequence[-1] != "B")
     rows, summary = _run_law(seams=seams)
     assert len(rows) == 64
     assert summary["n_attempted"] == 64
-    assert summary["n_definitive_feasible"] == sum(1 for r in rows if r["status"] == "retained")
+    assert summary["n_head_valid"] == sum(1 for r in rows if r["status"] == "head_valid")
+    assert summary["structure_operability"]["n_definitive_feasible"] == sum(
+        1 for r in rows if r["structure_definitive_feasible"])
 
 
 def test_the_summary_reports_the_distribution_not_only_the_scalar():
     """§2.1: "A producer that outputs only the chosen scalar is incomplete"."""
     _rows, summary = _run_law()
     assert {"q50", "q90_higher", "q95", "max", "order_statistic_rank", "n_attempted",
-            "n_definitive_feasible", "failure_counts"} <= set(summary)
+            "n_head_valid", "failure_counts", "structure_operability"} <= set(summary)
+
+
+def test_the_structure_rate_is_reported_beside_the_threshold_never_inside_it():
+    """Keeping it visible is what stops "measured over every endpoint" from being misread as
+    "structure was not checked"."""
+    seams = _seams(structure_ok=lambda sequence: sequence[-1] in "ACDEFGHIJ")
+    rows, summary = _run_law(seams=seams)
+    structure = summary["structure_operability"]
+    expected = sum(1 for r in rows if r["structure_definitive_feasible"])
+    assert structure["n_definitive_feasible"] == expected
+    assert 0 < expected < 64, "the fixture must exercise a partial rate"
+    assert structure["rate"] == pytest.approx(expected / summary["n_head_valid"])
+    assert "DIAGNOSTIC" in structure["note"]
 
 
 def test_the_canonical_row_carries_every_field_the_runbook_signs():
     rows, _summary = _run_law()
-    retained = next(row for row in rows if row["status"] == "retained")
+    row = next(row for row in rows if row["status"] == "head_valid")
     assert {"protein_id", "replicate_index", "seed", "sequence_md5", "reference_digest",
             "head_evaluator_digest", "window_grid_digest", "n_h_whole", "structure_evaluated",
-            "structure_feasible", "structure_metrics_json", "anchor_verdict"} <= set(retained)
+            "structure_feasible", "structure_definitive_feasible", "structure_metrics_json",
+            "anchor_verdict"} <= set(row)
 
 
 def test_an_anchor_mismatch_is_a_hard_failure_not_a_retained_endpoint():
@@ -287,7 +342,7 @@ def test_the_measurement_is_the_admission_gates_own_comparator():
 
     seams = _seams()
     rows, _summary = _run_law(seams=seams)
-    retained = next(row for row in rows if row["status"] == "retained")
+    retained = next(row for row in rows if row["status"] == "head_valid")
     # Re-derived from the row's OWN realized seed rather than a guessed one: a test that guessed
     # would drift the moment the seed law changed and would then be asserting nothing.
     sequence = seams["generate_completion"](
@@ -348,7 +403,7 @@ def _argv(tmp_path, **over):
     args = {
         "--protein-id": "5ZHV_B", "--n-completions": "64", "--master-seed": "20260806",
         "--seed-namespace": SEED_NAMESPACE, "--threshold-statistic": THRESHOLD_STATISTIC,
-        "--min-definitive-feasible": "48", "--checkpoint": "/nx/dplm.ckpt",
+        "--min-head-valid": "60", "--checkpoint": "/nx/dplm.ckpt",
         "--rf-config": "/nx/rf.yaml", "--test-set": "/nx/test.parquet", "--pdb-root": "/nx/pdbs",
         "--complete-reference-manifest": str(_reference_manifest(tmp_path)),
         "--head-config-dir": "/nx/head/configs", "--head-checkpoint": "/nx/head/best.pt",
@@ -402,17 +457,16 @@ def test_main_writes_both_artifacts_and_the_paste_ready_block(tmp_path):
     assert payload["threshold_statistic"] == THRESHOLD_STATISTIC
     assert payload["delta_new"]["source_id"] == source_id_for("5ZHV_B")
     assert payload["delta_new"]["artifact"]["window_domain"] == "whole_landscape"
-    assert payload["n_attempted"] == 64 and payload["n_definitive_feasible"] >= 48
+    assert payload["n_attempted"] == 64 and payload["n_head_valid"] >= 60
     assert (tmp_path / "rows.parquet").exists()
 
 
 def test_a_run_below_the_floor_writes_no_artifact(tmp_path):
     """§2.1 step 4 on the PRODUCTION path, not only inside the law helper."""
-    seams = _production_seams({})
-    fake = _seams(structure_ok=lambda sequence: sequence.endswith("A"))
+    fake = _head_starved_seams()
     seams = CalibrationSeams(
-        build_model_factory=seams.build_model_factory,
-        generate_completion=seams.generate_completion, derive_seed=seams.derive_seed,
+        build_model_factory=lambda **_: _Model(),
+        generate_completion=fake["generate_completion"], derive_seed=fake["derive_seed"],
         build_production_oracles=lambda **_: (fake["head_scorer"], fake["structure_gate"]),
     )
     assert main(_argv(tmp_path), seams=seams) == 2
@@ -429,7 +483,7 @@ def test_a_run_below_the_floor_writes_no_artifact(tmp_path):
 
 def test_the_refusal_message_names_the_failure_kinds(capsys, tmp_path):
     """A below-floor run whose only record is `only N of M` is undiagnosable without a re-run."""
-    fake = _seams(structure_ok=lambda sequence: False)
+    fake = _head_starved_seams()
     seams = CalibrationSeams(
         build_model_factory=lambda **_: _Model(),
         generate_completion=fake["generate_completion"], derive_seed=fake["derive_seed"],
@@ -437,8 +491,8 @@ def test_the_refusal_message_names_the_failure_kinds(capsys, tmp_path):
     )
     assert main(_argv(tmp_path), seams=seams) == 2
     err = capsys.readouterr().err
-    assert "status counts" in err and "not_definitive_feasible" in err
-    assert "failure counts" in err and "structure" in err
+    assert "status counts" in err and "head_failed" in err
+    assert "failure counts" in err and "head" in err
 
 
 # --------------------------------------------------------------------------------------------

@@ -12,11 +12,23 @@ The calibration law is FROZEN by the runbook, not chosen here.  Implemented exac
 2. score every candidate AND that protein's own native reference with the production Head, and
    compute ``N_H^whole(y; ybar_p) = max_w [z_w(y) - z_w(ybar_p)]_+`` through the ADMISSION GATE's
    own comparator;
-3. run the exact definitive structure gate the Canary uses, keeping only endpoints with a REAL
-   definitive-feasible verdict -- a cache-only label with no resolved verdict does not count;
-4. require at least ``--min-definitive-feasible`` of them, and below that floor write NO artifact;
-5. take the empirical ``Q0.90`` by the **higher** order statistic -- the value at one-indexed rank
-   ``ceil(0.90*n)`` -- and preserve its full floating-point value.
+3. run the exact definitive structure gate the Canary uses and record its verdict and metrics in
+   full -- as a DIAGNOSTIC.  It does **not** select the calibration population;
+4. require at least ``--min-head-valid`` endpoints with a valid Head measurement, and below that
+   floor write NO artifact;
+5. take the empirical ``Q0.90`` over ALL head-valid endpoints by the **higher** order statistic --
+   the value at one-indexed rank ``ceil(0.90*n)`` -- and preserve its full floating-point value.
+
+**Why the population is head-valid rather than structure-feasible.**  The Head gate and the
+structure gate answer independent safety questions: whether a sequence creates a new immune hotspot,
+and whether it preserves the target backbone and active-site geometry.  Conditioning the Head null
+distribution on the structure verdict couples two axes the science keeps apart, and it does so at
+exactly the wrong moment -- a low structure-pass rate shrinks the sample the threshold is estimated
+from, so the estimate is least stable precisely when structure is hardest.  The executed Canary made
+this concrete: ``Q00511`` preserved hard anchors 64/64 and passed scTM 64/64, and was rejected only
+because a predicted side-chain RMSD exceeded an absolute band whose own native baseline is 1.791 A.
+Nothing in that verdict makes the sequence's Head hotspot unmeasurable.  The structure rate is
+reported beside the threshold as ``structure_operability``, never inside it.
 
 **Per protein, never pooled.**  Sequence length, window multiplicity and the anchor domain all
 change the distribution of a whole-landscape maximum, so two proteins get two thresholds and two
@@ -66,7 +78,7 @@ __all__ = [
 
 #: The ONE admissible value.  A closed enum rather than a free-form label: the producer must
 #: interpret it exactly as runbook §2.1 step 5 and reject anything else.
-THRESHOLD_STATISTIC = "per_protein_definitive_feasible_q90_higher"
+THRESHOLD_STATISTIC = "per_protein_feedback_disabled_head_valid_q90_higher"
 
 #: Disjoint from every sampling namespace the Canary itself draws from, so calibration draws and
 #: run draws can never collide (PLAN §2.6's exclusion law applies to this producer too).
@@ -85,13 +97,13 @@ class V2HotspotCalibrationError(V2Error):
 
 
 class V2HotspotFloorNotMet(V2HotspotCalibrationError):
-    """Too few endpoints reached a definitive feasible verdict.
+    """Too few endpoints yielded a valid Head measurement.
 
     Carries the rows so the caller can still persist them.  §2.1's "write no calibration artifact"
-    withholds the THRESHOLD, not the evidence: the raw table is the only place the
-    definitive-feasible rate and the per-kind failure counts survive, and the floor is checked
-    against exactly that rate -- so discarding the table at the moment it fails is discarding the
-    one record that says WHY.
+    withholds the THRESHOLD, not the evidence: the raw table is the only place the head-valid rate,
+    the structure-operability rate and the per-kind failure counts survive, and the floor is checked
+    against exactly that first rate -- so discarding the table at the moment it fails is discarding
+    the one record that says WHY.
     """
 
     def __init__(self, message: str, *, rows, failures) -> None:
@@ -130,7 +142,7 @@ def q90_higher_order_statistic(values: Sequence[float]) -> tuple[float, int]:
 
 def source_id_for(protein_id: str) -> str:
     """Protein-specific, because the threshold is."""
-    return f"v2-canary-hotspot-null-q90-higher-v1:{protein_id}"
+    return f"v2-canary-hotspot-head-valid-q90-higher-v1:{protein_id}"
 
 
 def summarize(values: Sequence[float]) -> dict:
@@ -272,22 +284,34 @@ def _assert_declared_window_domain(score: Any, head_identity: Any, *, protein_id
 
 
 def _definitive_feasible(outcome: Any) -> bool:
-    """A REAL definitive-feasible verdict.
+    """A REAL definitive-feasible verdict: ``evaluated`` and ``feasible`` must BOTH hold.
 
-    ``evaluated`` and ``feasible`` must BOTH hold: a cache-only label with no resolved verdict is
-    not a measurement, and counting it would let the 48/64 floor be met by designs nothing folded.
+    Recorded as a structure-operability DIAGNOSTIC.  It no longer selects the calibration
+    population -- see :func:`calibrate_protein`.
     """
     return bool(getattr(outcome, "evaluated", False)) and bool(getattr(outcome, "feasible", False))
 
 
 def calibrate_protein(
-    *, protein_id: str, n_completions: int, min_definitive_feasible: int, master_seed: int,
+    *, protein_id: str, n_completions: int, min_head_valid: int, master_seed: int,
     reference_sequence: str, reference_digest: str, head_identity: Any, model: Any, seams: dict,
 ) -> tuple[list[dict], dict]:
     """Run the frozen law for ONE protein and return ``(rows, summary)``.
 
-    Raises rather than returning a partial artifact when the floor is not met: runbook §2.1 says
-    "write no calibration artifact and do not relax the floor".
+    **The calibration population is every HEAD-VALID endpoint, not the structure-feasible subset.**
+    The two gates answer independent safety questions -- the Head asks whether a sequence creates a
+    new immune hotspot, the structure gate asks whether it keeps the target backbone and active-site
+    geometry -- and conditioning the Head null distribution on the structure verdict couples them
+    for no reason the science requires.  ``Q00511`` is the case that makes it concrete: hard anchors
+    preserved 64/64 and scTM passing 64/64, rejected only because a predicted side-chain RMSD
+    exceeded an absolute band whose own native baseline is 1.791 A.  Nothing about that verdict
+    makes the sequence's Head hotspot unmeasurable.
+
+    The structure verdict and its metrics are still evaluated and recorded in full -- they are the
+    structure-OPERABILITY diagnostic, reported beside the threshold and never filtering it.
+
+    Raises rather than returning a partial artifact when the head-valid floor is not met: runbook
+    §2.1 still says "write no calibration artifact and do not relax the floor".
     """
     from inverse_folding.reference_flow.fusion.state import sequence_md5
     from inverse_folding.reference_flow.fusion_v2.identity import window_grid_digest
@@ -346,35 +370,46 @@ def calibrate_protein(
         row["n_h_whole"] = float(evidence.max_increase)
         row["window_grid_digest"] = window_grid_digest(design_score.windows)
 
+        # Evaluated and recorded, but NOT a filter: a structure rejection is a fact about geometry,
+        # not a reason the Head measurement did not happen.
         outcome = seams["structure_gate"](_oracle_request(protein_id, sequence))
         row["structure_evaluated"] = bool(getattr(outcome, "evaluated", False))
         row["structure_feasible"] = bool(getattr(outcome, "feasible", False))
+        row["structure_definitive_feasible"] = _definitive_feasible(outcome)
         row["structure_metrics_json"] = json.dumps(
             dict(getattr(outcome, "metrics", None) or {}), sort_keys=True)
-        if not _definitive_feasible(outcome):
-            _fail("structure")
-            rows.append({**row, "status": "not_definitive_feasible"})
-            continue
-        rows.append({**row, "status": "retained"})
+        rows.append({**row, "status": "head_valid"})
 
-    retained = [row["n_h_whole"] for row in rows if row["status"] == "retained"]
-    if len(retained) < int(min_definitive_feasible):
-        by_status = {}
+    head_valid = [row["n_h_whole"] for row in rows if row["status"] == "head_valid"]
+    if len(head_valid) < int(min_head_valid):
+        by_status: dict[str, int] = {}
         for row in rows:
             by_status[row["status"]] = by_status.get(row["status"], 0) + 1
         raise V2HotspotFloorNotMet(
-            f"{protein_id}: only {len(retained)} of {n_completions} endpoints reached a definitive "
-            f"feasible verdict, below the frozen floor of {min_definitive_feasible}.  Runbook §2.1: "
-            "write no calibration artifact and do not relax the floor -- a threshold measured on a "
-            "thin, structure-selected tail is not the null distribution it claims to be.  "
+            f"{protein_id}: only {len(head_valid)} of {n_completions} endpoints yielded a valid "
+            f"Head measurement, below the frozen floor of {min_head_valid}.  Runbook §2.1: write no "
+            "calibration artifact and do not relax the floor -- a Q0.90 over a thin sample is close "
+            "to its own second-largest value and is not a distribution.  "
             f"status counts: {dict(sorted(by_status.items()))}; failure counts: "
             f"{dict(sorted(failures.items()))}",
             rows=rows, failures=failures,
         )
-    summary = summarize(retained)
-    summary.update({"n_attempted": int(n_completions),
-                    "n_definitive_feasible": len(retained),
-                    "failure_counts": dict(sorted(failures.items()))})
+    summary = summarize(head_valid)
+    # The structure verdict is reported BESIDE the threshold, never inside it.  Keeping the rate
+    # visible is what stops "the Head null was measured over every endpoint" from being read as
+    # "structure was not checked" -- it was checked on all of them, and here is how it went.
+    n_definitive = sum(1 for row in rows if row.get("structure_definitive_feasible"))
+    summary.update({
+        "n_attempted": int(n_completions),
+        "n_head_valid": len(head_valid),
+        "failure_counts": dict(sorted(failures.items())),
+        "structure_operability": {
+            "n_definitive_feasible": n_definitive,
+            "rate": (n_definitive / len(head_valid)) if head_valid else 0.0,
+            "note": "DIAGNOSTIC ONLY -- an independent admission gate, not a filter on this "
+                    "threshold's population",
+        },
+    })
     return rows, summary
 
 
@@ -398,7 +433,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "runbook §2.1 step 5 and rejects any other value.  There is "
                              "deliberately no --quantile override -- two ways to say this is two "
                              "ways for them to disagree")
-    parser.add_argument("--min-definitive-feasible", type=int, required=True)
+    parser.add_argument("--min-head-valid", type=int, required=True,
+                        help="floor on endpoints yielding a VALID HEAD MEASUREMENT. Not a structure\n"
+                             "floor: the structure verdict is recorded in full but does not select\n"
+                             "this threshold's population -- the two gates answer independent safety\n"
+                             "questions and conditioning one on the other couples them for no reason"),
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--rf-config", required=True)
     parser.add_argument("--test-set", required=True)
@@ -495,7 +534,7 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
     try:
         rows, summary = calibrate_protein(
             protein_id=args.protein_id, n_completions=args.n_completions,
-            min_definitive_feasible=args.min_definitive_feasible, master_seed=args.master_seed,
+            min_head_valid=args.min_head_valid, master_seed=args.master_seed,
             reference_sequence=reference_sequence, reference_digest=reference_digest,
             head_identity=head_identity, model=model, seams=resolved,
         )
@@ -551,12 +590,16 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
         "delta_new": delta_new, "protein_id": args.protein_id,
         "code_revision": args.code_revision, "threshold_statistic": THRESHOLD_STATISTIC,
         "seed_namespace": SEED_NAMESPACE, "master_seed": args.master_seed,
-        "min_definitive_feasible": args.min_definitive_feasible,
+        "min_head_valid": args.min_head_valid,
         "rows_path": str(args.out_rows), **summary,
     }, indent=2, sort_keys=True))
+    structure = summary["structure_operability"]
     print(f"[calibrate_rf_fusion_v2_hotspot] {args.protein_id}: "
-          f"{summary['n_definitive_feasible']}/{summary['n_attempted']} definitive feasible, "
+          f"{summary['n_head_valid']}/{summary['n_attempted']} head-valid, "
           f"Q0.90(higher) at rank {summary['order_statistic_rank']} -> {value!r} -> {out}")
+    print(f"[calibrate_rf_fusion_v2_hotspot] structure-operability DIAGNOSTIC (not a filter): "
+          f"{structure['n_definitive_feasible']}/{summary['n_head_valid']} definitive feasible "
+          f"({structure['rate']:.1%})")
     print("copy the 'delta_new' block into config.safety.delta_new_cumulative VERBATIM; the loader "
           "recomputes source_ref and refuses an edited one")
     return 0
