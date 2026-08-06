@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from .errors import V2Error
-from .identity import ProjectionPolicyIdentity
+from .identity import ProjectionPolicyIdentity, require_digest
 from .schedule import (
     CycleCoordinates,
     EmptyBandIntersectionError,
@@ -474,6 +474,11 @@ class StateDerivedProbePolicy:
 
     band_table: ScheduleBandTable
     stratum_key: str
+    #: SHA-256 of the FROZEN spec file (``configs/v2_state_derived_probe_policy_v1.json``), the
+    #: run's ``projection_policy_spec`` content role.  Required and never derived: the kernel
+    #: compares it against ``conditioning.projection_policy_spec``, so a locally computed stand-in
+    #: would be a policy identity the run's own provenance does not describe.
+    policy_spec_digest: str = ""
     policy_version: str = "v1"
 
     def __post_init__(self) -> None:
@@ -485,26 +490,37 @@ class StateDerivedProbePolicy:
             )
         if not isinstance(self.stratum_key, str) or not self.stratum_key.strip():
             raise V2PolicyError("stratum_key must be a non-empty str")
+        require_digest(self.policy_spec_digest, "policy_spec_digest")
 
     def identity(self) -> ProjectionPolicyIdentity:
         from .identity import canonical_digest
 
-        # The band is part of the identity: two runs under different calibrations pinned different
-        # reopen cardinalities, so they ran different policies even at identical coordinates.
-        digest = canonical_digest({
-            "policy_id": STATE_DERIVED_PROBE_POLICY_ID,
-            "policy_version": self.policy_version,
-            "rule": "write=min_source_masked;carry=inherited_masks+commit_lt_r;"
-                    "inject=commit_ge_r;reopen=band_pinned_latest_committed",
-            "stratum_key": self.stratum_key,
-            "band_calibration_id": self.band_table.provenance.calibration_id,
-            "band_calibration_digest": self.band_table.provenance.calibration_content_digest,
-        })
+        # SPEC and CONFIG are two different questions and were previously answered with one digest:
+        #
+        #   * the SPEC is the rule -- invariant across protein, stratum, r_d and calibration.  It is
+        #     the sha256 of the frozen spec FILE, because that is what the config's
+        #     ``projection_policy_spec`` content role signs and what the kernel matches against.  A
+        #     canonical dict digest could never equal a file sha256, so the check could not pass;
+        #     and folding the band/stratum in made the spec cell-specific, so no single frozen file
+        #     could sign a multi-cell campaign like the four-cell Canary.
+        #   * the CONFIG is the per-cell realized binding.  The band belongs HERE: two runs under
+        #     different calibrations pinned different reopen cardinalities, so they ran the same
+        #     rule under different configuration.
         return ProjectionPolicyIdentity(
             policy_id=STATE_DERIVED_PROBE_POLICY_ID,
             policy_version=self.policy_version,
-            policy_config_digest=digest,
-            policy_spec_digest=digest,
+            policy_config_digest=canonical_digest({
+                "policy_id": STATE_DERIVED_PROBE_POLICY_ID,
+                "policy_version": self.policy_version,
+                "rule": "write=min_source_masked;carry=inherited_masks+commit_lt_r;"
+                        "inject=commit_ge_r;reopen=band_pinned_latest_committed",
+                "policy_spec_digest": self.policy_spec_digest,
+                "stratum_key": self.stratum_key,
+                "band_calibration_id": self.band_table.provenance.calibration_id,
+                "band_calibration_digest":
+                    self.band_table.provenance.calibration_content_digest,
+            }),
+            policy_spec_digest=self.policy_spec_digest,
             is_diagnostic_only=True,
         )
 

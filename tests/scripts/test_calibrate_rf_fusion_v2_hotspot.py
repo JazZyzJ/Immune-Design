@@ -8,6 +8,7 @@ program: the runbook had since frozen a different law. This suite pins the law t
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import types
 
@@ -89,6 +90,15 @@ def test_the_frozen_interface_requires_every_flag_the_runbook_names():
             "code_revision"} <= required
 
 
+def test_the_head_domain_the_artifact_records_is_required_not_defaulted():
+    """The artifact RECORDS `(allele, score_scale, window_k_min, window_k_max)` and
+    `bind_admission_policy` refuses a run whose `config.head` differs, so a default here would let
+    a threshold be measured over one window grid and enforced over another."""
+    required = {a.dest for a in build_parser()._actions if getattr(a, "required", False)}
+    assert {"allele", "score_scale", "window_k_min", "window_k_max",
+            "head_variant_id", "refold_cache_dir"} <= required
+
+
 def test_the_source_id_is_protein_specific():
     """The two proteins receive separate thresholds, so they receive separate identities."""
     assert source_id_for("Q00511") == "v2-canary-hotspot-null-q90-higher-v1:Q00511"
@@ -110,24 +120,32 @@ def _windows(zs):
 def _identity():
     from inverse_folding.reference_flow.fusion_v2.identity import HeadEvaluatorIdentity
 
-    return HeadEvaluatorIdentity(allele="DRB1_0701", score_scale="nats", window_k_min=4,
+    return HeadEvaluatorIdentity(allele="DRB1_0701", score_scale="raw_logit", window_k_min=4,
                                  window_k_max=4, head_config_hash="a" * 64,
                                  head_checkpoint_digest="b" * 64)
 
 
 class _Scorer:
-    """A Head whose z on the middle window is the sequence's own index -- so N_H is controllable."""
+    """A Head whose z on the middle window is the sequence's own index -- so N_H is controllable.
+
+    Exposes the SAME contract the V2 runtime scores through (``score(list[OracleRequest])``), not a
+    calibration-only convenience method: the producer and the Canary must reach the Head the same
+    way, or the threshold is calibrated against a path the gate never takes.
+    """
 
     def evaluator_identity(self):
         return _identity()
 
-    def score_reference(self, *, protein_id, sequence):
+    def score(self, requests):
+        return [self._one(request.protein_id, request.sequence) for request in requests]
+
+    def _one(self, protein_id, sequence):
         from inverse_folding.reference_flow.fusion.state import sequence_md5
 
         z = float(AA.index(sequence[-1])) if sequence[-1] in AA else 0.0
         return types.SimpleNamespace(
             protein_id=protein_id, sequence_md5=sequence_md5(sequence),
-            sequence_length=len(sequence), allele="DRB1_0701", score_scale="nats",
+            sequence_length=len(sequence), allele="DRB1_0701", score_scale="raw_logit",
             windows=_windows([0.0, z, 0.0]), residue_hotspot=(0.0,) * len(sequence),
             global_risk=z)
 
@@ -145,8 +163,8 @@ def _seams(*, n_ok=64, structure_ok=None):
     def generate(*, model, protein_id, seed):
         return "ACDEF" + AA[(seed % 1000) % 20]
 
-    def structure(*, protein_id, sequence):
-        ok = structure_ok(sequence) if structure_ok else True
+    def structure(request):
+        ok = structure_ok(request.sequence) if structure_ok else True
         return types.SimpleNamespace(evaluated=True, feasible=ok, metrics={"scTM": 0.9})
 
     return {
@@ -167,7 +185,7 @@ def _run_law(**over):
 
 def test_the_law_retains_only_definitively_feasible_endpoints():
     """§2.1 step 3: "cache-only labels without a resolved verdict do not count"."""
-    def unresolved(*, protein_id, sequence):
+    def unresolved(request):
         return types.SimpleNamespace(evaluated=False, feasible=True, metrics={})
 
     seams = _seams()
@@ -245,8 +263,223 @@ def test_the_measurement_is_the_admission_gates_own_comparator():
         model=_Model(), protein_id="5ZHV_B", seed=retained["seed"])
     scorer = _Scorer()
     direct = whole_landscape_new_hotspot(
-        scorer.score_reference(protein_id="5ZHV_B", sequence=sequence),
-        scorer.score_reference(protein_id="5ZHV_B", sequence="ACDEFA"),
+        scorer._one("5ZHV_B", sequence),
+        scorer._one("5ZHV_B", "ACDEFA"),
         endpoint_id="endpoint:x", head_identity=_identity(),
         reference_kind=ReferenceKind.CUMULATIVE_DEPTH0, reference_binding_id="ref:x")
     assert retained["n_h_whole"] == pytest.approx(direct.max_increase)
+
+
+def test_both_oracles_are_reached_through_the_runtimes_own_request_type():
+    """The producer and the Canary must call the Head and the structure gate the SAME way.
+
+    ``OracleRequest`` re-derives the digest from the bytes and refuses a non-canonical residue, so
+    scoring through it is what makes "the sequence the Head saw" and "the sequence the row claims"
+    one object.  A calibration-only `(protein_id=, sequence=)` convenience signature would let the
+    two paths diverge silently.
+    """
+    from inverse_folding.reference_flow.fusion_v2_runtime.lookahead import OracleRequest
+
+    seen = []
+    seams = _seams()
+    scorer = seams["head_scorer"]
+    seams["head_scorer"] = types.SimpleNamespace(
+        evaluator_identity=scorer.evaluator_identity,
+        score=lambda requests: (seen.extend(requests), scorer.score(requests))[1])
+    structure = seams["structure_gate"]
+    seams["structure_gate"] = lambda request: (seen.append(request), structure(request))[1]
+    _run_law(seams=seams)
+
+    assert seen, "neither oracle was reached"
+    assert all(isinstance(request, OracleRequest) for request in seen)
+
+
+# --------------------------------------------------------------------------------------------
+# the production path: the declared paths must actually BUILD the oracles
+# --------------------------------------------------------------------------------------------
+
+
+def _reference_manifest(tmp_path, protein_id="5ZHV_B", sequence="ACDEFA"):
+    """A `{protein_id: {path, sha256}}` manifest over canonical sequence BYTES (runbook §3)."""
+    import hashlib
+
+    seq_file = tmp_path / f"{protein_id}.seq"
+    seq_file.write_text(sequence, encoding="utf-8")
+    manifest = tmp_path / "references.json"
+    manifest.write_text(json.dumps({protein_id: {
+        "path": seq_file.name,
+        "sha256": hashlib.sha256(sequence.encode("utf-8")).hexdigest(),
+    }}), encoding="utf-8")
+    return manifest
+
+
+def _argv(tmp_path, **over):
+    args = {
+        "--protein-id": "5ZHV_B", "--n-completions": "64", "--master-seed": "20260806",
+        "--seed-namespace": SEED_NAMESPACE, "--threshold-statistic": THRESHOLD_STATISTIC,
+        "--min-definitive-feasible": "48", "--checkpoint": "/nx/dplm.ckpt",
+        "--rf-config": "/nx/rf.yaml", "--test-set": "/nx/test.parquet", "--pdb-root": "/nx/pdbs",
+        "--complete-reference-manifest": str(_reference_manifest(tmp_path)),
+        "--head-config-dir": "/nx/head/configs", "--head-checkpoint": "/nx/head/best.pt",
+        "--structure-config": "/nx/v0_fusion.yaml", "--refold-cache-dir": "/nx/refold",
+        "--allele": "DRB1_0701", "--score-scale": "nats",
+        "--window-k-min": "4", "--window-k-max": "4", "--head-variant-id": "LC1",
+        "--out-rows": str(tmp_path / "rows.parquet"),
+        "--out-json": str(tmp_path / "calib.json"), "--code-revision": "a" * 40,
+    }
+    args.update(over)
+    return [token for pair in args.items() for token in pair]
+
+
+def _production_seams(recorder):
+    fake = _seams()
+
+    def build_production_oracles(**kwargs):
+        recorder.update(kwargs)
+        return fake["head_scorer"], fake["structure_gate"]
+
+    return CalibrationSeams(
+        build_model_factory=lambda **_: _Model(),
+        generate_completion=fake["generate_completion"], derive_seed=fake["derive_seed"],
+        build_production_oracles=build_production_oracles,
+    )
+
+
+def test_main_builds_the_real_oracles_from_the_declared_paths(tmp_path):
+    """REGRESSION.  `--head-config-dir`, `--head-checkpoint` and `--structure-config` were declared
+    `required=True`, parsed, and then never read: `head_scorer`/`structure_gate` stayed `None` and
+    `main` died on `NoneType.evaluator_identity()` -- after the DPLM checkpoint had already been
+    loaded onto the GPU.  Every declared path must reach the builder."""
+    recorder: dict = {}
+    assert main(_argv(tmp_path), seams=_production_seams(recorder)) == 0
+
+    assert recorder["head_config_dir"] == "/nx/head/configs"
+    assert recorder["head_checkpoint"] == "/nx/head/best.pt"
+    assert recorder["structure_config"] == "/nx/v0_fusion.yaml"
+    assert recorder["refold_cache_dir"] == "/nx/refold"
+    # The Head DOMAIN is passed through verbatim: it is what the artifact records and what
+    # bind_admission_policy checks the realized scorer against.
+    assert (recorder["allele"], recorder["score_scale"]) == ("DRB1_0701", "nats")
+    assert (recorder["window_k_min"], recorder["window_k_max"]) == (4, 4)
+
+
+def test_main_writes_both_artifacts_and_the_paste_ready_block(tmp_path):
+    """The producer's two outputs: the canonical raw table and the typed artifact."""
+    assert main(_argv(tmp_path), seams=_production_seams({})) == 0
+
+    payload = json.loads((tmp_path / "calib.json").read_text())
+    assert payload["threshold_statistic"] == THRESHOLD_STATISTIC
+    assert payload["delta_new"]["source_id"] == source_id_for("5ZHV_B")
+    assert payload["delta_new"]["artifact"]["window_domain"] == "whole_landscape"
+    assert payload["n_attempted"] == 64 and payload["n_definitive_feasible"] >= 48
+    assert (tmp_path / "rows.parquet").exists()
+
+
+def test_a_run_below_the_floor_writes_no_artifact(tmp_path):
+    """§2.1 step 4 on the PRODUCTION path, not only inside the law helper."""
+    seams = _production_seams({})
+    fake = _seams(structure_ok=lambda sequence: sequence.endswith("A"))
+    seams = CalibrationSeams(
+        build_model_factory=seams.build_model_factory,
+        generate_completion=seams.generate_completion, derive_seed=seams.derive_seed,
+        build_production_oracles=lambda **_: (fake["head_scorer"], fake["structure_gate"]),
+    )
+    assert main(_argv(tmp_path), seams=seams) == 2
+    assert not (tmp_path / "calib.json").exists()
+
+
+# --------------------------------------------------------------------------------------------
+# the declared unit must be the one the evaluator actually emits
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_unit_and_the_artifact_scale_come_from_the_realized_head(tmp_path):
+    """`unit` and `artifact.score_scale` are GENERATED from the Head that scored, never typed.
+
+    The frozen Head emits uncalibrated classifier logits; `OnlineHeadScorer` refuses any other
+    `score_scale`. Declaring `nats` would be a unit the evaluator does not produce -- and a
+    threshold cannot be re-derived from measurements taken in a different unit.
+    """
+    assert main(_argv(tmp_path), seams=_production_seams({})) == 0
+    payload = json.loads((tmp_path / "calib.json").read_text())
+    scale = _identity().score_scale
+    assert payload["delta_new"]["unit"] == scale
+    assert payload["delta_new"]["artifact"]["score_scale"] == scale
+
+
+def test_the_artifact_records_the_window_grid_it_was_measured_over(tmp_path):
+    """No threshold measured on another grid may be inherited: `N_H^whole` is a maximum over the
+    windows these bounds define."""
+    assert main(_argv(tmp_path), seams=_production_seams({})) == 0
+    artifact = json.loads((tmp_path / "calib.json").read_text())["delta_new"]["artifact"]
+    assert artifact["window_k_min"] == _identity().window_k_min
+    assert artifact["window_k_max"] == _identity().window_k_max
+    assert artifact["allele"] == _identity().allele
+
+
+def test_the_source_ref_is_recomputed_over_the_value_and_the_artifact(tmp_path):
+    """The loader recomputes it and refuses a mismatch, so relabelling a threshold's unit without
+    re-measuring cannot survive: the digest covers the unit."""
+    from inverse_folding.reference_flow.fusion_v2.config import (
+        HotspotCalibrationArtifact,
+        calibration_source_ref,
+    )
+
+    assert main(_argv(tmp_path), seams=_production_seams({})) == 0
+    block = json.loads((tmp_path / "calib.json").read_text())["delta_new"]
+    artifact = HotspotCalibrationArtifact(**block["artifact"])
+    assert block["source_ref"] == calibration_source_ref(
+        value=block["value"], unit=block["unit"], source_kind=block["source_kind"],
+        source_id=block["source_id"], artifact=artifact)
+    assert block["unit"] == "raw_logit"
+    # Relabelling the unit produces a DIFFERENT source_ref, which is what makes the laundering the
+    # runbook forbids detectable rather than cosmetic.  `config.py` additionally requires
+    # `scalar.unit == head.score_scale`, so a block relabelled on ONE side is refused outright and
+    # a block relabelled on BOTH sides no longer matches its own recomputed digest.
+    assert block["source_ref"] != calibration_source_ref(
+        value=block["value"], unit="nats", source_kind=block["source_kind"],
+        source_id=block["source_id"], artifact=artifact)
+    relabelled = dataclasses.replace(artifact, score_scale="nats")
+    assert block["source_ref"] != calibration_source_ref(
+        value=block["value"], unit="nats", source_kind=block["source_kind"],
+        source_id=block["source_id"], artifact=relabelled)
+
+
+def test_the_shipped_canary_template_declares_the_unit_the_head_emits():
+    """REGRESSION. The template declared `nats` in three places while the only Head that exists
+    hard-refuses anything but `raw_logit`, so no resolved config could ever bind."""
+    import pathlib
+
+    import yaml
+
+    template = yaml.safe_load((pathlib.Path(__file__).resolve().parents[2]
+                               / "inverse_folding/reference_flow/configs"
+                               / "v2_canary_state_transition.yaml").read_text())
+    delta = template["safety"]["delta_new_cumulative"]
+    assert template["head"]["score_scale"] == "raw_logit"
+    assert delta["unit"] == "raw_logit"
+    assert delta["artifact"]["score_scale"] == "raw_logit"
+    # The reference is named ONE way across the config and the emitted artifact.
+    from scripts.calibrate_rf_fusion_v2_hotspot import (
+        CUMULATIVE_REFERENCE_KIND,
+        CUMULATIVE_REFERENCE_LABEL,
+    )
+
+    assert template["safety"]["cumulative_reference_kind"] == CUMULATIVE_REFERENCE_KIND
+    assert template["safety"]["cumulative_reference_label"] == CUMULATIVE_REFERENCE_LABEL
+    assert delta["artifact"]["reference_kind"] == CUMULATIVE_REFERENCE_KIND
+    assert delta["artifact"]["reference_label"] == CUMULATIVE_REFERENCE_LABEL
+
+
+def test_the_template_grid_is_the_one_the_v2_calibration_must_use():
+    """13-25, and V1's 12-25 threshold may not be inherited onto it."""
+    import pathlib
+
+    import yaml
+
+    template = yaml.safe_load((pathlib.Path(__file__).resolve().parents[2]
+                               / "inverse_folding/reference_flow/configs"
+                               / "v2_canary_state_transition.yaml").read_text())
+    assert (template["head"]["window_k_min"], template["head"]["window_k_max"]) == (13, 25)
+    artifact = template["safety"]["delta_new_cumulative"]["artifact"]
+    assert (artifact["window_k_min"], artifact["window_k_max"]) == (13, 25)

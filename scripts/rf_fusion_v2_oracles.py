@@ -48,7 +48,10 @@ __all__ = [
     "V2OracleError",
     "OracleSeams",
     "SUPPORT_POLICY_REGISTRY",
+    "V2HeadResult",
+    "ProductionHeadOracle",
     "assert_constraint_class_matches_band",
+    "build_production_oracles",
     "resolve_reference",
     "resolve_stratum",
     "resolve_support_policy",
@@ -76,8 +79,15 @@ class V2OracleError(V2Error):
 def _build_state_derived_probe(*, band_table, stratum_key, config):
     from inverse_folding.reference_flow.fusion_v2.policy import StateDerivedProbePolicy
 
-    del config
-    return StateDerivedProbePolicy(band_table=band_table, stratum_key=stratum_key)
+    # The SPEC digest is the run's DECLARED ``projection_policy_spec`` content role -- the sha256 of
+    # the frozen rule file -- not something this factory derives.  The kernel compares the answering
+    # policy's spec digest against ``conditioning.projection_policy_spec``, so deriving it here
+    # would make both sides agree by construction and check nothing.  The band and stratum stay out
+    # of it and enter ``policy_config_digest`` instead, which is what lets a multi-cell campaign
+    # (the four-cell Canary) sign one spec while pinning a different reopen cardinality per cell.
+    return StateDerivedProbePolicy(
+        band_table=band_table, stratum_key=stratum_key,
+        policy_spec_digest=_content_digest(config, "projection_policy_spec"))
 
 
 def _registry() -> dict[str, Callable[..., Any]]:
@@ -311,6 +321,327 @@ def _content_digest(config: Any, role: str) -> str:
     raise V2OracleError(f"config.content declares no {role!r} row")
 
 
+@dataclass(frozen=True)
+class V2HeadResult:
+    """One production ``HeadScore`` plus the ``HeadScoreBinding`` the V2 runtime binds results by.
+
+    The production ``head_scoring.HeadScore`` already carries every field the whole-landscape
+    comparator reads (``windows``/``allele``/``score_scale``/``global_risk``/...), but
+    ``fusion_v2_runtime.lookahead.bind_head_scores`` additionally requires each result to carry its
+    OWN ``binding``: it matches results to completions by identity rather than by position, so a
+    reordered batch has to be detectable.  This wrapper adds that one field and copies the rest
+    verbatim -- it does not recompute a single score, because a second scoring path is exactly how
+    a calibration and the gate it feeds start measuring different quantities.
+    """
+
+    protein_id: str
+    sequence_md5: str
+    sequence_length: int
+    allele: str
+    score_scale: str
+    windows: tuple
+    residue_hotspot: tuple | None
+    global_risk: float | None
+    binding: Any
+
+
+class ProductionHeadOracle:
+    """The frozen Head behind the V2 runtime's ``score(list[OracleRequest])`` contract.
+
+    Wraps the V1 production ``OnlineHeadScorer`` -- the same object the v0/V1 entry paths score
+    through -- so the Canary, the hotspot calibration and the v0 boundary all read one Head.  It
+    adds no scoring behaviour; it adapts the batch shape and asserts identity.
+
+    Two refusals are deliberate:
+
+    * the scorer's realized ``(allele, score_scale, window_k_min, window_k_max)`` must equal the
+      one the run DECLARED.  ``fusion_v2.safety.bind_admission_policy`` compares the same 4-tuple
+      and raises ``HeadIdentityMismatch``; catching it here names the offending field instead of
+      failing later with two opaque tuples; and
+    * a returned score whose ``sequence_md5`` does not key the sequence it was asked about is a
+      hard failure.  The digest is the join key the archive, the refold cache and the admission
+      ledger all use, so one naming a different design would silently attach a Head result to a
+      sequence it was never computed for.
+    """
+
+    def __init__(self, scorer: Any, *, allele: str, score_scale: str,
+                 window_k_min: int, window_k_max: int) -> None:
+        declared = (str(allele), str(score_scale), int(window_k_min), int(window_k_max))
+        observed = (str(getattr(scorer, "allele", "")),
+                    str(getattr(scorer, "score_scale", "")),
+                    int(getattr(scorer, "window_k_min", -1)),
+                    int(getattr(scorer, "window_k_max", -1)))
+        if declared != observed:
+            names = ("allele", "score_scale", "window_k_min", "window_k_max")
+            diff = ", ".join(f"{n}: declared {d!r} != realized {o!r}"
+                             for n, d, o in zip(names, declared, observed) if d != o)
+            raise V2OracleError(
+                f"the run's declared Head domain does not match the scorer that was built ({diff}). "
+                "bind_admission_policy compares this exact 4-tuple, so the run would fail with "
+                "HeadIdentityMismatch after the checkpoints were already resident; and the "
+                "whole-landscape N_H is a maximum over the window grid these fields define, so a "
+                "threshold measured under one domain does not bound designs scored under another"
+            )
+        self._scorer = scorer
+        self.allele, self.score_scale = declared[0], declared[1]
+        self.window_k_min, self.window_k_max = declared[2], declared[3]
+
+    def evaluator_identity(self):
+        """The Head evaluator identity, read off the scorer rather than retyped by a caller."""
+        from inverse_folding.reference_flow.fusion_v2.identity import HeadEvaluatorIdentity
+
+        return HeadEvaluatorIdentity(
+            allele=self.allele, score_scale=self.score_scale,
+            window_k_min=self.window_k_min, window_k_max=self.window_k_max,
+            head_config_hash=str(self._scorer.head_config_hash),
+            head_checkpoint_digest=str(self._scorer.head_checkpoint_digest),
+        )
+
+    def score(self, requests) -> list:
+        """Score a batch of ``OracleRequest`` and return one result per DISTINCT sequence.
+
+        Deduplicated by ``sequence_md5`` because the Head is a function of the sequence and
+        ``bind_head_scores`` refuses a duplicate result for one digest -- two forks that produced
+        identical bytes are one measurement, not two.  Batched per protein because
+        ``score_batch_same_protein`` is, and a batch spanning proteins would silently score every
+        sequence against the first one's context.
+        """
+        from inverse_folding.reference_flow.fusion_v2.identity import (
+            HeadScoreBinding,
+            window_grid_digest,
+        )
+
+        evaluator = self.evaluator_identity()
+        by_protein: dict[str, dict[str, Any]] = {}
+        for request in requests:
+            by_protein.setdefault(str(request.protein_id), {}) \
+                .setdefault(str(request.sequence_md5), request)
+
+        results: list[V2HeadResult] = []
+        for protein_id, unique in by_protein.items():
+            ordered = list(unique.values())
+            batch = self._scorer.score_batch_same_protein(
+                protein_id=protein_id,
+                records=[(request.sequence_md5, request.sequence) for request in ordered],
+            )
+            scores = list(batch.scores)
+            if len(scores) != len(ordered):
+                raise V2OracleError(
+                    f"Head returned {len(scores)} score(s) for {len(ordered)} distinct sequence(s) "
+                    f"of {protein_id}; a batch that does not correspond one-to-one cannot be "
+                    "matched back to the designs it was asked about"
+                )
+            for request, score in zip(ordered, scores):
+                if str(score.sequence_md5) != str(request.sequence_md5):
+                    raise V2OracleError(
+                        f"Head result for {protein_id} carries sequence_md5 "
+                        f"{score.sequence_md5!r} but was asked about {request.sequence_md5!r}; the "
+                        "digest is the archive/cache/ledger join key, so a mismatched one attaches "
+                        "a score to a sequence it was never computed for"
+                    )
+                windows = tuple(score.windows)
+                results.append(V2HeadResult(
+                    protein_id=str(score.protein_id), sequence_md5=str(score.sequence_md5),
+                    sequence_length=int(score.sequence_length), allele=str(score.allele),
+                    score_scale=str(score.score_scale), windows=windows,
+                    residue_hotspot=(tuple(score.residue_hotspot)
+                                     if score.residue_hotspot is not None else None),
+                    global_risk=(None if score.global_risk is None else float(score.global_risk)),
+                    binding=HeadScoreBinding(
+                        protein_id=str(score.protein_id), sequence_md5=str(score.sequence_md5),
+                        sequence_length=int(score.sequence_length),
+                        window_grid_digest=window_grid_digest(windows), evaluator=evaluator,
+                    ),
+                ))
+        return results
+
+
+#: Every field ``run_rf_refine_fusion.build_oracles`` reads off its ``args``.  Listed explicitly so
+#: an unknown key is a typo caught here rather than an attribute the builder silently never finds.
+_V0_ORACLE_FIELDS = (
+    "head_checkpoint", "head_config_dir", "head_variant_id", "head_device", "head_allele_idx",
+    "head_window_batch_size", "allele", "window_k_min", "window_k_max",
+    "test_set_parquet", "pdb_root", "refold_cache_dir", "constraint_manifest",
+    "esmfold2_site_packages", "esmfold2_model", "esmfold2_num_loops",
+    "esmfold2_num_sampling_steps", "esmfold2_num_diffusion_samples", "esmfold2_seed",
+)
+
+
+def _v0_oracle_args(**over: Any):
+    """The ``args``-shaped record ``run_rf_refine_fusion.build_oracles`` reads.
+
+    v0's builder was written against an ``argparse.Namespace``; reaching it from V2 through a
+    namespace is what lets both stacks run the SAME Head batch path and the SAME definitive
+    structure path.  Reimplementing either here would satisfy the type checker and quietly create
+    the second implementation the runbook forbids.
+
+    **Unset knobs take v0's OWN argparse defaults, read from v0's parser rather than copied.**  The
+    refold protocol knobs (`esmfold2_model`, `num_loops`, `num_sampling_steps`,
+    `num_diffusion_samples`, `seed`) are not optional decoration: v0 defaults them to
+    ``biohub/ESMFold2`` / 3 / 50 / 1 / 0, and handing ``None`` down instead would fold the V2
+    calibration and the Canary under a protocol v0 never used -- while the artifact still claimed
+    the v0 definitive contract.  Reading them off the parser means a future change to v0's protocol
+    propagates here instead of leaving two literals to drift apart.
+    """
+    from types import SimpleNamespace
+
+    defaults = {name: None for name in _V0_ORACLE_FIELDS}
+    defaults.update(v0_oracle_arg_defaults())
+    unknown = sorted(set(over) - set(defaults))
+    if unknown:
+        raise V2OracleError(f"unknown v0 oracle argument(s): {unknown}")
+    return SimpleNamespace(**{**defaults, **over})
+
+
+def v0_oracle_arg_defaults() -> dict:
+    """v0's OWN declared defaults for the fields its oracle builder reads.
+
+    Read off v0's parser, never transcribed: the refold protocol knobs decide how every endpoint in
+    the calibration and the Canary is folded, so a copied literal that fell behind v0 would silently
+    fold under a protocol nothing declared.
+    """
+    from scripts.run_rf_refine_fusion import build_arg_parser  # noqa: PLC0415
+
+    wanted = set(_V0_ORACLE_FIELDS)
+    return {action.dest: action.default
+            for action in build_arg_parser()._actions if action.dest in wanted}
+
+
+def build_production_oracles(
+    *, structure_config: Any, head_config_dir: Any, head_checkpoint: Any,
+    test_set_parquet: Any, pdb_root: Any, refold_cache_dir: Any,
+    allele: str, score_scale: str, window_k_min: int, window_k_max: int,
+    head_variant_id: str, head_allele_idx: int = 0, head_window_batch_size: int = 64,
+    constraint_manifest: Any = None, device: str = "cuda",
+    esmfold2: dict | None = None, build_oracles: Any = None,
+) -> tuple[ProductionHeadOracle, Callable[[Any], Any]]:
+    """Build the REAL ``(head_oracle, structure_oracle)`` pair from declared cluster paths.
+
+    Both come out of v0's ``build_oracles``: the Head is its ``head_fn`` behind
+    :class:`ProductionHeadOracle`, and the structure gate is its ``struct_fn`` composed with
+    ``fusion.oracles.structure_feasible`` -- the frozen v0 definitive contract, including the
+    active-site branch an anchored protein needs.  ``structure_config`` therefore names the v0
+    Fusion config that defines backend, ``scTM_min``, the active-site metric and its thresholds; it
+    is neither a PDB root nor a refold checkpoint.
+
+    Returns ``structure_oracle(request) -> StructureOutcome``.  A fold or geometry failure is an
+    ``evaluated=True, feasible=False`` verdict, never a deferral: the calibration's 48/64 floor and
+    the Canary's admission both read ``evaluated AND feasible``, and a deferred outcome would let an
+    endpoint nothing folded count toward either.
+    """
+    from inverse_folding.reference_flow.fusion.config import load_fusion_config
+    from inverse_folding.reference_flow.fusion.oracles import structure_feasible
+    from inverse_folding.reference_flow.fusion.v1_admission import StructureOutcome
+
+    if build_oracles is None:
+        from scripts.run_rf_refine_fusion import build_oracles  # noqa: PLC0415
+
+    fusion_config = load_fusion_config(str(structure_config))
+    args = _v0_oracle_args(
+        head_checkpoint=str(head_checkpoint), head_config_dir=str(head_config_dir),
+        head_variant_id=str(head_variant_id), head_device=str(device),
+        head_allele_idx=int(head_allele_idx),
+        head_window_batch_size=int(head_window_batch_size), allele=str(allele),
+        window_k_min=int(window_k_min), window_k_max=int(window_k_max),
+        test_set_parquet=str(test_set_parquet), pdb_root=str(pdb_root),
+        refold_cache_dir=str(refold_cache_dir),
+        constraint_manifest=(None if constraint_manifest is None else str(constraint_manifest)),
+        **(esmfold2 or {}),
+    )
+    oracles, manifest = build_oracles(args, fusion_config)
+
+    head_oracle = ProductionHeadOracle(
+        _scorer_behind(oracles.head_fn), allele=allele, score_scale=score_scale,
+        window_k_min=window_k_min, window_k_max=window_k_max)
+
+    def structure_oracle(request: Any):
+        import time
+
+        started = time.perf_counter()
+        protein_id = str(request.protein_id)
+        # Anchored vs unconstrained is read off the MANIFEST v0 itself resolved, not off a flag the
+        # caller passed: the active-site branch must fire for exactly the proteins v0 constrains.
+        has_active_site = bool(manifest is not None and manifest.has_protein(protein_id))
+        try:
+            metrics = oracles.struct_fn(protein_id, request.sequence)
+            feasible, reason = structure_feasible(
+                metrics, fusion_config, has_active_site=has_active_site)
+        except Exception as exc:  # noqa: BLE001 - unverifiable structure fails closed, not deferred
+            return StructureOutcome(
+                feasible=False, cache_status="miss", model_executed=True,
+                failure_reason=f"{type(exc).__name__}: {exc}",
+                walltime_s=time.perf_counter() - started, evaluated=True)
+        return StructureOutcome(
+            feasible=bool(feasible), cache_status="miss", model_executed=True,
+            failure_reason=(None if feasible else str(reason)),
+            metrics={name: float(value) for name, value in (
+                ("scTM", getattr(metrics, "scTM", None)),
+                ("pLDDT", getattr(metrics, "pLDDT", None)),
+                ("scRMSD", getattr(metrics, "scRMSD", None)),
+                ("active_site_RMSD", getattr(metrics, "active_site_RMSD", None)),
+                ("max_anchor_sidechain_RMSD",
+                 getattr(metrics, "max_anchor_sidechain_RMSD", None)),
+            ) if value is not None},
+            walltime_s=time.perf_counter() - started, evaluated=True)
+
+    return head_oracle, structure_oracle
+
+
+def _scorer_behind(head_fn: Any):
+    """Recover the ``OnlineHeadScorer`` v0's ``head_fn`` closes over.
+
+    v0 hands back a closure rather than the scorer, and V2 needs the object itself for its identity
+    (``head_config_hash`` / ``head_checkpoint_digest``) and its batch call.  Read from the closure
+    so there is still exactly ONE scorer: building a second one from the same paths would load the
+    Head twice and, worse, make "the identity on the artifact" and "the model that scored" two
+    objects that merely agree today.
+    """
+    for cell in getattr(head_fn, "__closure__", None) or ():
+        candidate = cell.cell_contents
+        if hasattr(candidate, "score_batch_same_protein") and hasattr(candidate, "head_config_hash"):
+            return candidate
+    raise V2OracleError(
+        "could not recover the OnlineHeadScorer from v0's head_fn closure; V2 needs the scorer "
+        "itself for its evaluator identity, and constructing a second one would load the Head "
+        "twice and let the recorded identity drift from the model that actually scored"
+    )
+
+
+#: Runtime knobs the v0 Head/structure stack needs that are NOT scientific config: they differ
+#: between machines and runs, so they arrive as ``--shard-input NAME=VALUE`` like every other path.
+_ESMFOLD2_INPUTS = (
+    "esmfold2_site_packages", "esmfold2_model", "esmfold2_num_loops",
+    "esmfold2_num_sampling_steps", "esmfold2_num_diffusion_samples", "esmfold2_seed",
+)
+
+
+def _production_oracles_for(config: Any, inputs: Any):
+    """Build the real Head + definitive structure oracles for one run from its declared inputs.
+
+    The Head DOMAIN is taken from ``config.head`` and never from a shard input: it is scientific
+    (it defines the window grid the whole-landscape maximum is taken over) and it is what
+    ``bind_admission_policy`` checks the realized scorer against.  Everything else here is a path.
+    """
+    esmfold2 = {name: inputs.paths.get(name) for name in _ESMFOLD2_INPUTS
+                if inputs.paths.get(name) is not None}
+    return build_production_oracles(
+        structure_config=inputs.require("v0_structure_gate_config"),
+        head_config_dir=inputs.require("head_config"),
+        head_checkpoint=inputs.require("head_checkpoint"),
+        test_set_parquet=inputs.require("test_set_parquet"),
+        pdb_root=inputs.require("pdb_root"),
+        refold_cache_dir=inputs.require("refold_cache_dir"),
+        allele=config.head.allele, score_scale=config.head.score_scale,
+        window_k_min=config.head.window_k_min, window_k_max=config.head.window_k_max,
+        head_variant_id=inputs.require("head_variant_id"),
+        head_allele_idx=int(inputs.paths.get("head_allele_idx", 0)),
+        head_window_batch_size=int(inputs.paths.get("head_window_batch_size", 64)),
+        constraint_manifest=inputs.paths.get("constraint_manifest"),
+        device=inputs.paths.get("device", "cuda"),
+        esmfold2=(esmfold2 or None),
+    )
+
+
 def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: OracleSeams | None = None):
     """Assemble the ``{gpu_clock, allow_production_depth_gt_1, cycle_kwargs}`` contract.
 
@@ -361,6 +692,14 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
     # gate that the config never signed.
     reference_sequence, reference_digest = resolve_reference(
         inputs.require("complete_reference_manifest"), protein_id)
+    # The Head and the definitive structure gate are REQUIRED, so a run that declared neither seam
+    # must build the real ones rather than proceed with ``None``.  Before this the factory returned
+    # a cycle whose ``head_oracle`` was ``None``; the failure surfaced as an ``AttributeError`` on
+    # the first score -- after the DPLM checkpoint was already resident on the GPU.
+    if resolved["head_scorer"] is None or resolved["structure_evaluator"] is None:
+        produced_head, produced_structure = _production_oracles_for(config, inputs)
+        resolved["head_scorer"] = resolved["head_scorer"] or produced_head
+        resolved["structure_evaluator"] = resolved["structure_evaluator"] or produced_structure
     head_identity = ident.HeadEvaluatorIdentity(
         allele=config.head.allele, score_scale=config.head.score_scale,
         window_k_min=config.head.window_k_min, window_k_max=config.head.window_k_max,

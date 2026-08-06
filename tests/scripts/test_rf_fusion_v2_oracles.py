@@ -392,3 +392,239 @@ def test_an_anchored_protein_on_an_anchored_band_is_accepted():
 
     assert assert_constraint_class_matches_band(
         band_table=F.band_table(), fixed_tokens={0: 10}, protein_id="5ZHV_B") is None
+
+
+# --------------------------------------------------------------------------------------------
+# the PRODUCTION Head/structure pair: the declared paths must build real oracles
+# --------------------------------------------------------------------------------------------
+
+
+class _Scorer:
+    """An ``OnlineHeadScorer``-shaped stand-in: the fields ``ProductionHeadOracle`` reads."""
+
+    allele, score_scale = "DRB1_0701", "raw_logit"
+    window_k_min, window_k_max = 13, 25
+    head_config_hash, head_checkpoint_digest = "a" * 64, "b" * 64
+
+    def __init__(self, md5_override=None):
+        self._md5_override = md5_override
+
+    def score_batch_same_protein(self, *, protein_id, records):
+        from inverse_folding.reference_flow.fusion.state import sequence_md5
+
+        scores = tuple(
+            types.SimpleNamespace(
+                protein_id=protein_id,
+                sequence_md5=self._md5_override or sequence_md5(sequence),
+                sequence_length=len(sequence), allele=self.allele, score_scale=self.score_scale,
+                windows=(types.SimpleNamespace(start_0b=0, end_0b=13, k=13, z=1.0),),
+                residue_hotspot=(0.0,) * len(sequence), global_risk=-1.0)
+            for _label, sequence in records
+        )
+        return types.SimpleNamespace(scores=scores)
+
+
+def _oracle(scorer=None, **over):
+    from scripts.rf_fusion_v2_oracles import ProductionHeadOracle
+
+    kw = dict(allele="DRB1_0701", score_scale="raw_logit", window_k_min=13, window_k_max=25)
+    kw.update(over)
+    return ProductionHeadOracle(scorer or _Scorer(), **kw)
+
+
+def _request(protein_id="5ZHV_B", sequence="ACDEFGHIKLMNPQRSTVWY"):
+    from inverse_folding.reference_flow.fusion.state import sequence_md5
+    from inverse_folding.reference_flow.fusion_v2_runtime.lookahead import OracleRequest
+
+    return OracleRequest(protein_id=protein_id, sequence=sequence,
+                         sequence_md5=sequence_md5(sequence), sequence_length=len(sequence))
+
+
+def test_the_head_identity_is_read_off_the_scorer_that_actually_scored():
+    identity = _oracle().evaluator_identity()
+    assert (identity.allele, identity.score_scale) == ("DRB1_0701", "raw_logit")
+    assert (identity.window_k_min, identity.window_k_max) == (13, 25)
+    assert identity.head_config_hash == "a" * 64
+    assert identity.head_checkpoint_digest == "b" * 64
+
+
+def test_a_scorer_whose_domain_differs_from_the_declared_one_is_refused_by_field():
+    """``bind_admission_policy`` compares this exact 4-tuple and raises with two opaque tuples --
+    after the checkpoints are resident.  Refusing here names the field instead."""
+    with pytest.raises(V2OracleError, match="score_scale: declared 'nats' != realized 'raw_logit'"):
+        _oracle(score_scale="nats")
+    with pytest.raises(V2OracleError, match="window_k_min"):
+        _oracle(window_k_min=12)
+
+
+def test_each_result_carries_the_binding_the_runtime_matches_results_by():
+    from inverse_folding.reference_flow.fusion_v2.identity import HeadScoreBinding
+
+    result = _oracle().score([_request()])[0]
+    assert isinstance(result.binding, HeadScoreBinding)
+    assert result.binding.sequence_md5 == result.sequence_md5
+    assert result.binding.evaluator == _oracle().evaluator_identity()
+
+
+def test_identical_sequences_are_scored_once_not_twice():
+    """``bind_head_scores`` refuses a duplicate result for one digest: two forks that produced the
+    same bytes are one measurement."""
+    assert len(_oracle().score([_request(), _request()])) == 1
+
+
+def test_a_result_keyed_to_another_sequence_is_a_hard_failure():
+    """The digest is the archive/cache/ledger join key; a mismatched one attaches a Head result to
+    a sequence it was never computed for."""
+    with pytest.raises(V2OracleError, match="join key"):
+        _oracle(scorer=_Scorer(md5_override="f" * 32)).score([_request()])
+
+
+def test_the_head_result_is_copied_verbatim_never_rescored():
+    result = _oracle().score([_request()])[0]
+    assert result.global_risk == -1.0 and result.score_scale == "raw_logit"
+    assert len(result.windows) == 1 and result.windows[0].z == 1.0
+
+
+# --------------------------------------------------------------------------------------------
+# the production STRUCTURE oracle: v0's struct_fn composed with v0's own feasibility contract
+# --------------------------------------------------------------------------------------------
+
+V0_STRUCTURE_CONFIG = "inverse_folding/reference_flow/configs/rf_refine_fusion_final_repair_beam.yaml"
+
+
+class _Manifest:
+    def __init__(self, anchored=()):
+        self._anchored = set(anchored)
+
+    def has_protein(self, protein_id):
+        return protein_id in self._anchored
+
+
+def _fake_build_oracles(*, metrics=None, raises=None, manifest=None, seen=None):
+    """Stands in for ``run_rf_refine_fusion.build_oracles``: returns ``(FusionOracles, manifest)``."""
+    from inverse_folding.reference_flow.fusion.oracles import FusionOracles
+
+    def build(args, config):
+        if seen is not None:
+            seen.append((args, config))
+
+        def struct_fn(protein_id, sequence):
+            if raises is not None:
+                raise raises
+            return metrics
+
+        return FusionOracles(head_fn=(lambda *_a, **_k: []), struct_fn=struct_fn), manifest
+
+    return build
+
+
+def _metrics(**over):
+    from inverse_folding.reference_flow.refine import StructureMetrics
+
+    kw = dict(scTM=0.95, pLDDT=88.0, scRMSD=1.2)
+    kw.update(over)
+    return StructureMetrics(**kw)
+
+
+def _structure_oracle(**over):
+    """Only the structure half is exercised; the Head half needs a real scorer in the closure."""
+    from scripts.rf_fusion_v2_oracles import build_production_oracles
+
+    kw = dict(structure_config=V0_STRUCTURE_CONFIG, head_config_dir="/nx/cfg",
+              head_checkpoint="/nx/head.pt", test_set_parquet="/nx/t.parquet",
+              pdb_root="/nx/pdbs", refold_cache_dir="/nx/refold", allele="DRB1_0701",
+              score_scale="raw_logit", window_k_min=13, window_k_max=25, head_variant_id="LC1")
+    kw.update(over)
+    with pytest.raises(V2OracleError, match="closure"):
+        # The fake head_fn closes over no scorer, so the Head half refuses -- which is itself the
+        # guarantee that a scorer can never be silently absent.  Build the structure half directly.
+        build_production_oracles(**kw)
+
+
+def _structure_only(build_oracles, **over):
+    """Build just the structure adapter by giving the Head half a recoverable scorer."""
+    from scripts.rf_fusion_v2_oracles import build_production_oracles
+
+    scorer = _Scorer()
+
+    def wrapped(args, config):
+        oracles, manifest = build_oracles(args, config)
+        head_fn = (lambda *_a, **_k: scorer)          # noqa: ARG005 - closes over the scorer
+        return types.SimpleNamespace(head_fn=head_fn, struct_fn=oracles.struct_fn), manifest
+
+    kw = dict(structure_config=V0_STRUCTURE_CONFIG, head_config_dir="/nx/cfg",
+              head_checkpoint="/nx/head.pt", test_set_parquet="/nx/t.parquet",
+              pdb_root="/nx/pdbs", refold_cache_dir="/nx/refold", allele="DRB1_0701",
+              score_scale="raw_logit", window_k_min=13, window_k_max=25, head_variant_id="LC1",
+              build_oracles=wrapped)
+    kw.update(over)
+    return build_production_oracles(**kw)[1]
+
+
+def test_a_passing_structure_is_an_EVALUATED_feasible_verdict():
+    gate = _structure_only(_fake_build_oracles(metrics=_metrics(), manifest=_Manifest()))
+    outcome = gate(_request())
+    assert outcome.evaluated is True and outcome.feasible is True
+    assert outcome.metrics["scTM"] == pytest.approx(0.95)
+
+
+def test_a_failing_scTM_is_refused_with_the_gates_own_reason():
+    gate = _structure_only(_fake_build_oracles(metrics=_metrics(scTM=0.10),
+                                               manifest=_Manifest()))
+    outcome = gate(_request())
+    assert outcome.evaluated is True and outcome.feasible is False
+    assert "scTM" in outcome.failure_reason
+
+
+def test_a_fold_failure_is_evaluated_and_infeasible_never_deferred():
+    """The 48/64 calibration floor and Canary admission both read `evaluated AND feasible`; a
+    deferred outcome would let an endpoint nothing folded count toward either."""
+    gate = _structure_only(_fake_build_oracles(raises=RuntimeError("refold died"),
+                                               manifest=_Manifest()))
+    outcome = gate(_request())
+    assert outcome.evaluated is True and outcome.feasible is False
+    assert "RuntimeError" in outcome.failure_reason and "refold died" in outcome.failure_reason
+
+
+def test_the_active_site_branch_fires_for_exactly_the_proteins_v0_constrains():
+    """Anchored/unconstrained is read off the manifest v0 itself resolved, not a caller flag: an
+    anchored protein whose active-site metrics are missing must FAIL, not pass on scTM alone."""
+    metrics = _metrics()                    # carries no active-site geometry
+    unconstrained = _structure_only(
+        _fake_build_oracles(metrics=metrics, manifest=_Manifest()))
+    anchored = _structure_only(
+        _fake_build_oracles(metrics=metrics, manifest=_Manifest(anchored={"5ZHV_B"})))
+    assert unconstrained(_request()).feasible is True
+    assert anchored(_request()).feasible is False
+
+
+def test_unset_refold_knobs_take_v0s_own_defaults_not_none():
+    """REGRESSION.  These defaulted to `None`, which would have folded the V2 calibration and the
+    Canary under a protocol v0 never used -- while the artifact still claimed the v0 definitive
+    contract.  They are READ off v0's parser, so a change to v0's protocol propagates here instead
+    of leaving two literals to drift."""
+    from scripts.rf_fusion_v2_oracles import _v0_oracle_args, v0_oracle_arg_defaults
+
+    args = _v0_oracle_args()
+    for name in ("esmfold2_model", "esmfold2_num_loops", "esmfold2_num_sampling_steps",
+                 "esmfold2_num_diffusion_samples", "esmfold2_seed"):
+        assert getattr(args, name) is not None, f"{name} would reach load_refold_model as None"
+        assert getattr(args, name) == v0_oracle_arg_defaults()[name]
+    # ...and v0's declared values, so a silent protocol change is visible in the diff.
+    assert args.esmfold2_model == "biohub/ESMFold2"
+    assert (args.esmfold2_num_loops, args.esmfold2_num_sampling_steps) == (3, 50)
+    assert (args.esmfold2_num_diffusion_samples, args.esmfold2_seed) == (1, 0)
+    assert (args.head_allele_idx, args.head_window_batch_size) == (0, 64)
+
+
+def test_an_explicit_knob_still_overrides_v0s_default():
+    from scripts.rf_fusion_v2_oracles import _v0_oracle_args
+
+    assert _v0_oracle_args(esmfold2_seed=7).esmfold2_seed == 7
+
+
+def test_a_misspelled_oracle_argument_is_refused_not_ignored():
+    from scripts.rf_fusion_v2_oracles import _v0_oracle_args
+
+    with pytest.raises(V2OracleError, match="unknown v0 oracle argument"):
+        _v0_oracle_args(esmfold_seed=7)

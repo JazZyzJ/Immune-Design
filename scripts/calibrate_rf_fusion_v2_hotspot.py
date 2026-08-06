@@ -72,6 +72,13 @@ THRESHOLD_STATISTIC = "per_protein_definitive_feasible_q90_higher"
 #: run draws can never collide (PLAN §2.6's exclusion law applies to this producer too).
 SEED_NAMESPACE = "v2_hotspot_calibration_1"
 
+#: The depth-0 reference the whole-landscape comparator measures against, spelled exactly as
+#: ``config.safety.cumulative_reference_{kind,label}`` spell it.  The emitted block is pasted into
+#: the config verbatim, so a producer that used its own wording would put two names for one
+#: reference into a single resolved config.
+CUMULATIVE_REFERENCE_KIND = "native_wt"
+CUMULATIVE_REFERENCE_LABEL = "wt_native"
+
 
 class V2HotspotCalibrationError(V2Error):
     """The calibration could not be produced under the frozen law."""
@@ -138,19 +145,53 @@ class CalibrationSeams:
     structure_gate: Any = None
     generate_completion: Any = None
     derive_seed: Any = None
+    build_production_oracles: Any = None
 
     def resolved(self) -> dict:
         from inverse_folding.reference_flow.fusion_v2.seeds import derive_seed
 
         from scripts.rf_fusion_model_factory import build_model_factory
+        from scripts.rf_fusion_v2_oracles import build_production_oracles
 
         return {
             "build_model_factory": self.build_model_factory or build_model_factory,
+            # Left as ``None`` on purpose: ``main`` builds the REAL pair from the declared paths
+            # when a caller injected neither.  Defaulting them here would need the CLI paths this
+            # dataclass cannot see, and returning ``None`` unconditionally is what made the
+            # producer die on ``NoneType.evaluator_identity`` after the DPLM checkpoint had already
+            # been loaded onto the GPU.
             "head_scorer": self.head_scorer,
             "structure_gate": self.structure_gate,
             "generate_completion": self.generate_completion or _generate_completion,
             "derive_seed": self.derive_seed or derive_seed,
+            "build_production_oracles": (
+                self.build_production_oracles or build_production_oracles),
         }
+
+
+def _oracle_request(protein_id: str, sequence: str):
+    """The typed request BOTH oracles consume -- the same one the Canary's runtime builds.
+
+    Not a bare ``(protein_id, sequence)`` pair: ``OracleRequest`` re-derives the digest from the
+    bytes and refuses a non-canonical residue, so a masked or mis-keyed candidate cannot reach a
+    backend that would map it to some arbitrary token.
+    """
+    from inverse_folding.reference_flow.fusion.state import sequence_md5
+    from inverse_folding.reference_flow.fusion_v2_runtime.lookahead import OracleRequest
+
+    return OracleRequest(protein_id=str(protein_id), sequence=str(sequence),
+                         sequence_md5=sequence_md5(sequence), sequence_length=len(sequence))
+
+
+def _score_one(head_oracle: Any, protein_id: str, sequence: str):
+    """One sequence through the SAME batch contract the Canary scores every endpoint through."""
+    results = list(head_oracle.score([_oracle_request(protein_id, sequence)]))
+    if len(results) != 1:
+        raise V2HotspotCalibrationError(
+            f"the Head returned {len(results)} result(s) for one request; the calibration cannot "
+            "attribute a score it cannot match to the sequence it asked about"
+        )
+    return results[0]
 
 
 def _generate_completion(*, model, protein_id: str, seed: int) -> str:
@@ -207,8 +248,7 @@ def calibrate_protein(
         whole_landscape_new_hotspot,
     )
 
-    reference_score = seams["head_scorer"].score_reference(
-        protein_id=protein_id, sequence=reference_sequence)
+    reference_score = _score_one(seams["head_scorer"], protein_id, reference_sequence)
     binding_id = f"ref:calib:{protein_id}:{reference_digest[:12]}"
 
     rows: list[dict] = []
@@ -245,8 +285,7 @@ def calibrate_protein(
             continue
 
         try:
-            design_score = seams["head_scorer"].score_reference(
-                protein_id=protein_id, sequence=sequence)
+            design_score = _score_one(seams["head_scorer"], protein_id, sequence)
             evidence = whole_landscape_new_hotspot(
                 design_score, reference_score, endpoint_id=f"endpoint:{protein_id}:{replicate}",
                 head_identity=head_identity, reference_kind=ReferenceKind.CUMULATIVE_DEPTH0,
@@ -258,7 +297,7 @@ def calibrate_protein(
         row["n_h_whole"] = float(evidence.max_increase)
         row["window_grid_digest"] = window_grid_digest(design_score.windows)
 
-        outcome = seams["structure_gate"](protein_id=protein_id, sequence=sequence)
+        outcome = seams["structure_gate"](_oracle_request(protein_id, sequence))
         row["structure_evaluated"] = bool(getattr(outcome, "evaluated", False))
         row["structure_feasible"] = bool(getattr(outcome, "feasible", False))
         row["structure_metrics_json"] = json.dumps(
@@ -310,9 +349,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-set", required=True)
     parser.add_argument("--pdb-root", required=True)
     parser.add_argument("--complete-reference-manifest", required=True)
-    parser.add_argument("--head-config-dir", required=True)
+    parser.add_argument("--head-config-dir", required=True,
+                        help="directory holding model.yaml / model_ablation.yaml / inference.yaml")
     parser.add_argument("--head-checkpoint", required=True)
-    parser.add_argument("--structure-config", required=True)
+    parser.add_argument("--structure-config", required=True,
+                        help="the v0 Fusion config defining the DEFINITIVE structure contract "
+                             "(backend, scTM_min, active-site metric and thresholds). Not a PDB "
+                             "root and not a refold checkpoint; the Canary must name the same file")
+    # --- the Head DOMAIN -----------------------------------------------------------------------
+    # Required, and not defaulted, because these four fields ARE the artifact: the emitted
+    # HotspotCalibrationArtifact records them, and ``bind_admission_policy`` refuses a run whose
+    # ``config.head`` 4-tuple differs.  They must be transcribed from the config that will consume
+    # this threshold -- N_H^whole is a maximum over the window grid they define, so a threshold
+    # measured under one domain does not bound designs scored under another.
+    parser.add_argument("--allele", required=True,
+                        help="must equal config.head.allele VERBATIM")
+    parser.add_argument("--score-scale", required=True,
+                        help="must equal config.head.score_scale; it is the threshold's unit")
+    parser.add_argument("--window-k-min", type=int, required=True)
+    parser.add_argument("--window-k-max", type=int, required=True)
+    parser.add_argument("--head-variant-id", required=True)
+    parser.add_argument("--head-allele-idx", type=int, default=0)
+    parser.add_argument("--head-window-batch-size", type=int, default=64)
+    parser.add_argument("--refold-cache-dir", required=True,
+                        help="the v0 on-disk refold cache identity the definitive gate folds into")
+    for name in ("--esmfold2-site-packages", "--esmfold2-model"):
+        parser.add_argument(name, default=None)
+    for name in ("--esmfold2-num-loops", "--esmfold2-num-sampling-steps",
+                 "--esmfold2-num-diffusion-samples", "--esmfold2-seed"):
+        parser.add_argument(name, type=int, default=None)
     parser.add_argument("--constraint-manifest", default=None,
                         help="omit for an unconstrained protein; supply the exact manifest for an "
                              "anchored one")
@@ -342,6 +407,28 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
 
     reference_sequence, reference_digest = resolve_reference(
         args.complete_reference_manifest, args.protein_id)
+
+    # The Head and the definitive structure gate come from the DECLARED paths.  Built before the
+    # sampler stack so a bad Head path fails in seconds instead of after DPLM is on the GPU.
+    if resolved["head_scorer"] is None or resolved["structure_gate"] is None:
+        esmfold2 = {name: getattr(args, name) for name in (
+            "esmfold2_site_packages", "esmfold2_model", "esmfold2_num_loops",
+            "esmfold2_num_sampling_steps", "esmfold2_num_diffusion_samples", "esmfold2_seed",
+        ) if getattr(args, name) is not None}
+        produced_head, produced_structure = resolved["build_production_oracles"](
+            structure_config=args.structure_config, head_config_dir=args.head_config_dir,
+            head_checkpoint=args.head_checkpoint, test_set_parquet=args.test_set,
+            pdb_root=args.pdb_root, refold_cache_dir=args.refold_cache_dir,
+            allele=args.allele, score_scale=args.score_scale,
+            window_k_min=args.window_k_min, window_k_max=args.window_k_max,
+            head_variant_id=args.head_variant_id, head_allele_idx=args.head_allele_idx,
+            head_window_batch_size=args.head_window_batch_size,
+            constraint_manifest=args.constraint_manifest, device=args.device,
+            esmfold2=(esmfold2 or None),
+        )
+        resolved["head_scorer"] = resolved["head_scorer"] or produced_head
+        resolved["structure_gate"] = resolved["structure_gate"] or produced_structure
+
     model = resolved["build_model_factory"](
         base_if_checkpoint=args.checkpoint, rf_sampler_config=args.rf_config,
         test_set_parquet=args.test_set, pdb_root=args.pdb_root, device=args.device,
@@ -370,9 +457,16 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
         "statistic": THRESHOLD_STATISTIC,
         "rows": sorted(rows, key=lambda row: row["replicate_index"]),
     })
+    # ``allele`` / ``score_scale`` / ``window_k_*`` come from the REALIZED Head identity, never
+    # from a literal here: they are the domain the threshold was measured over, and
+    # ``bind_admission_policy`` compares the same 4-tuple against ``config.head``.  In particular
+    # ``score_scale`` is whatever the frozen evaluator actually emits (``raw_logit``) rather than a
+    # label someone preferred -- an uncalibrated classifier logit is not a nat, and a threshold
+    # wearing the wrong unit cannot be re-derived from the measurements that produced it.
     artifact = HotspotCalibrationArtifact(
         schema_version=V2_HOTSPOT_CALIBRATION_SCHEMA_VERSION, gate_kind=HOTSPOT_GATE_KIND,
-        scope="cumulative_depth0", reference_kind="wt_native", reference_label="wt_native",
+        scope="cumulative_depth0", reference_kind=CUMULATIVE_REFERENCE_KIND,
+        reference_label=CUMULATIVE_REFERENCE_LABEL,
         window_domain=HOTSPOT_WINDOW_DOMAIN, allele=head_identity.allele,
         score_scale=head_identity.score_scale, window_k_min=head_identity.window_k_min,
         window_k_max=head_identity.window_k_max, calibration_data_digest=data_digest,

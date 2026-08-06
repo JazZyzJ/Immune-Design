@@ -22,6 +22,9 @@ the canary report a transition produced under a partition nobody declared.
 
 from __future__ import annotations
 
+import json
+import pathlib
+
 import pytest
 
 from inverse_folding.reference_flow.fusion_v2 import policy as pol
@@ -31,9 +34,16 @@ from tests.inverse_folding import _v2_fixtures as F
 
 
 
+#: Stands in for the sha256 of ``configs/v2_state_derived_probe_policy_v1.json`` -- the run's
+#: DECLARED ``projection_policy_spec`` role.  Supplied, never derived: the kernel checks the
+#: answering policy's spec digest against the run's conditioning, and a policy that computed its
+#: own would make both sides agree by construction.
+SPEC_DIGEST = "5" * 64
+
+
 def _policy(**over):
     table = over.pop("band_table", None) or F.band_table()
-    kw = dict(band_table=table, stratum_key=F.STRATUM)
+    kw = dict(band_table=table, stratum_key=F.STRATUM, policy_spec_digest=SPEC_DIGEST)
     kw.update(over)
     return pol.StateDerivedProbePolicy(**kw)
 
@@ -298,3 +308,97 @@ def test_the_committed_partition_leaves_a_carried_resolved_position():
     carried_resolved = [p for p in decision.carry_from_source
                         if source.tokens[p] != source.mask_token_id]
     assert carried_resolved
+
+
+# --------------------------------------------------------------------------------------------
+# the SPEC digest and the CONFIG digest are two different questions
+# --------------------------------------------------------------------------------------------
+
+
+def _band(calibration_id, lo):
+    """A DIFFERENT cell's calibration: another id and another pinned envelope.
+
+    Built through ``make_band_table`` rather than by replacing provenance fields, because the table
+    rebinds ``calibration_content_digest`` to its own content -- a hand-set digest would not be the
+    one the loader recomputes.
+    """
+    return F.band_table(
+        bands_override=(F.band(unresolved_accept=sch.BandInterval(
+            lo=lo, hi=lo + 2.0, lo_level=0.9, hi_level=0.1)),),
+        calibration_id=calibration_id)
+
+
+def test_the_spec_digest_is_the_declared_one_not_a_derived_stand_in():
+    """The kernel compares it against `conditioning.projection_policy_spec`, which is the sha256 of
+    the frozen spec FILE.  A policy that derived its own would make both sides agree by
+    construction -- and a canonical dict digest could never equal a file sha256, so the check as
+    previously written could not pass at all."""
+    assert _policy().identity().policy_spec_digest == SPEC_DIGEST
+
+
+def test_the_spec_digest_is_invariant_across_cells():
+    """REGRESSION.  The spec digest used to fold in `stratum_key` and the band, so every Canary
+    cell got a different one and no single frozen file could sign the four-cell campaign."""
+    cell_a = _policy(stratum_key="5zhv_b_unconstrained",
+                     band_table=_band("band:v2:canary:5zhv_b_unconstrained:v1", 1.0)).identity()
+    cell_b = _policy(stratum_key="q00511_anchor24",
+                     band_table=_band("band:v2:canary:q00511_anchor24:v1", 4.0)).identity()
+    assert cell_a.policy_spec_digest == cell_b.policy_spec_digest == SPEC_DIGEST
+    # ...while they remain distinguishable as CONFIGURATIONS.
+    assert cell_a.policy_config_digest != cell_b.policy_config_digest
+
+
+def test_the_config_digest_still_tracks_the_band_and_the_stratum():
+    """The per-cell binding must NOT be lost in the split: two runs under different calibrations
+    pinned different reopen cardinalities, so they ran the same rule under different config."""
+    base = _policy().identity().policy_config_digest
+    assert _policy(band_table=_band("band:other", 4.0)).identity().policy_config_digest != base
+    assert _policy(stratum_key="another_stratum").identity().policy_config_digest != base
+
+
+def test_the_two_digests_are_not_the_same_value():
+    identity = _policy().identity()
+    assert identity.policy_config_digest != identity.policy_spec_digest
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "unset:projection_policy_spec"])
+def test_a_policy_with_no_usable_spec_digest_is_refused(bad):
+    """PLAN §5.2's "missing content identity fails closed" -- the policy may not answer under a
+    spec the run never declared."""
+    with pytest.raises(Exception, match="policy_spec_digest"):
+        _policy(policy_spec_digest=bad)
+
+
+# --------------------------------------------------------------------------------------------
+# the shipped spec file
+# --------------------------------------------------------------------------------------------
+
+SPEC_PATH = (pathlib.Path(__file__).resolve().parents[2]
+             / "inverse_folding/reference_flow/configs/v2_state_derived_probe_policy_v1.json")
+
+
+def _spec():
+    return json.loads(SPEC_PATH.read_text(encoding="utf-8"))
+
+
+def test_the_shipped_spec_names_the_policy_the_code_registers():
+    spec = _spec()
+    assert spec["policy_id"] == pol.STATE_DERIVED_PROBE_POLICY_ID
+    assert spec["policy_version"] == _policy().identity().policy_version
+    assert spec["is_diagnostic_only"] is True
+
+
+def test_the_shipped_spec_carries_no_per_cell_configuration():
+    """A spec containing `stratum_key`, a band digest, a protein id or `r_step` would be a
+    per-cell artifact wearing a campaign-wide role, and the four Canary cells could not share it."""
+    blob = json.dumps(_spec())
+    for banned in ('"stratum_key":', '"r_step":', '"protein_id":',
+                   '"calibration_content_digest":', '"c_source_step":', '"c_next_step":'):
+        assert banned not in blob, f"the frozen spec must not carry {banned}"
+
+
+def test_the_shipped_spec_describes_every_support_class_the_policy_emits():
+    classes = set(_spec()["state_partition"]["classes"])
+    assert classes == {"write_from_endpoint", "inject_from_source_feedback",
+                       "reopen", "carry_from_source"}
+    assert {rule["class"] for rule in _spec()["rules"]} == classes

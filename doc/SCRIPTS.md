@@ -361,13 +361,47 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     pooled. **Scope**: authorizes Canary WIRING only — not a production immune-safety threshold.
     **Verification boundary**: `main` needs torch + checkpoints + a refold backend + PDBs; the
     frozen LAW is unit-tested against injected seams, real-oracle behaviour is a cluster check.
+    **Production path (fixed after the first cluster attempt).** `--head-config-dir`,
+    `--head-checkpoint` and `--structure-config` were declared `required=True`, parsed, and then
+    never read: the Head and structure seams defaulted to `None`, so `main` died on
+    `NoneType.evaluator_identity()` — *after* the DPLM checkpoint was resident on the GPU — and the
+    two methods it called (`score_reference` / a `(protein_id=, sequence=)` gate) existed nowhere in
+    the repo. Both oracles now come from `rf_fusion_v2_oracles.build_production_oracles`, are built
+    BEFORE the sampler stack so a bad Head path fails in seconds, and are reached through the
+    runtime's own `OracleRequest` — the same contract the Canary scores every endpoint through, so
+    the threshold cannot be calibrated against a path the gate never takes. The Head DOMAIN
+    (`--allele`, `--score-scale`, `--window-k-min/max`) plus `--head-variant-id` and
+    `--refold-cache-dir` are now REQUIRED: the artifact records the first four and
+    `bind_admission_policy` refuses a run whose `config.head` 4-tuple differs, so a default would
+    let a threshold be measured over one window grid and enforced over another. They must be
+    transcribed from the config that will consume the threshold.
     Tested: `tests/scripts/test_calibrate_rf_fusion_v2_hotspot.py`.
 
 19. `scripts/rf_fusion_v2_oracles.py` — the V2 PRODUCTION oracle stack: everything
     `run_v2_shard` needs to run a real protein. **REUSES** `rf_fusion_model_factory` for the
     sampler/denoiser/alphabet/backbone/hard-anchors (the same factory the V1 entry path delegates
     to, so the two cannot drift into different kernels) and the V1 Head batch + target-backbone
-    structure paths. What it ADDS is BINDING, not behaviour: the band is content-verified against
+    structure paths. **`build_production_oracles` / `ProductionHeadOracle` (added after the first
+    cluster attempt)** close the hole that made every V2 launch unrunnable: `OracleSeams.head_scorer`
+    and `.structure_evaluator` defaulted to `None` with no production assembly, and
+    `run_rf_fusion_v2.py` injected no seams — so the Canary would have died on
+    `NoneType.score()` with the checkpoints already loaded. Both oracles now come out of v0's own
+    `run_rf_refine_fusion.build_oracles`: the Head is its `head_fn`'s `OnlineHeadScorer` (recovered
+    from the closure, so there is exactly ONE scorer and the recorded identity cannot drift from
+    the model that scored) behind the runtime's `score(list[OracleRequest])` contract, and the
+    structure gate is its `struct_fn` composed with `fusion.oracles.structure_feasible` — the frozen
+    v0 definitive contract INCLUDING the active-site branch an anchored protein needs, with the
+    anchored/unconstrained split read off the manifest v0 itself resolved rather than a caller flag.
+    A fold or geometry failure is `evaluated=True, feasible=False`, never a deferral, because the
+    48/64 calibration floor and Canary admission both read `evaluated AND feasible`.
+    `ProductionHeadOracle` refuses two things by construction: a realized Head domain differing from
+    the declared `(allele, score_scale, window_k_min, window_k_max)` — naming the offending field,
+    since `bind_admission_policy` would otherwise fail later with two opaque tuples — and a result
+    whose `sequence_md5` does not key the sequence it was asked about, the archive/cache/ledger join
+    key. Results are deduplicated per digest because `bind_head_scores` refuses duplicates, and
+    batched per protein because `score_batch_same_protein` is. `build_v2_oracles` builds the pair
+    lazily when neither seam was injected, so tests still inject and production no longer needs the
+    driver to know. What it ADDS is BINDING, not behaviour: the band is content-verified against
     `config.content[schedule_band_calibration]`; the depth-0 safety reference is bound from the
     declared reference SEQUENCE with its digest recomputed from those bytes; the support policy is
     resolved from `config.projection.support_policy_id` through a registry that refuses an
