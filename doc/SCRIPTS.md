@@ -339,20 +339,29 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     factory yet**, so the driver cannot launch a real run until one is supplied. Tested:
     `tests/scripts/test_rf_fusion_v2_cohort.py`.
 
-21. `scripts/calibrate_rf_fusion_v2_hotspot.py` — produce the V2 whole-landscape hotspot
-    calibration artifact (PLAN §2.7). The schema existed and the PRODUCER did not, so a cluster
-    agent could only invent `delta_new_cumulative`. It **decides nothing**: `doc/FUSION_V2.md`
-    leaves the threshold statistic open, so `--threshold-statistic` is REQUIRED from a closed
-    vocabulary (`max`/`q90`/`q95`/`q99`/`mean_plus_2sd`) and is recorded in the artifact. It
-    measures `N_H^whole` for every declared (design, reference) pair through the GATE's own
-    comparator (`safety.whole_landscape_new_hotspot`, the one `measure_cumulative` calls), so a
-    threshold cannot be calibrated against a quantity the gate does not compute; a pair the gate
-    cannot measure stops the calibration rather than being dropped. Emits the `delta_new` block to
-    paste verbatim into `config.safety.delta_new_cumulative` — the loader recomputes `source_ref`
-    and refuses a mismatch — plus the full measurement table, so a reviewer sees the distribution
-    and not only the scalar. `calibration_data_digest` covers the measurements, not the input file.
-    Loads no model (consumes Head scores already computed). Tested:
-    `tests/scripts/test_calibrate_rf_fusion_v2_hotspot.py`.
+21. `scripts/calibrate_rf_fusion_v2_hotspot.py` — the PER-PROTEIN V2 whole-landscape hotspot
+    calibration producer, implementing the frozen law of `doc/RF_Fusion_v2_Cluster_Runbook.md`
+    §2.1. Generates `--n-completions` complete feedback-disabled trajectories under the frozen
+    substrate from the disjoint seed namespace `v2_hotspot_calibration_1` (REUSES
+    `rf_fusion_model_factory`), scores each candidate and that protein's OWN native reference with
+    the production Head, computes `N_H^whole` through the admission gate's own comparator
+    (`safety.whole_landscape_new_hotspot`), runs the v0 definitive structure gate, and keeps only
+    endpoints with a REAL definitive-feasible verdict — `evaluated` and `feasible` both, so a
+    cache-only label cannot help meet the floor. Below `--min-definitive-feasible` it writes **no
+    artifact** and does not relax the floor. `delta_new_cumulative` is the empirical `Q0.90` by the
+    **higher order statistic** — the value at one-indexed rank `ceil(0.90*n)`, at full precision —
+    NOT `numpy.quantile`, which interpolates and returns a number no endpoint produced.
+    `--threshold-statistic` is a closed enum with a single admissible value
+    (`per_protein_definitive_feasible_q90_higher`) and there is deliberately no `--quantile`
+    override. Writes a canonical raw parquet with **every attempt including failures** (a
+    retained-only table makes the definitive-feasible rate — what the floor is checked against —
+    unrecoverable) plus one typed artifact per protein reporting `n_attempted`,
+    `n_definitive_feasible`, `q50/q90/q95/max`, the order-statistic rank and all failure counts.
+    `source_id` is `v2-canary-hotspot-null-q90-higher-v1:<protein_id>`; the two proteins are never
+    pooled. **Scope**: authorizes Canary WIRING only — not a production immune-safety threshold.
+    **Verification boundary**: `main` needs torch + checkpoints + a refold backend + PDBs; the
+    frozen LAW is unit-tested against injected seams, real-oracle behaviour is a cluster check.
+    Tested: `tests/scripts/test_calibrate_rf_fusion_v2_hotspot.py`.
 
 19. `scripts/rf_fusion_v2_oracles.py` — the V2 PRODUCTION oracle stack: everything
     `run_v2_shard` needs to run a real protein. **REUSES** `rf_fusion_model_factory` for the
