@@ -245,3 +245,9 @@ def realized_seed_manifest(
         seeds[f"terminal_complete:{i}"] = ctx.terminal_complete_seed(i)
     assert_no_seed_collisions(seeds)
     return seeds
+
+
+# --- Public aliases for fusion_v2 reuse (additive; zero behavior change) ---------------------
+# exact_index rejects bool and non-int, preventing int(1.9) / int("1") / int(True) from aliasing
+# three callers onto one random stream.
+exact_index = _exact_index

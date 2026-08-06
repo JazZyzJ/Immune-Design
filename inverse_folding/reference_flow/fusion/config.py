@@ -405,3 +405,16 @@ def load_fusion_config(source: str | Path | dict) -> FusionConfig:
 
 def fusion_config_to_dict(config: FusionConfig) -> dict[str, Any]:
     return config.to_canonical_dict()
+
+
+# --- Public aliases for fusion_v2 reuse (additive; zero behavior change) ---------------------
+# require_explicit_bool already closes the quoted-"false" truthiness trap; re-deriving these in a
+# V2 loader would re-open a fixed bug. The V2 config shares the helpers, never the config types.
+require_key = _require
+require_int = _req_int
+require_float = _req_float
+require_str = _req_str
+require_explicit_bool = _as_bool
+require_submapping = _sub
+require_finite_nonneg = _finite_nonneg
+require_finite_pos = _finite_pos

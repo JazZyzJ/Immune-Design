@@ -135,3 +135,12 @@ def new_hotspot(child, parent, *, halo_start: int, halo_end: int) -> NewHotspot:
         positive_mass=math.fsum(positives),
         positive_count=len(positives),
     )
+
+
+# --- Public aliases for fusion_v2 reuse (additive; zero behavior change) ---------------------
+# doc/FUSION_V2.md section 4.3 names the window-alignment primitive as the one reusable part of the
+# v0 hotspot machinery. new_hotspot() itself is deliberately NOT reused: it is off-halo and
+# rolling-parent, and its max_increase falls back to 0.0 on an empty delta list (fail-open).
+aligned_window_z = _aligned_z
+finite_window_z = _finite_z
+window_coord = _coord

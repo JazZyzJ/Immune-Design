@@ -412,6 +412,44 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 
 ---
 
+## RF-Refine Fusion V2 — trajectory-coupled pre-terminal feedback (PLAN_RF_REFINE_FUSION_V2.md)
+
+> **V2F1–V2F7 IMPLEMENTED AND ADVERSARIALLY REVISED; NO CLUSTER RUN.** Branch
+> `fusion_rf_refine`, worktree `/Users/jerry/Project/MHC-IF-fusion`. Two new packages:
+> `fusion_v2/` (typed contracts + `q_phi`, torch-free) and `fusion_v2_runtime/` (torch-aware).
+> `inverse_folding/reference_flow/sampler.py` is byte-identical to HEAD — V1 is not touched.
+
+**The question.** Freeze a live partial state at `c_d`, fork K exact complete lookaheads, score
+them with a frozen Head, project ONE selected endpoint back to an earlier re-entry `r_d < c_d`
+through the pure kernel `q_phi`, propagate forward, repeat. A2 is the same run with feedback
+disabled — a matched control VIEW, not a second run.
+
+| Task | State |
+|---|---|
+| V2F1 typed contracts (`identity`/`state`/`schedule`/`seeds`/`safety`/`config`) | done |
+| V2F2 `q_phi` projection kernel + policy boundary | done; `(P, y)` binding added 2026-08-05 |
+| V2F3 segment executor, first-forward assimilation, `token_logprob` | done |
+| V2F4 lookaheads, Head binding, monotone exact archive, A2 view | done |
+| V2F5 one-cycle runner + paired mechanism executor | done; A2 made a shared-pool view 2026-08-05 |
+| V2F6 general D>=1 ladder + stationary comparator | done; production `D>1` launch-disabled |
+| V2F7 artifacts / ledger / resume / driver / preflight | done |
+
+Tests: 1164 V2 tests pass. Repo-wide failing set is identical to clean HEAD (47 entries,
+all missing-dependency or missing-fixture-file), i.e. no regression.
+
+**Open gaps:**
+
+| Gap | Status | Where |
+|---|---|---|
+| `explicit_probe` cannot drive a real canary (predeclared sets vs stochastic resolvedness) | **CLOSED** — replaced by `StateDerivedProbePolicy`, whose partition rule is frozen in `doc/RF_Fusion_v2_Cluster_Runbook.md` and whose reopen cardinality is pinned by `B(r_d)` rather than declared | `fusion_v2/policy.py` |
+| `active_population_width > 1` refused at config parse | Open scientific question, correctly refused. Interface Map OQ7 (:485): neither PLAN §2.7 nor `FUSION_V2.md` §4.3 says whether a forked family inherits its parent's `reference_binding_id` or opens its own | `fusion_v2/config.py` |
+| `reward_ordered` / `policy_source_off` mechanism views are interface-only (`NotYetFrozenError`) | **Correctly deferred, not a todo.** PLAN §2.5 + §8.4 sequence the `FeedbackSupportPolicySpec` freeze AFTER positive source transmission; running a placeholder would "yield a number that looks like evidence" | `fusion_v2_runtime/paired.py` |
+| No production oracle factory, so the driver cannot launch a real run | **Out of scope by PLAN §5.5** (:655): "Launcher and Canary commands are outside this PLAN revision and will be added to the runbook after the local code gate" | — |
+
+**Gate status.** Production `D>1` stays launch-disabled until a powered real one-cycle
+source-transmission gate AND the frozen `FeedbackSupportPolicy` directionality gate both pass.
+Local fake-oracle success validates WIRING ONLY and must not be read as feedback transmission.
+
 ## Active-15 uricase core-release v2 — 44-cell B1Aopen generation (2026-08-03)
 
 15 experimentally active single-domain uricases × 3 DR alleles. Search space = the union of every

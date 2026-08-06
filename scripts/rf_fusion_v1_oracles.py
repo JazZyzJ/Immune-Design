@@ -273,23 +273,16 @@ def build_entry_oracles(args, provenance):
     extension points. This function loads torch; the entry driver calls it lazily."""
     import dataclasses
 
-    from inverse_folding.reference_flow.config import load_reference_flow_config
     from inverse_folding.reference_flow.fusion.objective import global_risk_of
     from inverse_folding.reference_flow.fusion.state import sequence_md5
     from inverse_folding.reference_flow.fusion.v1_admission import StructureOutcome
     from inverse_folding.reference_flow.fusion.v1_alloc import HeadRecord
     from inverse_folding.reference_flow.fusion.v1_records import make_root_id
-    from inverse_folding.reference_flow.runtime import (
-        build_dplm_denoiser_context,
-        load_if_task,
-        make_dplm_denoiser,
-        prepare_backbone,
-    )
     from inverse_folding.reference_flow.sampler import (
         ContinuationRequest,
         MaturityNotReachedError,
-        PositionDependentDFMSampler,
     )
+    from scripts.rf_fusion_model_factory import build_model_factory
     from scripts.rf_fusion_v1_entry_core import (
         CompletionOutcome,
         EntryOracles,
@@ -316,44 +309,37 @@ def build_entry_oracles(args, provenance):
     rho = float(config.rho_target) if config.rho_target is not None else None
     rho_id = rho_id_for(rho) if rho is not None else "terminal"
 
-    task = load_if_task(args.base_if_checkpoint, device=device)
-    sampler = PositionDependentDFMSampler(
-        mask_token_id=task.alphabet.mask_idx, vocab_size=len(task.alphabet)
-    )
-    rf_config = load_reference_flow_config(args.rf_sampler_config)
-    assert_null_amplification(rf_config)
-    id_to_aa = _canonical_id_to_aa(task.alphabet)
-    aa_token_ids = frozenset(id_to_aa)
-    mask_id = int(task.alphabet.mask_idx)
-    _tokenizer_digest = tokenizer_digest(task.alphabet)
+    # DELEGATED (PLAN V2F7): the frozen task, the sampler, the sampler config under its
+    # null-amplification assertion, the canonical AA20 map, the tokenizer digest, the test-set rows,
+    # the per-protein backbone/denoiser cache and the hard-anchor projection are ONE implementation
+    # shared with V2.  Copying them into a second closure is exactly how two entry paths start
+    # running slightly different kernels while both claiming the frozen substrate.
+    #
+    # Conditioning identity is NOT delegated: V1 assembles a V1 conditioning record from its own
+    # provenance dict and V2 assembles a V2ConditioningIdentity.  The factory exposes the shared
+    # DIGESTS and each version builds its own identity from them.
     _fixed_token_policy = (
         f"manifest:{provenance['file_digests'].get('anchor_manifest')}"
         if getattr(args, "constraint_manifest", None) else "unconstrained"
     )
-
-    test_rows = pd.read_parquet(args.test_set_parquet).set_index("protein_id")
-    prepared_cache: dict = {}
-    denoiser_cache: dict = {}
-
-    # anchor (hard-fixed-token) projection: canary-B / constrained proteins (e.g. Q00511). The
-    # anchors are frozen through the sampler as fixed_tokens on the root prefix; the completer's
-    # fork resume carries them forward on its own (a self-contained resume rejects a fixed_tokens
-    # param), so they are re-protected through every continuation and the terminal population.
-    manifest = None
-    if getattr(args, "constraint_manifest", None):
-        from inverse_folding.reference_flow.constraints import load_constraint_manifest
-
-        manifest = load_constraint_manifest(args.constraint_manifest)
-
-    def _fixed_tokens(pid):
-        if manifest is None:
-            return None
-        constraint = manifest.constraint_for_protein(pid)
-        fixed = {
-            int(anchor.index_0b): int(task.alphabet.get_idx(str(anchor.expected_aa)))
-            for anchor in constraint.hard_anchors
-        }
-        return fixed or None
+    model = build_model_factory(
+        base_if_checkpoint=args.base_if_checkpoint,
+        rf_sampler_config=args.rf_sampler_config,
+        test_set_parquet=args.test_set_parquet,
+        pdb_root=args.pdb_root,
+        device=device,
+        constraint_manifest=getattr(args, "constraint_manifest", None),
+        fixed_token_policy=_fixed_token_policy,
+    )
+    task = model.task
+    sampler = model.sampler
+    rf_config = model.rf_config
+    id_to_aa = model.id_to_aa
+    aa_token_ids = model.aa_token_ids
+    mask_id = model.mask_token_id
+    _tokenizer_digest = model.tokenizer_digest
+    test_rows = model._test_rows
+    _fixed_tokens = model.fixed_tokens
 
     conditioning_cache: dict = {}
 
@@ -371,17 +357,7 @@ def build_entry_oracles(args, provenance):
             )
         return conditioning_cache[pid]
 
-    def _prepared(pid):
-        if pid not in prepared_cache:
-            row = dict(test_rows.loc[pid])
-            row["protein_id"] = pid
-            prepared = prepare_backbone(task=task, entry=row, pdb_root=args.pdb_root, device=device)
-            ctx = build_dplm_denoiser_context(
-                task=task, prepared=prepared, use_draft_seq_override=False
-            )
-            prepared_cache[pid] = prepared
-            denoiser_cache[pid] = make_dplm_denoiser(ctx)
-        return prepared_cache[pid], denoiser_cache[pid]
+    _prepared = model.backbone_and_denoiser
 
     scorer = build_head_scorer(
         head_scorer_setup(args),

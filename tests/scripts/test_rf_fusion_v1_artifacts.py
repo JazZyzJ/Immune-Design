@@ -349,3 +349,50 @@ def test_t0_membership_columns_name_the_three_v1a_policies():
     assert "selected_partial_member" in columns
     assert "random_partial_member" in columns
     assert "independent_full_member" in columns
+
+
+# --------------------------------------------------------------------------------------------
+# the ledger writer must survive the V2 fragment round-trip (PLAN_RF_REFINE_FUSION_V2 §5.3-5.4)
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_ledger_writer_accepts_events_that_came_back_through_a_fragment(tmp_path):
+    """V2 routes its compute ledger through resume, so every event reaches the writer as a plain
+    JSON mapping rather than as the dataclass it was emitted as.  A writer that only accepted
+    dataclasses made a PLAN-required evidence object unwritable for exactly the path it has to
+    survive.  Widening it here keeps ONE ledger writer rather than adding a second for V2.
+    """
+    import dataclasses
+
+    from inverse_folding.reference_flow.fusion_v2_runtime.ledger import V2LedgerEvent
+    from scripts.rf_fusion_v1_artifacts import read_cost_ledger_jsonl, write_cost_ledger_jsonl
+
+    event = V2LedgerEvent(event_id="evt:1", attempt_id="att:1", protein_id="5ZHV_B", arm="v2",
+                          phase="screen", status="ok", logical_dfe=150, physical_forwards=150)
+    round_tripped = json.loads(json.dumps(dataclasses.asdict(event)))
+
+    path = tmp_path / "cost_ledger.jsonl"
+    write_cost_ledger_jsonl(path, [round_tripped])
+    assert read_cost_ledger_jsonl(path) == [round_tripped]
+
+
+def test_the_ledger_writer_still_accepts_the_dataclass_form(tmp_path):
+    """V1 emits dataclasses and its results are published; the widening must be purely additive."""
+    import dataclasses
+
+    from inverse_folding.reference_flow.fusion_v2_runtime.ledger import V2LedgerEvent
+    from scripts.rf_fusion_v1_artifacts import read_cost_ledger_jsonl, write_cost_ledger_jsonl
+
+    event = V2LedgerEvent(event_id="evt:1", attempt_id="att:1", protein_id="5ZHV_B", arm="v2",
+                          phase="head", status="ok", head_calls=3)
+    path = tmp_path / "cost_ledger.jsonl"
+    write_cost_ledger_jsonl(path, [event])
+    assert read_cost_ledger_jsonl(path) == [dataclasses.asdict(event)]
+
+
+def test_the_ledger_writer_refuses_something_that_is_neither(tmp_path):
+    """A bare str would serialize to a JSON string and read back as a row nothing can aggregate."""
+    from scripts.rf_fusion_v1_artifacts import write_cost_ledger_jsonl
+
+    with pytest.raises(TypeError):
+        write_cost_ledger_jsonl(tmp_path / "x.jsonl", ["evt:1"])

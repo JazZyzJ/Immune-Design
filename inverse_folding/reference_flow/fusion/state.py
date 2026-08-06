@@ -251,3 +251,10 @@ def uniform_population(*, round_idx: int, particles: "Sequence[ParticleState]",
     w = 1.0 / len(particles)
     reset = tuple(replace(p, weight=w, round_idx=round_idx) for p in particles)
     return PopulationState(round_idx=round_idx, particles=reset, elite=elite)
+
+
+# --- Public aliases for fusion_v2 reuse (additive; zero behavior change) ---------------------
+# require_canonical_aa20 is the AA20 firewall PLAN section 2.7 relies on; a private copy would be a
+# second place a masked or non-canonical residue can reach the Head.
+require_canonical_aa20 = _require_canonical
+require_finite = _require_finite

@@ -376,3 +376,13 @@ def collapse_roots(payloads: Sequence[PartialRootPayload]) -> RootCollapse:
     unique = tuple(sorted(representatives.values(), key=lambda p: p.root_id))
     converged = {equivalence: tuple(sorted(ids)) for equivalence, ids in groups.items()}
     return RootCollapse(unique=unique, converged=converged)
+
+
+# --- Public aliases for fusion_v2 reuse (additive; zero behavior change) ---------------------
+# fusion_v2 must not re-derive these: a second canonical-JSON encoder or hash recipe would digest
+# the same payload to different bytes, so V1 and V2 digests of shared payloads would disagree.
+# See doc/FUSION_V2_Interface_Map.md section 5 and tests/inverse_folding/test_fusion_v2_reuse_boundary.py.
+canonical_json_bytes = _canonical_json
+sha256_hex = _sha256_hex
+require_int_token = _require_int_token
+normalize_score = _norm_score

@@ -1,0 +1,542 @@
+"""V2 trajectory-coupled feedback driver (PLAN V2F7, §5.5).
+
+**Reuse decision (PLAN §5.5), recorded here as the rule requires.**  Compared against
+``run_rf_fusion_v1_entry.py`` and ``run_rf_refine_fusion.py``:
+
+* the writers are REUSED -- ``rf_fusion_v2_artifacts`` delegates to ``rf_fusion_v1_artifacts``
+  (``write_stable_parquet``/``write_manifest``/``write_cost_ledger_jsonl``), adding V2's column
+  vocabulary through an argument rather than a second parquet implementation;
+* model preparation is REUSED -- ``rf_fusion_model_factory`` is the one implementation, and the V1
+  oracle path now delegates to it;
+* the DRIVER is new.  V1's CLI is organised around one rho-crossing entry per protein with an
+  entry arm and a maturity target; V2's is organised around a depth ladder with a projection
+  policy, a safety gate, a schedule-band table and paired mechanism arms.  The state graph, the
+  checkpoint contents and the exit conditions differ throughout, so this is the "materially
+  different CLI/state graph" case PLAN §5.5 permits rather than an ambiguous mode inside the V1
+  scientific config.
+
+``--print-config`` and ``--dry-run`` load no model: every torch-touching import is deferred behind
+the execution path, so a typo costs a second rather than a GPU allocation.
+
+**Content provenance fails closed (PLAN §5.2).**  "The run signature binds file **contents**, not
+paths alone ... Missing content identity fails closed."  Three consequences are implemented here:
+
+* a run that declares NO input file is refused rather than signed with a sentinel.  A sentinel is
+  worse than no signature at all: every run that declared nothing shares it, so two experiments over
+  different data resume from each other's fragments, and the manifest records an identity that was
+  never observed.  ``--dry-run`` is refused for the same reason -- a zero exit there is exactly the
+  evidence an operator uses to justify submitting.  ``--print-config`` is DELIBERATELY exempt: it
+  signs nothing, writes nothing and reuses nothing, and its purpose is to check a config before the
+  input set has been assembled.  It reports the absent signature as ``null``, never as a value.
+* every declared input names the PLAN §5.2 role it binds (``--input-file ROLE=PATH``).  A file that
+  arrives without a role can be neither checked against the digest its config declares nor recorded
+  as that role's observed identity, and §5.2 states the requirement per role.  Where the config
+  declares an expected digest, a contradicting file is refused rather than run.
+* the manifest carries one provenance row per declared role -- role, declared label, declared digest
+  (explicitly ``null`` when the role declares none) and the OBSERVED digest of the file supplied for
+  it (``null`` when no file was supplied).  ``""`` is not used: an empty string sorts, compares and
+  prints as though the content had been identified.
+
+**One code revision per experiment.**  ``identity.code_revision`` is a required config field and is
+inside ``config_digest``, so the config is the authority and ``--code-revision`` defaults to it.
+Supplying a value that disagrees is refused with both named.  There is therefore no value of the
+flag that can sign a run with a revision the config does not declare -- and no ``"unknown"``, which
+``fusion_v2.schedule`` already rejects as a placeholder for this exact field.
+
+**Exit codes** are the contract this driver is judged on, because a cohort runner reads them and
+nothing else:
+
+===== =========================================================================================
+  0   every requested protein produced an accepted fragment AND at least one succeeded
+  2   nothing usable: no accepted fragment, or every protein failed, or a cap was breached
+  3   partial: some proteins are missing or their fragments were rejected
+  4   the run is not launchable as configured (preflight refusal, stale inputs)
+===== =========================================================================================
+
+``2`` for "all proteins failed but fragments exist" is deliberate.  PLAN §7.2 lists "all proteins
+fail but the driver exits zero" as an adversarial case: a zero exit there would let a cohort of
+total failures be consumed downstream as a completed run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from inverse_folding.reference_flow.fusion_v2.errors import V2Error  # noqa: E402
+from scripts.rf_fusion_v2_artifacts import (  # noqa: E402
+    V2_TABLE_SCHEMAS,
+    run_manifest,
+    write_v2_bundle,
+)
+from scripts.rf_fusion_v2_preflight import (  # noqa: E402
+    V2PreflightError,
+    assert_launch_feasible,
+    input_signature,
+    load_v2_config_file,
+    print_config_payload,
+    project_v2_budget,
+)
+from scripts.rf_fusion_v2_resume import (  # noqa: E402
+    RunSignature,
+    aggregate_fragments,
+    write_fragment,
+)
+
+EXIT_OK = 0
+EXIT_FAILED = 2      # nothing usable (also argparse's usage-error code)
+EXIT_PARTIAL = 3     # some proteins missing or rejected
+EXIT_UNLAUNCHABLE = 4
+
+__all__ = [
+    "EXIT_OK", "EXIT_FAILED", "EXIT_PARTIAL", "EXIT_UNLAUNCHABLE",
+    "V2DriverError", "DeclaredInput",
+    "build_parser", "main", "decide_exit_code",
+    "parse_declared_inputs", "parse_shard_inputs", "realized_cap_verdict",
+    "resolve_code_revision",
+    "content_provenance",
+]
+
+
+class V2DriverError(V2Error):
+    """A run identity this driver refuses to sign, as opposed to a run that failed."""
+
+
+@dataclass(frozen=True)
+class DeclaredInput:
+    """One PLAN §5.2 role, the file supplied for it, and that file's OBSERVED content digest."""
+
+    role: str
+    path: Path
+    sha256: str
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="run_rf_fusion_v2",
+        description="V2 trajectory-coupled pre-terminal feedback driver",
+    )
+    parser.add_argument("--v2-config", required=True,
+                        help="V2 run config YAML (schema-validated; no defaults are supplied)")
+    parser.add_argument("--out-dir", required=True, help="artifact bundle destination")
+    parser.add_argument("--cohort", nargs="*", default=(), metavar="PROTEIN_ID",
+                        help="the frozen requested cohort; a protein missing from the result is "
+                             "reported, never dropped")
+    parser.add_argument("--input-file", nargs="*", default=(), metavar="ROLE=PATH",
+                        help="declared input files, each naming the PLAN §5.2 content role it "
+                             "binds; their CONTENT signs the resume identity and is checked "
+                             "against any digest the config declares for that role. A run that "
+                             "declares none is refused rather than signed with a sentinel")
+    parser.add_argument("--code-revision", default=None,
+                        help="the code revision this run is bound to. Defaults to the config's "
+                             "identity.code_revision, which is the authority; a value that "
+                             "disagrees with it is refused rather than run as one experiment")
+    parser.add_argument("--shard-input", nargs="*", default=(), metavar="NAME=PATH",
+                        help="runtime paths handed to the execution stage as ShardInputs "
+                             "(e.g. journal_dir=..., pdb_root=...). Cluster paths are CLI "
+                             "arguments and are never hardcoded in a module; the NAMES belong to "
+                             "the oracle stack, so the driver routes them rather than fixing them")
+    parser.add_argument("--fragment-dir", default=None,
+                        help="per-shard fragment directory (default: <out-dir>/fragments)")
+    parser.add_argument("--print-config", action="store_true",
+                        help="resolve the config, derive its digest and project its budget; "
+                             "loads no model")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="everything --print-config does, plus the launch-feasibility gate; "
+                             "loads no model")
+    parser.add_argument("--aggregate-only", action="store_true",
+                        help="skip execution and aggregate the fragments already on disk")
+    return parser
+
+
+def decide_exit_code(report, *, requested: int) -> int:
+    """Turn an aggregate report into the one number a cohort runner reads.
+
+    Ordering matters.  "Partial" is checked before "no successes" because a partial cohort is a
+    different operator action (re-run the missing shards) from a cohort that ran completely and
+    produced nothing (investigate the method).
+    """
+    if requested == 0:
+        return EXIT_FAILED
+    if report.missing_proteins or report.rejected:
+        # Some evidence exists but the cohort is not the one that was requested.
+        return EXIT_PARTIAL if report.any_success else EXIT_FAILED
+    if not report.any_success:
+        # Every requested protein was processed and every one failed.  PLAN §7.2 names the zero
+        # exit here as an adversarial case: it would let a cohort of total failures be consumed
+        # downstream as a completed run.
+        return EXIT_FAILED
+    return EXIT_OK
+
+
+def parse_declared_inputs(values: Sequence[Any], *, config) -> tuple[DeclaredInput, ...]:
+    """Bind each declared file to the PLAN §5.2 content role it stands for, and digest it.
+
+    A bare path is refused.  §5.2 states the provenance requirement per role -- cohort table,
+    backbone, constraint manifest, Head checkpoint -- so a file that names no role can neither be
+    compared against the digest its config declares nor be recorded as that role's observed
+    identity; it would be provenance in name only.
+
+    Where the config declares an expected digest, a file whose content contradicts it is refused:
+    running anyway would attribute results to a calibration or policy spec that never entered the
+    run.
+    """
+    known = {row.role: row for row in config.content}
+    declared: dict[str, DeclaredInput] = {}
+    for value in values:
+        role, separator, raw = str(value).partition("=")
+        role, raw = role.strip(), raw.strip()
+        if not separator or not role or not raw:
+            raise V2DriverError(
+                f"--input-file {str(value)!r} must be ROLE=PATH; an input that names no content "
+                f"role cannot be checked or recorded (declared roles: {sorted(known)})"
+            )
+        if role not in known:
+            raise V2DriverError(
+                f"--input-file names content role {role!r}, which this config does not declare; "
+                f"declared roles: {sorted(known)}"
+            )
+        if role in declared:
+            raise V2DriverError(
+                f"content role {role!r} was declared twice ({declared[role].path} and {raw}); one "
+                "role identifies one content, or the manifest cannot say which was used"
+            )
+        path = Path(raw)
+        observed = hashlib.sha256(path.read_bytes()).hexdigest()
+        expected = known[role].expected_sha256
+        if expected is not None and observed != expected:
+            raise V2DriverError(
+                f"declared input for role {role!r} contradicts the digest the config binds it to: "
+                f"{path} has sha256 {observed}, config.content declares {expected}"
+            )
+        declared[role] = DeclaredInput(role=role, path=path, sha256=observed)
+    return tuple(declared[role] for role in sorted(declared))
+
+
+def resolve_code_revision(requested, *, config) -> str:
+    """The config is the authority; the flag may only agree with it.
+
+    ``identity.code_revision`` is required, has no default and is inside ``config_digest``.  A
+    second, independently settable source for the same fact is how two revisions get treated as one
+    experiment -- so omitting the flag adopts the config's value and supplying a different one is
+    refused with both named.
+    """
+    declared = str(config.identity.code_revision)
+    if requested is None:
+        return declared
+    if str(requested) != declared:
+        raise V2DriverError(
+            f"--code-revision {str(requested)!r} disagrees with the config's declared "
+            f"identity.code_revision {declared!r}; two revisions are two experiments"
+        )
+    return declared
+
+
+def content_provenance(config, declared: Sequence[DeclaredInput]) -> list[dict]:
+    """One row per declared content role (PLAN §5.3: the manifest carries ALL content identities).
+
+    Keyed by ROLE because that is the vocabulary §5.2 states the requirement in; a label is a human
+    name two roles may share.  An identity that does not exist is ``None`` rather than ``""`` --
+    the empty string sorts, compares and prints as though the content had been identified.
+    """
+    observed_by_role = {item.role: item for item in declared}
+    rows = []
+    for row in sorted(config.content, key=lambda entry: entry.role):
+        observed = observed_by_role.get(row.role)
+        rows.append({
+            "role": row.role,
+            "declared_label": row.label,
+            "binding": row.binding,
+            "declared_sha256": row.expected_sha256,
+            "observed_path": None if observed is None else str(observed.path),
+            "observed_sha256": None if observed is None else observed.sha256,
+        })
+    return rows
+
+
+def _content_identities(provenance: Sequence[dict]) -> dict:
+    """Role -> the digest actually established for it, omitting roles where none was.
+
+    ``run_manifest`` coerces this mapping's values with ``str()``, so a null cannot be expressed in
+    it without becoming the string ``"None"`` -- a placeholder by another name.  The complete,
+    explicitly nullable table is the manifest's ``content_provenance``; this map carries only what
+    is known.
+    """
+    identities = {}
+    for row in provenance:
+        digest = row["observed_sha256"] or row["declared_sha256"]
+        if digest:
+            identities[row["role"]] = digest
+    return identities
+
+
+def parse_shard_inputs(raw: Sequence[str]):
+    """Turn ``NAME=PATH`` pairs into the :class:`ShardInputs` the execution stage consumes.
+
+    A bare path is refused rather than positionally assigned: guessing which parameter it meant is
+    how a checkpoint ends up passed as a PDB root.  A repeated name is refused rather than
+    last-one-wins, which would silently pick between two paths the operator declared.
+    """
+    from scripts.rf_fusion_v2_cohort import ShardInputs
+
+    paths: dict[str, str] = {}
+    for item in raw:
+        name, sep, value = str(item).partition("=")
+        if not sep or not name.strip() or not value.strip():
+            raise V2Error(
+                f"--shard-input expects NAME=PATH, got {item!r}; a bare path cannot be routed to a "
+                "parameter and guessing which one it meant is how a checkpoint is passed as a PDB "
+                "root"
+            )
+        if name in paths:
+            raise V2Error(
+                f"--shard-input names {name!r} twice; last-one-wins would silently pick between "
+                "two paths the run declared"
+            )
+        paths[name] = value
+    return ShardInputs(**paths)
+
+
+def realized_cap_verdict(ledger_events, *, caps):
+    """Check the REALIZED cohort ledger against the run's declared hard caps (PLAN §5.1, §5.3).
+
+    Cohort-scoped, because that is how the caps are declared and how ``project_v2_budget`` already
+    reads them (``total = per_protein * n_proteins``).  The per-shard check inside ``run_v2_shard``
+    cannot see this: four proteins each comfortably under ``max_logical_dfe`` can breach it
+    together, and the two code paths were disagreeing about the scope of the same quantity while
+    only the projection was ever evaluated cohort-wide.
+
+    Returns ``None`` when the run kept no ledger at all -- an absent ledger is not a certificate of
+    compliance and the caller reports it as such rather than reading it as "within budget".
+    """
+    from inverse_folding.reference_flow.fusion_v2_runtime.ledger import (  # noqa: PLC0415
+        V2LedgerEvent,
+        aggregate_v2_ledger,
+        check_caps,
+    )
+
+    rows = list(ledger_events or ())
+    if not rows:
+        return None
+    try:
+        events = [row if isinstance(row, V2LedgerEvent) else V2LedgerEvent(**dict(row))
+                  for row in rows]
+    except (TypeError, ValueError) as exc:
+        raise V2Error(f"the aggregated cost ledger is not a V2 ledger: {exc}") from exc
+    return check_caps(aggregate_v2_ledger(events), caps)
+
+
+def _signatures(config, cohort, *, arm_role, code_revision, inputs):
+    if not inputs:
+        # PLAN §5.2: "Missing content identity fails closed."  A sentinel signature would be shared
+        # by every run that declared nothing, so two experiments over different data would resume
+        # from each other's fragments.
+        raise V2DriverError(
+            "no --input-file was declared, so this run has no content identity to sign; PLAN §5.2 "
+            "binds the run signature to file CONTENTS and missing content identity fails closed"
+        )
+    signature = input_signature(inputs)
+    return {
+        protein_id: RunSignature(
+            config_digest=config.config_digest(),
+            campaign_id=config.identity.campaign_id,
+            split_role=config.identity.split_role,
+            arm_role=arm_role,
+            protein_id=protein_id,
+            input_signature=signature,
+            code_revision=code_revision,
+        )
+        for protein_id in cohort
+    }
+
+
+def main(argv=None, *, runner=None) -> int:
+    """Run, or explain why it will not.
+
+    ``runner`` is the injection seam for the execution stage: the default is resolved lazily so the
+    config paths never import torch.  Tests drive the whole driver through a fake runner, which is
+    what makes the exit-code matrix verifiable without a GPU.
+    """
+    args = build_parser().parse_args(argv)
+    out_dir = Path(args.out_dir)
+    fragment_dir = Path(args.fragment_dir) if args.fragment_dir else out_dir / "fragments"
+
+    try:
+        config = load_v2_config_file(args.v2_config)
+    except (V2Error, OSError) as exc:
+        print(f"config refused: {exc}", file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+
+    cohort = list(args.cohort)
+    if len(set(cohort)) != len(cohort):
+        print("duplicate protein id in the requested cohort", file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+    if not cohort and not (args.print_config or args.dry_run):
+        # Requesting nothing and succeeding at it is not a completed run.  Reported here as a typed
+        # refusal rather than left to argparse, so the message names the actual problem.
+        print("the requested cohort is empty; nothing was asked for and nothing was produced",
+              file=sys.stderr)
+        return EXIT_FAILED
+
+    try:
+        declared = parse_declared_inputs(args.input_file, config=config)
+        code_revision = resolve_code_revision(args.code_revision, config=config)
+    except (V2Error, OSError) as exc:
+        print(f"declared input refused: {exc}", file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+    if args.print_config or args.dry_run:
+        try:
+            payload = print_config_payload(
+                config, n_proteins=len(cohort), declared_inputs=declared,
+                code_revision=code_revision)
+        except (V2Error, OSError) as exc:
+            print(f"preflight refused: {exc}", file=sys.stderr)
+            return EXIT_UNLAUNCHABLE
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        if args.dry_run:
+            # --dry-run answers "may this be submitted", so it must fail on everything the run
+            # would fail on.  A zero exit here is the evidence an operator submits on.
+            # --print-config makes no such claim and stays lenient (see the module docstring).
+            if not declared:
+                print("dry run refused: no --input-file was declared, so the run has no content "
+                      "identity to sign (PLAN §5.2 fails closed on missing content identity)",
+                      file=sys.stderr)
+                return EXIT_UNLAUNCHABLE
+            try:
+                assert_launch_feasible(project_v2_budget(config, n_proteins=len(cohort)))
+            except V2PreflightError as exc:
+                print(f"launch gate refused: {exc}", file=sys.stderr)
+                return EXIT_UNLAUNCHABLE
+        return EXIT_OK
+
+    try:
+        assert_launch_feasible(project_v2_budget(config, n_proteins=len(cohort)))
+    except V2PreflightError as exc:
+        print(f"launch gate refused: {exc}", file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+
+    try:
+        expected = _signatures(config, cohort, arm_role=config.arm.arm_role,
+                               code_revision=code_revision, inputs=declared)
+    except (V2Error, OSError) as exc:
+        print(f"run signature refused: {exc}", file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+
+    try:
+        shard_inputs = parse_shard_inputs(args.shard_input)
+    except V2Error as exc:
+        print(f"shard input refused: {exc}", file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+
+    if not args.aggregate_only:
+        if runner is None:
+            from scripts.rf_fusion_v2_cohort import run_v2_shard as runner  # noqa: PLC0415
+
+        for protein_id in cohort:
+            signature = expected[protein_id]
+            fragment_path = fragment_dir / f"{protein_id}.json"
+            if fragment_path.exists():
+                # Content-bound resume: previously paid work is reused only when every scientific
+                # condition still matches.  A stale fragment is REPLACED, not trusted.
+                from scripts.rf_fusion_v2_resume import validate_fragment
+
+                verdict = validate_fragment(fragment_path, expected=signature,
+                                            table_names=tuple(V2_TABLE_SCHEMAS))
+                # Only work that actually SUCCEEDED may be skipped.  Skipping on admissibility
+                # alone would freeze a protein as failed for every future invocation -- one
+                # preempted node and the cohort could never be completed by re-running it.
+                if verdict.records_success:
+                    continue
+            try:
+                status, payload = runner(
+                    protein_id=protein_id, config=config, signature=signature,
+                    out_dir=out_dir, inputs=shard_inputs,
+                )
+            except V2Error as exc:
+                status, payload = "failed", {"error": f"{type(exc).__name__}: {exc}"}
+            write_fragment(fragment_path, signature=signature, status=status, payload=payload)
+
+    report = aggregate_fragments(
+        fragment_dir, requested_cohort=cohort, expected_by_protein=expected,
+        table_names=tuple(V2_TABLE_SCHEMAS),
+    )
+
+    # Realized cohort budget, computed from the ledger the run actually wrote.  A breach is a fact
+    # about spend and stops the run; "unverifiable" is a fact about INSTRUMENTATION (some attempt
+    # reported unknown_after_start) and is reported without failing the cohort -- PLAN §5.4 requires
+    # that state to be persisted rather than resolved, and failing on it would make one preempted
+    # attempt condemn an otherwise complete cohort.
+    try:
+        realized = realized_cap_verdict(report.ledger_events, caps=config.caps)
+    except V2Error as exc:
+        print(f"cost ledger refused: {exc}", file=sys.stderr)
+        return EXIT_FAILED
+
+    tables = {name: list(report.tables.get(name, [])) for name in V2_TABLE_SCHEMAS}
+    provenance = content_provenance(config, declared)
+    write_v2_bundle(
+        out_dir,
+        manifest={
+            **run_manifest(
+                config=config, code_revision=code_revision,
+                content_identities=_content_identities(provenance),
+                seed_namespaces=("v2_depth0_root", "v2_lookahead", "a2_extra_lookahead",
+                                 "matched_descendant"),
+            ),
+            # Per PLAN §5.2 ROLE, with the declared identity and the observed one side by side.
+            # A digest that was never observed is null: "" would read as a value.
+            "content_provenance": provenance,
+            "input_signature": expected[cohort[0]].input_signature if cohort else None,
+            # The cohort's own outcome belongs in the manifest: a bundle that recorded only what
+            # succeeded could not be told apart from one where nothing else was ever requested.
+            "requested_cohort": cohort,
+            "accepted_fragments": [v.fragment_id for v in report.accepted],
+            "rejected_fragments": [
+                {"fragment_id": v.fragment_id, "status": v.status, "detail": v.detail}
+                for v in report.rejected
+            ],
+            "missing_proteins": list(report.missing_proteins),
+            "n_ok": report.n_ok,
+            # Recorded even when clean: an exit code says a run is unusable, it cannot say WHICH
+            # budget it blew, and that decides whether the operator re-scopes the cohort or the
+            # science.  ``null`` means no ledger was kept, which is NOT a compliance certificate.
+            "realized_caps": (
+                None if realized is None
+                else {"within": bool(realized.within), "breached": list(realized.breached),
+                      "unverifiable": list(realized.unverifiable), "detail": realized.detail}
+            ),
+        },
+        tables=tables,
+        # PLAN §5.3 lists the compute ledger as a REQUIRED evidence object and PLAN §5.4 routes it
+        # through resume.  Aggregation already collected it and the writer already accepted it;
+        # nothing joined the two, so `cost_ledger.jsonl` was never produced and a run could not say
+        # what it burned -- least of all the attempts that started and were never measured.
+        ledger_events=report.ledger_events,
+    )
+
+    for verdict in report.rejected:
+        print(f"fragment rejected [{verdict.status}] {verdict.fragment_id}: {verdict.detail}",
+              file=sys.stderr)
+    for protein_id in report.missing_proteins:
+        print(f"missing protein: {protein_id}", file=sys.stderr)
+
+    if realized is not None and realized.breached:
+        print(f"declared hard cap breached over the cohort: {realized.detail}", file=sys.stderr)
+        return EXIT_FAILED
+    if realized is not None and realized.unverifiable:
+        print(f"budget could not be certified: {realized.detail}", file=sys.stderr)
+
+    return decide_exit_code(report, requested=len(cohort))
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entry
+    raise SystemExit(main())

@@ -1,0 +1,615 @@
+"""V2F7: the V2 evidence bundle -- schemas and row builders (PLAN §5.3).
+
+An artifact bundle is the only thing that outlives a run, so every scientific claim about V2 is
+eventually read off these tables.  Three properties therefore matter more than any single column:
+
+**Nothing scored is dropped.**  PLAN §5.3: "Raw logical duplicates remain in endpoint tables."  Two
+forks that converged on the same sequence are two logical endpoints, and collapsing them here would
+make the table a biased sample of what was generated -- every diversity and yield number read off it
+would then be wrong in the direction that flatters the method.
+
+**A schema is stable whether or not there are rows.**  An empty cohort writes the same typed columns
+as a full one, so a reader can never confuse "no results" with "column renamed".
+
+**Per-position evidence is carried, not summarized.**  The provenance, origin, commit and score
+vectors are exactly what make a state reconstructible.  They are JSON-encoded into declared string
+columns beside the digest that binds them, which keeps one flat table per evidence object while
+losing nothing an audit needs.
+
+**Reuse.**  Writing is delegated to :mod:`scripts.rf_fusion_v1_artifacts` -- ``write_stable_parquet``
+(explicit Arrow schema, declared column order, stable sort, hard error on an undeclared column),
+``write_manifest`` (atomic JSON) and ``write_cost_ledger_jsonl``.  V2 adds its column vocabulary
+through that writer's ``types`` argument rather than a second parquet implementation, per the
+``scripts/CLAUDE.md`` reuse rule: add arguments, not files.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:  # allow `python scripts/...` as well as `import scripts...`
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from inverse_folding.reference_flow.fusion_v2.errors import V2Error  # noqa: E402
+from inverse_folding.reference_flow.fusion_v2.identity import canonical_digest  # noqa: E402
+
+# REUSE, not reimplementation: the V1 writers already give an explicit Arrow schema, declared
+# column order, a stable sort, atomic manifest writes and the append-safe JSONL ledger format.
+# V2 adds its own column vocabulary through ``write_stable_parquet(types=...)`` -- an argument, not
+# a second parquet implementation (``scripts/CLAUDE.md`` reuse rule).
+from scripts.rf_fusion_v1_artifacts import (  # noqa: E402,F401
+    TableSchema,
+    write_cost_ledger_jsonl,
+    write_manifest,
+    write_stable_parquet,
+)
+
+__all__ = [
+    "V2ArtifactError",
+    "V2_TABLE_SCHEMAS",
+    "V2_COLUMN_TYPES",
+    "run_manifest",
+    "partial_state_rows",
+    "complete_endpoint_rows",
+    "archive_rows",
+    "feedback_event_rows",
+    "a2_view_rows",
+    "terminal_validation_rows",
+    "write_v2_bundle",
+]
+
+
+class V2ArtifactError(V2Error):
+    """A bundle contract violation: a missing table, a duplicate join key, a malformed row."""
+
+
+def _schema(columns: Sequence[str], sort_by: Sequence[str]) -> TableSchema:
+    return TableSchema(columns=tuple(columns), sort_by=tuple(sort_by))
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+#: The frozen V2 table registry.  One entry per PLAN §5.3 evidence object except the run manifest
+#: (JSON, not tabular) and the compute ledger (JSONL, written by the ledger module).
+V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
+    "partial_states": _schema(
+        ["state_id", "state_content_digest", "layer", "protein_id", "root_id", "family_id",
+         "depth", "parent_state_id", "parent_transition_id", "origin_endpoint_id",
+         "sampler_step", "r_step", "c_next_step", "n_steps", "coordinate_law",
+         "length", "n_editable", "n_unresolved_editable", "rho_edit",
+         "tokens_json", "mask_token_id", "hard_anchors_json", "editable_positions_json",
+         "active_origin_kind_json", "feedback_origin_ref_json", "active_commit_json",
+         "origin_transition_id_json", "active_sampler_score_json", "active_score_status_json",
+         "provenance_json", "temporary_protection_json", "expired_protection_json",
+         "replay_mode", "replay_fork_seed", "replay_state_hash",
+         "accumulated_lineage_dfe", "conditioning_digest", "safety_reference_id"],
+        ["state_id"],
+    ),
+    "complete_endpoints": _schema(
+        ["endpoint_id", "endpoint_content_digest", "protein_id", "root_id", "family_id", "depth",
+         "source_state_id", "source_state_content_digest", "fork_index", "fork_seed",
+         "sequence", "sequence_md5", "sequence_equivalence_key", "sequence_length",
+         "head_evaluator_digest", "head_window_grid_digest", "head_global_risk",
+         "head_score_json", "feasibility_level", "structure_evaluated", "structure_feasible",
+         "structure_metrics_json", "endpoint_provenance_json",
+         "replay_mode", "replay_fork_seed", "replay_state_hash", "cost_event_ids_json"],
+        ["endpoint_id"],
+    ),
+    "archive": _schema(
+        ["endpoint_id", "endpoint_content_digest", "protein_id", "root_id", "family_id",
+         "sequence_equivalence_key", "feasibility_level", "is_elite", "elite_rank",
+         "is_diversity_frontier", "first_depth_seen", "last_depth_seen",
+         "may_become_ancestry", "admission_reason"],
+        ["endpoint_id"],
+    ),
+    "feedback_events": _schema(
+        ["transition_id", "outcome", "detail", "protein_id", "family_id", "depth",
+         "source_state_id", "source_state_content_digest", "selected_endpoint_id",
+         "selected_endpoint_content_digest", "projected_state_id", "projected_state_digest",
+         "propagated_state_id", "propagated_state_digest",
+         "policy_id", "policy_version", "policy_config_digest", "policy_spec_digest",
+         "policy_is_diagnostic",
+         "write_from_endpoint_json", "inject_from_source_feedback_json", "reopen_json",
+         "carry_from_source_json", "support_reason_by_pos_json",
+         "n_write_from_endpoint", "n_inject_from_source_feedback", "n_reopen",
+         "n_carry_from_source",
+         "assimilation_json", "temporary_protection_json",
+         "r_step", "c_source_step", "c_next_step", "declared_band_id", "declared_band_digest",
+         "pair_id", "arm_slot", "treatment_identity", "descendant_fork_seed"],
+        ["transition_id", "source_state_id"],
+    ),
+    "a2_views": _schema(
+        ["a2_view_id", "protein_id", "source_state_id", "depth", "n_members",
+         "member_endpoint_ids_json", "member_content_digests_json",
+         "matched_extra_lookaheads", "matching_resource", "declared_matching_resource",
+         "matching_status", "matching_detail", "unmatched_components_json"],
+        ["a2_view_id"],
+    ),
+    "terminal_validation": _schema(
+        ["endpoint_id", "sequence_md5", "structure_definitive", "structure_feasible",
+         "structure_metrics_json", "immune_evaluator", "immune_global_risk", "immune_passed",
+         "whole_landscape_max_increase", "whole_landscape_positive_mass",
+         "whole_landscape_positive_count", "whole_landscape_n_windows",
+         "whole_landscape_reference_binding_id", "incremental_gate_status",
+         "diversity_family_id", "v0_before_after_json"],
+        ["endpoint_id"],
+    ),
+}
+
+#: Explicit Arrow types for the V2 vocabulary.  Declared here rather than registered in the V1
+#: module's global name sets, so the two vocabularies cannot collide on a shared column name.
+V2_COLUMN_TYPES: dict[str, str] = {
+    **{name: "int" for name in (
+        "depth", "sampler_step", "r_step", "c_next_step", "c_source_step", "n_steps", "length",
+        "n_editable", "n_unresolved_editable", "mask_token_id", "accumulated_lineage_dfe",
+        "fork_index", "sequence_length", "elite_rank", "first_depth_seen", "last_depth_seen",
+        "n_write_from_endpoint", "n_inject_from_source_feedback", "n_reopen",
+        "n_carry_from_source", "n_members", "matched_extra_lookaheads",
+        "whole_landscape_positive_count", "whole_landscape_n_windows",
+    )},
+    **{name: "uint" for name in ("fork_seed", "replay_fork_seed", "descendant_fork_seed")},
+    **{name: "float" for name in ("rho_edit", "head_global_risk", "immune_global_risk",
+                                  "whole_landscape_max_increase",
+                                  "whole_landscape_positive_mass")},
+    **{name: "bool" for name in (
+        "structure_evaluated", "structure_feasible", "structure_definitive", "is_elite",
+        "is_diversity_frontier", "may_become_ancestry", "policy_is_diagnostic", "immune_passed",
+    )},
+}
+
+
+# --------------------------------------------------------------------------------------------
+# run manifest
+# --------------------------------------------------------------------------------------------
+
+
+def run_manifest(
+    *, config: Any, code_revision: str, content_identities: Mapping[str, str],
+    seed_namespaces: Sequence[str],
+) -> dict:
+    """The run's whole identity, derivable with no model and no file access (PLAN §5.1, §5.3).
+
+    ``config_digest`` is taken from the config object itself rather than recomputed here, so
+    ``--print-config``, ``--dry-run`` and the realized run can never disagree about which config
+    they described.
+    """
+    return {
+        "schema_version": config.schema_version,
+        "config_digest": config.config_digest(),
+        "campaign_id": config.identity.campaign_id,
+        "split_role": config.identity.split_role,
+        "phase": config.identity.phase,
+        "master_seed": int(config.identity.master_seed),
+        "seed_schema": config.identity.seed_schema,
+        "code_revision": str(code_revision),
+        "arm_role": config.arm.arm_role,
+        "feedback_enabled": bool(config.arm.feedback_enabled),
+        "a2_matching_resource": config.arm.a2_matching_resource,
+        "coordinate_law": config.schedule.coordinate_law.value,
+        "depth_cap": int(config.schedule.depth_cap),
+        "active_population_width": int(config.schedule.active_population_width),
+        "caps": {
+            "max_logical_dfe": int(config.caps.max_logical_dfe),
+            "max_head_calls": int(config.caps.max_head_calls),
+            "max_definitive_refolds": int(config.caps.max_definitive_refolds),
+            "max_gpu_seconds": int(config.caps.max_gpu_seconds),
+            "max_walltime_s": int(config.caps.max_walltime_s),
+            "max_retries": int(config.caps.max_retries),
+            "retry_scope": config.caps.retry_scope,
+        },
+        "content_identities": {str(k): str(v) for k, v in sorted(dict(content_identities).items())},
+        "seed_namespaces": sorted(str(name) for name in seed_namespaces),
+    }
+
+
+# --------------------------------------------------------------------------------------------
+# row builders
+# --------------------------------------------------------------------------------------------
+
+
+def _commit_payload(commit) -> list | None:
+    return None if commit is None else [commit.depth, commit.step]
+
+
+def partial_state_rows(states: Iterable[Any]) -> list[dict]:
+    """One row per live or projected partial state, carrying every vector a replay needs."""
+    rows: list[dict] = []
+    for state in states:
+        tokens = list(state.tokens)
+        editable = [int(i) for i in state.editable_positions]
+        mask_token_id = int(state.mask_token_id)
+        unresolved = sum(1 for i in editable if tokens[i] == mask_token_id)
+        is_projected = hasattr(state, "r_step")
+        rows.append({
+            "state_id": state.state_id,
+            "state_content_digest": state.content_digest,
+            "layer": "projected" if is_projected else "live",
+            "protein_id": state.lineage.protein_id,
+            "root_id": state.lineage.root_id,
+            "family_id": state.lineage.family_id,
+            "depth": int(state.lineage.depth),
+            "parent_state_id": state.lineage.parent_state_id,
+            "parent_transition_id": state.lineage.parent_transition_id,
+            "origin_endpoint_id": state.lineage.origin_endpoint_id,
+            "sampler_step": int(getattr(state, "sampler_step", getattr(state, "r_step", 0))),
+            "r_step": int(state.r_step) if is_projected else None,
+            "c_next_step": int(state.c_next_step) if is_projected else None,
+            "n_steps": int(state.n_steps),
+            "coordinate_law": (
+                state.coordinate_law.value if is_projected
+                and hasattr(state.coordinate_law, "value") else None),
+            "length": len(tokens),
+            "n_editable": len(editable),
+            "n_unresolved_editable": unresolved,
+            "rho_edit": (
+                float(len(editable) - unresolved) / float(len(editable)) if editable else 0.0),
+            "tokens_json": _json([int(t) for t in tokens]),
+            "mask_token_id": mask_token_id,
+            "hard_anchors_json": _json([[int(p), int(t)] for p, t in state.hard_anchors]),
+            "editable_positions_json": _json(editable),
+            "active_origin_kind_json": _json(
+                [kind.value for kind in state.active_origin_kind_by_pos]),
+            "feedback_origin_ref_json": _json(
+                [ref.value for ref in state.feedback_origin_ref_by_pos]),
+            "active_commit_json": _json(
+                [_commit_payload(c) for c in state.active_commit_depth_step_by_pos]),
+            "origin_transition_id_json": _json(list(state.origin_transition_id_by_pos)),
+            "active_sampler_score_json": _json(
+                [None if v is None else float(v) for v in state.active_sampler_score_by_pos]),
+            "active_score_status_json": _json(
+                [status.value for status in state.active_score_status_by_pos]),
+            "provenance_json": _json(
+                [prov.canonical_payload() for prov in state.provenance_by_pos]),
+            "temporary_protection_json": _json([
+                protection.canonical_payload()
+                for protection in getattr(state, "active_temporary_protection", ())
+            ]),
+            "expired_protection_json": _json([
+                protection.canonical_payload()
+                for protection in getattr(state, "expired_protection", ())
+            ]),
+            "replay_mode": getattr(getattr(state, "replay", None), "mode", None),
+            "replay_fork_seed": getattr(getattr(state, "replay", None), "fork_seed", None),
+            "replay_state_hash": getattr(getattr(state, "replay", None), "replay_state_hash",
+                                         None),
+            "accumulated_lineage_dfe": int(getattr(
+                state, "accumulated_lineage_dfe", getattr(state, "inherited_lineage_dfe", 0))),
+            # V2ConditioningIdentity exposes its canonical payload, not a digest property;
+            # hashing it here keeps ONE conditioning identity per state row without
+            # inventing a second definition of what that identity is.
+            "conditioning_digest": canonical_digest(state.conditioning.canonical_payload()),
+            "safety_reference_id": state.safety_reference.reference_id,
+        })
+    return rows
+
+
+def complete_endpoint_rows(endpoints: Iterable[Any], *, depth: int) -> list[dict]:
+    """One row per LOGICAL endpoint.
+
+    Two forks that converged on the same sequence produce two rows with one shared
+    ``sequence_equivalence_key``.  A summary table may collapse on that key; this one may not.
+    """
+    rows: list[dict] = []
+    for endpoint in endpoints:
+        structure = endpoint.structure_outcome
+        rows.append({
+            "endpoint_id": endpoint.endpoint_id,
+            "endpoint_content_digest": endpoint.content_digest,
+            "protein_id": endpoint.protein_id,
+            "root_id": endpoint.lineage.root_id,
+            "family_id": endpoint.lineage.family_id,
+            "depth": int(depth),
+            "source_state_id": endpoint.source_state_id,
+            "source_state_content_digest": endpoint.source_state_content_digest,
+            "fork_index": int(endpoint.fork_index),
+            "fork_seed": int(endpoint.fork_seed),
+            "sequence": endpoint.sequence,
+            "sequence_md5": endpoint.sequence_md5,
+            "sequence_equivalence_key": endpoint.sequence_md5,
+            "sequence_length": int(endpoint.sequence_length),
+            "head_evaluator_digest": endpoint.head_binding.evaluator.digest(),
+            "head_window_grid_digest": endpoint.head_binding.window_grid_digest,
+            "head_global_risk": float(endpoint.head_global_risk),
+            "head_score_json": _json(endpoint.canonical_payload()["head_score"]),
+            "feasibility_level": endpoint.feasibility_level.value,
+            "structure_evaluated": bool(getattr(structure, "evaluated", False)),
+            "structure_feasible": bool(getattr(structure, "feasible", False)),
+            "structure_metrics_json": _json(dict(getattr(structure, "metrics", None) or {})),
+            "endpoint_provenance_json": _json([
+                evidence.canonical_payload()
+                for evidence in endpoint.endpoint_provenance_evidence_by_pos
+            ]),
+            "replay_mode": endpoint.replay.mode,
+            "replay_fork_seed": endpoint.replay.fork_seed,
+            "replay_state_hash": endpoint.replay.replay_state_hash,
+            "cost_event_ids_json": _json(list(endpoint.cost_event_ids)),
+        })
+    return rows
+
+
+def archive_rows(archive: Any, *, admission_by_endpoint: Mapping[str, str] | None = None
+                 ) -> list[dict]:
+    """One row per archived endpoint, with membership and the reason it may or may not be ancestry.
+
+    ``admission_reason`` is threaded from the safety gate rather than re-derived: an archive that
+    recomputed eligibility could disagree with the decision the run actually made.
+    """
+    reasons = dict(admission_by_endpoint or {})
+    by_id = {endpoint.endpoint_id: endpoint for endpoint in archive.endpoints()}
+    rows: list[dict] = []
+    for entry in archive.raw_rows():
+        endpoint = by_id[entry.endpoint_id]
+        rows.append({
+            "endpoint_id": entry.endpoint_id,
+            "endpoint_content_digest": entry.endpoint_content_digest,
+            "protein_id": entry.lineage.protein_id,
+            "root_id": entry.lineage.root_id,
+            "family_id": entry.lineage.family_id,
+            "sequence_equivalence_key": entry.sequence_equivalence_key,
+            "feasibility_level": entry.feasibility_level.value,
+            "is_elite": bool(entry.membership.is_elite),
+            "elite_rank": entry.membership.elite_rank,
+            "is_diversity_frontier": bool(entry.membership.is_diversity_frontier),
+            "first_depth_seen": int(entry.first_depth_seen),
+            "last_depth_seen": int(entry.last_depth_seen),
+            "may_become_ancestry": bool(archive.may_become_ancestry(entry.endpoint_id)),
+            "admission_reason": reasons.get(entry.endpoint_id),
+            **({} if endpoint is None else {}),
+        })
+    return rows
+
+
+def feedback_event_rows(events: Iterable[Mapping[str, Any]]) -> list[dict]:
+    """One row per feedback transition, committed or null.
+
+    A null event is recorded in full.  PLAN §4.5 makes a refusal a result, and a bundle that kept
+    only the cycles that committed would be a record of the successes alone.
+    """
+    rows: list[dict] = []
+    for event in events:
+        source = event["source"]
+        endpoint = event.get("endpoint")
+        projected = event.get("projected")
+        propagated = event.get("propagated")
+        policy = event.get("policy")
+        support = getattr(projected, "support", None)
+
+        def _set(name):
+            return list(getattr(support, name, ()) or ())
+
+        rows.append({
+            "transition_id": (
+                projected.origin_transition_id if projected is not None
+                else event.get("transition_id", f"null:{source.state_id}")),
+            "outcome": event["outcome"],
+            "detail": event.get("detail", ""),
+            "protein_id": source.lineage.protein_id,
+            "family_id": source.lineage.family_id,
+            "depth": int(source.lineage.depth),
+            "source_state_id": source.state_id,
+            "source_state_content_digest": source.content_digest,
+            "selected_endpoint_id": None if endpoint is None else endpoint.endpoint_id,
+            "selected_endpoint_content_digest": (
+                None if endpoint is None else endpoint.content_digest),
+            "projected_state_id": None if projected is None else projected.state_id,
+            "projected_state_digest": None if projected is None else projected.content_digest,
+            "propagated_state_id": None if propagated is None else propagated.state_id,
+            "propagated_state_digest": None if propagated is None else propagated.content_digest,
+            "policy_id": getattr(policy, "policy_id", None),
+            "policy_version": getattr(policy, "policy_version", None),
+            "policy_config_digest": getattr(policy, "policy_config_digest", None),
+            "policy_spec_digest": getattr(policy, "policy_spec_digest", None),
+            "policy_is_diagnostic": bool(getattr(policy, "is_diagnostic_only", False)),
+            "write_from_endpoint_json": _json(_set("write_from_endpoint")),
+            "inject_from_source_feedback_json": _json(_set("inject_from_source_feedback")),
+            "reopen_json": _json(_set("reopen")),
+            "carry_from_source_json": _json(_set("carry_from_source")),
+            "support_reason_by_pos_json": _json(
+                {str(k): str(v) for k, v in dict(getattr(support, "reason_by_pos", {}) or {})
+                 .items()}),
+            "n_write_from_endpoint": len(_set("write_from_endpoint")),
+            "n_inject_from_source_feedback": len(_set("inject_from_source_feedback")),
+            "n_reopen": len(_set("reopen")),
+            "n_carry_from_source": len(_set("carry_from_source")),
+            "assimilation_json": _json(list(event.get("assimilation", []) or [])),
+            "temporary_protection_json": _json([
+                protection.canonical_payload()
+                for protection in getattr(projected, "active_temporary_protection", ())
+            ]),
+            "r_step": None if projected is None else int(projected.r_step),
+            "c_source_step": int(source.sampler_step),
+            "c_next_step": None if projected is None else int(projected.c_next_step),
+            "declared_band_id": getattr(projected, "declared_band_id", None),
+            "declared_band_digest": getattr(projected, "declared_band_digest", None),
+            "pair_id": event.get("pair_id"),
+            "arm_slot": event.get("arm_slot"),
+            "treatment_identity": event.get("treatment_identity"),
+            "descendant_fork_seed": (
+                None if projected is None else int(projected.descendant_fork_seed)),
+        })
+    return rows
+
+
+def a2_view_rows(
+    views: Iterable[Any], *, matched_extra_lookaheads: int,
+    matching_resource: str | None,
+    declared_matching_resource: str,
+    matching_executed: bool,
+    unmatched_components: Mapping[str, Any] | None = None,
+) -> list[dict]:
+    """One row per A2 view: the exact pre-feedback membership and what A2 was given instead.
+
+    The unmatched components are reported rather than netted away.  PLAN §4.3 requires A2's extra
+    allocation to be matched on ONE declared resource; every other resource is then unmatched by
+    construction, and hiding that would make the control look tighter than it is.
+    """
+    if not isinstance(matching_executed, bool):
+        raise V2ArtifactError("matching_executed must be an explicit bool")
+    if not isinstance(matched_extra_lookaheads, int) or isinstance(
+        matched_extra_lookaheads, bool
+    ) or matched_extra_lookaheads < 0:
+        raise V2ArtifactError("matched_extra_lookaheads must be a non-negative int")
+    if not isinstance(declared_matching_resource, str) or not declared_matching_resource:
+        raise V2ArtifactError("declared_matching_resource must be a non-empty str")
+    if matching_executed:
+        if matching_resource != declared_matching_resource:
+            raise V2ArtifactError(
+                "executed matching_resource must equal declared_matching_resource"
+            )
+        matching_status = "executed"
+        matching_detail = "matched-extra allocation executed"
+    else:
+        if matching_resource is not None or matched_extra_lookaheads != 0:
+            raise V2ArtifactError(
+                "an unexecuted match must report no matching_resource and zero extra lookaheads"
+            )
+        matching_status = "declared_not_executed"
+        matching_detail = "matching declared but not executed; no matched-extra allocation was run"
+
+    rows: list[dict] = []
+    for view in views:
+        member_ids = list(view.endpoint_ids)
+        rows.append({
+            "a2_view_id": view.a2_view_id,
+            "protein_id": view.protein_id,
+            "source_state_id": view.source_state_id,
+            "depth": int(view.depth),
+            "n_members": len(member_ids),
+            "member_endpoint_ids_json": _json(member_ids),
+            "member_content_digests_json": _json(
+                {str(k): str(v) for k, v in dict(view.content_digest_by_endpoint).items()}),
+            "matched_extra_lookaheads": int(matched_extra_lookaheads),
+            "matching_resource": matching_resource,
+            "declared_matching_resource": declared_matching_resource,
+            "matching_status": matching_status,
+            "matching_detail": matching_detail,
+            "unmatched_components_json": _json(dict(unmatched_components or {})),
+        })
+    return rows
+
+
+def terminal_validation_rows(records: Iterable[Mapping[str, Any]]) -> list[dict]:
+    """Structure and immune results stay in SEPARATE columns.
+
+    They are independent measurements of different failure modes; one "passed" column would hide
+    which of them a design actually failed, and a design that folds but opens a hotspot is exactly
+    the case V2's safety contract exists for.
+    """
+    rows: list[dict] = []
+    for record in records:
+        rows.append({
+            "endpoint_id": record["endpoint_id"],
+            "sequence_md5": record["sequence_md5"],
+            "structure_definitive": bool(record.get("structure_definitive", False)),
+            "structure_feasible": bool(record.get("structure_feasible", False)),
+            "structure_metrics_json": _json(dict(record.get("structure_metrics") or {})),
+            "immune_evaluator": record.get("immune_evaluator"),
+            "immune_global_risk": (
+                None if record.get("immune_global_risk") is None
+                else float(record["immune_global_risk"])),
+            "immune_passed": bool(record.get("immune_passed", False)),
+            "whole_landscape_max_increase": record.get("whole_landscape_max_increase"),
+            "whole_landscape_positive_mass": record.get("whole_landscape_positive_mass"),
+            "whole_landscape_positive_count": record.get("whole_landscape_positive_count"),
+            "whole_landscape_n_windows": record.get("whole_landscape_n_windows"),
+            "whole_landscape_reference_binding_id": record.get(
+                "whole_landscape_reference_binding_id"),
+            "incremental_gate_status": record.get("incremental_gate_status"),
+            "diversity_family_id": record.get("diversity_family_id"),
+            "v0_before_after_json": (
+                None if record.get("v0_before_after") is None
+                else _json(dict(record["v0_before_after"]))),
+        })
+    return rows
+
+
+# --------------------------------------------------------------------------------------------
+# the bundle
+# --------------------------------------------------------------------------------------------
+
+
+def write_v2_bundle(
+    out_dir: Any, *, manifest: Mapping[str, Any], tables: Mapping[str, Sequence[Mapping]],
+    ledger_events: Sequence[Any] = (),
+) -> None:
+    """Write the whole evidence bundle for one shard.
+
+    Every declared table is written even when empty, and a MISSING table is an error rather than an
+    omission: a bundle that silently skipped one would read as "this run produced none of that",
+    which is a different claim entirely.
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    missing = sorted(set(V2_TABLE_SCHEMAS) - set(tables))
+    if missing:
+        raise V2ArtifactError(
+            f"bundle is missing required table(s) {missing}; an absent table reads as 'this run "
+            "produced none of that', which is a claim rather than an omission"
+        )
+    unknown = sorted(set(tables) - set(V2_TABLE_SCHEMAS))
+    if unknown:
+        raise V2ArtifactError(f"bundle carries undeclared table(s) {unknown}")
+
+    for name, schema in V2_TABLE_SCHEMAS.items():
+        rows = list(tables[name])
+        keys = [tuple(row.get(k) for k in schema.sort_by) for row in rows]
+        if len(set(keys)) != len(keys):
+            duplicated = sorted({key for key in keys if keys.count(key) > 1})
+            raise V2ArtifactError(
+                f"table {name!r} has duplicate join key(s) {duplicated[:3]}; a duplicated key "
+                "silently multiplies rows in every downstream join"
+            )
+        write_stable_parquet(
+            out / f"{name}.parquet", rows,
+            columns=schema.columns, sort_by=schema.sort_by,
+            types={c: V2_COLUMN_TYPES[c] for c in schema.columns if c in V2_COLUMN_TYPES},
+        )
+
+    write_manifest(out / "run_manifest.json", manifest)
+    # Written even when EMPTY.  An absent file and an empty one are different claims -- "no ledger
+    # was kept" versus "a ledger was kept and it is empty" -- and only the second is auditable.
+    write_cost_ledger_jsonl(out / "cost_ledger.jsonl", _validated_ledger_events(ledger_events))
+
+
+def _validated_ledger_events(events: Sequence[Any]) -> Sequence[Any]:
+    """Check every ledger row against the typed event contract, and publish it UNCHANGED.
+
+    A shard's ledger reaches this writer as PLAIN MAPPINGS: PLAN §5.4 routes it through resume, and
+    a fragment is JSON on disk, so the dataclass does not survive the trip.  Rebuilding the event
+    here re-runs the whole ``V2LedgerEvent`` contract -- the closed phase and status vocabularies,
+    non-negative counters, and the rule that one row may not report both a measured and an unknown
+    physical cost -- at the boundary where the ledger becomes an artifact.
+
+    Without it, a row carrying a phase nothing aggregates would be published as a measurement and
+    then silently skipped by every reader of that closed vocabulary, so the run's compute total
+    would be understated with no error raised anywhere.
+
+    What is written is the row as GIVEN, never the reconstruction: a writer that persisted the
+    rebuilt event would fill absent fields with dataclass defaults, and a defaulted ``0.0`` in a
+    physical column is indistinguishable in the artifact from a measurement of zero.
+    """
+    from inverse_folding.reference_flow.fusion_v2_runtime.ledger import (  # noqa: PLC0415
+        V2LedgerError,
+        V2LedgerEvent,
+    )
+
+    for index, event in enumerate(events):
+        if isinstance(event, V2LedgerEvent):
+            continue
+        if not isinstance(event, Mapping):
+            raise V2ArtifactError(
+                f"ledger row {index} is a {type(event).__name__}; the compute ledger is typed "
+                "evidence (PLAN §5.3), not free-form JSON"
+            )
+        try:
+            V2LedgerEvent(**dict(event))
+        except (V2LedgerError, TypeError) as exc:
+            raise V2ArtifactError(f"ledger row {index} is not a V2LedgerEvent: {exc}") from exc
+    return events
