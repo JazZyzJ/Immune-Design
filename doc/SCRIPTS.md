@@ -339,6 +339,21 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     factory yet**, so the driver cannot launch a real run until one is supplied. Tested:
     `tests/scripts/test_rf_fusion_v2_cohort.py`.
 
+21. `scripts/calibrate_rf_fusion_v2_hotspot.py` — produce the V2 whole-landscape hotspot
+    calibration artifact (PLAN §2.7). The schema existed and the PRODUCER did not, so a cluster
+    agent could only invent `delta_new_cumulative`. It **decides nothing**: `doc/FUSION_V2.md`
+    leaves the threshold statistic open, so `--threshold-statistic` is REQUIRED from a closed
+    vocabulary (`max`/`q90`/`q95`/`q99`/`mean_plus_2sd`) and is recorded in the artifact. It
+    measures `N_H^whole` for every declared (design, reference) pair through the GATE's own
+    comparator (`safety.whole_landscape_new_hotspot`, the one `measure_cumulative` calls), so a
+    threshold cannot be calibrated against a quantity the gate does not compute; a pair the gate
+    cannot measure stops the calibration rather than being dropped. Emits the `delta_new` block to
+    paste verbatim into `config.safety.delta_new_cumulative` — the loader recomputes `source_ref`
+    and refuses a mismatch — plus the full measurement table, so a reviewer sees the distribution
+    and not only the scalar. `calibration_data_digest` covers the measurements, not the input file.
+    Loads no model (consumes Head scores already computed). Tested:
+    `tests/scripts/test_calibrate_rf_fusion_v2_hotspot.py`.
+
 19. `scripts/rf_fusion_v2_oracles.py` — the V2 PRODUCTION oracle stack: everything
     `run_v2_shard` needs to run a real protein. **REUSES** `rf_fusion_model_factory` for the
     sampler/denoiser/alphabet/backbone/hard-anchors (the same factory the V1 entry path delegates
@@ -354,7 +369,15 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `check_caps` treats GPU-seconds as measured. Never grants `allow_production_depth_gt_1`.
     **Verification boundary**: `build_v2_oracles` needs torch + checkpoints + a refold backend +
     PDBs and is not runnable here; what is verified is the assembly and the refusals against
-    injected seams. Tested: `tests/scripts/test_rf_fusion_v2_oracles.py`.
+    injected seams. `stratum_key` comes from an explicit per-protein manifest, NEVER from
+    `DepthSchedulePoint.band_key` (the Interface Map states they are different keys: `band_key`
+    names a schedule cell, `stratum_key` names the cohort the band's quantiles were measured over),
+    and the protein's REALIZED constraint class is checked against the band's
+    `constraint_stratum_id` through the scan's own `classify_constraint_stratum` — an anchored
+    protein may not read its reopen cardinality off an unconstrained calibration. The depth-0
+    reference comes from a per-protein `{protein_id: {path, sha256}}` manifest, because one config
+    digest cannot sign a two-protein cohort's two references. Tested:
+    `tests/scripts/test_rf_fusion_v2_oracles.py`.
 
 20. `inverse_folding/reference_flow/configs/v2_canary_state_transition.yaml` — the state-transition
     Canary config skeleton. Every `REPLACE_*` is a value the loader has no default for; a

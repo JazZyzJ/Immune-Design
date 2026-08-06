@@ -359,7 +359,7 @@ def _signatures(config, cohort, *, arm_role, code_revision, inputs):
     }
 
 
-def main(argv=None, *, runner=None) -> int:
+def main(argv=None, *, runner=None, oracles_factory=None) -> int:
     """Run, or explain why it will not.
 
     ``runner`` is the injection seam for the execution stage: the default is resolved lazily so the
@@ -393,6 +393,16 @@ def main(argv=None, *, runner=None) -> int:
     except (V2Error, OSError) as exc:
         print(f"declared input refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
+    # Parsed BEFORE the --print-config/--dry-run branch returns.  A gate that certified a launch
+    # without looking at the runtime paths it would launch WITH is not a launch gate: a malformed
+    # --shard-input was discovered only on the GPU, after the allocation the gate exists to
+    # authorize had already been paid for.
+    try:
+        shard_inputs = parse_shard_inputs(args.shard_input)
+    except V2Error as exc:
+        print(f"shard input refused: {exc}", file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+
     if args.print_config or args.dry_run:
         try:
             payload = print_config_payload(
@@ -431,15 +441,17 @@ def main(argv=None, *, runner=None) -> int:
         print(f"run signature refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
 
-    try:
-        shard_inputs = parse_shard_inputs(args.shard_input)
-    except V2Error as exc:
-        print(f"shard input refused: {exc}", file=sys.stderr)
-        return EXIT_UNLAUNCHABLE
-
     if not args.aggregate_only:
         if runner is None:
             from scripts.rf_fusion_v2_cohort import run_v2_shard as runner  # noqa: PLC0415
+        if oracles_factory is None:
+            # ``run_v2_shard`` refuses to build oracles implicitly, so that --dry-run can never
+            # cost a GPU allocation.  The DRIVER is where the real stack is named: without this a
+            # production launch failed with "no oracles_factory was supplied" after the config had
+            # already been resolved, signed and budget-checked.
+            from scripts.rf_fusion_v2_oracles import build_v2_oracles  # noqa: PLC0415
+
+            oracles_factory = build_v2_oracles
 
         for protein_id in cohort:
             signature = expected[protein_id]
@@ -460,6 +472,7 @@ def main(argv=None, *, runner=None) -> int:
                 status, payload = runner(
                     protein_id=protein_id, config=config, signature=signature,
                     out_dir=out_dir, inputs=shard_inputs,
+                    oracles_factory=oracles_factory,
                 )
             except V2Error as exc:
                 status, payload = "failed", {"error": f"{type(exc).__name__}: {exc}"}

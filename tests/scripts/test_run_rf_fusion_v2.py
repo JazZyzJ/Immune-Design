@@ -86,7 +86,7 @@ def _write_config_binding(tmp_path, role, digest):
 def _fake_runner(status="ok", rows=1, raises=None):
     calls = []
 
-    def runner(*, protein_id, config, signature, out_dir, inputs=None):
+    def runner(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
         calls.append(protein_id)
         if raises is not None:
             raise raises
@@ -190,7 +190,7 @@ def test_a_cohort_where_every_protein_failed_does_not_exit_zero(tmp_path):
 
 
 def test_a_partial_cohort_exits_partial_and_names_the_missing_protein(tmp_path, capsys):
-    def runner(*, protein_id, config, signature, out_dir, inputs=None):
+    def runner(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
         if protein_id == "B_2":
             raise RuntimeError("shard died")
         return "ok", {"complete_endpoints": [{"endpoint_id": protein_id}]}
@@ -236,7 +236,7 @@ def test_paid_work_is_not_recomputed_on_a_second_invocation(tmp_path):
 
 def test_a_crash_after_paid_work_leaves_that_work_reusable(tmp_path):
     """A shard that died after finishing A_1 must not force A_1 to be recomputed."""
-    def flaky(*, protein_id, config, signature, out_dir, inputs=None):
+    def flaky(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
         if protein_id == "B_2":
             raise RuntimeError("killed")
         return "ok", {"complete_endpoints": [{"endpoint_id": protein_id}]}
@@ -320,7 +320,7 @@ def test_swapping_input_roles_invalidates_previously_paid_work(tmp_path):
 def test_the_bundle_records_the_requested_cohort_and_what_was_missing(tmp_path):
     """A bundle that recorded only what succeeded could not be told apart from one where nothing
     else was ever requested."""
-    def runner(*, protein_id, config, signature, out_dir, inputs=None):
+    def runner(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
         if protein_id == "B_2":
             raise __import__("inverse_folding.reference_flow.fusion_v2.errors",
                              fromlist=["V2Error"]).V2Error("no admissible endpoint")
@@ -658,7 +658,7 @@ class _EmptyArchive:
 
 
 def _ledger_runner(events):
-    def runner(*, protein_id, config, signature, out_dir, inputs=None):
+    def runner(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
         return "ok", {
             "complete_endpoints": [{"endpoint_id": f"{protein_id}:0"}],
             "ledger_events": list(events),
@@ -743,7 +743,7 @@ def test_a_duplicated_shard_input_name_is_refused(tmp_path):
 
 
 def _cap_runner(per_protein_dfe):
-    def runner(*, protein_id, config, signature, out_dir, inputs=None):
+    def runner(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
         return "ok", {
             "complete_endpoints": [{"endpoint_id": f"{protein_id}:0"}],
             "ledger_events": [{
@@ -795,3 +795,36 @@ def test_the_breached_cap_is_named_in_the_manifest_not_only_in_the_exit_code(tmp
          config_path=config_path)
     manifest = json.loads((tmp_path / "out" / "run_manifest.json").read_text())
     assert "max_logical_dfe" in json.dumps(manifest.get("realized_caps", {}))
+
+
+# --------------------------------------------------------------------------------------------
+# the driver reaches a real oracle stack, and --dry-run is a STRICT gate
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_driver_supplies_the_production_oracle_factory(tmp_path):
+    """``run_v2_shard`` refuses to build oracles implicitly, so a driver that never passed one made
+    every real launch fail with "no oracles_factory was supplied" after the config had already been
+    resolved and signed."""
+    seen = {}
+
+    def runner(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
+        seen["factory"] = oracles_factory
+        return "ok", {"complete_endpoints": [{"endpoint_id": protein_id}]}
+
+    assert _run(tmp_path, runner=runner) == EXIT_OK
+    assert seen["factory"] is not None, "the driver handed the shard no oracle factory"
+
+
+def test_dry_run_parses_the_runtime_paths_it_will_launch_with(tmp_path):
+    """``--dry-run`` returned success BEFORE ``--shard-input`` was parsed, so a malformed runtime
+    path -- the thing that decides whether the job can start at all -- was discovered only on the
+    GPU.  A gate that does not check the launch inputs is not a launch gate.
+    """
+    code = _run(tmp_path, extra=["--dry-run", "--shard-input", str(tmp_path)])
+    assert code == EXIT_UNLAUNCHABLE
+
+
+def test_dry_run_still_succeeds_on_well_formed_runtime_paths(tmp_path):
+    """The gate must not be satisfiable by refusing every dry run."""
+    assert _run(tmp_path, extra=["--dry-run", "--shard-input", f"pdb_root={tmp_path}"]) == EXIT_OK

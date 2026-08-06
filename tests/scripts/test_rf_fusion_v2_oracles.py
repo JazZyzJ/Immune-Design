@@ -174,11 +174,13 @@ def test_a_runtime_bound_role_is_signed_by_its_OBSERVED_bytes(tmp_path):
 
     config = _config()
     inputs = _runtime_inputs(config, tmp_path)
-    first = mod._conditioning(config, model=_Model(), protein_id="5ZHV_B", inputs=inputs)
+    first = mod._conditioning(config, model=_Model(), protein_id="5ZHV_B", inputs=inputs,
+                              band_table=F.band_table())
 
     role = next(r.role for r in config.content if r.expected_sha256 is None)
     (tmp_path / f"{role}.bin").write_text("different bytes entirely")
-    second = mod._conditioning(config, model=_Model(), protein_id="5ZHV_B", inputs=inputs)
+    second = mod._conditioning(config, model=_Model(), protein_id="5ZHV_B", inputs=inputs,
+                               band_table=F.band_table())
     assert first.digest() != second.digest(), (
         f"changing the {role!r} file did not change the run's conditioning identity")
 
@@ -190,7 +192,8 @@ def test_a_role_that_is_neither_frozen_nor_supplied_fails_closed(tmp_path):
     from scripts.rf_fusion_v2_cohort import ShardInputs
 
     with pytest.raises(V2OracleError, match="content identity"):
-        mod._conditioning(_config(), model=_Model(), protein_id="5ZHV_B", inputs=ShardInputs())
+        mod._conditioning(_config(), model=_Model(), protein_id="5ZHV_B",
+                          inputs=ShardInputs(), band_table=F.band_table())
 
 
 def test_the_per_protein_coordinate_mask_overrides_any_file_level_digest(tmp_path):
@@ -206,5 +209,186 @@ def test_the_per_protein_coordinate_mask_overrides_any_file_level_digest(tmp_pat
             return "c" * 64
 
     assert mod._conditioning(config, model=_Model(), protein_id="5ZHV_B",
-                             inputs=inputs).digest() != \
-        mod._conditioning(config, model=_Other(), protein_id="5ZHV_B", inputs=inputs).digest()
+                             inputs=inputs, band_table=F.band_table()).digest() != \
+        mod._conditioning(config, model=_Other(), protein_id="5ZHV_B", inputs=inputs, band_table=F.band_table()).digest()
+
+
+# --------------------------------------------------------------------------------------------
+# the depth-0 reference is PER PROTEIN
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_reference_manifest_resolves_a_sequence_per_protein(tmp_path):
+    """PLAN §2.7 binds "a predeclared complete reference sequence" per lineage.
+
+    One file for the whole cohort binds every protein's whole-landscape hotspot comparator to the
+    same sequence: at different lengths the Head binding simply fails, and at equal lengths -- the
+    dangerous case -- it succeeds while measuring each design against another protein's native.
+    """
+    from scripts.rf_fusion_v2_oracles import resolve_reference
+
+    import hashlib
+    import json
+
+    def _write(name, sequence):
+        (tmp_path / name).write_text(sequence)
+        return {"path": name,
+                "sha256": hashlib.sha256(sequence.encode("ascii")).hexdigest()}
+
+    manifest = tmp_path / "references.json"
+    manifest.write_text(json.dumps({"5ZHV_B": _write("a.seq", "ACDEFG"),
+                                    "9L2Q_A": _write("b.seq", "WYWYWYWY")}))
+    assert resolve_reference(manifest, "5ZHV_B")[0] == "ACDEFG"
+    assert resolve_reference(manifest, "9L2Q_A")[0] == "WYWYWYWY"
+
+
+def test_a_reference_whose_bytes_do_not_match_the_manifest_is_refused(tmp_path):
+    """The per-protein digest is what binds the comparator to its molecule; a file edited after the
+    manifest was written must not be silently accepted."""
+    import hashlib
+    import json
+
+    from scripts.rf_fusion_v2_oracles import resolve_reference
+
+    (tmp_path / "a.seq").write_text("ACDEFG")
+    manifest = tmp_path / "references.json"
+    manifest.write_text(json.dumps({"5ZHV_B": {
+        "path": "a.seq", "sha256": hashlib.sha256(b"ACDEFG").hexdigest()}}))
+    assert resolve_reference(manifest, "5ZHV_B")[0] == "ACDEFG"
+    (tmp_path / "a.seq").write_text("WWWWWW")
+    with pytest.raises(V2OracleError, match="hashes to"):
+        resolve_reference(manifest, "5ZHV_B")
+
+
+def test_a_protein_absent_from_the_reference_manifest_fails_closed(tmp_path):
+    """PLAN §5.2: missing content identity fails closed.  Falling back to any other protein's
+    native would anchor the safety ratchet to the wrong molecule for the whole lineage."""
+    from scripts.rf_fusion_v2_oracles import resolve_reference
+
+    manifest = tmp_path / "references.json"
+    import hashlib
+    import json
+
+    manifest.write_text(json.dumps({"5ZHV_B": {
+        "path": "a.seq", "sha256": hashlib.sha256(b"ACDEFG").hexdigest()}}))
+    (tmp_path / "a.seq").write_text("ACDEFG")
+    with pytest.raises(V2OracleError, match="9L2Q_A"):
+        resolve_reference(manifest, "9L2Q_A")
+
+
+def test_a_single_sequence_file_is_refused_as_a_cohort_reference(tmp_path):
+    """A bare sequence file is exactly the shape that silently shares one reference across the
+    cohort, so it is refused by TYPE rather than accepted for a one-protein run and then reused."""
+    from scripts.rf_fusion_v2_oracles import resolve_reference
+
+    bare = tmp_path / "reference.seq"
+    bare.write_text("ACDEFG")
+    with pytest.raises(V2OracleError, match="manifest"):
+        resolve_reference(bare, "5ZHV_B")
+
+
+# --------------------------------------------------------------------------------------------
+# the band's two digests are two different quantities
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_conditioning_carries_the_TABLE_digest_not_the_files_sha256(tmp_path):
+    """``make_band_table`` REBINDS ``calibration_content_digest`` to a canonical digest of the
+    table's own content, and that is what ``declared_band_digest`` carries and what the kernel
+    compares against ``conditioning.schedule_band_calibration``.
+
+    The config role's ``expected_sha256`` is the FILE's sha256 (PLAN §5.2 signs file CONTENTS, and
+    that is what the driver computes for a declared input).  Two different numbers for one field:
+    left as it was, every real run would be refused by the kernel's own provenance check.
+
+    Resolved exactly as ``coordinate_mask`` already is -- an intrinsic identity the file digest
+    cannot express overrides the role digest in the conditioning, while the role digest keeps
+    signing the file.
+    """
+    from scripts import rf_fusion_v2_oracles as mod
+
+    config = _config()
+    inputs = _runtime_inputs(config, tmp_path)
+    table = F.band_table()
+    conditioning = mod._conditioning(
+        config, model=_Model(), protein_id="5ZHV_B", inputs=inputs, band_table=table)
+    assert conditioning.schedule_band_calibration == \
+        table.provenance.calibration_content_digest
+
+
+def test_the_band_digest_in_the_conditioning_tracks_the_band_content(tmp_path):
+    """Two calibrations under one name must not share a conditioning identity."""
+    from scripts import rf_fusion_v2_oracles as mod
+
+    config = _config()
+    inputs = _runtime_inputs(config, tmp_path)
+    other = F.band_table(bands_override=(F.band(
+        unresolved_accept=__import__(
+            "inverse_folding.reference_flow.fusion_v2.schedule",
+            fromlist=["BandInterval"]).BandInterval(lo=1.0, hi=3.0, lo_level=0.9, hi_level=0.1)),))
+    assert mod._conditioning(config, model=_Model(), protein_id="5ZHV_B", inputs=inputs,
+                             band_table=F.band_table()).digest() != \
+        mod._conditioning(config, model=_Model(), protein_id="5ZHV_B", inputs=inputs,
+                          band_table=other).digest()
+
+
+# --------------------------------------------------------------------------------------------
+# the band stratum is the PROTEIN's, not the schedule point's
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_stratum_comes_from_an_explicit_per_protein_manifest(tmp_path):
+    """``source_writeback``'s own docstring: ``stratum_key`` "is deliberately NOT derived from
+    ``DepthSchedulePoint.band_key`` -- the Interface Map states they are different keys".
+
+    ``band_key`` names a schedule cell; ``stratum_key`` names the COHORT STRATUM the band was
+    measured on.  Using one for the other gives every protein in a cohort the same stratum, so an
+    anchored protein would read its reopen cardinality off a band measured on unconstrained ones.
+    """
+    import json
+
+    from scripts.rf_fusion_v2_oracles import resolve_stratum
+
+    manifest = tmp_path / "strata.json"
+    manifest.write_text(json.dumps({"5ZHV_B": "len4_8_unconstrained",
+                                    "9L2Q_A": "len4_8_anchored"}))
+    assert resolve_stratum(manifest, "5ZHV_B") == "len4_8_unconstrained"
+    assert resolve_stratum(manifest, "9L2Q_A") == "len4_8_anchored"
+
+
+def test_a_protein_with_no_declared_stratum_fails_closed(tmp_path):
+    """Defaulting to any other protein's stratum is how an anchored protein silently reads an
+    unconstrained band."""
+    import json
+
+    from scripts.rf_fusion_v2_oracles import resolve_stratum
+
+    manifest = tmp_path / "strata.json"
+    manifest.write_text(json.dumps({"5ZHV_B": "len4_8_unconstrained"}))
+    with pytest.raises(V2OracleError, match="9L2Q_A"):
+        resolve_stratum(manifest, "9L2Q_A")
+
+
+def test_an_anchored_protein_may_not_run_on_an_unconstrained_band():
+    """The declared stratum is a LABEL; the constraint class is a FACT about the protein.
+
+    Hard anchors remove positions from the editable domain, so at equal length an anchored protein
+    carries different unresolved mass at the same step.  A band measured on an unconstrained cohort
+    does not describe it, and the reopen cardinality read off that band is pinned from the wrong
+    distribution -- which the artifact would record as a legitimate projection.
+    """
+    from scripts.rf_fusion_v2_oracles import assert_constraint_class_matches_band
+
+    table = F.band_table()          # provenance declares constraint_stratum_id="anchored"
+    assert table.provenance.constraint_stratum_id == "anchored"
+    with pytest.raises(V2OracleError, match="unconstrained"):
+        assert_constraint_class_matches_band(band_table=table, fixed_tokens=None,
+                                             protein_id="5ZHV_B")
+
+
+def test_an_anchored_protein_on_an_anchored_band_is_accepted():
+    """The guard must not be satisfiable by refusing every protein."""
+    from scripts.rf_fusion_v2_oracles import assert_constraint_class_matches_band
+
+    assert assert_constraint_class_matches_band(
+        band_table=F.band_table(), fixed_tokens={0: 10}, protein_id="5ZHV_B") is None

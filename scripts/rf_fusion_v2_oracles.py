@@ -48,6 +48,9 @@ __all__ = [
     "V2OracleError",
     "OracleSeams",
     "SUPPORT_POLICY_REGISTRY",
+    "assert_constraint_class_matches_band",
+    "resolve_reference",
+    "resolve_stratum",
     "resolve_support_policy",
     "build_v2_oracles",
 ]
@@ -149,6 +152,130 @@ class OracleSeams:
         }
 
 
+def resolve_reference(manifest_path: Any, protein_id: str) -> tuple[str, str]:
+    """The depth-0 reference sequence for ONE protein, from a ``{protein_id: path}`` manifest.
+
+    PLAN §2.7 binds "a predeclared complete reference sequence" per lineage, and the whole-landscape
+    hotspot comparator measures every design against it.  A single cohort-wide file binds every
+    protein to the same native: at different lengths the Head binding fails outright, and at equal
+    lengths -- the dangerous case -- it SUCCEEDS while comparing each design to another molecule.
+
+    The manifest is refused if it is a bare sequence file, because that is exactly the shape that
+    works for a one-protein run and then silently shares one reference across a cohort.  A protein
+    absent from it fails closed rather than falling back (PLAN §5.2).
+
+    Returns ``(sequence, declared_digest)``.  The digest is PER PROTEIN and lives in the manifest,
+    because ``config.content[complete_reference_sequence].expected_sha256`` is a single value and a
+    two-protein cohort has two references -- one config field cannot sign both.  That role's digest
+    therefore signs the MANIFEST, and the manifest signs each sequence, so every byte is still bound
+    and nothing is signed twice under one number.
+
+    Paths inside the manifest are resolved relative to the manifest itself, so the file can be moved
+    with its sequences.  Read as ASCII with NO normalization: ``bind_cumulative_reference``
+    recomputes the content digest over these exact bytes.
+    """
+    import json
+
+    manifest = Path(manifest_path)
+    try:
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V2OracleError(
+            f"the complete-reference manifest {manifest} is not readable JSON: {exc}.  It must be "
+            "a {protein_id: path} mapping -- a bare sequence file would bind the whole cohort's "
+            "hotspot comparator to one protein's native"
+        ) from exc
+    if not isinstance(entries, dict) or not entries:
+        raise V2OracleError(
+            f"{manifest} is not a non-empty {{protein_id: path}} reference manifest"
+        )
+    entry = entries.get(protein_id)
+    if isinstance(entry, str):
+        raise V2OracleError(
+            f"the reference manifest gives {protein_id!r} a bare path; each entry must be "
+            '{"path": ..., "sha256": ...} so the sequence carries its own content identity -- the '
+            "config's single complete_reference_sequence digest cannot sign a two-protein cohort"
+        )
+    if not entry:
+        raise V2OracleError(
+            f"the reference manifest names no complete reference for {protein_id!r} "
+            f"(it has {sorted(entries)}); PLAN §5.2 fails closed on missing content identity, and "
+            "falling back to another protein's native would anchor this lineage's safety ratchet "
+            "to the wrong molecule"
+        )
+    path, declared = entry.get("path"), entry.get("sha256")
+    if not path or not declared:
+        raise V2OracleError(
+            f"the reference manifest entry for {protein_id!r} needs both 'path' and 'sha256'"
+        )
+    sequence = (manifest.parent / path).read_text(encoding="ascii")
+    observed = _observed_digest(manifest.parent / path)
+    if observed != declared:
+        raise V2OracleError(
+            f"the reference file for {protein_id!r} hashes to {observed} but the manifest declares "
+            f"{declared}; the whole-landscape comparator would be anchored to bytes the run never "
+            "signed"
+        )
+    return sequence, declared
+
+
+def resolve_stratum(manifest_path: Any, protein_id: str) -> str:
+    """The COHORT STRATUM this protein's band was measured on, from a ``{protein_id: key}`` map.
+
+    ``source_writeback``'s own contract: ``stratum_key`` "is deliberately NOT derived from
+    ``DepthSchedulePoint.band_key`` -- the Interface Map states they are different keys".
+    ``band_key`` names a schedule CELL; ``stratum_key`` names the cohort the band's quantiles were
+    measured over.  Conflating them gives every protein in a cohort one stratum, so an anchored
+    protein reads its reopen cardinality off a band measured on unconstrained ones.
+
+    A protein absent from the manifest fails closed: defaulting to another protein's stratum is
+    precisely the silent mis-binding this exists to prevent.
+    """
+    import json
+
+    manifest = Path(manifest_path)
+    try:
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise V2OracleError(
+            f"the protein-stratum manifest {manifest} is not readable JSON: {exc}"
+        ) from exc
+    if not isinstance(entries, dict) or not entries:
+        raise V2OracleError(f"{manifest} is not a non-empty {{protein_id: stratum_key}} mapping")
+    stratum = entries.get(protein_id)
+    if not isinstance(stratum, str) or not stratum.strip():
+        raise V2OracleError(
+            f"the stratum manifest names no cohort stratum for {protein_id!r} "
+            f"(it has {sorted(entries)}); the band's quantiles were measured over a stratum, and "
+            "guessing which one would pin the reopen cardinality from the wrong distribution"
+        )
+    return stratum
+
+
+def assert_constraint_class_matches_band(*, band_table: Any, fixed_tokens: Any,
+                                         protein_id: str) -> None:
+    """The declared stratum is a LABEL; the constraint class is a FACT about the protein.
+
+    Hard anchors remove positions from the editable domain, so at equal length an anchored protein
+    carries different unresolved mass at the same step than an unconstrained one.  A band measured
+    on an unconstrained cohort does not describe it, and the reopen cardinality read off that band
+    would be pinned from the wrong distribution -- recorded in the artifact as a legitimate
+    projection.  ``mixed`` is compatible with either, because that is what it means.
+    """
+    from scripts.rho_maturity_scan import classify_constraint_stratum
+
+    band_class = band_table.provenance.constraint_stratum_id
+    protein_class = classify_constraint_stratum([bool(fixed_tokens)])
+    if band_class != "mixed" and band_class != protein_class:
+        raise V2OracleError(
+            f"{protein_id!r} is {protein_class} but its band was calibrated on a {band_class} "
+            "cohort; anchors change the editable domain, so the band's unresolved-mass quantiles "
+            "do not describe this protein and the reopen cardinality would come from the wrong "
+            "distribution"
+        )
+    return None
+
+
 def _default_gpu_clock():
     """Cumulative GPU seconds, or a refusal when nothing can measure them.
 
@@ -205,7 +332,7 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
     band_digest = _content_digest(config, "schedule_band_calibration")
     band_table = resolved["load_band_table"](
         inputs.require("schedule_band_calibration"), expected_content_digest=band_digest)
-    stratum_key = config.schedule.points[0].band_key
+    stratum_key = resolve_stratum(inputs.require("protein_stratum_manifest"), protein_id)
 
     # ---- the model stack, SHARED with the V1 entry path ---------------------------------------
     model = resolved["build_model_factory"](
@@ -218,6 +345,12 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
     )
     _prepared, denoiser = model.backbone_and_denoiser(protein_id)
     length = model.sequence_length(protein_id)
+    # The declared stratum is checked against the protein's REALIZED constraint class before
+    # anything else reads the band: a label alone cannot stop an anchored protein from running on
+    # an unconstrained calibration.
+    assert_constraint_class_matches_band(
+        band_table=band_table, fixed_tokens=model.fixed_tokens(protein_id),
+        protein_id=protein_id)
 
     # ---- the depth-0 safety reference, bound to the reference BYTES ---------------------------
     # Read as BYTES with no normalization: ``bind_cumulative_reference`` recomputes the content
@@ -226,8 +359,8 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
     # wrapper, no trailing newline.  Stripping here would make the two digests disagree for a file
     # that is otherwise correct, and silently accepting a stripped variant would put bytes in the
     # gate that the config never signed.
-    reference_sequence = Path(
-        inputs.require("complete_reference_sequence")).read_text(encoding="ascii")
+    reference_sequence, reference_digest = resolve_reference(
+        inputs.require("complete_reference_manifest"), protein_id)
     head_identity = ident.HeadEvaluatorIdentity(
         allele=config.head.allele, score_scale=config.head.score_scale,
         window_k_min=config.head.window_k_min, window_k_max=config.head.window_k_max,
@@ -249,7 +382,7 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
         lineage_id=f"{protein_id}:fam0", protein_id=protein_id,
         reference_label=config.safety.cumulative_reference_label,
         reference_sequence=reference_sequence,
-        reference_content_digest=_content_digest(config, "complete_reference_sequence"),
+        reference_content_digest=reference_digest,
         policy=policy, head_score=reference_head_score,
     )
     safety_gate = SafetyGate(policy=policy, ledger=open_lineage_ledger(cumulative))
@@ -270,7 +403,7 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
                 origin_endpoint_id=None),
             mask_token_id=model.mask_token_id, aa_token_ids=model.aa_token_ids,
             conditioning=_conditioning(config, model=model, protein_id=protein_id,
-                                       inputs=inputs),
+                                       inputs=inputs, band_table=band_table),
             safety_reference=cumulative.binding,
             head_oracle=resolved["head_scorer"], structure_oracle=resolved["structure_evaluator"],
             support_policy=resolve_support_policy(
@@ -295,7 +428,8 @@ def _observed_digest(path: Any) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def _conditioning(config: Any, *, model: Any, protein_id: str, inputs: Any):
+def _conditioning(config: Any, *, model: Any, protein_id: str, inputs: Any,
+                  band_table: Any):
     """The run's content provenance, one digest per PLAN §5.2 role.
 
     A FROZEN role carries its digest in the config and is used as declared.  A RUNTIME-bound role
@@ -340,4 +474,12 @@ def _conditioning(config: Any, *, model: Any, protein_id: str, inputs: Any):
     # conditioning bundle is reused verbatim (PLAN §5.2's reuse) while V2 also records it as its
     # own provenance row.
     base["entry_config"] = own["rf_sampler_config"]
+    # ``schedule_band_calibration`` is the one role whose config digest and whose SCIENTIFIC
+    # identity are different numbers.  ``make_band_table`` rebinds ``calibration_content_digest``
+    # to a canonical digest of the TABLE's content; that is what ``declared_band_digest`` carries
+    # and what ``q_phi`` compares against this field.  The role's ``expected_sha256`` signs the
+    # FILE (PLAN §5.2), which the file digest above already records.  Left conflated, the kernel's
+    # own provenance check would refuse every real run.  Same shape as ``coordinate_mask``: an
+    # intrinsic identity a file digest cannot express overrides the role digest here.
+    own["schedule_band_calibration"] = band_table.provenance.calibration_content_digest
     return ident.V2ConditioningIdentity(base=ident.make_v2_conditioning(**base), **own)

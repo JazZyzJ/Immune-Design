@@ -17,7 +17,7 @@ feedback transmits — the Canary establishes that the mechanism EXECUTES, not t
 |---|---|
 | `immune-design` conda env on Della | PyTorch 2.5.1 / Python 3.12 |
 | The V2 substrate is frozen and controller-free | `config.substrate` is checked field by field against the runtime sampler config **before the ladder pays its root prefix** (`rf_fusion_v2_cohort.assert_runtime_substrate_matches`) |
-| Two Canary proteins chosen: one **ordinary**, one **anchored** | PLAN V2F5 acceptance names both; the anchored one is what proves hard anchors never enter a support set |
+| Canary proteins frozen as ordinary `5ZHV_B` and anchored `Q00511` | PLAN V2F5 acceptance names both; `Q00511` uses the committed 24-anchor safety manifest and proves hard anchors never enter a support set |
 
 Cluster paths are **always** CLI arguments. Nothing in this runbook may be hardcoded into a module.
 
@@ -29,36 +29,105 @@ This must come first: the projection policy's **reopen cardinality is not a free
 pinned by `B(r_d)` through `admissible_reopen_cardinality`, so the policy is not instantiable until
 a real band exists.
 
+### 1.1 Frozen Canary geometry and sampling law
+
+These values are scientific inputs, not operator choices:
+
+| Quantity | Frozen Canary value | Meaning |
+|---|---:|---|
+| source checkpoint | `c_source=50` | the one source state shared by both re-entry diagnostics |
+| re-entry candidates | `r={30,40}` | `r=40` is the late intervention; `r=30` is the earlier intervention |
+| propagated checkpoint | `c_next=60` | both interventions are compared after reaching the same later checkpoint |
+| attempts per `(protein,r)` | `64` | enough to estimate a diagnostic central band without using mechanism outcomes |
+| reported quantiles | `0.05, 0.50, 0.95` | median plus the central 90% empirical schedule band |
+| capture floor | `60/64` | more than four failed captures invalidates the cell and writes no artifact |
+
+The coordinates are frozen **before** the scan. Do not substitute another step because one of the
+two declared cells is inconvenient. A missing or infeasible band is a geometry/blocking result, not
+authorization to tune the Canary after observing it.
+
+Use the actual no-remask substrate. `c1_null.yaml` is remask-on and is invalid for this scan;
+`c1_constant_clean_no_remask.yaml` retains the sampler lifecycle while setting the realized
+background-remask count to zero.
+
+The ordinary and anchored proteins are two separately signed strata. Run both commands:
+
 ```bash
+export PYTHONPATH=${PROJECT_ROOT}
+GIT_SHA=$(git rev-parse HEAD)
+
 python scripts/rho_maturity_scan.py --mode step \
   --checkpoint       <dplm.ckpt> \
-  --rf-config        inverse_folding/reference_flow/configs/c1_null.yaml \
+  --rf-config        inverse_folding/reference_flow/configs/c1_constant_clean_no_remask.yaml \
   --test-set         <if_ready.parquet> \
   --pdb-root         <pdbs> \
-  --out-parquet      <WORK>/v2_canary/rho_step_scan.parquet \
-  --steps            <r candidates> \
-  --stratum-key      <stratification law> \
-  --quantile-levels  <levels> \
-  --min-captures-per-cell <floor> \
-  --calibration-id   band:v2:canary \
-  --calibration-json <WORK>/v2_canary/B_r.json
+  --proteins         5ZHV_B \
+  --out-parquet      <WORK>/v2_canary/bands/5ZHV_B/rho_step_scan.parquet \
+  --steps            30 40 \
+  --stratum-key      5zhv_b_unconstrained \
+  --quantile-levels  0.05 0.50 0.95 \
+  --attempts-per-cell 64 \
+  --min-captures-per-cell 60 \
+  --calibration-id   band:v2:canary:5zhv_b_unconstrained:v1 \
+  --calibration-json <WORK>/v2_canary/bands/5ZHV_B/B_r.json \
+  --code-revision    ${GIT_SHA}
+
+python scripts/rho_maturity_scan.py --mode step \
+  --checkpoint       <dplm.ckpt> \
+  --rf-config        inverse_folding/reference_flow/configs/c1_constant_clean_no_remask.yaml \
+  --test-set         <if_ready.parquet> \
+  --pdb-root         <pdbs> \
+  --proteins         Q00511 \
+  --constraint-manifest inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml \
+  --out-parquet      <WORK>/v2_canary/bands/Q00511/rho_step_scan.parquet \
+  --steps            30 40 \
+  --stratum-key      q00511_anchor24 \
+  --quantile-levels  0.05 0.50 0.95 \
+  --attempts-per-cell 64 \
+  --min-captures-per-cell 60 \
+  --calibration-id   band:v2:canary:q00511_anchor24:v1 \
+  --calibration-json <WORK>/v2_canary/bands/Q00511/B_r.json \
+  --code-revision    ${GIT_SHA}
 ```
 
-Every step-mode flag is required and has no default — the stratification law, the quantile grid and
-the capture floor are deferred scientific calibrations, and a cell below the capture floor exits
-non-zero and writes **no** artifact.
+The two artifacts remain separate. The Canary is one campaign with four one-protein cells
+(`5ZHV_B/Q00511` x `r=30/40`), not one config pretending that different lengths and anchor domains
+share an absolute unresolved-mass distribution. Apart from protein-specific reference, constraint,
+band and hotspot artifacts, the four resolved configs must carry identical Head, sampler, policy,
+seed schema, `c_source=50`, `c_next=60`, and code revision.
 
-**Choose the schedule cell so that both strata have non-empty support.** A cell where the ordinary
-protein's stratum is calibrated and the anchored one's is not will make the anchored arm decline on
-`no calibrated band at r_d`, which is a fact about the scan, not about the mechanism.
+`--code-revision` is required by the scan as well; it enters the band's provenance and the config's
+`schedule_band_calibration` identity, so an unrecorded revision makes the artifact unusable
+downstream.
+
+**The runtime `stratum_key` must be the exact protein-specific key above.** `lookup_band` is exact
+and refuses to interpolate. The cohort/oracle layer must not replace it with the schedule point's
+generic cell label: schedule-cell identity and protein/constraint stratum are different axes.
+
+The runtime reads each protein's stratum from `--shard-input protein_stratum_manifest=PATH`, a
+`{protein_id: stratum_key}` map. It is **not** derived from the schedule's `band_key`: that names a
+schedule CELL, while `stratum_key` names the cohort the band's quantiles were measured over. The
+factory additionally derives each protein's realized constraint class and refuses a band calibrated
+on a different one.
+
+**The anchored protein needs its OWN stratum.** Hard anchors remove positions from the editable
+domain, so at equal length an anchored protein has different unresolved mass at the same step than
+an unconstrained one. A `B(r)` measured on an unconstrained cohort does not describe it, and the
+reopen cardinality the policy reads off that band would be pinned from the wrong distribution. Run
+the scan with a stratification that separates them and give each protein the matching runtime
+`stratum_key`.
+
+**All four predeclared cells must have non-empty support.** A cell where one protein has no legal
+reopen envelope is a geometry/blocking result. Do not drop that cell, choose a nearest band, widen
+the quantiles, or lower the capture floor after seeing it.
 
 Step mode refuses a `remask.fraction_scale != 0.0` substrate: the V1 crossings were compressed into
 the last ~16 steps by repeated global remasking, and PLAN §2.1 forbids reusing them to select V2
 coordinates.
 
-**Check before moving on:** `B(r)` must admit a non-empty reopen envelope at your chosen `r_d` for
-**both** strata. If it does not, the Canary cannot produce a non-null transition and there is
-nothing to fix downstream — go back and re-choose the cell.
+**Check before moving on:** `B(30)` and `B(40)` must each admit a non-empty reopen envelope for the
+protein-specific stratum they sign. Otherwise the Canary is blocked at schedule calibration and
+there is nothing to diagnose downstream.
 
 ---
 
@@ -74,27 +143,146 @@ refused, and `source_id` naming `objective.max_offtarget_window_increase` is ref
 relabelling v0's number is laundering, not calibration. `window_domain` must be `whole_landscape`;
 an off-halo artifact cannot authorize the V2 gate.
 
-`source_ref` must equal `calibration_source_ref(value, unit, source_kind, source_id, artifact)`, so
-the provenance is content-binding rather than a label.
+Produce it with the frozen per-protein producer specified in §2.1; do **not** hand-write the
+block. The Canary threshold statistic is already frozen as
+`per_protein_definitive_feasible_q90_higher`: the empirical per-protein `Q0.90` among definitive
+structure-feasible endpoints, evaluated with the `higher` order statistic. It has no user-selectable
+alternative in this runbook.
+
+Paste the emitted `delta_new` block into `config.safety.delta_new_cumulative` **verbatim**:
+`source_ref` must equal `calibration_source_ref(value, unit, source_kind, source_id, artifact)`, and
+the loader recomputes it — so an edited block is refused, which is the point.
+
+### 2.1 Frozen Canary-only calibration law
+
+This artifact authorizes **wiring of the two-protein Canary only**. It is not a production immune
+safety threshold and cannot be carried into a mechanism cohort, policy qualification, capability
+ladder, or holdout.
+
+For each Canary protein independently:
+
+1. Generate `64` complete trajectories with feedback disabled under the exact frozen V2 substrate:
+   controller-free, h-map-free, `constant_one`, `n_steps=100`, temperature `1.0`, and background
+   remask fraction `0.0`. Use a disjoint seed namespace
+   `v2_hotspot_calibration_1`; include the Q00511 24-anchor manifest in the anchored calibration.
+2. Score every candidate and its protein-specific native reference with the exact production Head.
+   Compute
+
+   $$
+   N_H^{\mathrm{whole}}(y;\bar y_p)
+   =\max_w\left[z_w(y)-z_w(\bar y_p)\right]_+.
+   $$
+
+   Missing, duplicate or misaligned window grids, non-finite logits, reference mismatch and anchor
+   mismatch are hard failures.
+3. Run the exact definitive structure gate used by the Canary. Retain only endpoints with a real
+   definitive feasible verdict; cache-only labels without a resolved verdict do not count.
+4. Require at least `48/64` definitive-feasible endpoints for that protein. Below this floor, write
+   no calibration artifact and do not relax the floor.
+5. Sort the retained `N_H` values and set `delta_new_cumulative` to the empirical `Q0.90` using the
+   **higher** order statistic: the value at one-indexed rank `ceil(0.90*n)`. Preserve the full
+   floating-point value; do not round it before computing `source_ref`.
+
+The two proteins receive separate thresholds and separate artifacts. Do not pool endpoints across
+proteins and do not take a cohort-level maximum: sequence length, window multiplicity and the anchor
+domain change the distribution of a whole-landscape maximum. The Canary does not compare their
+pass rates.
+
+The producer must be `scripts/calibrate_rf_fusion_v2_hotspot.py`, reuse the shared model factory,
+production Head batch scorer, V2 `measure_cumulative` primitive and v0 definitive structure seam,
+and be registered in `doc/SCRIPTS.md`. It writes a canonical raw table and one typed artifact per
+protein. Its frozen interface is:
+
+**This producer is a required implementation unit before cluster execution.** Until the script,
+tests and `doc/SCRIPTS.md` registration exist, stop here; a hand-written scalar or ad-hoc notebook
+does not satisfy the calibration contract.
+
+```bash
+python scripts/calibrate_rf_fusion_v2_hotspot.py \
+  --protein-id <5ZHV_B|Q00511> \
+  --n-completions 64 \
+  --master-seed 20260806 \
+  --seed-namespace v2_hotspot_calibration_1 \
+  --threshold-statistic per_protein_definitive_feasible_q90_higher \
+  --min-definitive-feasible 48 \
+  --checkpoint <dplm.ckpt> \
+  --rf-config inverse_folding/reference_flow/configs/c1_constant_clean_no_remask.yaml \
+  --test-set <if_ready.parquet> \
+  --pdb-root <pdbs> \
+  --complete-reference-manifest <WORK>/v2_canary/references.json \
+  --head-config-dir <head-config-dir> \
+  --head-checkpoint <head.ckpt> \
+  --structure-config <v0-structure-config> \
+  [--constraint-manifest inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml] \
+  --out-rows <WORK>/v2_canary/hotspot/<PID>/calibration_rows.parquet \
+  --out-json <WORK>/v2_canary/hotspot/<PID>/hotspot_calibration.json \
+  --code-revision $(git rev-parse HEAD)
+```
+
+Omit `--constraint-manifest` for `5ZHV_B`; supply the exact path shown for `Q00511`.
+
+`--threshold-statistic` is a closed enum for this Canary, not a free-form label. The producer must
+interpret `per_protein_definitive_feasible_q90_higher` exactly as step 5 above and reject any other
+value. Do not also expose independent `--quantile` or `--quantile-method` overrides, because they
+would create two conflicting sources of truth.
+
+The canonical row projection signed by `calibration_data_digest` contains at least protein ID,
+replicate index, realized seed, sequence MD5, native-reference digest, Head evaluator/window-grid
+digests, `N_H`, definitive structure verdict/metrics and anchor verdict. The artifact additionally
+reports `n_attempted=64`, `n_definitive_feasible`, `q50/q90/q95/max`, the order-statistic rank and
+all failure counts. A producer that outputs only the chosen scalar is incomplete.
+
+Use `source_kind=measured_calibration` and a protein-specific `source_id` of
+`v2-canary-hotspot-null-q90-higher-v1:<protein_id>`. The config value, typed artifact and canonical
+`source_ref` are copied verbatim from this JSON; they are never typed manually.
 
 ---
 
 ## 3. Fill the Canary config
 
+The Canary campaign contains TWO proteins, so it needs TWO references even though each execution
+cell is a one-protein job. `complete_reference_manifest` is a
+`{protein_id: path}` JSON map resolved relative to itself:
+
+```json
+{
+  "5ZHV_B": {"path": "5ZHV_B.seq", "sha256": "<sha256 of 5ZHV_B.seq>"},
+  "Q00511": {"path": "Q00511.seq", "sha256": "<sha256 of Q00511.seq>"}
+}
+```
+
+The digest is **per protein and lives in the manifest**, because
+`content[complete_reference_sequence].expected_sha256` is a single value and a two-protein cohort
+has two references — one config field cannot sign both. That role's digest therefore signs the
+**manifest**, and the manifest signs each sequence, so every byte is still bound and nothing is
+signed twice under one number. A file edited after the manifest was written is refused.
+
+A bare path (or a bare sequence file) is refused by type. One file for the cohort binds every protein's
+whole-landscape hotspot comparator to the same native: at different lengths the Head binding fails
+outright, and at equal lengths — the dangerous case — it succeeds while measuring each design
+against another molecule.
+
 Start from `inverse_folding/reference_flow/configs/v2_canary_state_transition.yaml`. Every
 `REPLACE_*` is a value the file cannot carry; the loader has no default and refuses the run.
 
-Three that bite:
+Four that bite:
 
 1. **`identity.code_revision`** — 7–64 lowercase hex. `unknown` is refused. The CLI's
    `--code-revision` defaults to this value and must equal it, so no flag can sign a run under an
    undeclared revision.
-2. **`content[complete_reference_sequence].expected_sha256`** — SHA-256 over the sequence's **ASCII
-   bytes**. The file this role names must be **the canonical sequence itself: no FASTA header, no
-   wrapper, no trailing newline.** `bind_cumulative_reference` recomputes the digest from those
+2. **`content[schedule_band_calibration].expected_sha256` is the TABLE's
+   `calibration_content_digest`, NOT the file's sha256.** `make_band_table` rebinds it to a
+   canonical digest of the table's content, and that is what `q_phi` compares against
+   `conditioning.schedule_band_calibration`. Read it off the artifact:
+   `python -c "import json;print(json.load(open('B_r.json'))['provenance']['calibration_content_digest'])"`.
+   Do **not** pass this role to `--input-file`: that computes the file's sha256 and refuses. Pass
+   the path with `--shard-input schedule_band_calibration=...` instead.
+3. **`content[complete_reference_sequence].expected_sha256`** — SHA-256 of the **manifest file**
+   (see above). Each sequence file it names must be **the canonical sequence itself: no FASTA
+   header, no wrapper, no trailing newline**, and its own sha256 goes in the manifest entry. `bind_cumulative_reference` recomputes the digest from those
    bytes and compares; any container format puts bytes in the file that are not in the sequence and
    the two numbers can never agree.
-3. **`arm.a2_matching_resource`** — one of five, and the choice IS the experiment. At the measured
+4. **`arm.a2_matching_resource`** — one of five, and the choice IS the experiment. At the measured
    unit costs one refold ≈ 81 DFE and structure is ~94% of a cycle's marginal cost, so matching on
    `logical_dfe` and matching on `definitive_refolds` are different experiments. The other four
    components are reported unmatched, never netted away.
@@ -104,19 +292,40 @@ referent and the admission records a typed `IncrementalInapplicable` minted only
 ledger; it becomes binding from depth 1. If you enable it, `delta_new_incremental` is required and
 must carry its own `immediate_parent`-scoped artifact.
 
+Materialize four resolved configs under `<WORK>/v2_canary/resolved_configs/`; do not edit the
+tracked template in place:
+
+| Cell | Protein | `r_step` | Runtime stratum | Band artifact | Hotspot artifact | Constraint |
+|---|---|---:|---|---|---|---|
+| `5zhv_r30` | `5ZHV_B` | 30 | `5zhv_b_unconstrained` | `bands/5ZHV_B/B_r.json` | `hotspot/5ZHV_B/hotspot_calibration.json` | none |
+| `5zhv_r40` | `5ZHV_B` | 40 | `5zhv_b_unconstrained` | same | same | none |
+| `q00511_r30` | `Q00511` | 30 | `q00511_anchor24` | `bands/Q00511/B_r.json` | `hotspot/Q00511/hotspot_calibration.json` | Q00511 safety24 |
+| `q00511_r40` | `Q00511` | 40 | `q00511_anchor24` | same | same | Q00511 safety24 |
+
+Every config keeps `c_source_step=50`, `c_next_step=60`, `n_lookaheads=4`, `depth_cap=1`,
+`incremental_gate_enabled=false`, and `a2_matching_resource=definitive_refolds`. The
+protein-specific runtime stratum must come from an explicit cohort/shard binding; it must not be
+derived from `DepthSchedulePoint.band_key`. The latter is a schedule-cell identity, not a
+length/constraint stratum. This separation is a pre-launch code acceptance condition.
+
 ---
 
 ## 4. Preflight — costs nothing, refuses early
 
+Run the following template once for each row of the four-cell table:
+
 ```bash
 python scripts/run_rf_fusion_v2.py \
-  --v2-config    inverse_folding/reference_flow/configs/v2_canary_state_transition.yaml \
-  --out-dir      <RUN>/v2_canary \
-  --cohort       <ORDINARY_PID> <ANCHORED_PID> \
+  --v2-config    <WORK>/v2_canary/resolved_configs/<CELL>.yaml \
+  --out-dir      <RUN>/v2_canary/<CELL> \
+  --cohort       <PROTEIN_ID> \
   --input-file   dplm_checkpoint=<dplm.ckpt> \
-                 complete_reference_sequence=<reference.seq> \
-                 schedule_band_calibration=<WORK>/v2_canary/B_r.json \
+                 complete_reference_sequence=<WORK>/v2_canary/references.json \
                  <...one ROLE=PATH per PLAN §5.2 role...> \
+  --shard-input  schedule_band_calibration=<WORK>/v2_canary/bands/<PROTEIN_ID>/B_r.json \
+                 complete_reference_manifest=<WORK>/v2_canary/references.json \
+                 protein_stratum_manifest=<WORK>/v2_canary/strata.json \
+                 stratum_key=<PROTEIN_SPECIFIC_STRATUM> \
   --dry-run
 ```
 
@@ -136,17 +345,19 @@ Exit codes are the whole interface a cohort runner sees: `0` complete and at lea
 
 ## 5. Run the Canary
 
-Drop `--dry-run` and add the runtime paths the oracle stack needs:
+For the same cell, drop `--dry-run` and add the remaining runtime paths the oracle stack needs:
 
 ```bash
   --shard-input  base_if_checkpoint=<dplm.ckpt> \
-                 rf_sampler_config=inverse_folding/reference_flow/configs/c1_null.yaml \
+                 rf_sampler_config=inverse_folding/reference_flow/configs/c1_constant_clean_no_remask.yaml \
                  test_set_parquet=<if_ready.parquet> \
                  pdb_root=<pdbs> \
-                 schedule_band_calibration=<WORK>/v2_canary/B_r.json \
-                 complete_reference_sequence=<reference.seq> \
-                 constraint_manifest=<anchors.json> \
-                 journal_dir=<RUN>/v2_canary/journals \
+                 schedule_band_calibration=<WORK>/v2_canary/bands/<PROTEIN_ID>/B_r.json \
+                 complete_reference_manifest=<WORK>/v2_canary/references.json \
+                 protein_stratum_manifest=<WORK>/v2_canary/strata.json \
+                 stratum_key=<PROTEIN_SPECIFIC_STRATUM> \
+                 [constraint_manifest=inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml] \
+                 journal_dir=<RUN>/v2_canary/<CELL>/journals \
                  device=cuda \
                  <...one <role>=PATH for every RUNTIME-bound content role...>
 ```
@@ -155,6 +366,10 @@ Drop `--dry-run` and add the runtime paths the oracle stack needs:
 parameter a path meant is how a checkpoint ends up passed as a PDB root. Every **runtime-bound**
 content role must be supplied here: its digest is computed from the bytes you actually give, and a
 role that is neither frozen in the config nor supplied fails closed.
+
+Omit `constraint_manifest` in both `5ZHV_B` cells. A four-cell launch is complete only when all
+four resolved configs pass dry-run under the same code revision and are submitted before any
+feedback outcome is opened.
 
 SLURM: follow `scripts/submit_benchmark.slurm`. `--output/--error` go to `logs/`, never `run/`.
 
@@ -170,7 +385,11 @@ Read **only** these, per PLAN §8.3:
 | **Anchors** | `partial_states.hard_anchors_json` vs `complete_endpoints.sequence` | every anchor preserved in the anchored protein's endpoints |
 | **Replay** | `partial_states.replay_state_hash`, `complete_endpoints.replay_*` | present and distinct per fork |
 | **Lineage** | `partial_states.parent_state_id` / `parent_transition_id` / `origin_endpoint_id` | the chain source → endpoint → projected → propagated closes |
-| **Assimilation** | `partial_states.active_score_status_json` | injected positions begin `pending_assimilation` with no fabricated score |
+| **Assimilation (4 checks, not 1)** | `partial_states.active_score_status_json` / `active_sampler_score_json` / `temporary_protection_json` / `provenance_json` | see the four rows below |
+| — at projection | projected state's injected positions | status `pending_assimilation`, and their `active_sampler_score` is **null**, not a number |
+| — after the first propagation forward | propagated state at `c_{d+1}` | those positions have become `assimilated` and now carry a **finite** active sampler score |
+| — protection expiry | `temporary_protection_json` on the projected state vs `expired_protection_json` on the propagated one | every grant expires at `c_{d+1}` exactly — not before, not carried past |
+| — the two evidence namespaces stay separate | `provenance_json[*].last_origin.evidence_logprob` vs `active_sampler_score_json` | the endpoint's completion log-prob is immutable provenance and must **never** appear as an active sampler score. If it does, the reopen/ranking signal is being driven by the endpoint's own evidence and the mechanism is circular |
 | **Ledger** | `cost_ledger.jsonl`, `run_manifest.realized_caps` | phases present; `physical_cost_complete` true; no `unknown_after_start` you cannot explain |
 
 **Do not compute a Head-score contrast from a Canary.** It has no power and no matched control.

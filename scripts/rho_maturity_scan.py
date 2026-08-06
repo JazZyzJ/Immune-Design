@@ -115,6 +115,21 @@ class ScanConstraintBindings:
     fixed_tokens_by_protein: dict[str, dict[int, int]]
 
 
+def classify_constraint_stratum(anchored: Sequence[bool]) -> str:
+    """The constraint class of a cohort, from REALIZED fixed-token cardinalities.
+
+    Lives here, in the module that measures the bands, and is imported by the runtime rather than
+    restated: a second copy would let the class a band was calibrated under and the class a run
+    checks itself against drift apart, which is exactly the disagreement the check exists to catch.
+    """
+    flags = list(anchored)
+    if flags and all(flags):
+        return "anchored"
+    if any(flags):
+        return "mixed"
+    return "unconstrained"
+
+
 def build_constraint_bindings(
     *, protein_ids: Sequence[str], rows_by_protein: Mapping[str, Mapping[str, Any]],
     alphabet: Any, constraint_manifest: str | None,
@@ -154,13 +169,8 @@ def build_constraint_bindings(
             for anchor in constraint.hard_anchors
         }
 
-    anchored = [bool(fixed[protein_id]) for protein_id in ordered_ids]
-    if all(anchored):
-        stratum = "anchored"
-    elif any(anchored):
-        stratum = "mixed"
-    else:
-        stratum = "unconstrained"
+    stratum = classify_constraint_stratum(
+        [bool(fixed[protein_id]) for protein_id in ordered_ids])
     return ScanConstraintBindings(
         constraint_manifest_digest=str(manifest.manifest_hash),
         constraint_stratum_id=stratum,
