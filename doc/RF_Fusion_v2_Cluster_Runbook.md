@@ -280,6 +280,55 @@ frozen law. What may never be inherited is a **number**, not a grid.
 
 ---
 
+### 2.3 EXECUTED (2026-08-06, `d9c0938`) — `BLOCKED_AT_CALIBRATION`
+
+`B(r)` passed; the hotspot floor did not. Both proteins were run at the frozen law (64 completions,
+`min_definitive_feasible=48`, `per_protein_definitive_feasible_q90_higher`, grid 12–25,
+`raw_logit`). **No calibration artifact was written for either protein** — §2.1 step 4. The raw
+tables ARE written (every attempt, including failures) so the rate is recoverable.
+
+| | `5ZHV_B` (unconstrained) | `Q00511` (anchor24) |
+|---|---:|---:|
+| definitive feasible | **32/64 = 50.0%** | **19/64 = 29.7%** |
+| binding gate | `scTM_min=0.85` | `max_anchor_sidechain_RMSD_max=2.0` |
+| scTM median (native) | 0.8528 (0.9109) | 0.9568 (0.9764) — **64/64 pass** |
+| anchor RMSD median (native) | n/a | 2.386 (**1.791**) |
+| hard anchors preserved | n/a | 64/64 |
+
+The two failures have **different mechanisms** and neither is a wiring fault — Head, `N_H^whole`,
+the definitive structure gate and the anchored side-chain branch all produced sane values on all
+128 attempts:
+
+- **`5ZHV_B`**: the design scTM distribution is centred essentially ON the gate (median 0.8528 vs
+  floor 0.85), so it is cut in half by construction. The native reaches 0.9109, so the gate is not
+  unreachable for this backbone; de novo full-sequence completions simply sit ~0.06 scTM below it.
+- **`Q00511`**: backbone quality is excellent and **not** the constraint — every design passes
+  scTM, 45 of them are rejected by the anchor side-chain gate alone. The native's own worst anchor
+  side chain reconstructs at 1.791 Å under this identical protocol, leaving only **0.209 Å** of
+  headroom below the 2.0 Å band; design medians sit at 2.386 Å.
+
+**Why the conjunction fails.** `scTM_min=0.85` and `max_anchor_sidechain_RMSD_max=2.0` come from
+v0's `rf_refine_fusion_final_repair_beam.yaml`, calibrated for **WT-seeded local refine**, where
+side chains barely move. §2.1 step 1 requires **feedback-disabled backbone-only de novo
+completion**. The 48/64 floor is a V2 runbook number. No single one of the three is wrong; their
+conjunction has never been calibrated against the regime §2.1 actually specifies.
+
+Distance to the gate, as measurement only — **nothing here authorizes changing a frozen value**:
+
+| `5ZHV_B` scTM_min | 0.80 | 0.82 | 0.84 | **0.85** | 0.86 |
+|---|---:|---:|---:|---:|---:|
+| pass /64 | 58 | 50 | 39 | **32** | 26 |
+
+| `Q00511` anchor max | 2.0 | 2.2 | 2.5 | 2.8 | 3.0 |
+|---|---:|---:|---:|---:|---:|
+| pass /64 | **19** | 28 | 35 | 45 | 52 |
+
+Artifacts: `<WORK>/v2_canary/{bands/<PID>/{rho_step_scan.parquet,B_r.json},
+hotspot/<PID>/calibration_rows.parquet, references.json}`. Steps 3–5 are **not** authorized:
+`delta_new_cumulative` has no measured value, so no resolved config can load.
+
+---
+
 ## 3. Fill the Canary config
 
 The Canary campaign contains TWO proteins, so it needs TWO references even though each execution
