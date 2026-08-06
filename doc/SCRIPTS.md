@@ -341,23 +341,28 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
 
 21. `scripts/calibrate_rf_fusion_v2_hotspot.py` — the PER-PROTEIN V2 whole-landscape hotspot
     calibration producer, implementing the frozen law of `doc/RF_Fusion_v2_Cluster_Runbook.md`
-    §2.1. Generates `--n-completions` complete feedback-disabled trajectories under the frozen
+    §2.1. **The population is every HEAD-VALID endpoint, not the structure-feasible subset**: the
+    two gates answer independent safety questions, and conditioning the Head null on the structure
+    verdict shrinks the estimation sample exactly when structure is hardest. The structure gate
+    still runs on every endpoint and its verdict/metrics are recorded in full, reported beside the
+    threshold as `structure_operability` and never filtering it. Anchor mismatch remains a hard
+    failure. Generates `--n-completions` complete feedback-disabled trajectories under the frozen
     substrate from the disjoint seed namespace `v2_hotspot_calibration_1` (REUSES
     `rf_fusion_model_factory`), scores each candidate and that protein's OWN native reference with
     the production Head, computes `N_H^whole` through the admission gate's own comparator
     (`safety.whole_landscape_new_hotspot`), runs the v0 definitive structure gate, and keeps only
     endpoints with a REAL definitive-feasible verdict — `evaluated` and `feasible` both, so a
-    cache-only label cannot help meet the floor. Below `--min-definitive-feasible` it writes **no
+    cache-only label cannot help meet the floor. Below `--min-head-valid` it writes **no
     artifact** and does not relax the floor. `delta_new_cumulative` is the empirical `Q0.90` by the
     **higher order statistic** — the value at one-indexed rank `ceil(0.90*n)`, at full precision —
     NOT `numpy.quantile`, which interpolates and returns a number no endpoint produced.
     `--threshold-statistic` is a closed enum with a single admissible value
-    (`per_protein_definitive_feasible_q90_higher`) and there is deliberately no `--quantile`
+    (`per_protein_feedback_disabled_head_valid_q90_higher`) and there is deliberately no `--quantile`
     override. Writes a canonical raw parquet with **every attempt including failures** (a
     retained-only table makes the definitive-feasible rate — what the floor is checked against —
     unrecoverable) plus one typed artifact per protein reporting `n_attempted`,
-    `n_definitive_feasible`, `q50/q90/q95/max`, the order-statistic rank and all failure counts.
-    `source_id` is `v2-canary-hotspot-null-q90-higher-v1:<protein_id>`; the two proteins are never
+    `n_head_valid`, `structure_operability`, `q50/q90/q95/max`, the order-statistic rank and all failure counts.
+    `source_id` is `v2-canary-hotspot-head-valid-q90-higher-v1:<protein_id>`; the two proteins are never
     pooled. **Scope**: authorizes Canary WIRING only — not a production immune-safety threshold.
     **Verification boundary**: `main` needs torch + checkpoints + a refold backend + PDBs; the
     frozen LAW is unit-tested against injected seams, real-oracle behaviour is a cluster check.

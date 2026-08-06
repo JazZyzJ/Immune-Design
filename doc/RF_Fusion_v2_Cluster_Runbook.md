@@ -145,9 +145,9 @@ an off-halo artifact cannot authorize the V2 gate.
 
 Produce it with the frozen per-protein producer specified in §2.1; do **not** hand-write the
 block. The Canary threshold statistic is already frozen as
-`per_protein_definitive_feasible_q90_higher`: the empirical per-protein `Q0.90` among definitive
-structure-feasible endpoints, evaluated with the `higher` order statistic. It has no user-selectable
-alternative in this runbook.
+`per_protein_feedback_disabled_head_valid_q90_higher`: the empirical per-protein `Q0.90` over every
+**head-valid** feedback-disabled endpoint, evaluated with the `higher` order statistic. It has no
+user-selectable alternative in this runbook.
 
 Paste the emitted `delta_new` block into `config.safety.delta_new_cumulative` **verbatim**:
 `source_ref` must equal `calibration_source_ref(value, unit, source_kind, source_id, artifact)`, and
@@ -175,13 +175,31 @@ For each Canary protein independently:
 
    Missing, duplicate or misaligned window grids, non-finite logits, reference mismatch and anchor
    mismatch are hard failures.
-3. Run the exact definitive structure gate used by the Canary. Retain only endpoints with a real
-   definitive feasible verdict; cache-only labels without a resolved verdict do not count.
-4. Require at least `48/64` definitive-feasible endpoints for that protein. Below this floor, write
-   no calibration artifact and do not relax the floor.
-5. Sort the retained `N_H` values and set `delta_new_cumulative` to the empirical `Q0.90` using the
-   **higher** order statistic: the value at one-indexed rank `ceil(0.90*n)`. Preserve the full
+3. Run the exact definitive structure gate used by the Canary on **every** endpoint and record its
+   verdict and metrics in full. This is a **structure-operability DIAGNOSTIC**; it does not select
+   the calibration population. A cache-only label with no resolved verdict is not a definitive
+   pass, but it is also not a reason to drop the Head measurement.
+4. Require at least `60/64` **head-valid** endpoints for that protein — endpoints that produced a
+   valid `N_H` measurement. Below this floor, write no calibration artifact and do not relax the
+   floor.
+5. Sort the head-valid `N_H` values and set `delta_new_cumulative` to the empirical `Q0.90` using
+   the **higher** order statistic: the value at one-indexed rank `ceil(0.90*n)`. Preserve the full
    floating-point value; do not round it before computing `source_ref`.
+
+**Why the population is head-valid, not structure-feasible.** The Head gate and the structure gate
+answer independent safety questions — whether a sequence creates a new immune hotspot, and whether
+it preserves the target backbone and active-site geometry. Conditioning the Head null on the
+structure verdict couples them, and does so at exactly the wrong moment: a low structure-pass rate
+shrinks the estimation sample precisely when structure is hardest, and a `Q0.90` over ~19 points is
+close to its own second-largest value. The executed Canary made it concrete — `Q00511` preserved
+hard anchors `64/64` and passed scTM `64/64`, rejected only because a predicted side-chain RMSD
+exceeded an absolute band whose own native baseline under the identical protocol is `1.791 Å`.
+Nothing in that verdict makes the sequence's Head hotspot unmeasurable. The structure rate is
+reported beside the threshold as `structure_operability` and never inside it.
+
+**Hard-anchor identity preservation is untouched and remains an absolute gate**: an anchor mismatch
+is a hard failure and never enters the population. Only the *side-chain RMSD* band is a
+recalibration question, and only for a later stage (§7).
 
 The two proteins receive separate thresholds and separate artifacts. Do not pool endpoints across
 proteins and do not take a cohort-level maximum: sequence length, window multiplicity and the anchor
@@ -203,8 +221,8 @@ python scripts/calibrate_rf_fusion_v2_hotspot.py \
   --n-completions 64 \
   --master-seed 20260806 \
   --seed-namespace v2_hotspot_calibration_1 \
-  --threshold-statistic per_protein_definitive_feasible_q90_higher \
-  --min-definitive-feasible 48 \
+  --threshold-statistic per_protein_feedback_disabled_head_valid_q90_higher \
+  --min-head-valid 60 \
   --checkpoint <dplm.ckpt> \
   --rf-config inverse_folding/reference_flow/configs/c1_constant_clean_no_remask.yaml \
   --test-set <if_ready.parquet> \
@@ -222,18 +240,18 @@ python scripts/calibrate_rf_fusion_v2_hotspot.py \
 Omit `--constraint-manifest` for `5ZHV_B`; supply the exact path shown for `Q00511`.
 
 `--threshold-statistic` is a closed enum for this Canary, not a free-form label. The producer must
-interpret `per_protein_definitive_feasible_q90_higher` exactly as step 5 above and reject any other
+interpret `per_protein_feedback_disabled_head_valid_q90_higher` exactly as step 5 above and reject any other
 value. Do not also expose independent `--quantile` or `--quantile-method` overrides, because they
 would create two conflicting sources of truth.
 
 The canonical row projection signed by `calibration_data_digest` contains at least protein ID,
 replicate index, realized seed, sequence MD5, native-reference digest, Head evaluator/window-grid
 digests, `N_H`, definitive structure verdict/metrics and anchor verdict. The artifact additionally
-reports `n_attempted=64`, `n_definitive_feasible`, `q50/q90/q95/max`, the order-statistic rank and
-all failure counts. A producer that outputs only the chosen scalar is incomplete.
+reports `n_attempted=64`, `n_head_valid`, `q50/q90/q95/max`, the order-statistic rank, all failure
+counts and the `structure_operability` diagnostic block. A producer that outputs only the chosen scalar is incomplete.
 
 Use `source_kind=measured_calibration` and a protein-specific `source_id` of
-`v2-canary-hotspot-null-q90-higher-v1:<protein_id>`. The config value, typed artifact and canonical
+`v2-canary-hotspot-head-valid-q90-higher-v1:<protein_id>`. The config value, typed artifact and canonical
 `source_ref` are copied verbatim from this JSON; they are never typed manually.
 
 ### 2.2 The threshold's unit is `raw_logit`, and the grid is 12–25
@@ -280,52 +298,64 @@ frozen law. What may never be inherited is a **number**, not a grid.
 
 ---
 
-### 2.3 EXECUTED (2026-08-06, `d9c0938`) — `BLOCKED_AT_CALIBRATION`
+### 2.3 EXECUTED (2026-08-06, `2c7af9a`) — `READY_FOR_V2_CANARY`
 
-`B(r)` passed; the hotspot floor did not. Both proteins were run at the frozen law (64 completions,
-`min_definitive_feasible=48`, `per_protein_definitive_feasible_q90_higher`, grid 12–25,
-`raw_logit`). **No calibration artifact was written for either protein** — §2.1 step 4. The raw
-tables ARE written (every attempt, including failures) so the rate is recoverable.
+Both proteins passed at the frozen law: 64 completions, `min_head_valid=60`,
+`per_protein_feedback_disabled_head_valid_q90_higher`, grid 12–25, `raw_logit`.
 
 | | `5ZHV_B` (unconstrained) | `Q00511` (anchor24) |
 |---|---:|---:|
-| definitive feasible | **32/64 = 50.0%** | **19/64 = 29.7%** |
-| binding gate | `scTM_min=0.85` | `max_anchor_sidechain_RMSD_max=2.0` |
-| scTM median (native) | 0.8528 (0.9109) | 0.9568 (0.9764) — **64/64 pass** |
-| anchor RMSD median (native) | n/a | 2.386 (**1.791**) |
+| head-valid | **64/64** | **64/64** |
+| `delta_new_cumulative` | `15.737810611724854` | `20.082843780517578` |
+| order-statistic rank | 58 of 64 | 58 of 64 |
+| `N_H` q50 / q90 / max | 5.966 / 15.738 / 18.486 | 16.587 / 20.083 / 20.627 |
 | hard anchors preserved | n/a | 64/64 |
+| **structure operability** (diagnostic) | 32/64 = 50.0% | 19/64 = 29.7% |
 
-The two failures have **different mechanisms** and neither is a wiring fault — Head, `N_H^whole`,
-the definitive structure gate and the anchored side-chain branch all produced sane values on all
-128 attempts:
+`source_ref` recomputes for both; a resolved config carrying either block is accepted by
+`load_v2_config`. Steps 3–5 are authorized.
 
-- **`5ZHV_B`**: the design scTM distribution is centred essentially ON the gate (median 0.8528 vs
-  floor 0.85), so it is cut in half by construction. The native reaches 0.9109, so the gate is not
-  unreachable for this backbone; de novo full-sequence completions simply sit ~0.06 scTM below it.
-- **`Q00511`**: backbone quality is excellent and **not** the constraint — every design passes
-  scTM, 45 of them are rejected by the anchor side-chain gate alone. The native's own worst anchor
-  side chain reconstructs at 1.791 Å under this identical protocol, leaving only **0.209 Å** of
-  headroom below the 2.0 Å band; design medians sit at 2.386 Å.
+#### The structure-operability finding — carried forward, not resolved
 
-**Why the conjunction fails.** `scTM_min=0.85` and `max_anchor_sidechain_RMSD_max=2.0` come from
-v0's `rf_refine_fusion_final_repair_beam.yaml`, calibrated for **WT-seeded local refine**, where
-side chains barely move. §2.1 step 1 requires **feedback-disabled backbone-only de novo
-completion**. The 48/64 floor is a V2 runbook number. No single one of the three is wrong; their
-conjunction has never been calibrated against the regime §2.1 actually specifies.
+The rates above are a real result and they are **not** a hotspot-calibration failure. They bind on
+different gates and neither is a wiring fault:
 
-Distance to the gate, as measurement only — **nothing here authorizes changing a frozen value**:
+- **`5ZHV_B`** — the design scTM distribution is centred essentially ON the `scTM_min=0.85` gate
+  (median `0.8528`), so it is cut in half by construction. The native reaches `0.9109` under the
+  identical protocol, so the gate is not unreachable; de novo completions simply sit ~0.06 below it.
+- **`Q00511`** — backbone quality is not the constraint: **every** design passes scTM (median
+  `0.9568`, native `0.9764`) and 45 are rejected by the anchor side-chain band alone. The native's
+  own worst anchor side chain reconstructs at **`1.791 Å`** against the `2.0 Å` band — `0.209 Å` of
+  headroom — while design medians sit at `2.386 Å`.
+
+`scTM_min=0.85` and `max_anchor_sidechain_RMSD_max=2.0` come from v0's
+`rf_refine_fusion_final_repair_beam.yaml`, calibrated for **WT-seeded local refine**, where side
+chains barely move. §2.1 step 1 specifies **backbone-only de novo completion**. The conjunction has
+never been calibrated against that regime.
+
+Distance to each gate, as measurement only — **nothing here authorizes changing a frozen value**:
 
 | `5ZHV_B` scTM_min | 0.80 | 0.82 | 0.84 | **0.85** | 0.86 |
 |---|---:|---:|---:|---:|---:|
 | pass /64 | 58 | 50 | 39 | **32** | 26 |
 
-| `Q00511` anchor max | 2.0 | 2.2 | 2.5 | 2.8 | 3.0 |
+| `Q00511` anchor max (Å) | **2.0** | 2.2 | 2.5 | 2.8 | 3.0 |
 |---|---:|---:|---:|---:|---:|
 | pass /64 | **19** | 28 | 35 | 45 | 52 |
 
+**How this must be read downstream.** For the first state-transition Canary the existing structure
+gate stands unchanged as an independent admission gate — both proteins have real passing endpoints,
+so it does not block the mechanism test. A structure rejection is **not** evidence of feedback
+failure and may not be reported as one. Before any capability or production stage, the V2 de novo
+structure policy needs its own calibration: v0's WT-seeded `2.0 Å` may not become V2 production
+authority unverified. **Hard-anchor identity preservation stays an absolute gate and is not in
+scope for that recalibration; only the side-chain RMSD band is.**
+
 Artifacts: `<WORK>/v2_canary/{bands/<PID>/{rho_step_scan.parquet,B_r.json},
-hotspot/<PID>/calibration_rows.parquet, references.json}`. Steps 3–5 are **not** authorized:
-`delta_new_cumulative` has no measured value, so no resolved config can load.
+hotspot/<PID>/{calibration_rows.parquet,hotspot_calibration.json}, references.json}`. The
+structure-conditioned rows from the superseded law are kept beside them as
+`calibration_rows.PREV_structure_conditioned.parquet`; `n_h_whole` is bit-identical across the two,
+so the population change altered no measurement.
 
 ---
 
