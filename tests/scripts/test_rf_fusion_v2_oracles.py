@@ -403,7 +403,7 @@ class _Scorer:
     """An ``OnlineHeadScorer``-shaped stand-in: the fields ``ProductionHeadOracle`` reads."""
 
     allele, score_scale = "DRB1_0701", "raw_logit"
-    window_k_min, window_k_max = 13, 25
+    window_k_min, window_k_max = 12, 25
     head_config_hash, head_checkpoint_digest = "a" * 64, "b" * 64
 
     def __init__(self, md5_override=None):
@@ -427,7 +427,7 @@ class _Scorer:
 def _oracle(scorer=None, **over):
     from scripts.rf_fusion_v2_oracles import ProductionHeadOracle
 
-    kw = dict(allele="DRB1_0701", score_scale="raw_logit", window_k_min=13, window_k_max=25)
+    kw = dict(allele="DRB1_0701", score_scale="raw_logit", window_k_min=12, window_k_max=25)
     kw.update(over)
     return ProductionHeadOracle(scorer or _Scorer(), **kw)
 
@@ -443,7 +443,7 @@ def _request(protein_id="5ZHV_B", sequence="ACDEFGHIKLMNPQRSTVWY"):
 def test_the_head_identity_is_read_off_the_scorer_that_actually_scored():
     identity = _oracle().evaluator_identity()
     assert (identity.allele, identity.score_scale) == ("DRB1_0701", "raw_logit")
-    assert (identity.window_k_min, identity.window_k_max) == (13, 25)
+    assert (identity.window_k_min, identity.window_k_max) == (12, 25)
     assert identity.head_config_hash == "a" * 64
     assert identity.head_checkpoint_digest == "b" * 64
 
@@ -453,8 +453,12 @@ def test_a_scorer_whose_domain_differs_from_the_declared_one_is_refused_by_field
     after the checkpoints are resident.  Refusing here names the field instead."""
     with pytest.raises(V2OracleError, match="score_scale: declared 'nats' != realized 'raw_logit'"):
         _oracle(score_scale="nats")
+    # 13 against the Head's real 12: this check compares the run's DECLARED domain to the scorer's
+    # recorded one.  It is not the check that catches a domain the Head cannot emit -- the scorer
+    # records whatever it was constructed with, so that one has to compare against the windows
+    # actually returned (`calibrate_rf_fusion_v2_hotspot._assert_declared_window_domain`).
     with pytest.raises(V2OracleError, match="window_k_min"):
-        _oracle(window_k_min=12)
+        _oracle(window_k_min=13)
 
 
 def test_each_result_carries_the_binding_the_runtime_matches_results_by():
@@ -533,7 +537,7 @@ def _structure_oracle(**over):
     kw = dict(structure_config=V0_STRUCTURE_CONFIG, head_config_dir="/nx/cfg",
               head_checkpoint="/nx/head.pt", test_set_parquet="/nx/t.parquet",
               pdb_root="/nx/pdbs", refold_cache_dir="/nx/refold", allele="DRB1_0701",
-              score_scale="raw_logit", window_k_min=13, window_k_max=25, head_variant_id="LC1")
+              score_scale="raw_logit", window_k_min=12, window_k_max=25, head_variant_id="LC1")
     kw.update(over)
     with pytest.raises(V2OracleError, match="closure"):
         # The fake head_fn closes over no scorer, so the Head half refuses -- which is itself the
@@ -555,7 +559,7 @@ def _structure_only(build_oracles, **over):
     kw = dict(structure_config=V0_STRUCTURE_CONFIG, head_config_dir="/nx/cfg",
               head_checkpoint="/nx/head.pt", test_set_parquet="/nx/t.parquet",
               pdb_root="/nx/pdbs", refold_cache_dir="/nx/refold", allele="DRB1_0701",
-              score_scale="raw_logit", window_k_min=13, window_k_max=25, head_variant_id="LC1",
+              score_scale="raw_logit", window_k_min=12, window_k_max=25, head_variant_id="LC1",
               build_oracles=wrapped)
     kw.update(over)
     return build_production_oracles(**kw)[1]

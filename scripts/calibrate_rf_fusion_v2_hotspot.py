@@ -84,6 +84,22 @@ class V2HotspotCalibrationError(V2Error):
     """The calibration could not be produced under the frozen law."""
 
 
+class V2HotspotFloorNotMet(V2HotspotCalibrationError):
+    """Too few endpoints reached a definitive feasible verdict.
+
+    Carries the rows so the caller can still persist them.  §2.1's "write no calibration artifact"
+    withholds the THRESHOLD, not the evidence: the raw table is the only place the
+    definitive-feasible rate and the per-kind failure counts survive, and the floor is checked
+    against exactly that rate -- so discarding the table at the moment it fails is discarding the
+    one record that says WHY.
+    """
+
+    def __init__(self, message: str, *, rows, failures) -> None:
+        super().__init__(message)
+        self.rows = list(rows)
+        self.failures = dict(failures)
+
+
 # --------------------------------------------------------------------------------------------
 # the frozen statistic
 # --------------------------------------------------------------------------------------------
@@ -215,12 +231,44 @@ def _generate_completion(*, model, protein_id: str, seed: int) -> str:
         residue_token_ids=model.aa_token_ids, fixed_tokens=model.fixed_tokens(protein_id),
     )
     del prepared
-    return decode_tokens_to_aa(output.tokens, model.alphabet)
+    # ``id_to_aa``, not ``alphabet``: that is the mapping ``PreparedModel`` actually carries, and
+    # it is the same one the V1 entry path decodes through.
+    return decode_tokens_to_aa(output.tokens, model.id_to_aa)
 
 
 # --------------------------------------------------------------------------------------------
 # the measurement
 # --------------------------------------------------------------------------------------------
+
+
+def _assert_declared_window_domain(score: Any, head_identity: Any, *, protein_id: str) -> None:
+    """Check the DECLARED window domain against the one the Head actually emits, on row zero.
+
+    The declared ``window_k_min/max`` are metadata: ``OnlineHeadScorer`` stores them and echoes
+    them into its cache identity, but the window grid comes from the Head's own inference config,
+    so passing a narrower domain does not narrow anything -- it only makes
+    ``whole_landscape_new_hotspot`` reject every window outside it.  A mismatch is therefore not a
+    flaky failure but a guaranteed 0-of-N, and without this it is discovered one endpoint at a time
+    after a GPU allocation has been paid for.  Checked once, on the reference, before any
+    completion is drawn.
+    """
+    observed = sorted({int(window.k) for window in getattr(score, "windows", ()) or ()})
+    if not observed:
+        raise V2HotspotCalibrationError(
+            f"{protein_id}: the Head returned no windows for the reference; N_H^whole is a maximum "
+            "over the window grid, and an empty grid makes it vacuous"
+        )
+    low, high = int(head_identity.window_k_min), int(head_identity.window_k_max)
+    stray = [k for k in observed if not low <= k <= high]
+    if stray:
+        raise V2HotspotCalibrationError(
+            f"{protein_id}: the run declares window domain [{low}, {high}] but the frozen Head "
+            f"emits k in [{observed[0]}, {observed[-1]}] (outside: {stray}).  The declared bounds "
+            "are metadata -- the grid comes from the Head's inference config -- so this would "
+            "reject EVERY endpoint, not some of them.  Declare the domain the evaluator actually "
+            "has, or change the evaluator; do not narrow the declaration and call the result a "
+            "calibration over the narrower grid"
+        )
 
 
 def _definitive_feasible(outcome: Any) -> bool:
@@ -249,6 +297,7 @@ def calibrate_protein(
     )
 
     reference_score = _score_one(seams["head_scorer"], protein_id, reference_sequence)
+    _assert_declared_window_domain(reference_score, head_identity, protein_id=protein_id)
     binding_id = f"ref:calib:{protein_id}:{reference_digest[:12]}"
 
     rows: list[dict] = []
@@ -275,7 +324,7 @@ def calibrate_protein(
         row["sequence_md5"] = sequence_md5(sequence)
 
         anchors = model.fixed_tokens(protein_id) or {}
-        alphabet = model.alphabet
+        alphabet = model.id_to_aa
         anchor_ok = all(alphabet.get(int(token)) == sequence[int(position)]
                         for position, token in anchors.items())
         row["anchor_verdict"] = bool(anchor_ok)
@@ -310,11 +359,17 @@ def calibrate_protein(
 
     retained = [row["n_h_whole"] for row in rows if row["status"] == "retained"]
     if len(retained) < int(min_definitive_feasible):
-        raise V2HotspotCalibrationError(
+        by_status = {}
+        for row in rows:
+            by_status[row["status"]] = by_status.get(row["status"], 0) + 1
+        raise V2HotspotFloorNotMet(
             f"{protein_id}: only {len(retained)} of {n_completions} endpoints reached a definitive "
             f"feasible verdict, below the frozen floor of {min_definitive_feasible}.  Runbook §2.1: "
             "write no calibration artifact and do not relax the floor -- a threshold measured on a "
-            "thin, structure-selected tail is not the null distribution it claims to be"
+            "thin, structure-selected tail is not the null distribution it claims to be.  "
+            f"status counts: {dict(sorted(by_status.items()))}; failure counts: "
+            f"{dict(sorted(failures.items()))}",
+            rows=rows, failures=failures,
         )
     summary = summarize(retained)
     summary.update({"n_attempted": int(n_completions),
@@ -444,6 +499,15 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
             reference_sequence=reference_sequence, reference_digest=reference_digest,
             head_identity=head_identity, model=model, seams=resolved,
         )
+    except V2HotspotFloorNotMet as exc:
+        # The THRESHOLD is withheld; the EVIDENCE is not.  Without this the only record of why the
+        # floor was missed is a one-line stderr message, and a below-floor run -- the case that most
+        # needs diagnosing -- would be the one case that leaves nothing to diagnose.
+        _write_rows(args.out_rows, exc.rows)
+        print(f"calibration refused: {exc}", file=sys.stderr)
+        print(f"[calibrate_rf_fusion_v2_hotspot] no artifact written; the {len(exc.rows)} attempted "
+              f"row(s) are in {args.out_rows} so the failure is diagnosable", file=sys.stderr)
+        return 2
     except V2HotspotCalibrationError as exc:
         print(f"calibration refused: {exc}", file=sys.stderr)
         return 2

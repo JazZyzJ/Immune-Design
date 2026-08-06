@@ -236,7 +236,7 @@ Use `source_kind=measured_calibration` and a protein-specific `source_id` of
 `v2-canary-hotspot-null-q90-higher-v1:<protein_id>`. The config value, typed artifact and canonical
 `source_ref` are copied verbatim from this JSON; they are never typed manually.
 
-### 2.2 The threshold's unit is `raw_logit`, and the grid is 13–25
+### 2.2 The threshold's unit is `raw_logit`, and the grid is 12–25
 
 **`score_scale: raw_logit`, not `nats`.** The frozen Head emits UNCALIBRATED classifier logits.
 Absent an explicit log-probability/calibration transform, calling them nats is scientifically
@@ -263,10 +263,20 @@ requires `delta_new_cumulative.unit == head.score_scale` — so a block edited o
 outright and a block edited on both no longer matches its own digest. The threshold has to be
 re-measured on the Head that will enforce it.
 
-**One window grid everywhere.** `window_k_min=13`, `window_k_max=25` for the V2 calibration, the
-reference scoring and the Canary alike. `N_H^whole` is a maximum over the windows these bounds
-define, so a threshold measured on V1's 12–25 grid does not bound designs scored on this one and
-may not be inherited.
+**One window grid everywhere: `window_k_min=12`, `window_k_max=25`** — the V2 calibration, the
+reference scoring and the Canary alike.
+
+12 is not a preference, it is what the frozen Head emits: `epitope_head/configs/inference.yaml`
+declares `min_k: 12, max_k: 25`, and the window grid comes from the Head's own predictor.
+`window_k_min/max` are **metadata** — `OnlineHeadScorer` stores them and echoes them into its cache
+identity, but never enumerates or filters on them. So a narrower declaration does not narrow the
+grid; it makes `whole_landscape_new_hotspot` reject every window outside it, i.e. **every
+endpoint**. A declared `13` is a guaranteed 0-of-N on every protein, not a flaky failure — it cost
+one smoke allocation to find, and `calibrate_rf_fusion_v2_hotspot` now checks the declared domain
+against the reference's realized windows before drawing a single completion.
+
+Sharing V1's grid inherits no threshold: the V2 value is re-measured from scratch under §2.1's
+frozen law. What may never be inherited is a **number**, not a grid.
 
 ---
 

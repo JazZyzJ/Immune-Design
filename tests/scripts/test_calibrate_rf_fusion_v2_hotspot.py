@@ -150,12 +150,43 @@ class _Scorer:
             global_risk=z)
 
 
+#: Every attribute the producer reads off the model factory's ``PreparedModel``.  Named once so
+#: :func:`test_the_fake_model_matches_the_real_prepared_model_surface` can check the fake against
+#: the real class -- the fake previously called the residue map ``alphabet`` while ``PreparedModel``
+#: calls it ``id_to_aa``, so the suite and production were wrong in exactly the same way and the
+#: tests could not see it.  It cost a cluster allocation to find.
+MODEL_SURFACE = ("id_to_aa", "aa_token_ids", "rf_config", "sampler", "fixed_tokens",
+                 "backbone_and_denoiser", "sequence_length", "null_h_values")
+
+
 class _Model:
-    alphabet = {i: c for i, c in enumerate(AA)}
+    id_to_aa = {i: c for i, c in enumerate(AA)}
     aa_token_ids = frozenset(range(len(AA)))
 
     def fixed_tokens(self, protein_id):
         return None
+
+
+def test_the_fake_model_matches_the_real_prepared_model_surface():
+    """A fake that renames a real attribute makes the suite agree with the bug."""
+    from scripts.rf_fusion_model_factory import PreparedModel
+
+    missing = [name for name in MODEL_SURFACE if not hasattr(PreparedModel, name)
+               and name not in getattr(PreparedModel, "__annotations__", {})]
+    assert not missing, f"the producer reads {missing}, which PreparedModel does not carry"
+
+
+def test_the_generator_decodes_through_the_map_prepared_model_actually_carries():
+    """REGRESSION. `_generate_completion` ended in `decode_tokens_to_aa(tokens, model.alphabet)`.
+    The sampler ran all 100 steps fine and the attempt died on the LAST line, so every replicate
+    became `generation_failed` -- 0/4 on both Canary proteins."""
+    import inspect
+
+    from scripts.calibrate_rf_fusion_v2_hotspot import _generate_completion
+
+    src = inspect.getsource(_generate_completion)
+    assert "model.id_to_aa" in src
+    assert "model.alphabet" not in src
 
 
 def _seams(*, n_ok=64, structure_ok=None):
@@ -386,6 +417,28 @@ def test_a_run_below_the_floor_writes_no_artifact(tmp_path):
     )
     assert main(_argv(tmp_path), seams=seams) == 2
     assert not (tmp_path / "calib.json").exists()
+    # ...but the EVIDENCE survives.  "Write no calibration artifact" withholds the threshold, not
+    # the raw table: the definitive-feasible rate the floor is checked against lives only there, so
+    # discarding it at the moment the floor fails discards the one record that says why.
+    import pandas as pd
+
+    rows = pd.read_parquet(tmp_path / "rows.parquet")
+    assert len(rows) == 64, "every attempt is a row, including the rejected ones"
+    assert set(rows["status"]) - {"retained"}, "the failing statuses must be recoverable"
+
+
+def test_the_refusal_message_names_the_failure_kinds(capsys, tmp_path):
+    """A below-floor run whose only record is `only N of M` is undiagnosable without a re-run."""
+    fake = _seams(structure_ok=lambda sequence: False)
+    seams = CalibrationSeams(
+        build_model_factory=lambda **_: _Model(),
+        generate_completion=fake["generate_completion"], derive_seed=fake["derive_seed"],
+        build_production_oracles=lambda **_: (fake["head_scorer"], fake["structure_gate"]),
+    )
+    assert main(_argv(tmp_path), seams=seams) == 2
+    err = capsys.readouterr().err
+    assert "status counts" in err and "not_definitive_feasible" in err
+    assert "failure counts" in err and "structure" in err
 
 
 # --------------------------------------------------------------------------------------------
@@ -472,7 +525,11 @@ def test_the_shipped_canary_template_declares_the_unit_the_head_emits():
 
 
 def test_the_template_grid_is_the_one_the_v2_calibration_must_use():
-    """13-25, and V1's 12-25 threshold may not be inherited onto it."""
+    """12-25 -- the domain the frozen Head's inference config actually emits.
+
+    Declaring a narrower one does not narrow the grid: `window_k_min/max` are metadata and the
+    windows come from the Head, so a narrower declaration rejects every endpoint instead. Using
+    V1's grid inherits no THRESHOLD: the V2 value is re-measured under §2.1's frozen law."""
     import pathlib
 
     import yaml
@@ -480,6 +537,37 @@ def test_the_template_grid_is_the_one_the_v2_calibration_must_use():
     template = yaml.safe_load((pathlib.Path(__file__).resolve().parents[2]
                                / "inverse_folding/reference_flow/configs"
                                / "v2_canary_state_transition.yaml").read_text())
-    assert (template["head"]["window_k_min"], template["head"]["window_k_max"]) == (13, 25)
+    assert (template["head"]["window_k_min"], template["head"]["window_k_max"]) == (12, 25)
     artifact = template["safety"]["delta_new_cumulative"]["artifact"]
-    assert (artifact["window_k_min"], artifact["window_k_max"]) == (13, 25)
+    assert (artifact["window_k_min"], artifact["window_k_max"]) == (12, 25)
+
+
+def test_a_declared_window_domain_the_head_does_not_have_fails_before_any_completion():
+    """REGRESSION.  The run declared [13,25]; the frozen Head's inference config emits k=12..25, and
+    `window_k_min/max` are METADATA -- the scorer stores them and never filters on them.  So the
+    narrower declaration rejected every endpoint, one at a time, after the allocation was paid.
+    64 identical `head_failed` rows is not a measurement; it is a declaration error."""
+    class _K12(_Scorer):
+        def _one(self, protein_id, sequence):
+            score = super()._one(protein_id, sequence)
+            score.windows = score.windows + (
+                types.SimpleNamespace(start_0b=0, end_0b=12, k=12, z=0.0),)
+            return score
+
+    seams = _seams()
+    seams["head_scorer"] = _K12()
+    with pytest.raises(V2HotspotCalibrationError, match=r"emits k in \[4, 12\]"):
+        _run_law(seams=seams)
+
+
+def test_an_empty_window_grid_is_refused_rather_than_scored():
+    class _NoWindows(_Scorer):
+        def _one(self, protein_id, sequence):
+            score = super()._one(protein_id, sequence)
+            score.windows = ()
+            return score
+
+    seams = _seams()
+    seams["head_scorer"] = _NoWindows()
+    with pytest.raises(V2HotspotCalibrationError, match="no windows"):
+        _run_law(seams=seams)

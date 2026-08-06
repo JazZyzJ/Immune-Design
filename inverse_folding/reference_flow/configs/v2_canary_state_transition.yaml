@@ -107,11 +107,17 @@ head:
   # refuses anything but raw_logit, so a `nats` declaration fails closed at
   # `bind_admission_policy`'s Head-domain check rather than silently mislabelling the threshold.
   score_scale: raw_logit
-  # One grid for EVERYTHING: V2 calibration, reference scoring and the Canary.  N_H^whole is a
-  # maximum over the windows these bounds define, so no threshold calibrated on V1's 12-25 grid
-  # may be inherited here.
+  # 12-25 is the domain the frozen Head ACTUALLY emits (`epitope_head/configs/inference.yaml`:
+  # min_k 12, max_k 25).  These bounds are metadata: `OnlineHeadScorer` stores them and echoes them
+  # into its cache identity but never enumerates or filters on them, so declaring a narrower domain
+  # does not narrow the grid -- it makes `whole_landscape_new_hotspot` reject EVERY endpoint.  A
+  # declared 13 produced 0-of-N on both Canary proteins.
+  #
+  # One grid for EVERYTHING: V2 calibration, reference scoring and the Canary.  Sharing V1's grid
+  # inherits no THRESHOLD -- the V2 value is re-measured from scratch under runbook §2.1's frozen
+  # law; what may never be inherited is a NUMBER.
   window_k_max: 25
-  window_k_min: 13
+  window_k_min: 12
 identity:
   campaign_id: v2-canary-2026Q3
   code_revision: REPLACE_WITH_GIT_SHA
@@ -148,7 +154,7 @@ safety:
       score_scale: raw_logit
       window_domain: whole_landscape
       window_k_max: 25
-      window_k_min: 13
+      window_k_min: 12
     source_id: REPLACE_from_calibration_json
     source_kind: measured_calibration
     source_ref: REPLACE_canonical_digest
