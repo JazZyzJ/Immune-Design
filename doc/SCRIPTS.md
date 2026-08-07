@@ -433,6 +433,71 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     is 1: PLAN §8.4 keeps production `D>1` launch-disabled. Procedure:
     `doc/RF_Fusion_v2_Cluster_Runbook.md`.
 
+22. `scripts/materialize_v2_canary_config.py` — resolves ONE Canary cell from the template above
+    plus that cell's measured artifacts (runbook §3). Required flags name the cell
+    (`--protein-id`, `--r-step`, `--stratum-key`), the artifacts (`--band-json`, `--hotspot-json`,
+    `--reference-manifest`, `--stratum-manifest`, `--reference-sequence`) and every content-role
+    path; `--constraint-manifest` is the one optional, and OMITTING it is what declares an
+    unconstrained cell. It fills `identity.code_revision`, the single schedule point's
+    `r_step`/`band_key`, and `safety.delta_new_cumulative` copied VERBATIM out of the hotspot
+    artifact, then binds all eighteen PLAN §5.2 roles. Three roles are frozen because no file
+    sha256 can express them: `head_config` is the three-YAML rolling hash (imported from
+    `run_if_phase_c1`, not re-implemented), `schedule_band_calibration` is the TABLE's
+    `calibration_content_digest` rather than the band file's sha256, and an unconstrained cell's
+    `constraint_manifest`/`fixed_token_policy` carry `rho_maturity_scan`'s typed-ABSENCE digest —
+    the same number that protein's own `B(r)` artifact already records, so the run's conditioning
+    and the band agree rather than the config being silent about constraints. `structure_backend`
+    binds the structure model's weight FILE, whose bytes are the backend. Three refusals: a hotspot
+    artifact measured under a different Head 4-tuple, a band with no cell at
+    `(r_step, stratum_key)` (`lookup_band` never interpolates, so this would be a typed null after
+    the GPU time), and any surviving `REPLACE_*`. It writes the config, LOADS it back through
+    `load_v2_config_file`, and emits `<out>.args.sh` — the driver's exact
+    `INPUT_FILES`/`SHARD_INPUTS` vectors, `source`-able from SLURM — because those vectors must
+    agree with the frozen/runtime declaration the same script just made, and two hands maintaining
+    that agreement is how it drifts.
+
+25. `scripts/preflight_v2_canary_assembly.py` — the gate `--dry-run` cannot be.
+    `run_rf_fusion_v2.py --dry-run` deliberately loads no model, so it returns BEFORE
+    `build_v2_oracles`, which is where the launch-blocking faults actually live: four consecutive
+    cluster attempts died there, each after the allocation and the 3 GB checkpoint load were paid
+    for (`complete_reference_sequence` bound to the manifest instead of the cell's `.seq` →
+    `ReferenceRebindAttempt`; `alphabet=model.alphabet`, which `PreparedModel` calls `id_to_aa`; an
+    anchored cell's runtime-bound `fixed_token_policy` missing from the shard inputs). All three are
+    decidable on a login node in seconds. `--cell CONFIG=PROTEIN_ID` (repeatable) runs the real
+    chain: band load under the config's declared content digest, realized constraint class vs the
+    band's stratum, `lookup_band` admitting a non-empty envelope at this `r_step`, reference
+    resolution and depth-0 safety BINDING, admission policy + safety gate, the support policy's
+    identity against the declaration and its `policy_spec_digest` against the
+    `projection_policy_spec` role, and all eighteen content roles resolving through the launcher's
+    OWN `SHARD_INPUTS` vector (parsed out of `<CELL>.args.sh`, so it checks what will run). The two
+    torch builds are stubbed — stated in the module docstring — but the stub's attribute surface is
+    checked by AST against the real `PreparedModel`, so it cannot pass by defining a name the real
+    class lacks, which is exactly how the earlier fakes agreed with the bug. Exit `0` only if every
+    cell passes.
+
+24. `scripts/analysis/read_v2_canary.py` — applies runbook §6's checks to one or more Canary
+    bundles (`--bundle <RUN>/v2_canary/<CELL> ...`, optional `--json-out`) and reads NOTHING else.
+    Nine verdicts: a `committed` outcome exists per protein; every hard anchor survives into every
+    endpoint (anchors read off the STATES, so a manifest that never reached the sampler cannot pass
+    by agreeing with itself); replay hashes present and fork seeds distinct; the
+    source → endpoint → projected → propagated chain closes on IDs that exist; and assimilation as
+    FOUR separate checks — `pending_assimilation` with a NULL score at projection, `assimilated`
+    with a finite one after the first propagation, every temporary-protection grant expiring at
+    `c_{d+1}` exactly, and the endpoint's own `evidence_logprob` never equal to an active sampler
+    score (which would make the reopen signal circular — the one failure that still looks like a
+    working Canary); plus the ledger (events present, `physical_cost_complete`, no breached
+    realized cap). It REFUSES to compute a Head-score contrast and instead reports
+    `a2_matched_extra_lookaheads`, the quantity whose being zero is why no contrast is licensed.
+    Exit `0` only if every check passes on every cell.
+
+23. `scripts/submit_rf_fusion_v2_canary.slurm` — one Canary CELL per job (runbook §5).
+    `CELL={5zhv_r30|5zhv_r40|q00511_r30|q00511_r40}` is the only required variable; the job sources
+    that cell's `<CELL>.args.sh` and adds only what belongs to the JOB rather than the cell
+    (`journal_dir`, `device`). `rtx6000` + `CONDA_ENV=immune-design-blackwell` (sm_120), which is
+    the env the `B(r)` scan and the hotspot calibration also ran under — a different stack would
+    score the Canary against a threshold measured on another one. Echoes the driver's exit code as
+    `EXIT=<rc>`.
+
 18. `scripts/run_rf_fusion_v2.py` — the V2 production driver. `--v2-config`, `--out-dir`,
     `--cohort`, `--input-file ROLE=PATH` (repeatable), `--shard-input NAME=PATH` (repeatable;
     the runtime paths handed to the execution stage — a bare path or a repeated name is refused,

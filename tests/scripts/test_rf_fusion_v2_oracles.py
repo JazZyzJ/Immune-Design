@@ -288,6 +288,99 @@ def test_a_single_sequence_file_is_refused_as_a_cohort_reference(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
+# the factory reads attributes that PreparedModel actually carries
+# --------------------------------------------------------------------------------------------
+
+
+def test_every_model_attribute_the_factory_reads_exists_on_prepared_model():
+    """REGRESSION, twice over. `build_v2_oracles` passed `alphabet=model.alphabet`.
+
+    The cycle's `alphabet` parameter is a `Mapping[int, str]` residue map and `PreparedModel` calls
+    it `id_to_aa`, so the attribute simply does not exist -- but every fake in this suite defines
+    whatever the production code asks for, which is precisely why no test saw it. The identical
+    rename had already cost the hotspot calibrator one cluster allocation; it cost the Canary a
+    second one.
+
+    Read off the SOURCE rather than from a hand-maintained list: a list is a third place to forget.
+    """
+    import ast
+    import inspect
+
+    from scripts import rf_fusion_v2_oracles as mod
+    from scripts.rf_fusion_model_factory import PreparedModel
+
+    tree = ast.parse(inspect.getsource(mod.build_v2_oracles))
+    read = sorted({node.attr for node in ast.walk(tree)
+                   if isinstance(node, ast.Attribute)
+                   and isinstance(node.value, ast.Name) and node.value.id == "model"})
+    declared = set(dir(PreparedModel)) | set(getattr(PreparedModel, "__annotations__", {}))
+    missing = [name for name in read if name not in declared]
+    assert not missing, (
+        f"build_v2_oracles reads model.{missing}, which PreparedModel does not carry; "
+        f"it reads {read}")
+
+
+# --------------------------------------------------------------------------------------------
+# the constraint policy the conditioning records is the one that was ENFORCED
+# --------------------------------------------------------------------------------------------
+
+
+def test_an_anchored_run_does_not_record_an_unconstrained_fixed_token_policy(tmp_path):
+    """``build_model_factory`` defaults ``fixed_token_policy`` to the literal ``"unconstrained"``.
+
+    V2 was never passing it, so an anchored protein ran with its 24 hard anchors enforced while
+    every artifact's conditioning row named an unconstrained policy -- and the two Canary strata,
+    which differ in exactly this, declared the same one.
+    """
+    import hashlib
+
+    from scripts.rf_fusion_v2_cohort import ShardInputs
+    from scripts.rf_fusion_v2_oracles import fixed_token_policy_label
+
+    manifest = tmp_path / "anchors.yaml"
+    manifest.write_text("entries: []\n")
+    expected = hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+    assert fixed_token_policy_label(ShardInputs()) == "unconstrained"
+    assert fixed_token_policy_label(
+        ShardInputs(constraint_manifest=str(manifest))) == f"manifest:{expected}"
+
+
+def test_the_factory_hands_the_realized_constraint_policy_to_the_model(tmp_path):
+    """The label must reach ``build_model_factory``, not merely be computable.
+
+    ``_conditioning`` reads ``model.fixed_token_policy`` and overrides whatever a file-level digest
+    said, so a label that never reaches the model is a label that never reaches the artifact.
+    """
+    from scripts import rf_fusion_v2_oracles as mod
+
+    manifest = tmp_path / "anchors.yaml"
+    manifest.write_text("entries: []\n")
+    seen = {}
+
+    def _factory(**kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop after the model call")
+
+    inputs = _runtime_inputs(_config(), tmp_path)
+    inputs.paths.update({
+        "base_if_checkpoint": "ckpt", "rf_sampler_config": "rf.yaml",
+        "test_set_parquet": "t.parquet", "pdb_root": str(tmp_path),
+        "protein_stratum_manifest": str(tmp_path / "strata.json"),
+        "constraint_manifest": str(manifest),
+        "schedule_band_calibration": str(tmp_path / "B_r.json"),
+    })
+    (tmp_path / "strata.json").write_text('{"5ZHV_B": "%s"}' % F.STRATUM)
+
+    with pytest.raises(RuntimeError, match="stop after the model call"):
+        mod.build_v2_oracles(
+            protein_id="5ZHV_B", config=_config(), inputs=inputs,
+            seams=OracleSeams(build_model_factory=_factory,
+                              load_band_table=lambda *a, **k: F.band_table()))
+    assert seen["fixed_token_policy"].startswith("manifest:"), seen.get("fixed_token_policy")
+
+
+# --------------------------------------------------------------------------------------------
 # the band's two digests are two different quantities
 # --------------------------------------------------------------------------------------------
 

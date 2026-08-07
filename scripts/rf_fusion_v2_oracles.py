@@ -52,6 +52,7 @@ __all__ = [
     "ProductionHeadOracle",
     "assert_constraint_class_matches_band",
     "build_production_oracles",
+    "fixed_token_policy_label",
     "resolve_reference",
     "resolve_stratum",
     "resolve_support_policy",
@@ -260,6 +261,25 @@ def resolve_stratum(manifest_path: Any, protein_id: str) -> str:
             "guessing which one would pin the reopen cardinality from the wrong distribution"
         )
     return stratum
+
+
+def fixed_token_policy_label(inputs: Any) -> str:
+    """The conditioning's ``fixed_token_policy``, in the vocabulary V1 already established.
+
+    ``build_model_factory`` DEFAULTS this to the literal ``"unconstrained"``, and V2 was never
+    passing it -- so an anchored protein's conditioning identity recorded ``unconstrained`` while
+    the sampler was enforcing 24 hard anchors read from the manifest.  The anchors themselves were
+    always applied (``fixed_tokens`` comes from the loaded manifest, and
+    :func:`assert_constraint_class_matches_band` checks the REALIZED class), but the provenance row
+    every V2 artifact carries named the wrong policy, and two cells that differ precisely in their
+    constraint class would have declared the same one.
+
+    Same spelling as ``rf_fusion_v1_oracles`` -- ``manifest:<sha256 of the manifest FILE>`` -- so
+    the V1 entry stack and the V2 ladder describe one constraint policy in one vocabulary rather
+    than two labels that happen to mean the same thing.
+    """
+    manifest = inputs.paths.get("constraint_manifest")
+    return f"manifest:{_observed_digest(manifest)}" if manifest else "unconstrained"
 
 
 def assert_constraint_class_matches_band(*, band_table: Any, fixed_tokens: Any,
@@ -673,6 +693,7 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
         pdb_root=inputs.require("pdb_root"),
         device=inputs.paths.get("device", "cuda"),
         constraint_manifest=inputs.paths.get("constraint_manifest"),
+        fixed_token_policy=fixed_token_policy_label(inputs),
     )
     _prepared, denoiser = model.backbone_and_denoiser(protein_id)
     length = model.sequence_length(protein_id)
@@ -734,7 +755,12 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
         "cycle_kwargs": dict(
             sampler=model.sampler, denoiser=denoiser, config=model.rf_config,
             sequence_length=length, h_values=model.null_h_values(length),
-            residue_token_ids=model.aa_token_ids, alphabet=model.alphabet,
+            # ``id_to_aa``, NOT ``alphabet``: the cycle's ``alphabet`` parameter is a
+            # ``Mapping[int, str]`` residue map, and that is what ``PreparedModel`` calls it.  The
+            # same rename cost the calibrator a cluster allocation; the AST contract test in
+            # ``tests/scripts/test_rf_fusion_v2_oracles.py`` now checks every ``model.<attr>`` this
+            # factory reads against the real class, so a third occurrence fails locally.
+            residue_token_ids=model.aa_token_ids, alphabet=model.id_to_aa,
             fixed_tokens=model.fixed_tokens(protein_id),
             lineage=ident.LineageRef(
                 protein_id=protein_id, root_id=f"{protein_id}:v2:d0:r0", family_id="fam0",

@@ -386,7 +386,15 @@ against another molecule.
 Start from `inverse_folding/reference_flow/configs/v2_canary_state_transition.yaml`. Every
 `REPLACE_*` is a value the file cannot carry; the loader has no default and refuses the run.
 
-Five that bite:
+**Do not fill it by hand.** `scripts/materialize_v2_canary_config.py` resolves one cell, refuses
+the three ways a config can run and still be wrong (a threshold measured under a different Head
+domain, a band with no cell at this `(r_step, stratum_key)`, a surviving placeholder), loads its own
+output back through `load_v2_config_file`, and writes `<CELL>.args.sh` — the driver's exact
+`--input-file`/`--shard-input` vectors. Those vectors must agree with the frozen/runtime split the
+config declares; emitting both from one place is what keeps them agreeing. The notes below are why
+each field is what it is, not a filling procedure.
+
+Eight that bite:
 
 1. **`identity.code_revision`** — 7–64 lowercase hex. `unknown` is refused. The CLI's
    `--code-revision` defaults to this value and must equal it, so no flag can sign a run under an
@@ -398,11 +406,17 @@ Five that bite:
    `python -c "import json;print(json.load(open('B_r.json'))['provenance']['calibration_content_digest'])"`.
    Do **not** pass this role to `--input-file`: that computes the file's sha256 and refuses. Pass
    the path with `--shard-input schedule_band_calibration=...` instead.
-3. **`content[complete_reference_sequence].expected_sha256`** — SHA-256 of the **manifest file**
-   (see above). Each sequence file it names must be **the canonical sequence itself: no FASTA
-   header, no wrapper, no trailing newline**, and its own sha256 goes in the manifest entry. `bind_cumulative_reference` recomputes the digest from those
-   bytes and compares; any container format puts bytes in the file that are not in the sequence and
-   the two numbers can never agree.
+3. **`content[complete_reference_sequence].expected_sha256` is THIS CELL'S OWN `.seq`, not the
+   manifest.** A Canary cell is one protein, and `bind_cumulative_reference` compares the digest it
+   recomputes from the reference BYTES against `policy.complete_reference_content_digest` — which
+   IS this field. A manifest digest there can never equal a sequence digest, so the shard dies with
+   `ReferenceRebindAttempt` after the checkpoints are already resident (measured, 2026-08-06). The
+   cohort manifest binds separately, as the plural `reference_sequences` role plus the
+   `complete_reference_manifest` shard input; between them every byte is still signed and nothing is
+   signed twice under one number. Each sequence file must be **the canonical sequence itself: no
+   FASTA header, no wrapper, no trailing newline** — any container puts bytes in the file that are
+   not in the sequence and the two numbers can never agree. Command:
+   `--input-file complete_reference_sequence=<WORK>/v2_canary/<PROTEIN_ID>.seq`.
 4. **`arm.a2_matching_resource`** — one of five, and the choice IS the experiment. At the measured
    unit costs one refold ≈ 81 DFE and structure is ~94% of a cycle's marginal cost, so matching on
    `logical_dfe` and matching on `definitive_refolds` are different experiments. The other four
@@ -426,6 +440,31 @@ Five that bite:
    #            expected_sha256: ${POLICY_SPEC_SHA}
    # command: --input-file projection_policy_spec="${POLICY_SPEC}"
    ```
+6. **`head_config` and `head_checkpoint` must be FROZEN, and their digests are the ones the scorer
+   itself reports.** They are declared runtime in the template, but `build_v2_oracles` reads both
+   through `_content_digest`, which refuses a runtime role — and the numbers are not decoration:
+   `bind_cumulative_reference` stamps the reference's `HeadScoreBinding.evaluator` from the
+   CONFIG's identity while every endpoint's binding carries the SCORER's, and `bind_head_scores`
+   compares the two for equality. A declared digest that merely looks plausible therefore fails
+   every endpoint, not just the provenance row. `head_config` is a DIRECTORY: its identity is the
+   three-YAML rolling hash `run_if_phase_c1._compute_head_config_hash` computes over
+   `model.yaml` + `model_ablation.yaml` + `inference.yaml`, which is why it can never be passed to
+   `--input-file`.
+7. **An unconstrained cell still has to DECLARE its lack of constraints.** `constraint_manifest`
+   and `fixed_token_policy` are two of the eighteen roles `_conditioning` requires, and PLAN §5.2
+   grants them no exemption — a run whose conditioning is simply silent about constraints cannot be
+   told apart from one whose manifest went missing. `rho_maturity_scan` already answered this with a
+   typed ABSENCE digest, and `5ZHV_B`'s own `B(r)` artifact carries it, so the `5ZHV_B` cells freeze
+   both roles to that same number
+   (`canonical_digest({"schema": "scan-constraint-binding/1", "constraint_manifest": null})`) and
+   pass **no** `constraint_manifest` shard input, which is what makes v0 build unconstrained
+   oracles. Being frozen, it also refuses any `--input-file constraint_manifest=...` on those cells.
+   The `Q00511` cells bind both roles runtime, to the safety24 manifest file.
+8. **`structure_backend` is the weight file, not the backend's name.** `esmfold2_live` is code and
+   is already covered by `code_revision`; what decides every fold is the ESMFold2 snapshot's
+   `model.safetensors`, so that file's sha256 is the role's identity. `code_revision` itself is
+   frozen to the git revision — `require_digest` accepts it precisely because a revision is a legal
+   content identity that is not a SHA-256.
 
 `config.safety.incremental_gate_enabled` may now be either value. At depth 0 the gate has no
 referent and the admission records a typed `IncrementalInapplicable` minted only from a parentless
@@ -465,9 +504,16 @@ python scripts/run_rf_fusion_v2.py \
   --shard-input  schedule_band_calibration=<WORK>/v2_canary/bands/<PROTEIN_ID>/B_r.json \
                  complete_reference_manifest=<WORK>/v2_canary/references.json \
                  protein_stratum_manifest=<WORK>/v2_canary/strata.json \
-                 stratum_key=<PROTEIN_SPECIFIC_STRATUM> \
   --dry-run
 ```
+
+There is no `stratum_key` shard input: `build_v2_oracles` resolves the stratum through
+`resolve_stratum(protein_stratum_manifest, protein_id)`, so passing one as a path would be a name
+nothing reads while looking like the thing that binds the band. `strata.json` is
+`{"5ZHV_B": "5zhv_b_unconstrained", "Q00511": "q00511_anchor24"}`.
+
+In practice, source the cell's generated `<CELL>.args.sh` and expand `INPUT_FILES`/`SHARD_INPUTS`
+rather than retyping either vector.
 
 Loads **no model**. It resolves the config, derives the one shared `config_digest`, signs every
 declared input by CONTENT, and projects the run's logical cost against the declared caps —
@@ -476,6 +522,22 @@ realized ladder's counted forward passes.
 
 A run that declares **no** inputs is refused (`exit 4`), on this path and on the execution path
 alike: PLAN §5.2's "missing content identity fails closed".
+
+**`--dry-run` is not sufficient, and knowing why matters.** It loads no model, so it returns before
+`build_v2_oracles` — and that is where the launch-blocking faults live. Four consecutive cluster
+attempts passed `--dry-run` and then died inside the assembly, each after the allocation and the
+3 GB checkpoint load. Run the second gate on every cell too; it needs no GPU and takes seconds:
+
+```bash
+python scripts/preflight_v2_canary_assembly.py \
+  --cell <WORK>/v2_canary/resolved_configs/<CELL>.yaml=<PROTEIN_ID> ...
+```
+
+It exercises the real band load and stratum match, `lookup_band`'s envelope at this `r_step`, the
+depth-0 reference BINDING, the admission policy and safety gate, the support policy's identity
+against the declaration, and all eighteen roles resolving through the launcher's own `SHARD_INPUTS`.
+Only the two torch builds are stubbed — and the stub is checked by AST against `PreparedModel`'s
+real surface, so a renamed attribute fails here instead of on the GPU.
 
 Exit codes are the whole interface a cohort runner sees: `0` complete and at least one success;
 `2` nothing usable, an empty cohort, every protein failed, **or a realized cohort cap breached**;
@@ -495,12 +557,18 @@ For the same cell, drop `--dry-run` and add the remaining runtime paths the orac
                  schedule_band_calibration=<WORK>/v2_canary/bands/<PROTEIN_ID>/B_r.json \
                  complete_reference_manifest=<WORK>/v2_canary/references.json \
                  protein_stratum_manifest=<WORK>/v2_canary/strata.json \
-                 stratum_key=<PROTEIN_SPECIFIC_STRATUM> \
                  [constraint_manifest=inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml] \
                  journal_dir=<RUN>/v2_canary/<CELL>/journals \
                  device=cuda \
                  <...one <role>=PATH for every RUNTIME-bound content role...>
 ```
+
+`scripts/submit_rf_fusion_v2_canary.slurm` is this command: `CELL=<cell> sbatch ...` sources that
+cell's `args.sh` and adds only `journal_dir` and `device`, which belong to the job rather than the
+cell. It must run under `immune-design-blackwell` on `rtx6000` — the env the band scan and the
+hotspot calibration ran under. It also **exports** `PROJECT_ROOT`: the DPLM checkpoint's stored
+hydra config resolves paths through `oc.env:PROJECT_ROOT`, so a merely-set shell variable is
+invisible to omegaconf and the checkpoint load dies after the GPU has been allocated.
 
 `--shard-input` is `NAME=PATH`. A bare path or a repeated name is refused — guessing which
 parameter a path meant is how a checkpoint ends up passed as a PDB root. Every **runtime-bound**
