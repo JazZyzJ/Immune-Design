@@ -4013,3 +4013,29 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - A cell's four lookaheads share a 50-step prefix, so they are correlated: "no admissible endpoint" is a per-cell coin-flip at these rates, not a rare tail.
   - A failed structure verdict is recorded on the ARCHIVE row and the endpoint keeps `structure_evaluated=false` with empty metrics, by design ("evaluated and failed" is bookkeeping about a design, not a property of it). The consequence is that a cell which admitted nothing cannot say WHY from its own bundle; the folds are still recoverable from the refold cache, keyed `{protein_id}_{sha256(seq)[:12]}`.
   - Structure rejection is still NOT feedback-mechanism failure (§2.3 stands), and `a2_matched_extra_lookaheads = 0` in all four cells, so no Head contrast from this Canary is licensed.
+
+### L0145
+- timestamp: 2026-08-06T23:55:00-04:00
+- type: FEAT
+- module: RF/FUSION_V2
+- trigger: Owner's ruling after the Canary closed: freeze the verdict, measure `N_H^whole` on the existing bundles, land failed structure evidence, then calibrate a RESUMED null with the SOURCE PREFIX as the sampling unit and freeze mechanism-stage gates from it. The Canary had suggested a population mismatch on the structure axis and left the Head axis unmeasured.
+- change_summary: Executed all six steps. The properly powered resumed null (32 independent prefixes x 2 completions per protein) does NOT confirm the population mismatch on either axis; what it does confirm is that `Q00511`'s ABSOLUTE anchor band is mis-scaled. Mechanism-stage gates are frozen from the measured null.
+- rationale: The mismatch reading came from 8-16 endpoints drawn from TWO source prefixes. The measured intraclass correlation -- 0.508 on `5ZHV_B`, 0.369 on `Q00511` -- says a third to a half of the variance lives between prefixes, so eight endpoints from two prefixes are worth about three independent draws. Sampling on the prefix instead overturned the reading that motivated the run, which is the outcome the design was for. The anchor finding survives and is a scaling error rather than a population one: `Q00511`'s native scores 1.790 A under the same backend while the null's absolute median is 2.409 A, so v0's 2.0 A band rejected 47/64 feedback-off endpoints for ~0.6 A of excess over a native that already scores 1.79 -- with scTM never binding (64/64 clear 0.85). Moving admission to the native-relative excess and taking the ceiling from the null's own upper tail is what lets a matched control arm exist at all.
+- artifacts:
+  - `scripts/analysis/recompute_v2_nh_whole.py`, `scripts/calibrate_rf_fusion_v2_hotspot.py` (`--population`, `Draw`, `resumed_draws`, `source_variance`, `mechanism_stage_structure_gates`)
+  - `scripts/rf_fusion_v2_artifacts.py` + `scripts/rf_fusion_v2_cohort.py` (`structure_evaluations` table)
+  - `inverse_folding/reference_flow/configs/rf_refine_fusion_v2_mechanism_{5zhv_b,q00511}.yaml`
+  - `doc/RF_Fusion_v2_Cluster_Runbook.md` §5.1 (frozen verdict), §5.2 (superseded), §5.3 (the resumed null + frozen gates), §7 (the mechanism-cohort design)
+  - `<WORK>/v2_canary/resumed_null/<PID>/`, `<WORK>/v2_canary/nh_recompute/`
+- evidence: Resumed null, jobs `12096127/8`, 64/64 head-valid per protein, zero failures, 32 sources x 2 each. Head thresholds agree with the full-trajectory null to **2.6%** (`5ZHV_B` 15.738 -> 15.333) and **2.4%** (`Q00511` 20.083 -> 20.561); structure operability 50% -> 56% and 29.7% -> 26.6%. ICC 0.508 / 0.369. `Q00511` absolute anchor: native 1.790 A, design min/q50/max 1.330/2.409/7.345, 17/64 under 2.0 A; native-relative excess q50/q90/max 0.615/1.479/5.556. FROZEN mechanism-stage gates admit **59/64 (92%)** and **52/64 (81%)** of their own null against v0's 36/64 and 17/64, and both configs load through `load_fusion_config`. The resumed `delta_new` block is ACCEPTED by `load_v2_config`. `N_H` recompute over all 28 Canary endpoints agreed with the stored artifact to 0.00e+00 (102 aa) and 7.07e-03 (302 aa) -- bf16 reduction-order noise, length-dependent, four orders below the thresholds. Tests: 1016 fusion_v2 + 261 script/config.
+- impact:
+  - scope: `--population` is now REQUIRED on the calibrator with no default; `full_trajectory` is unchanged and still emits the original statistic and source id, so the executed artifacts stay valid. The `structure_evaluations` table is additive. The two mechanism-stage configs are new files; frozen v0 is untouched.
+  - risk: medium
+  - confidence: 0.88
+- status: done
+- next_action: The mechanism cohort of §7. Its gates, its unit of analysis and its power rule are specified; `delta` (the smallest effect worth detecting) is a scientific choice that must be pre-registered BEFORE the cohort runs, and `n_pairs` follows from it and the measured within-source variance.
+- refs:
+  - The corrected reading is the one that matters going forward: there is no evidence that the resumed population differs from the full-trajectory one in Head landscape or in fold quality. `5zhv_r30`'s 0/4 is a ~44-56% per-endpoint rate, four siblings of one prefix, ICC ~0.5. Source maturity at `c=50` explains little on its own (Spearman -0.16 against scTM).
+  - Mechanism-stage authority is explicitly NOT capability and NOT holdout, and the configs say so in their own headers. A floor at a null's 10th percentile is chosen so the experiment can run.
+  - Hard-anchor residue IDENTITY was never in scope for recalibration and is unchanged.
+  - `structure_evaluations` is tested but has not yet been produced by a cluster shard; the mechanism cohort will be the first run to write it.

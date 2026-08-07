@@ -457,6 +457,18 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     digest cannot sign a two-protein cohort's two references. Tested:
     `tests/scripts/test_rf_fusion_v2_oracles.py`.
 
+27. `inverse_folding/reference_flow/configs/rf_refine_fusion_v2_mechanism_{5zhv_b,q00511}.yaml` —
+    the MECHANISM-STAGE structure gates, byte-identical to the frozen v0
+    `rf_refine_fusion_final_repair_beam.yaml` apart from two thresholds, each DERIVED from the
+    resumed feedback-off null (32 independent prefixes x 2 completions) and each carrying its
+    own derivation in the file. `scTM_min` = `Q0.10(lower)`; `Q00511`'s anchor band is the
+    NATIVE-RELATIVE excess `Q0.90(higher)` written as `native + Delta_max` only because
+    `structure_feasible` compares an absolute number and frozen v0 is a boundary this project
+    does not mutate. They admit 92% and 81% of their own null against v0's 56% and 27%, which
+    is what lets a matched control arm run. **Mechanism-operability authority only** — a floor
+    at a null's 10th percentile is chosen so the experiment can run, not so the product is
+    safe. Hard-anchor residue IDENTITY is untouched and remains an absolute hard gate.
+
 20. `inverse_folding/reference_flow/configs/v2_canary_state_transition.yaml` — the state-transition
     Canary config skeleton. Every `REPLACE_*` is a value the loader has no default for; a
     placeholder left in place fails closed at `--print-config` rather than on the GPU. `depth_cap`

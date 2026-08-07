@@ -780,6 +780,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class _ModelView:
+    """The two things `calibrate_protein` reads off a model, taken from the cycle kwargs.
+
+    Not a general model: `resumed` generation happens through `build_v2_oracles`, which already
+    built one, and the anchor check needs only the constraint class and the residue map. Building a
+    second `PreparedModel` to supply them would put two DPLM checkpoints on one allocation.
+    """
+
+    def __init__(self, cycle_kwargs: dict) -> None:
+        self.id_to_aa = cycle_kwargs["alphabet"]
+        self._fixed = cycle_kwargs["fixed_tokens"]
+
+    def fixed_tokens(self, protein_id: str):        # noqa: ARG002 - one protein per invocation
+        return self._fixed
+
+
 def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -842,7 +858,11 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
         resolved["head_scorer"] = resolved["head_scorer"] or produced_head
         resolved["structure_gate"] = resolved["structure_gate"] or produced_structure
 
-    model = resolved["build_model_factory"](
+    # In `resumed` mode the model comes from the ORACLE STACK, below, and is not built twice: two
+    # `PreparedModel`s mean two DPLM checkpoints resident at once, and one already peaks at ~30 GB
+    # RSS against a 40 GB request. `calibrate_protein` needs exactly two things off it, and the
+    # cycle kwargs carry both.
+    model = None if args.population == "resumed" else resolved["build_model_factory"](
         base_if_checkpoint=args.checkpoint, rf_sampler_config=args.rf_config,
         test_set_parquet=args.test_set, pdb_root=args.pdb_root, device=args.device,
         constraint_manifest=args.constraint_manifest,
@@ -864,6 +884,7 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
         oracles = build_v2_oracles(
             protein_id=args.protein_id, config=load_v2_config_file(args.v2_config),
             inputs=shard_inputs)
+        model = _ModelView(oracles["cycle_kwargs"])
         draws = resumed_draws(
             protein_id=args.protein_id, n_sources=args.n_sources,
             completions_per_source=args.completions_per_source, c_source=args.c_source,

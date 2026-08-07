@@ -1,0 +1,93 @@
+# V2 MECHANISM-STAGE structure gate for Q00511 -- DERIVED, not chosen.
+#
+# Base: rf_refine_fusion_final_repair_beam.yaml (frozen v0, byte-identical apart from the two thresholds below).
+# Source of the numbers: the RESUMED feedback-off null, 32 INDEPENDENT c=50 source prefixes x 2
+# completions = 64 endpoints, <WORK>/v2_canary/resumed_null/Q00511/hotspot_calibration.json.
+# Produced by: scripts/calibrate_rf_fusion_v2_hotspot.py --population resumed
+#
+# AUTHORITY: mechanism-operability ONLY. A floor at the 10th percentile of a null is chosen so the
+# transmission experiment can RUN, not so the product is safe. Capability and holdout still need
+# their own independently frozen structure gate. Runbook §5.3.
+#
+# WHAT DID NOT CHANGE: hard-anchor residue IDENTITY remains an absolute hard gate. This file
+# recalibrates a geometric tolerance and nothing else.
+#
+# The anchor band is NATIVE-RELATIVE and only written as an absolute number because
+# fusion.oracles.structure_feasible compares an absolute one, and frozen v0 is a system boundary
+# this project does not mutate.
+# 
+#   Delta_anchor(y) = RMSD_anchor(y) - RMSD_anchor(native)
+#   native absolute, same backend and protocol : 1.789673 A
+#   null Delta_anchor  q50 0.61498  Q0.90(higher) 1.47909  max 5.55559
+#   => max_anchor_sidechain_RMSD_max = 1.789673 + 1.479091 = 3.268764 A
+# 
+#   v0 used 2.0 A absolute. The native alone is 1.790 A and the null's absolute median is
+#   2.405 A, so that band rejected 47/64 feedback-off endpoints for about
+#   0.61 A of excess over a native that already scores 1.79.
+# 
+# scTM_min = Q0.10(lower): null min 0.92127  q10 0.93541  q50 0.95654
+#   native 0.97642. scTM never binds on this protein -- 64/64 clear 0.85.
+
+# RF-Refine Fusion — FINAL integration PACKAGE: repair + beam (the full Fusion package).
+#
+# repair.enabled=true (children_per_edit=4) + selection.mode=beam, n_rounds=8. Requires
+# --base-if-checkpoint (dplm_v1_adapter best.ckpt) + --rf-sampler-config c1_null.yaml. Paired against
+# rf_refine_fusion_final_explicit_greedy.yaml on held-out fast_v2 DRB1*07:01 (286) with frozen NoD
+# gumbel parents. Runbook §17 main-conclusion experiment. N=4, scTM_min 0.85, N_H 0.10, esmfold2_live.
+fusion:
+  enabled: true
+  seed: 20260715
+  population_size: 4
+  n_rounds: 8
+
+  handoff:
+    mode: terminal_population
+
+  targeting:
+    mode: head_max_window
+    registers_per_parent: 1
+    halo_radius: 4
+
+  objective:
+    head_field: global_risk
+    min_head_improvement: 0.05
+    max_offtarget_window_increase: 0.10
+
+  moves:
+    explicit:
+      enabled: true
+      max_edit_order: 2
+      max_raw_candidates_per_parent: 200
+      pair_seed_budget: 32
+    rf_reopen:
+      enabled: false
+      children_per_parent: 0
+    repair:
+      enabled: true                        # <-- the ONLY difference vs the explicit arm
+      repair_shortlist_per_parent: 4
+      children_per_edit: 4                 # data-decided (probe dispersion) — fat novel-channel draw
+      sampler_steps: 8
+      local_remask: false
+
+  structure:
+    backend: esmfold2_live
+    surrogate_mode: none
+    scTM_min: 0.93541
+    active_site_metric: sidechain_max_anchor
+    max_anchor_sidechain_RMSD_max: 3.268764
+    active_site_RMSD_max: null
+    active_site_shell_radius: 6.0
+    scRMSD_max: null
+    cache_dir: structure_cache
+    max_refolds_per_parent: 8
+
+  selection:
+    mode: beam
+    beta_start: 1.0
+    beta_end: 4.0
+    resample_method: multinomial
+
+  telemetry:
+    candidate_detail: true
+    window_detail: false
+    trajectory_detail: true

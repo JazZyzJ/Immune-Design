@@ -632,6 +632,12 @@ Per §6's own wording the non-null condition is per PROTEIN: both proteins trans
 
 #### The structure gate is measured on a different population than it enforces on
 
+> **SUPERSEDED by §5.3 (2026-08-06).** Everything in this subsection and in §5.2 was read off
+> 8–16 endpoints drawn from **two** source prefixes. The properly-powered measurement — 32
+> INDEPENDENT prefixes per protein — does **not** confirm a population-level mismatch on either
+> axis. Read §5.3 first; what remains true here is kept below because the Canary cell's behaviour
+> is still a fact that needed explaining.
+
 `5zhv_r30`'s four lookaheads scored scTM `0.784 / 0.788 / 0.810 / 0.812` against a `0.85` floor;
 `5zhv_r40`'s single admitted endpoint scored `0.8516` — **1.6 × 10⁻³ above the gate**. Recovered
 from the refold cache (`{protein_id}_{sha256(seq)[:12]}`), because a failed verdict is recorded on
@@ -699,7 +705,12 @@ cheaply first, from the bundles already on disk.
 
 ---
 
-## 5.2 `N_H^whole` on the resumed population (2026-08-06, `9c8b042`) — the Head gate does not bite here
+## 5.2 `N_H^whole` on the Canary's own endpoints — **SUPERSEDED by §5.3**
+
+> The numbers below are correct as a description of the 28 Canary endpoints. The CONCLUSION drawn
+> from them — that the resumed population is systematically colder — did not survive a properly
+> powered measurement. Twenty-eight endpoints from four source prefixes, at a measured intraclass
+> correlation of 0.37–0.51, are worth roughly a dozen independent samples. §5.3 has the answer.
 
 `scripts/analysis/recompute_v2_nh_whole.py`, all 28 Canary endpoints, same Head, k = 12–25, same
 native reference, through `whole_landscape_new_hotspot` — the function the admission gate itself
@@ -735,6 +746,100 @@ The live Head re-scored every design and agreed with the stored artifact to `0.0
 102 aa) and `7.07e-03` (`Q00511`, 302 aa) raw logits — reduction-order noise in a bf16 ESMC-6B
 stack without fused kernels, length-dependent as expected, and four orders below the thresholds.
 Bit-equality is the wrong bar here and the tolerance says so explicitly.
+
+---
+
+## 5.3 The resumed null, 32 INDEPENDENT prefixes per protein (2026-08-06, `c24ddc9`)
+
+`scripts/calibrate_rf_fusion_v2_hotspot.py --population resumed --c-source 50 --n-sources 32
+--completions-per-source 2`, jobs `12096127/8`, 64/64 head-valid per protein, zero failures.
+Artifacts: `<WORK>/v2_canary/resumed_null/<PID>/{calibration_rows.parquet,hotspot_calibration.json}`.
+
+### The population mismatch is NOT supported
+
+| | full-trajectory null (n=64) | **resumed null (n=64, 32 prefixes)** | Canary (n=8, 2 prefixes) |
+|---|---:|---:|---:|
+| `5ZHV_B` `N_H` q50 / **q90** | 5.966 / **15.738** | 5.115 / **15.333** | 1.319 / 11.699 |
+| `5ZHV_B` scTM q50 / ≥0.85 | 0.8528 / 50.0% | **0.8571 / 56.3%** | ~0.798 / 12.5% |
+| `Q00511` `N_H` q50 / **q90** | 16.587 / **20.083** | 16.921 / **20.561** | 13.551 / 18.371 |
+| `Q00511` definitive-feasible | 29.7% | **26.6%** | 37.5% |
+
+The two nulls agree to **2.6%** and **2.4%** on the Head threshold and to a few points on structure
+operability. **§5.1's and §5.2's mismatch reading was small-sample.** It came from 8–16 endpoints
+drawn from two prefixes, and the measured intraclass correlation says how badly that under-counts:
+
+| | between-source var | within-source var | **ICC** |
+|---|---:|---:|---:|
+| `5ZHV_B` | 21.74 | 21.02 | **0.508** |
+| `Q00511` | 14.74 | 25.16 | **0.369** |
+
+A third to a half of the variance lives BETWEEN prefixes, so eight endpoints from two prefixes are
+worth about three independent draws. That is exactly the error "the source prefix is the sampling
+unit" exists to prevent, and it is why this measurement was worth running even though it overturned
+the reading that motivated it.
+
+`5zhv_r30`'s 0/4 stays a real observation and is now correctly explained: a ~44–56% per-endpoint
+rate, four siblings of one prefix, ICC ≈ 0.5. Source maturity at `c=50` explains little on its own
+(Spearman −0.16 against scTM; the resumed sources span 41–62 unresolved editable while both Canary
+sources sat at 55).
+
+### What IS mis-scaled: `Q00511`'s absolute anchor band
+
+Not the population — the number.
+
+| `Q00511`, n=64 | value |
+|---|---:|
+| native `max_anchor_sidechain_RMSD`, same backend | **1.790 Å** |
+| design absolute, min / q50 / max | 1.330 / **2.409** / 7.345 Å |
+| design ≤ the v0 band of 2.0 Å | **17/64** |
+| native-relative excess `Δ_anchor`, q50 / **q90** / max | 0.615 / **1.479** / 5.556 Å |
+| scTM, min / q50 | 0.921 / 0.957 — **64/64 above 0.85** |
+
+The 2.0 Å band sits between the native (1.790) and the design median (2.409), so it rejects
+three quarters of the null for about **0.6 Å of excess over a native that already scores 1.79**.
+Every one of those rejections is the anchor band alone: scTM never binds on this protein.
+`5ZHV_B` is the mirror case — no anchors, and scTM sitting on the 0.85 gate with a null median of
+0.857.
+
+### FROZEN mechanism-stage gates
+
+Measured, not chosen. `Q0.10(lower)` for a floor, `Q0.90(higher)` for a ceiling — a floor and a
+ceiling must round in opposite directions or one of them admits a sample it meant to exclude. By
+construction each admits ~90% of the feedback-off null, which is what lets the transmission
+experiment run.
+
+| | `5ZHV_B` | `Q00511` |
+|---|---:|---:|
+| `delta_new_cumulative` (`raw_logit`) | **15.333256721496582** | **20.560853958129883** |
+| `scTM_min` | **0.79562** | **0.93541** |
+| `Δ_anchor_max` | n/a (unconstrained) | **1.47909 Å** |
+| ⇒ absolute band `= native + Δ_max` | n/a | **3.26876 Å** |
+| hard-anchor residue identity | n/a | **absolute hard gate, unchanged** |
+
+The absolute band is DERIVED from the native and the excess, not chosen: it is written that way
+only because `fusion.oracles.structure_feasible` compares an absolute number, and frozen v0 is a
+system boundary this project does not mutate. The derivation lives in the config file beside the
+value. Configs: `inverse_folding/reference_flow/configs/rf_refine_fusion_v2_mechanism_{5zhv_b,q00511}.yaml`,
+both byte-identical to the v0 file apart from those thresholds.
+
+Realized against the null they came from — which is the check that says the control arm can run:
+
+| gate | admits of its own 64-endpoint null |
+|---|---|
+| `5ZHV_B` v0 (`scTM_min` 0.85) | 36/64 = 56% |
+| `5ZHV_B` mechanism-stage | **59/64 = 92%** |
+| `Q00511` v0 (2.0 Å absolute) | 17/64 = 27% |
+| `Q00511` mechanism-stage | **52/64 = 81%** |
+
+`5ZHV_B`'s file keeps `max_anchor_sidechain_RMSD_max: 2.0` untouched: the protein declares no
+anchors, so v0 resolves `has_active_site=False` off the manifest and the branch never fires.
+
+**Authority.** These are **mechanism-operability gates for the transmission experiment only**. A
+threshold set at the 10th percentile of a null is chosen so the experiment can run, not so the
+product is safe; capability and holdout still need their own frozen structure gate. The Head
+thresholds are population-matched replacements for the full-trajectory ones and, per §5.2's
+surviving observation, still sit above most of what the mechanism regime produces — a gate that
+rarely fires is not evidence that nothing was caught.
 
 ---
 
