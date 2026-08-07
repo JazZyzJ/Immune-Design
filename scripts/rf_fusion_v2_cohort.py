@@ -543,6 +543,9 @@ def run_v2_shard(
                 "declared_unmatched": list(config.arm.a2_unmatched_reported)},
         ),
         "terminal_validation": terminal_validation_rows(_terminal_records(outcome, admissions)),
+        # Empty, and true: a ladder run has no matched arms, so it scores no mechanism contrast.
+        # Declared rather than omitted, so the bundle carries the same tables either way.
+        "mechanism_contrasts": [],
         "ledger_events": ledger_events,
         "cap_verdict": {
             "within": bool(verdict.within),
@@ -561,4 +564,291 @@ def run_v2_shard(
     # as a success with an empty table.
     status = "ok" if (outcome.depth_reached > 0 and outcome.best_definitive is not None
                       and not verdict.breached) else "failed"
+    return status, payload
+
+
+# --------------------------------------------------------------------------------------------
+# the mechanism cohort (runbook §7)
+# --------------------------------------------------------------------------------------------
+
+#: Namespace for the per-prefix source seeds.  Separate from every namespace the ladder uses, so a
+#: mechanism prefix and a ladder root with the same ordinal cannot collide on a seed.
+MECHANISM_SEED_NAMESPACE = "v2_mechanism_source"
+
+
+class _ArmRecord:
+    """The two fields ``_endpoints_by_depth`` / ``_partial_states`` / ``_admissions`` read."""
+
+    __slots__ = ("depth", "cycle")
+
+    def __init__(self, depth: int, cycle: Any) -> None:
+        self.depth, self.cycle = int(depth), cycle
+
+
+class _ArmOutcome:
+    """One executed arm, shaped like the ladder outcome the row helpers already consume.
+
+    Written as an adapter rather than as a second set of row builders: the mechanism cohort's
+    endpoints, states, admissions and terminal records mean exactly what a ladder's do, and a
+    parallel implementation is how two tables that claim the same thing start to disagree.
+    """
+
+    __slots__ = ("cycles", "archive")
+
+    def __init__(self, cycle: Any) -> None:
+        self.cycles = (_ArmRecord(0, cycle),)
+        self.archive = cycle.archive
+
+
+def _first_by(rows: Any, key: str) -> list[dict]:
+    """De-duplicate on a join key, first write wins.
+
+    Every arm forks ONE shared archive, so the shared depth-0 pool appears in all of them.  That is
+    the design -- it is what makes the arms comparable -- but a bundle that wrote it once per arm
+    would duplicate the join key and multiply every downstream join.
+    """
+    seen: dict[Any, dict] = {}
+    for row in rows:
+        seen.setdefault(row[key], row)
+    return list(seen.values())
+
+
+def _depth0_point(config: Any):
+    for point in config.schedule.points:
+        if int(point.depth) == 0:
+            return point
+    raise V2CohortError("config.schedule declares no depth-0 point; the mechanism cohort runs "
+                        "exactly one cycle and has nowhere to start")
+
+
+def run_v2_mechanism_shard(
+    *, protein_id: str, config: Any, signature: Any, out_dir: Any,
+    inputs: ShardInputs | None = None,
+    oracles_factory=None,
+    n_prefixes: int = 16,
+    views: Any = None,
+) -> tuple[str, Mapping[str, Any]]:
+    """Runbook §7: ``n_prefixes`` INDEPENDENT source prefixes, each through the matched arms.
+
+    The Canary showed the feedback machinery executes.  This shard asks the question the Canary
+    could not: does the identity that was projected back actually reach the completed descendant?
+    Each prefix is carried once through :func:`run_mechanism_views`, which pays for the source
+    prefix and its lookahead pool ONCE and forks every arm off that single realized pool -- so the
+    arms differ in the intervention and in nothing else, including in what they were compared
+    against.
+
+    **The source prefix is the sampling unit.**  Endpoints of one prefix are correlated (measured
+    ICC 0.37-0.51 on the resumed null), so the prefix index is carried on every row and the
+    analysis averages within a prefix before treating prefixes as independent.  A prefix that
+    produced no scorable contrast still emits a row saying why: a silently absent prefix is
+    indistinguishable from one that was never attempted.
+    """
+    from scripts.rf_fusion_v2_artifacts import (
+        MECHANISM_CONTRAST_VIEWS,
+        a2_view_rows,
+        archive_rows,
+        complete_endpoint_rows,
+        feedback_event_rows,
+        mechanism_contrast_rows,
+        partial_state_rows,
+        structure_evaluation_rows,
+    )
+    from inverse_folding.reference_flow.fusion_v2.seeds import (
+        V2_SEED_ENCODING_VERSION,
+        FeedbackPairSeedContext,
+        derive_seed,
+    )
+    from inverse_folding.reference_flow.fusion_v2_runtime.paired import run_mechanism_views
+
+    inputs = inputs or ShardInputs()
+    if oracles_factory is None:
+        raise V2CohortError("no oracles_factory was supplied; see run_v2_shard")
+    n_prefixes = int(n_prefixes)
+    if n_prefixes < 1:
+        raise V2CohortError(f"n_prefixes must be >= 1, got {n_prefixes}")
+    requested_views = tuple(views) if views is not None else MECHANISM_CONTRAST_VIEWS
+    unknown = [v for v in requested_views if v not in MECHANISM_CONTRAST_VIEWS]
+    if unknown:
+        raise V2CohortError(
+            f"{unknown} name no scorable mechanism contrast; expected a subset of "
+            f"{list(MECHANISM_CONTRAST_VIEWS)}"
+        )
+
+    signature = _validate_run_signature(signature=signature, config=config, protein_id=protein_id)
+
+    oracles = oracles_factory(protein_id=protein_id, config=config, inputs=inputs)
+    cycle_kwargs = dict(oracles["cycle_kwargs"])
+    conflicting = [name for name in RUN_OWNED_CYCLE_KWARGS if name in cycle_kwargs]
+    if conflicting:
+        raise V2CohortError(
+            f"the oracles factory supplied {conflicting}, which the RUN owns; see run_v2_shard")
+    assert_runtime_substrate_matches(config, cycle_kwargs.get("config"))
+
+    from inverse_folding.reference_flow.fusion_v2_runtime.ledger import (
+        AttemptJournal,
+        CostMeter,
+        V2LedgerEvent,
+        aggregate_v2_ledger,
+        check_caps,
+    )
+
+    journal_path = _journal_path(
+        inputs=inputs, out_dir=out_dir, protein_id=protein_id, run_signature=signature.value)
+    cost_meter = CostMeter(
+        journal=AttemptJournal(journal_path), protein_id=str(protein_id),
+        arm=str(config.arm.arm_role), gpu_clock=_gpu_clock(oracles))
+
+    point = _depth0_point(config)
+    master_seed = int(config.identity.master_seed)
+    base_config = cycle_kwargs["config"]
+
+    contrast_rows: list[dict] = []
+    endpoints_by_id: dict[str, tuple[Any, int]] = {}
+    states_by_id: dict[str, Any] = {}
+    admissions: dict[str, Any] = {}
+    archives: list[Any] = []
+    events: list[dict] = []
+    a2_views: list[Any] = []
+    n_scorable = 0
+
+    for prefix_index in range(n_prefixes):
+        # The SOURCE seed is what makes prefixes independent; everything else about the sampler is
+        # the run's own declared configuration.  Same construction as the resumed-null calibration,
+        # so the two populations are the same generative process measured twice.
+        source_seed = int(derive_seed(
+            MECHANISM_SEED_NAMESPACE, str(protein_id), str(master_seed), "source",
+            str(prefix_index)))
+        prefix_config = dataclasses.replace(
+            base_config, sampler=dataclasses.replace(base_config.sampler, seed=source_seed))
+        source_fork_seeds = tuple(int(derive_seed(
+            MECHANISM_SEED_NAMESPACE, str(protein_id), str(master_seed), "fork",
+            str(prefix_index), str(k))) for k in range(int(point.n_lookaheads)))
+        context = FeedbackPairSeedContext(
+            seed_schema=V2_SEED_ENCODING_VERSION,
+            campaign_id=str(config.identity.campaign_id),
+            split_role=str(config.identity.split_role),
+            master_seed=master_seed, protein_id=str(protein_id), depth=0,
+            r_step=int(point.r_step), c_next_step=int(point.c_next_step),
+            pair_ordinal=prefix_index, n_forks=int(point.n_lookaheads),
+            n_descendant_lookaheads=int(point.n_lookaheads),
+        )
+
+        common = dict(
+            protein_id=str(protein_id), source_index=prefix_index, source_seed=source_seed,
+            source_state_id=None, source_unresolved_editable=None,
+        )
+        try:
+            results = run_mechanism_views(
+                **dict(cycle_kwargs,
+                       config=prefix_config,
+                       context=context, fork_index=0,
+                       c_source_step=int(point.c_source_step), r_step=int(point.r_step),
+                       c_next_step=int(point.c_next_step),
+                       source_fork_seeds=source_fork_seeds,
+                       interventions=requested_views,
+                       declared_policy=config.declared_policy(),
+                       feedback_enabled=True, cost_meter=cost_meter))
+        except V2Error as exc:
+            # A prefix that could not be executed is a RESULT of this cohort, recorded once per
+            # requested view.  Raising here would lose every prefix already paid for.
+            for view in requested_views:
+                contrast_rows.extend(mechanism_contrast_rows(
+                    **common, view=view, arm_a=None, arm_b=None,
+                    parity_violation=f"{type(exc).__name__}: {str(exc)[:180]}"))
+            continue
+
+        for result in results:
+            view = result.axes.mechanism_view
+            arm_a_cycle, arm_b_cycle = result.arm_a.cycle, result.arm_b.cycle
+            source = getattr(arm_a_cycle, "source", None)
+            per_view = dict(
+                common,
+                source_state_id=None if source is None else source.state_id,
+                source_unresolved_editable=(
+                    None if source is None
+                    else int(source.realized_maturity.n_unresolved_editable)),
+            )
+            rows = mechanism_contrast_rows(
+                **per_view, view=view, arm_a=arm_a_cycle, arm_b=arm_b_cycle,
+                parity_violation=result.parity_violation)
+            contrast_rows.extend(rows)
+            n_scorable += sum(1 for row in rows if row["analyzable"])
+
+            for arm in (result.arm_a, result.arm_b):
+                outcome = _ArmOutcome(arm.cycle)
+                for endpoint, depth in _endpoints_by_depth(outcome):
+                    endpoints_by_id.setdefault(endpoint.endpoint_id, (endpoint, depth))
+                for state in _partial_states(outcome):
+                    states_by_id.setdefault(state.state_id, state)
+                admissions.update(_admissions(outcome))
+                archives.append(outcome.archive)
+                if arm.cycle.a2_view is not None:
+                    a2_views.append(arm.cycle.a2_view)
+                events.append(dict(
+                    source=arm.cycle.source, endpoint=arm.cycle.selected_endpoint,
+                    projected=arm.cycle.projected, propagated=arm.cycle.propagated,
+                    policy=_policy_identity(_ArmRecord(0, arm.cycle), config=config),
+                    outcome=arm.cycle.outcome.value, detail=arm.cycle.detail,
+                    pair_id=context.pair_id, arm_slot=arm.arm_slot,
+                    treatment_identity=arm.treatment_identity))
+
+    admission_by_endpoint = {eid: adm.reason for eid, adm in admissions.items()}
+    by_depth: dict[int, list] = {}
+    for endpoint, depth in endpoints_by_id.values():
+        by_depth.setdefault(depth, []).append(endpoint)
+    endpoint_rows: list[dict] = []
+    for depth in sorted(by_depth):
+        endpoint_rows.extend(complete_endpoint_rows(by_depth[depth], depth=depth))
+
+    ledger_events = _ledger_rows(journal_path)
+    verdict = check_caps(
+        aggregate_v2_ledger(tuple(V2LedgerEvent(**row) for row in ledger_events)), config.caps)
+
+    payload = {
+        "mechanism_contrasts": contrast_rows,
+        "complete_endpoints": endpoint_rows,
+        "partial_states": partial_state_rows(states_by_id.values()),
+        "feedback_events": feedback_event_rows(events),
+        # Every arm forks the shared archive, so the same endpoint appears in many of them.  First
+        # write wins: the shared pool is one pool, and duplicating it would multiply every join.
+        "archive": _first_by(
+            [row for archive in archives
+             for row in archive_rows(archive, admission_by_endpoint=admission_by_endpoint)],
+            "endpoint_id"),
+        "structure_evaluations": _first_by(
+            [row for archive in archives
+             for row in structure_evaluation_rows(
+                 archive, admission_by_endpoint=admission_by_endpoint,
+                 conditioning=cycle_kwargs.get("conditioning"))],
+            "endpoint_id"),
+        "a2_views": _first_by(
+            a2_view_rows(
+                a2_views, matched_extra_lookaheads=EXECUTED_A2_EXTRA_LOOKAHEADS,
+                matching_resource=None,
+                declared_matching_resource=config.arm.a2_matching_resource,
+                matching_executed=False,
+                unmatched_components={
+                    "declared_unmatched": list(config.arm.a2_unmatched_reported)}),
+            "a2_view_id"),
+        # Empty, and that is the TRUE claim: terminal validation is what a ladder returns about the
+        # designs it proposes, and this cohort proposes none.  It measures whether a projected
+        # identity reaches the descendant, and every design it produces is an instrument reading.
+        "terminal_validation": [],
+        "ledger_events": ledger_events,
+        "cap_verdict": {
+            "within": bool(verdict.within), "breached": list(verdict.breached),
+            "unverifiable": list(verdict.unverifiable), "detail": verdict.detail,
+        },
+        "n_prefixes_requested": n_prefixes,
+        "n_scorable_contrasts": n_scorable,
+        "stopping_reason": "mechanism_cohort_complete",
+        "depth_reached": 1 if n_scorable else 0,
+        "total_logical_dfe": sum(int(row.get("logical_dfe") or 0) for row in ledger_events),
+        "substrate_digest": None,
+    }
+    # A mechanism shard SUCCEEDS when it produced scorable contrasts and stayed inside its caps.
+    # Zero scorable contrasts is a real failure for this protein: every prefix stopped before a
+    # projection, and reporting it as success with an empty table would let the cohort be consumed
+    # downstream as evidence of no transmission.
+    status = "ok" if (n_scorable > 0 and not verdict.breached) else "failed"
     return status, payload

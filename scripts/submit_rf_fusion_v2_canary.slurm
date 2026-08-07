@@ -50,6 +50,12 @@ WORK="${WORK:-${SCRATCH_BASE}/work/immune-design/v2_canary}"
 RUNDIR="${RUNDIR:-${SCRATCH_BASE}/run/inverse_folding/v2_canary}"
 CONDA_ENV="${CONDA_ENV:-immune-design-blackwell}"
 DEVICE="${DEVICE:-cuda}"
+# 0 = the ordinary depth ladder (the Canary).  N > 0 = the runbook §7 MECHANISM cohort: N
+# independent source prefixes, each carried through the matched arms.  The mechanism run is roughly
+# three cells per prefix, so pass a matching wall clock at submit time -- the SBATCH header below is
+# static and sized for a Canary cell:
+#   MECHANISM_PREFIXES=16 CELL=q00511_mech sbatch --time=04:00:00 scripts/submit_rf_fusion_v2_canary.slurm
+MECHANISM_PREFIXES="${MECHANISM_PREFIXES:-0}"
 
 OUT_DIR="${RUNDIR}/${CELL}"
 ARGS_FILE="${WORK}/resolved_configs/${CELL}.args.sh"
@@ -77,11 +83,14 @@ echo "[v2canary] cell=${CELL} cohort=${V2_COHORT} config=${V2_CONFIG}"
 echo "[v2canary] git=$(git rev-parse HEAD) env=${CONDA_ENV} node=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
+echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES}"
+
 set +e
 python scripts/run_rf_fusion_v2.py \
   --v2-config   "${V2_CONFIG}" \
   --out-dir     "${OUT_DIR}" \
   --cohort      "${V2_COHORT}" \
+  --mechanism-prefixes "${MECHANISM_PREFIXES}" \
   --input-file  "${INPUT_FILES[@]}" \
   --shard-input "${SHARD_INPUTS[@]}" \
                 "journal_dir=${OUT_DIR}/journals" \

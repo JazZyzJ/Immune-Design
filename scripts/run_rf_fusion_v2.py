@@ -61,6 +61,7 @@ total failures be consumed downstream as a completed run.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import sys
@@ -155,7 +156,27 @@ def build_parser() -> argparse.ArgumentParser:
                              "loads no model")
     parser.add_argument("--aggregate-only", action="store_true",
                         help="skip execution and aggregate the fragments already on disk")
+    parser.add_argument("--mechanism-prefixes", type=int, default=0, metavar="N",
+                        help="run the runbook §7 MECHANISM cohort instead of the depth ladder: "
+                             "N independent source prefixes per protein, each carried through the "
+                             "matched arms (0 = the ordinary ladder run)")
     return parser
+
+
+def select_runner(args, *, ladder, mechanism):
+    """Which experiment this invocation is.
+
+    The two shards share a signature and the whole driver around them -- config resolution, the
+    signature, oracles, fragments, resume, the ledger and the bundle -- so the choice is one
+    argument rather than a second driver.  It is made HERE, once, so that no code below has to ask
+    again which kind of run it is in.
+    """
+    n_prefixes = int(getattr(args, "mechanism_prefixes", 0) or 0)
+    if n_prefixes < 0:
+        raise V2DriverError(f"--mechanism-prefixes must be >= 0, got {n_prefixes}")
+    if not n_prefixes:
+        return ladder
+    return functools.partial(mechanism, n_prefixes=n_prefixes)
 
 
 def decide_exit_code(report, *, requested: int) -> int:
@@ -443,7 +464,12 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
 
     if not args.aggregate_only:
         if runner is None:
-            from scripts.rf_fusion_v2_cohort import run_v2_shard as runner  # noqa: PLC0415
+            from scripts.rf_fusion_v2_cohort import (  # noqa: PLC0415
+                run_v2_mechanism_shard,
+                run_v2_shard,
+            )
+
+            runner = select_runner(args, ladder=run_v2_shard, mechanism=run_v2_mechanism_shard)
         if oracles_factory is None:
             # ``run_v2_shard`` refuses to build oracles implicitly, so that --dry-run can never
             # cost a GPU allocation.  The DRIVER is where the real stack is named: without this a

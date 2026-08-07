@@ -866,98 +866,144 @@ until it is non-zero the two arms are not compute-matched.
 
 ---
 
-## 7. The powered one-cycle mechanism cohort
+## 7. The mechanism cohort
 
-The Canary answered "does it execute". This answers "does it transmit", and it is the only stage
-whose result can open `D>1`. Everything below is the design; the numbers marked **[from §7.4]** are
-computed from the resumed null, not chosen.
+The Canary answered "does it execute". This answers **"does it transmit"**, and it is the only stage
+whose result can open `D>1`.
 
-### 7.1 The unit of analysis is a MATCHED PAIR, not a run
+### 7.1 What the kernel makes the question about
 
-One pair = one source prefix, carried through the cycle twice:
+`FeedbackSupportPolicy` returns `write_from_endpoint=(write,)` — a single position, always
+(`policy.py`). `inject_from_source_feedback` writes the **source's own** token, not the endpoint's
+(`projection.py`), and `carry_from_source` copies source rows verbatim. So at `D=1` the entire
+endpoint channel is **one amino acid**, written at the lowest-indexed masked position and protected
+until `c_next`.
 
-| | arm A (`feedback_on`) | arm B (`feedback_off`) |
+The experiment therefore asks a sharp question: **does one conditioning token measurably steer the
+completion?** A null answer indicts the write cardinality, not the architecture — and §7.6 reads it
+that way.
+
+### 7.2 Two views: one test, one positive control
+
+Both hold the source prefix, the support partition, the fork seeds and the horizon fixed; they are
+run in ONE call to `run_mechanism_views`, which pays for the prefix and its lookahead pool once and
+forks every arm off that single realized pool.
+
+| view | what differs | role |
 |---|---|---|
-| source prefix at `c_source` | identical bytes | identical bytes |
-| lookahead pool + selected endpoint | identical | identical |
-| support partition | the policy's | **the same positions**, written from the SOURCE rather than the endpoint |
-| descendant fork seeds | identical | identical |
-| propagation horizon `c_next` | identical | identical |
+| `endpoint_change` | a DIFFERENT projected endpoint (one token) | **the mechanism test** |
+| `source_shuffle` | the source's resolved bytes permuted, same endpoint | **assay positive control** |
 
-Everything except the ORIGIN of the injected identities is held fixed, so a difference between the
-arms is attributable to the feedback content and to nothing else. `a2_views.matched_extra_lookaheads`
-must be non-zero for the pair to be compute-matched — it is `0` in every Canary cell, which is
-exactly why no Canary contrast is licensed.
+`feedback_off` produces no descendants — feedback-disabled cycles stop after the A2 view — so it is
+not a descendant contrast. `source_change` masks a carried position, which moves that position into
+the measurement domain on one arm only; it still runs, it is not scored.
 
-This is what makes the descendant observation testable. `0.798 → 0.712` from the Canary compares a
-depth-0 pool against a descendant pool: **different stages of different populations, and not a
-causal claim.** The paired design compares descendant against descendant.
+### 7.3 The statistic, and why the domain is the whole design
 
-### 7.2 Two readouts, read in a fixed order
+Normalized Hamming between a matched pair of complete descendants, on the **free domain**:
 
-**Primary — source transmission.** Does the propagated state carry information from the source that
-a feedback-off propagation does not? Per PLAN §2.6 the interventions are `endpoint_change`,
-`source_shuffle` and `feedback_off`; `source_change` (fixed-support ablation) is admissible only
-where arm A carried a resolved position, and where it is not, the row says so in its own words and
-`source_shuffle` carries intervention 2.
+> editable positions still unresolved in the projected state at `r_d`.
 
-**Secondary — structure non-damage**, three-way and pre-registered:
+One predicate, stated as a property of the projection rather than as a list of exclusions, so it
+cannot fall out of date with the kernel. It automatically excludes hard anchors (not editable), the
+written position (resolved by the write), and both source-carrying classes.
+
+That last exclusion is not fastidiousness — it is what stops the control from passing on nothing.
+Under `source_shuffle` the permuted bytes flow verbatim through `inject` and `carry`, so on the
+three executed Canary coordinates the arms differ **by construction** at:
+
+| cell | inject + carry-resolved | whole-editable Hamming |
+|---|---:|---:|
+| `5zhv_r40` | 9 + 37 = 46 / 101 | **0.455** |
+| `q00511_r30` | 10 + 80 = 90 / 277 | **0.325** |
+| `q00511_r40` | 10 + 109 = 119 / 277 | **0.430** |
+
+A 0.02 gate on that domain is not a gate. Both denominators are written to
+`mechanism_contrasts.parquet`; the free one is primary and the other is reported beside it.
+
+**Descendants are not filtered on their own structure verdict.** That is a post-treatment variable —
+conditioning on it is collider stratification and can bias the contrast. Structure is read per arm
+as the §7.6 secondary, from `complete_endpoints` and `structure_evaluations`.
+
+### 7.4 The unit of analysis is the SOURCE PREFIX
+
+Measured ICC on the resumed null: `5ZHV_B` **0.508**, `Q00511` **0.369**. A third to a half of the
+variance lives between prefixes, so descendants of one prefix are worth well under one draw each.
+Matched forks are averaged **within** a prefix first; prefixes are then the sample.
+
+Pairs whose two arms received byte-identical inputs are **structural zeros**, not evidence of no
+transmission. Excluded by pre-registered rule (`contrastable=false`), and counted, so the exclusion
+is visible rather than merely applied.
+
+### 7.5 Power, from measured spread — as an INTERNAL pilot
+
+The contrast is already a difference, so this is a one-sample problem: $\sigma_d$ is the standard
+deviation of the prefix-level means, and the two-sample factor of 2 does not belong in the formula.
+
+$$
+n_{\text{pairs}} \;=\; \mathrm{clip}\!\left(\left\lceil \frac{(z_{0.975}+z_{0.80})^{2}\,\sigma_d^{2}}{\delta^{2}} \right\rceil,\; 32,\; 128\right)
+$$
+
+Run in two batches, **analysed as one**. Batch 1 is 16 prefixes/protein and estimates $\sigma_d$;
+batch 2 completes to $n_{\text{pairs}}$; the verdict is read on all of it. This is a standard
+internal pilot — discarding batch 1 would throw away a third of the sample for a purity that
+inflates type-I error by less than 0.001 at these sizes. Batch 1 emits **no verdict**
+(`read_v2_mechanism.py` without `--confirmatory`), and its only output that feeds a decision is
+$\hat\sigma_d$.
+
+Sized on `endpoint_change` — the binding contrast — and not on the maximum over both views:
+`source_shuffle` perturbs tens of conditioning tokens where the primary perturbs one, so its spread
+belongs to a much larger effect and would push the primary past the cap to over-power a control that
+passes at a fraction of the sample. Reference scale at $\delta = 0.02$:
+
+| $\sigma_d$ | 0.03 | 0.04 | 0.05 | 0.06 | 0.08 |
+|---|---:|---:|---:|---:|---:|
+| prefixes | 18 → floor 32 | 32 | 50 | 71 | 126 |
+
+Past the cap the run is declared `underpowered_unresolved`. **$\delta$ is never raised to fit the
+sample.**
+
+### 7.6 The gate, pre-registered
+
+**$\delta = 0.036$ on the free domain** — about 2 residues on `5ZHV_B` (free ≈ 55 at `r=40`) and
+about 6 on `Q00511` (free ≈ 158). This is the pre-registered "at least ~2 / ~6 extra residues of
+downstream propagation", expressed in the only denominator whose positions can move.
+
+Gate: the **two-sided 95% CI lower bound exceeds $\delta$** — confidence that the effect clears the
+margin, not merely that a sample mean did. A point-estimate criterion on top would be inert (it is
+implied by the CI criterion at this $n$) and would silently halve power at the design effect.
+
+Conjunctive across proteins and views, so it is an **intersection-union test**: each component is
+read at its own level and **no multiplicity correction applies**. Adding one would buy no type-I
+protection and would under-power a sample sized without it.
 
 | observation | reading |
 |---|---|
-| both arms' descendants drop vs their own depth-0 pool | the resumed / no-remask **generation geometry**, not the mechanism |
-| only arm A drops | projection or policy is **damaging structure**; `D>1` stays shut regardless of transmission |
-| no stable paired difference | the four Canary descendants were **small-sample** |
+| primary clears $\delta$, control live | **transmission demonstrated** |
+| control live, primary does not clear | the assay works; **the one-token channel does not transmit** → indicts write cardinality, `D>1` stays shut |
+| control silent | **assay failure** — the readout cannot see propagation, and the primary's zero says nothing |
 
-The secondary is read even if the primary fails, because "feedback transmits nothing" and "feedback
-damages structure" call for different next experiments.
+Secondary, read even if the primary fails, because "transmits nothing" and "damages structure" call
+for different next experiments: if both arms' descendants drop against their own depth-0 pool it is
+the resumed/no-remask generation geometry; if only the feedback arm drops, projection is damaging
+structure and `D>1` stays shut regardless of transmission.
 
-### 7.3 Gates, in the units the mechanism stage uses
+Admission runs on the **mechanism-operability gates of §5.3**, never the v0 contract. Hard-anchor
+residue identity remains an absolute hard gate.
 
-Admission runs on the **mechanism-operability gates of §7.5**, not on the v0 contract — a floor
-calibrated on a population that folds better rejects most of this one, and the Canary measured
-exactly that. Hard-anchor residue identity remains an absolute hard gate. The Head gate keeps the
-resumed threshold, and §5.2's finding that it does not bite at this operating point is itself a
-result to report, not a reason to lower it.
+### 7.7 Coordinate and cost
 
-### 7.4 Power comes from the measured variance, not from a round number
+`r = 40` for both strata — the only `r` with a committed Canary transition on both (`5zhv_r30` was
+null). `r = 30` may run as a secondary; it does not enter the verdict.
 
-`source_variance` in the resumed-null artifact reports between-source and within-source variance of
-`N_H^whole` and the intraclass correlation. The pair count is derived, not picked:
+Traceable to the executed Canary (jobs `12094327–30`): one cell ≈ 2 min wall, 8.6–35.9 GPU-s,
+MaxRSS 27.5–30.4 GB; refold of a 302-aa design dominates a cycle's marginal cost (~94%). A prefix is
+about three cells, so 16 prefixes × 2 proteins ≈ 1.5–2 GPU-hours for batch 1.
 
-$$
-n_{\text{pairs}} \;=\; \left\lceil \frac{2\,(z_{1-\alpha/2} + z_{1-\beta})^{2}\,\sigma_{d}^{2}}{\delta^{2}} \right\rceil
-$$
+### 7.8 Only then
 
-with $\sigma_d$ the **paired** standard deviation (within-source, because the pair holds the source
-fixed) and $\delta$ the smallest effect worth detecting. Two consequences of the clustering the
-Canary exposed:
-
-* if the ICC is near 1, endpoints of one prefix are one measurement and the effective $n$ is the
-  number of **prefixes** — an interval computed as though endpoints were independent is too narrow;
-* the pairing is what buys the power here, because it removes exactly the between-source component
-  that dominates when ICC is high.
-
-$\delta$ is a scientific choice and is **pre-registered before the cohort runs**, not read off it.
-
-### 7.5 Cost model, from measured unit costs
-
-Traceable to the executed Canary (jobs `12094327–30`) and to the calibration:
-
-| unit | measured |
-|---|---|
-| one cell: 8 lookahead + descendant endpoints, 8 definitive refolds | ~2 min wall, 8.6–35.9 GPU-s, MaxRSS 27.5–30.4 GB |
-| one full-trajectory calibration replicate (completion + refold) | ~4 s (`5ZHV_B`) to ~5 s (`Q00511`) amortized |
-| refold, 302 aa, cold cache | dominates a cycle's marginal cost (~94%) |
-
-A pair costs about two cells, so $n_{\text{pairs}}$ pairs × 2 proteins ≈ $4n$ cell-equivalents ≈
-$8n$ minutes of one rtx6000 at 4 cores / 40 GB. At $n = 30$ that is roughly 4 GPU-hours per
-protein — cheap enough that the sample size should be set by §7.4 and not by budget.
-
-### 7.6 Only then
-
-Only if **source transmission** holds: freeze the production `FeedbackSupportPolicySpec`
-(PLAN §2.5's eight required elements) and only then open `D>1`.
+Only if transmission holds: freeze the production `FeedbackSupportPolicySpec` (PLAN §2.5's eight
+required elements) and only then open `D>1`.
 
 `allow_production_depth_gt_1` is never granted by the oracle factory. Opening it is a runbook
 decision that also requires the FeedbackSupportPolicy directionality gate. Nothing in §7 authorizes

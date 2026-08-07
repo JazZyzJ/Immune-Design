@@ -204,6 +204,11 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
     config = json.loads(json.dumps(template))  # deep copy without YAML aliases
 
     config["identity"]["code_revision"] = str(args.code_revision)
+    # The campaign names the EXPERIMENT.  Two runs that share a template but answer different
+    # questions -- the Canary's "does it execute", the mechanism cohort's "does it transmit" --
+    # must not sign their artifacts under one campaign, or the second reads as more of the first.
+    if getattr(args, "campaign_id", None):
+        config["identity"]["campaign_id"] = str(args.campaign_id)
 
     points = config["schedule"]["points"]
     if len(points) != 1:
@@ -344,6 +349,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--constraint-manifest", default=None,
                         help="omit for an unconstrained cell; its absence is then declared, "
                              "not left silent")
+    parser.add_argument("--campaign-id", default=None,
+                        help="override identity.campaign_id (default: the template's).  Use a "
+                             "distinct campaign for a distinct question, e.g. the mechanism cohort")
     return parser
 
 

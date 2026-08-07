@@ -60,6 +60,9 @@ __all__ = [
     "feedback_event_rows",
     "a2_view_rows",
     "terminal_validation_rows",
+    "MECHANISM_CONTRAST_VIEWS",
+    "free_domain",
+    "mechanism_contrast_rows",
     "write_v2_bundle",
 ]
 
@@ -123,7 +126,12 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
          "assimilation_json", "temporary_protection_json",
          "r_step", "c_source_step", "c_next_step", "declared_band_id", "declared_band_digest",
          "pair_id", "arm_slot", "treatment_identity", "descendant_fork_seed"],
-        ["transition_id", "source_state_id"],
+        # ``arm_slot`` and ``treatment_identity`` are part of the KEY, not merely columns.  A
+        # matched pair runs both arms off one source through one transition id, so without them two
+        # arms of the same contrast collide on the join key and the bundle refuses a table whose
+        # own columns were designed to hold exactly that.  For an unpaired ladder run both are
+        # constant, so the key is unchanged.
+        ["transition_id", "source_state_id", "arm_slot", "treatment_identity"],
     ),
     "a2_views": _schema(
         ["a2_view_id", "protein_id", "source_state_id", "depth", "n_members",
@@ -149,6 +157,24 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
          "structure_backend_digest", "v0_structure_gate_config_digest"],
         ["endpoint_id"],
     ),
+    # Runbook §7: the mechanism cohort's readout, one row per MATCHED DESCENDANT PAIR.
+    #
+    # Neither of the two checks that already exist answers the question this table is for.  The
+    # Canary showed the feedback machinery EXECUTES; ``source_dependence_verdict`` shows the kernel
+    # is not blind to what it was handed -- but both stop at the projected state.  Whether the
+    # injected identity survives propagation to a completed descendant is the actual scientific
+    # claim of V2, and nothing measured it.
+    "mechanism_contrasts": _schema(
+        ["protein_id", "view", "source_index", "fork_index",
+         "source_seed", "source_state_id", "source_unresolved_editable",
+         "analyzable", "reason", "parity_violation",
+         "n_free", "n_diff_free", "hamming_free",
+         "n_editable_scored", "n_diff_editable", "hamming_editable",
+         "contrastable", "n_input_diff", "write_positions_json",
+         "arm_a_descendant_id", "arm_b_descendant_id",
+         "arm_a_sequence_md5", "arm_b_sequence_md5"],
+        ["protein_id", "view", "source_index", "fork_index"],
+    ),
     "terminal_validation": _schema(
         ["endpoint_id", "sequence_md5", "structure_definitive", "structure_feasible",
          "structure_metrics_json", "immune_evaluator", "immune_global_risk", "immune_passed",
@@ -170,15 +196,19 @@ V2_COLUMN_TYPES: dict[str, str] = {
         "n_write_from_endpoint", "n_inject_from_source_feedback", "n_reopen",
         "n_carry_from_source", "n_members", "matched_extra_lookaheads",
         "whole_landscape_positive_count", "whole_landscape_n_windows",
+        "source_index", "n_free", "n_diff_free", "n_editable_scored", "n_diff_editable",
+        "n_input_diff", "source_unresolved_editable",
     )},
-    **{name: "uint" for name in ("fork_seed", "replay_fork_seed", "descendant_fork_seed")},
+    **{name: "uint" for name in ("fork_seed", "replay_fork_seed", "descendant_fork_seed",
+                                 "source_seed")},
     **{name: "float" for name in ("rho_edit", "head_global_risk", "immune_global_risk",
                                   "whole_landscape_max_increase",
-                                  "whole_landscape_positive_mass", "walltime_s")},
+                                  "whole_landscape_positive_mass", "walltime_s",
+                                  "hamming_free", "hamming_editable")},
     **{name: "bool" for name in (
         "structure_evaluated", "structure_feasible", "structure_definitive", "is_elite",
         "is_diversity_frontier", "may_become_ancestry", "policy_is_diagnostic", "immune_passed",
-        "evaluated", "feasible", "model_executed",
+        "evaluated", "feasible", "model_executed", "analyzable", "contrastable",
     )},
 }
 
@@ -555,6 +585,163 @@ def a2_view_rows(
             "matching_status": matching_status,
             "matching_detail": matching_detail,
             "unmatched_components_json": _json(dict(unmatched_components or {})),
+        })
+    return rows
+
+
+# --------------------------------------------------------------------------------------------
+# mechanism contrasts (runbook §7)
+# --------------------------------------------------------------------------------------------
+
+#: The views whose DESCENDANTS form a scorable contrast.
+#:
+#: ``feedback_off`` is absent because it is a view of the shared pre-feedback stage rather than a
+#: second execution: that stage runs with feedback disabled, stops after the A2 view, and therefore
+#: produces no descendants to pair.  ``source_change`` is absent because its fixed-support ablation
+#: masks a carried position, which moves that position INTO the free domain on one arm only -- the
+#: two arms would then be scored on different domains.  Both still run and still write their
+#: ordinary rows; they are simply not contrasts this statistic can carry.
+MECHANISM_CONTRAST_VIEWS: tuple[str, ...] = ("endpoint_change", "source_shuffle")
+
+
+def free_domain(projected: Any) -> tuple[int, ...]:
+    """The positions feedback can still steer: editable, and still unresolved at re-entry.
+
+    This one predicate is the whole domain definition, and it is stated as a property of the
+    projected state rather than as a list of exclusions so that it cannot fall out of date with the
+    kernel.  It excludes, automatically:
+
+    * **hard anchors** -- they are not in ``editable_positions`` at all;
+    * **the endpoint-written position** -- ``write_from_endpoint`` is resolved by the write, and it
+      is the one position two different endpoints differ at BY CONSTRUCTION;
+    * **``inject_from_source_feedback`` and ``carry_from_source``** -- both resolved, and both
+      carrying source bytes verbatim.  Under ``source_shuffle`` those bytes are permuted, so the
+      arms differ there by construction with no mechanism involved: on the three executed Canary
+      coordinates that is 46/101, 90/277 and 119/277 positions.  A whole-editable Hamming would
+      read 0.33-0.46 for a kernel that transmits nothing, and a 0.02 gate on it is not a gate.
+
+    What remains is masked on BOTH arms at ``r_d`` and can only be decided by forward propagation.
+    A difference there is transmission or it is nothing.
+    """
+    mask = projected.mask_token_id
+    return tuple(position for position in projected.editable_positions
+                 if projected.tokens[position] == mask)
+
+
+def _hamming(sequence_a: str, sequence_b: str, positions: Sequence[int]) -> int:
+    return sum(1 for position in positions if sequence_a[position] != sequence_b[position])
+
+
+def mechanism_contrast_rows(
+    *,
+    protein_id: str,
+    source_index: int,
+    source_seed: int,
+    source_state_id: str | None,
+    source_unresolved_editable: int | None,
+    view: str,
+    arm_a: Any,
+    arm_b: Any,
+    parity_violation: str = "",
+) -> list[dict]:
+    """Score one mechanism view's matched descendant pairs for one source prefix.
+
+    Returns one row per matched fork.  A prefix that produced no scorable contrast returns a SINGLE
+    row saying why rather than no rows at all: the sampling unit is the source prefix, and a
+    silently absent prefix is indistinguishable from one that was never attempted.
+    """
+    if view not in MECHANISM_CONTRAST_VIEWS:
+        raise V2ArtifactError(
+            f"{view!r} is not a scorable mechanism contrast; expected one of "
+            f"{list(MECHANISM_CONTRAST_VIEWS)}"
+        )
+
+    common = {
+        "protein_id": str(protein_id), "view": str(view),
+        "source_index": int(source_index), "source_seed": int(source_seed),
+        "source_state_id": source_state_id,
+        "source_unresolved_editable": (None if source_unresolved_editable is None
+                                       else int(source_unresolved_editable)),
+        "parity_violation": str(parity_violation),
+    }
+
+    def unscorable(reason: str) -> list[dict]:
+        return [{
+            **common, "fork_index": 0, "analyzable": False, "reason": reason,
+            "n_free": None, "n_diff_free": None, "hamming_free": None,
+            "n_editable_scored": None, "n_diff_editable": None, "hamming_editable": None,
+            "contrastable": None, "n_input_diff": None, "write_positions_json": _json([]),
+            "arm_a_descendant_id": None, "arm_b_descendant_id": None,
+            "arm_a_sequence_md5": None, "arm_b_sequence_md5": None,
+        }]
+
+    if parity_violation:
+        return unscorable(f"support parity violated: {parity_violation}")
+
+    projected_a = getattr(arm_a, "projected", None)
+    projected_b = getattr(arm_b, "projected", None)
+    if projected_a is None or projected_b is None:
+        missing = "A" if projected_a is None else "B"
+        return unscorable(f"arm {missing} produced no projection; the cycle stopped before feedback")
+
+    free = free_domain(projected_a)
+    if free != free_domain(projected_b):
+        return unscorable("the arms do not share a free domain, so no position is comparable "
+                          "between them")
+    if not free:
+        return unscorable("the free domain is empty; this coordinate leaves nothing for "
+                          "propagation to decide")
+
+    written = set(projected_a.support.write_from_endpoint) | set(
+        projected_b.support.write_from_endpoint)
+    # The whole-editable reading is kept alongside the free-domain one, minus the written position,
+    # because it is the denominator a threshold might instead be frozen on -- and because the gap
+    # between the two columns is the measurement of how much of the domain could never move.
+    editable_scored = tuple(sorted(set(projected_a.editable_positions) - written))
+
+    descendants_a = tuple(getattr(arm_a, "descendant_endpoints", ()) or ())
+    descendants_b = tuple(getattr(arm_b, "descendant_endpoints", ()) or ())
+    if len(descendants_a) != len(descendants_b):
+        return unscorable(
+            f"the arms produced {len(descendants_a)} and {len(descendants_b)} descendant(s); "
+            "zipping them would drop the tail and report a matched contrast that is not one")
+    if not descendants_a:
+        return unscorable("neither arm produced a descendant to compare")
+
+    # Whether the intervention actually changed what the arms were handed.  Two endpoints that
+    # happen to agree at the written position make the arms byte-identical INPUTS, so their
+    # descendants are identical for a reason that has nothing to do with transmission; such a pair
+    # is a structural zero and the analysis must be able to exclude it by a pre-registered rule
+    # rather than by looking at the outcome.
+    n_input_diff = _hamming(
+        "".join(chr(t) for t in projected_a.tokens),
+        "".join(chr(t) for t in projected_b.tokens),
+        range(len(projected_a.tokens)),
+    )
+
+    rows: list[dict] = []
+    for fork_index, (endpoint_a, endpoint_b) in enumerate(zip(descendants_a, descendants_b)):
+        sequence_a, sequence_b = endpoint_a.sequence, endpoint_b.sequence
+        if len(sequence_a) != len(projected_a.tokens) or len(sequence_b) != len(sequence_a):
+            raise V2ArtifactError(
+                f"descendant length {len(sequence_a)}/{len(sequence_b)} does not match the "
+                f"projected state's {len(projected_a.tokens)}; the position indices would not align"
+            )
+        n_diff_free = _hamming(sequence_a, sequence_b, free)
+        n_diff_editable = _hamming(sequence_a, sequence_b, editable_scored)
+        rows.append({
+            **common, "fork_index": int(fork_index), "analyzable": True, "reason": "",
+            "n_free": len(free), "n_diff_free": n_diff_free,
+            "hamming_free": n_diff_free / len(free),
+            "n_editable_scored": len(editable_scored), "n_diff_editable": n_diff_editable,
+            "hamming_editable": (n_diff_editable / len(editable_scored)
+                                 if editable_scored else None),
+            "contrastable": bool(n_input_diff), "n_input_diff": int(n_input_diff),
+            "write_positions_json": _json(sorted(written)),
+            "arm_a_descendant_id": getattr(endpoint_a, "endpoint_id", None),
+            "arm_b_descendant_id": getattr(endpoint_b, "endpoint_id", None),
+            "arm_a_sequence_md5": getattr(endpoint_a, "sequence_md5", None),
+            "arm_b_sequence_md5": getattr(endpoint_b, "sequence_md5", None),
         })
     return rows
 

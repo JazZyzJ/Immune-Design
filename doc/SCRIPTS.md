@@ -457,6 +457,21 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     digest cannot sign a two-protein cohort's two references. Tested:
     `tests/scripts/test_rf_fusion_v2_oracles.py`.
 
+28. `scripts/analysis/read_v2_mechanism.py` — reads a runbook §7 mechanism cohort
+    (`--bundle DIR ...`, `--delta`, `--floor`, `--cap`, `--confirmatory`, `--out`). One number per
+    SOURCE PREFIX: matched forks are averaged WITHIN a prefix before prefixes are treated as the
+    sample, because the resumed null measured ICC 0.37–0.51 and descendants of one prefix are worth
+    well under one draw each. Scores the free domain (editable, still unresolved at re-entry) and
+    reports the whole-editable reading beside it; drops `contrastable=false` pairs as structural
+    zeros and counts them. Without `--confirmatory` it emits NO verdict — it is an internal-pilot
+    variance reader and its only decision output is $n_{pairs}$ from the frozen one-sample formula
+    (no two-sample factor of 2), sized on `endpoint_change` rather than on the `source_shuffle`
+    positive control. With `--confirmatory` it reads the pre-registered margin gate (two-sided 95%
+    CI lower bound > δ, conjunctive across proteins and views, so an intersection-union test with
+    no multiplicity correction) and distinguishes `transmission_demonstrated` /
+    `transmission_not_demonstrated` / `assay_failure`. Tested:
+    `tests/scripts/test_rf_fusion_v2_mechanism.py`.
+
 27. `inverse_folding/reference_flow/configs/rf_refine_fusion_v2_mechanism_{5zhv_b,q00511}.yaml` —
     the MECHANISM-STAGE structure gates, byte-identical to the frozen v0
     `rf_refine_fusion_final_repair_beam.yaml` apart from two thresholds, each DERIVED from the
@@ -475,7 +490,10 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     is 1: PLAN §8.4 keeps production `D>1` launch-disabled. Procedure:
     `doc/RF_Fusion_v2_Cluster_Runbook.md`.
 
-22. `scripts/materialize_v2_canary_config.py` — resolves ONE Canary cell from the template above
+22. `scripts/materialize_v2_canary_config.py` — resolves ONE cell from the template above
+    (`--campaign-id` overrides `identity.campaign_id`, so the runbook §7 mechanism cohort can
+    reuse this producer with the mechanism-stage `--hotspot-json` and
+    `--v0-structure-gate-config` without signing its artifacts as more Canary)
     plus that cell's measured artifacts (runbook §3). Required flags name the cell
     (`--protein-id`, `--r-step`, `--stratum-key`), the artifacts (`--band-json`, `--hotspot-json`,
     `--reference-manifest`, `--stratum-manifest`, `--reference-sequence`) and every content-role
@@ -556,13 +574,15 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     (`journal_dir`, `device`). `rtx6000` + `CONDA_ENV=immune-design-blackwell` (sm_120), which is
     the env the `B(r)` scan and the hotspot calibration also ran under — a different stack would
     score the Canary against a threshold measured on another one. Echoes the driver's exit code as
-    `EXIT=<rc>`.
+    `EXIT=<rc>`. `MECHANISM_PREFIXES=N` switches the same job to the runbook §7 mechanism cohort;
+    a prefix is about three cells, so pass a matching `sbatch --time` (the header is sized for a
+    Canary cell).
 
 18. `scripts/run_rf_fusion_v2.py` — the V2 production driver. `--v2-config`, `--out-dir`,
     `--cohort`, `--input-file ROLE=PATH` (repeatable), `--shard-input NAME=PATH` (repeatable;
     the runtime paths handed to the execution stage — a bare path or a repeated name is refused,
     because guessing which parameter a path meant is how a checkpoint is passed as a PDB root),
-    `--code-revision`, `--fragment-dir`, `--print-config`, `--dry-run`, `--aggregate-only`. Provenance cannot be empty (PLAN §5.2,
+    `--code-revision`, `--fragment-dir`, `--print-config`, `--dry-run`, `--aggregate-only`, `--mechanism-prefixes N` (0 = the depth ladder; N > 0 runs the runbook §7 mechanism cohort — N independent source prefixes per protein through the matched arms, via `run_v2_mechanism_shard`, which shares this driver's config, signature, oracles, fragments, resume, ledger and bundle rather than duplicating them). Provenance cannot be empty (PLAN §5.2,
     "missing content identity fails closed"): a run that declares no inputs is REFUSED rather than
     signed with a sentinel — on the execution path and under `--dry-run` alike, while
     `--print-config` stays lenient because it signs nothing and reuses nothing. Each declared input
