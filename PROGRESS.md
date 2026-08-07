@@ -414,10 +414,11 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 
 ## RF-Refine Fusion V2 — trajectory-coupled pre-terminal feedback (PLAN_RF_REFINE_FUSION_V2.md)
 
-> **V2F1–V2F7 IMPLEMENTED AND ADVERSARIALLY REVISED; NO CLUSTER RUN.** Branch
-> `fusion_rf_refine`, worktree `/Users/jerry/Project/MHC-IF-fusion`. Two new packages:
-> `fusion_v2/` (typed contracts + `q_phi`, torch-free) and `fusion_v2_runtime/` (torch-aware).
-> `inverse_folding/reference_flow/sampler.py` is byte-identical to HEAD — V1 is not touched.
+> **STATE-TRANSITION CANARY EXECUTED ON CLUSTER (2026-08-06, `4dd0922`) — THE MECHANISM
+> EXECUTES.** Branch `fusion_rf_refine`, worktree `/Users/jerry/Project/MHC-IF-fusion`. Two
+> packages: `fusion_v2/` (typed contracts + `q_phi`, torch-free) and `fusion_v2_runtime/`
+> (torch-aware). `inverse_folding/reference_flow/sampler.py` is byte-identical to HEAD — V1 is not
+> touched.
 
 **The question.** Freeze a live partial state at `c_d`, fork K exact complete lookaheads, score
 them with a frozen Head, project ONE selected endpoint back to an earlier re-entry `r_d < c_d`
@@ -444,7 +445,25 @@ all missing-dependency or missing-fixture-file), i.e. no regression.
 | `explicit_probe` cannot drive a real canary (predeclared sets vs stochastic resolvedness) | **CLOSED** — replaced by `StateDerivedProbePolicy`, whose partition rule is frozen in `doc/RF_Fusion_v2_Cluster_Runbook.md` and whose reopen cardinality is pinned by `B(r_d)` rather than declared | `fusion_v2/policy.py` |
 | `active_population_width > 1` refused at config parse | Open scientific question, correctly refused. Interface Map OQ7 (:485): neither PLAN §2.7 nor `FUSION_V2.md` §4.3 says whether a forked family inherits its parent's `reference_binding_id` or opens its own | `fusion_v2/config.py` |
 | `reward_ordered` / `policy_source_off` mechanism views are interface-only (`NotYetFrozenError`) | **Correctly deferred, not a todo.** PLAN §2.5 + §8.4 sequence the `FeedbackSupportPolicySpec` freeze AFTER positive source transmission; running a placeholder would "yield a number that looks like evidence" | `fusion_v2_runtime/paired.py` |
-| No production oracle factory, so the driver cannot launch a real run | **Out of scope by PLAN §5.5** (:655): "Launcher and Canary commands are outside this PLAN revision and will be added to the runbook after the local code gate" | — |
+| No production oracle factory, so the driver cannot launch a real run | **CLOSED** — the launch surface is `materialize_v2_canary_config.py` → `preflight_v2_canary_assembly.py` → `submit_rf_fusion_v2_canary.slurm` → `analysis/read_v2_canary.py`, runbook §3–§6 | `doc/SCRIPTS.md` 22–25 |
+| The structure gate is calibrated on a different population than it enforces on | **OPEN, decision pending.** Calibrated on full de novo trajectories (`5ZHV_B` scTM median 0.8528, 50% pass); enforces on completions RESUMED from a captured source state (median ≈0.798, 1/8 pass; descendants ≈0.712). This is why `5zhv_r30` admitted nothing | runbook §5.1 |
+| The SAME population question on the Head axis | **OPEN, unmeasured.** The hotspot threshold was calibrated on full trajectories and enforces on resumed ones; the artifact records `head_global_risk`, not `N_H^whole`, for Canary endpoints, so this run does not answer it | runbook §5.1 |
+
+### Executed Canary (jobs `12094327–30`, rtx6000 / `immune-design-blackwell`, ~2 min + 8.6–35.9 GPU-s per cell)
+
+| cell | outcome | write/inject/reopen/carry | Σ | definitive |
+|---|---|---|---:|---:|
+| `5zhv_r30` | `null_no_admissible_endpoint` | — | — | 0/4 |
+| `5zhv_r40` | **committed** | 1 / 9 / 1 / 91 | 102 | 1/8 |
+| `q00511_r30` | **committed** | 1 / 10 / 50 / 217 | 278 | 4/8 |
+| `q00511_r40` | **committed** | 1 / 10 / 21 / 246 | 278 | 2/8 |
+
+`Σ` is the editable domain exactly (`278 = 302 − 24`), so hard anchors are in no support class by
+measurement. `u_proj = u_src − a + b_new` closes to the digit and every projected state lands inside
+its own `B(r)` envelope on both axes — the band pinned the reopen cardinality. Anchors 24 × 8
+endpoints vs WT, **0 violations**. All other §6 invariants pass wherever a transition occurred.
+`a2_matched_extra_lookaheads = 0`, so **no Head contrast is licensed**. Report:
+`<WORK>/v2_canary/canary_read_v1.json`.
 
 **Gate status.** Production `D>1` stays launch-disabled until a powered real one-cycle
 source-transmission gate AND the frozen `FeedbackSupportPolicy` directionality gate both pass.
@@ -502,19 +521,38 @@ per-parent cohorts + decision ledgers + launch manifest). Runs:
     full-residue Kabsch fit: its ~26-residue N-terminal extension sits 30–60 Å off AFDB **more in
     the WT than in the designs**. Refit on residues 20+: catalytic RMSD **0.55 Å** vs AFDB,
     **0.23 Å** vs WT-ESMFold2. Its designs are structurally fine.
-- **Refinement — RUNNING** (44 cells → 109 shards, rtx6000, submitted 2026-08-04). Full-cohort per
+- **Refinement — COMPLETE (2026-08-06)**, `refine/cohort/cohort_final.parquet` (4910 rows, one per
+  seed) + `cohort_decision_table.tsv` (44 cells). Full-cohort per
   `PROTOCOL/shortlist_and_refine_seed_selection.md`: all **4910 cell-specific unique seeds** enter
   (dedup on `protein_id+allele+sequence`; the global-dedup table drops the allele dimension and
   gives 4906), no immune/structure pre-shortlist, same constraint manifests as generation. Gate =
-  each parent's own WT floor + cohort-wide margins (−0.03 scTM / +1.0 Å cat / −15 pLDDT), leaving
-  95.5% of seeds inside and no cell under 50%. Three contract fixes were required first: the
-  manifests needed `direct_functional_union_uniprot_1b` (else the gate cannot resolve
-  `cat_max_scRMSD` and fails closed), the refold cache needed atomic writes (44 jobs share one
-  content-addressed cache), and `STRONG_RANK` must stay **0.02** — refine's `nmp_fn` emits
-  `rank_EL` as a fraction while `evaluate`'s table stores 0–100 percent. Measured ≈6 min/seed at
-  6-way concurrency (NMP-bound; rtx6000 is a single 64-core node, so more GPUs would not help).
-- **Next**: on completion, `merge_refine_shards.py` → `verify_refine.py` full pass → paired
-  WT → seed → refined cohort into the tetramer gate.
+  each parent's own WT floor + cohort-wide margins (−0.03 scTM / +1.0 Å cat / −15 pLDDT). Three
+  contract fixes were required first: the manifests needed `direct_functional_union_uniprot_1b`
+  (else the gate cannot resolve `cat_max_scRMSD` and fails closed), the refold cache needed atomic
+  writes (44 jobs share one content-addressed cache), and `STRONG_RANK` must stay **0.02** —
+  refine's `nmp_fn` emits `rank_EL` as a fraction while `evaluate`'s table stores 0–100 percent.
+  - **Coverage**: 44/44 cells, per-cell refined count == that cell's seed-table `n_seeds` exactly;
+    `verify_refine.py` contract problems 0, hard failures 0. (44 not 45 cells: `D0VWQ1 × 15:01`
+    has no cell-specific unique seeds.) `n_strong_binders` 4910/4910 after the 777-design NMP
+    backfill for shards killed at walltime. The two independent NMP paths (refine-internal, rank
+    fraction 0.02 vs `evaluate`, percentage 2.0) agree on **282 vs 282** epitope-free designs with
+    **0 disagreements**.
+  - **Result**: distinct core **5 → 2** median (mean 5.15 → 2.27), median reduction **3**; **282
+    (5.7%)** reach zero; 313 (6.4%) unimproved. Mutation cost median **1**, **max 2**. scTM median
+    0.974 (p05 0.917). Structure gate 4905/4910 — all 4597 edited designs pass by construction, the
+    5 failures are unedited A0A9P8P4R1 seeds whose own structure sits just over the cell threshold
+    (the gate never filtered seeds, by design).
+  - **Zero-core is set by the starting core count, not by refinement effort.** Reduction is ≈3
+    regardless of where a seed starts, so zero-rate collapses monotonically with `core_before`:
+    1 → 63.6%, 2 → 21.3%, 3 → 17.3%, 4 → 4.9%, 5 → 1.1%, **≥6 → 0%** (2087 seeds). By allele:
+    **15:01 23.4%** (core_before median 3), **07:01 1.9%** (median 6), **04:01 0.0%** (median 6).
+    The 282 zero-core designs come from **7/44 cells / 6 parents**, 257 earned by refinement and 25
+    already clean at seed. Implication for the next round: press 04:01/07:01 **generation** down to
+    `core_before ≤ 2`; more refine budget will not close that gap.
+- **Next**: holo/tetramer-gate cohort selection is a user decision (zero-core = 282 designs but
+  only 6/15 parents and no 04:01 coverage; `core ≤ 1` + gate = 1060 across 15 cells / 13 parents,
+  still no 04:01; `core ≤ 2` + gate = 3190 across 32 cells and **all 15 parents**).
+  Nothing submitted downstream.
 
 ## Backup Collection — wet-lab targets (NEW, 2026-07-13)
 
