@@ -62,6 +62,16 @@ def _verdict(ok: bool, detail: str) -> dict:
     return {"pass": bool(ok), "detail": detail}
 
 
+def _not_applicable(detail: str) -> dict:
+    """A check the run never reached, kept distinct from one it reached and failed.
+
+    A cell that admitted no endpoint has no injected positions to assimilate. Scoring that as a
+    FAIL would report the same verdict as a cell whose assimilation was actually wrong, and the
+    two call for opposite actions. `non_null_transition` already carries the real failure.
+    """
+    return {"pass": True, "not_applicable": True, "detail": detail}
+
+
 def _check_non_null(events: pd.DataFrame) -> dict:
     if events.empty:
         return _verdict(False, "no feedback events at all -- the ladder ran no cycle")
@@ -108,14 +118,27 @@ def _check_anchors(states: pd.DataFrame, endpoints: pd.DataFrame,
 
 
 def _check_replay(states: pd.DataFrame, endpoints: pd.DataFrame) -> dict:
-    missing_states = states["replay_state_hash"].isna().sum()
-    missing_endpoints = endpoints["replay_state_hash"].isna().sum()
+    """Fork identity present and distinct -- on the layers that HAVE a fork.
+
+    A PROJECTED state is constructed by the kernel from a source and an endpoint; nothing sampled
+    it, so it carries no fork seed and no replay hash. Requiring one there would fail every
+    committed cell for a value that cannot exist. Its absence is reported rather than skipped, so
+    "no replay by construction" stays distinguishable from "the field went missing".
+    """
+    sampled = states[states["layer"] != "projected"]
+    projected = states[states["layer"] == "projected"]
+    stray = int(projected["replay_state_hash"].notna().sum())
+    missing_states = int(sampled["replay_state_hash"].isna().sum())
+    missing_endpoints = int(endpoints["replay_state_hash"].isna().sum())
     seeds = endpoints["replay_fork_seed"].dropna().tolist()
     distinct = len(set(seeds)) == len(seeds)
     return _verdict(
-        missing_states == 0 and missing_endpoints == 0 and distinct and bool(seeds),
-        f"states missing hash={missing_states}, endpoints missing hash={missing_endpoints}, "
-        f"fork seeds {len(seeds)} total / {len(set(seeds))} distinct")
+        missing_states == 0 and missing_endpoints == 0 and distinct and bool(seeds)
+        and stray == 0,
+        f"sampled states missing hash={missing_states}, endpoints missing hash="
+        f"{missing_endpoints}, fork seeds {len(seeds)} total / {len(set(seeds))} distinct, "
+        f"{len(projected)} projected state(s) carry none by construction"
+        + (f" -- but {stray} DID, which nothing sampled" if stray else ""))
 
 
 def _check_lineage(states: pd.DataFrame, events: pd.DataFrame) -> dict:
@@ -145,7 +168,10 @@ def _check_lineage(states: pd.DataFrame, events: pd.DataFrame) -> dict:
             # relationship this reader has not established. Presence is the chain-closing property.
             if not row.get("parent_transition_id"):
                 broken.append((event["transition_id"], "projected.parent_transition_id", None))
-    committed = int((events["outcome"] == "committed").sum()) if not events.empty else 0
+    n_committed = int((events["outcome"] == "committed").sum()) if not events.empty else 0
+    if n_committed == 0:
+        return _not_applicable("no committed transition, so there is no chain to close")
+    committed = n_committed
     return _verdict(committed >= 1 and not broken,
                     f"{committed} committed transition(s), {len(broken)} break(s){broken[:3]}")
 
@@ -167,8 +193,11 @@ def _check_assimilation_projected(states: pd.DataFrame, events: pd.DataFrame) ->
     A number there would mean the projected state was ranked on evidence it has not yet earned
     through a forward pass of its own.
     """
+    committed = events[events["outcome"] == "committed"]
+    if committed.empty:
+        return _not_applicable("no committed transition, so nothing was injected to assimilate")
     problems, checked = [], 0
-    for _, event in events[events["outcome"] == "committed"].iterrows():
+    for _, event in committed.iterrows():
         row = _state_row(states, event.get("projected_state_id"))
         if row is None:
             problems.append((event["transition_id"], "projected state absent"))
@@ -188,8 +217,11 @@ def _check_assimilation_projected(states: pd.DataFrame, events: pd.DataFrame) ->
 
 def _check_assimilation_propagated(states: pd.DataFrame, events: pd.DataFrame) -> dict:
     """After the first propagation forward: those positions are `assimilated` with a FINITE score."""
+    committed = events[events["outcome"] == "committed"]
+    if committed.empty:
+        return _not_applicable("no committed transition, so nothing was injected to assimilate")
     problems, checked = [], 0
-    for _, event in events[events["outcome"] == "committed"].iterrows():
+    for _, event in committed.iterrows():
         row = _state_row(states, event.get("propagated_state_id"))
         if row is None:
             problems.append((event["transition_id"], "propagated state absent"))
@@ -211,8 +243,11 @@ def _check_assimilation_propagated(states: pd.DataFrame, events: pd.DataFrame) -
 
 def _check_protection_expiry(states: pd.DataFrame, events: pd.DataFrame) -> dict:
     """Every grant expires at `c_{d+1}` exactly -- not before it, and not carried past it."""
+    committed = events[events["outcome"] == "committed"]
+    if committed.empty:
+        return _not_applicable("no committed transition, so no protection was granted")
     problems, grants = [], 0
-    for _, event in events[events["outcome"] == "committed"].iterrows():
+    for _, event in committed.iterrows():
         c_next = int(event["c_next_step"])
         projected = _state_row(states, event.get("projected_state_id"))
         propagated = _state_row(states, event.get("propagated_state_id"))
@@ -360,7 +395,29 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     report = [read_cell(path, reference=reference)
               for path, reference in (_split(item) for item in args.bundle)]
-    payload = {"cells": report, "all_pass": all(cell["all_pass"] for cell in report)}
+
+    # §6 states the non-null condition PER PROTEIN, not per cell: "at least one `committed` per
+    # protein".  A cell that admitted no endpoint is a fact about that cell's four lookaheads
+    # against the structure gate; the mechanism question is whether the protein ever transitioned.
+    # Both are reported, because collapsing to either one alone loses the other.
+    by_protein: dict[str, dict] = {}
+    for cell in report:
+        for protein_id in cell["cohort"] or ():
+            entry = by_protein.setdefault(protein_id, {"cells": [], "committed_cells": []})
+            entry["cells"].append(Path(cell["bundle"]).name)
+            if cell["checks"]["non_null_transition"]["pass"]:
+                entry["committed_cells"].append(Path(cell["bundle"]).name)
+    for entry in by_protein.values():
+        entry["non_null_transition"] = bool(entry["committed_cells"])
+
+    payload = {
+        "cells": report,
+        "per_protein": by_protein,
+        # Per-cell: every check on every cell.  Per-protein: §6's own condition.
+        "all_cells_pass": all(cell["all_pass"] for cell in report),
+        "all_proteins_transitioned": all(e["non_null_transition"] for e in by_protein.values()),
+    }
+    payload["all_pass"] = payload["all_cells_pass"]
     text = json.dumps(payload, indent=2, sort_keys=True, default=str)
     if args.json_out:
         Path(args.json_out).write_text(text, encoding="utf-8")
