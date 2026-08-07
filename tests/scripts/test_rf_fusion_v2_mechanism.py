@@ -659,3 +659,34 @@ def test_a_merge_across_code_revisions_is_visible_not_silent(tmp_path):
 
     same = provenance(load_contrasts([str(b1)]))
     assert same["single_code_revision"] is True
+
+
+def test_a_single_unscorable_prefix_does_not_change_how_the_rest_are_counted():
+    """One null row turns `contrastable` from bool into OBJECT dtype across a batch merge.
+
+    Object masks still index correctly, but `~mask` on them is integer negation -- it yields
+    -1/-2 rather than the complement.  Measured on the real merged 5ZHV_B sample, where two rows
+    are typed nulls from a band refusal.  The counts must not depend on which operation the code
+    happens to reach for.
+    """
+    from scripts.analysis.read_v2_mechanism import _flag, read_mechanism
+
+    clean = _frame({i: [0.05] for i in range(4)})
+    dirty = pd.concat([clean, pd.DataFrame([{
+        "protein_id": "5ZHV_B", "view": "endpoint_change", "source_index": 9, "fork_index": 0,
+        "analyzable": None, "contrastable": None, "reason": "band refused",
+        "n_free": None, "hamming_free": None, "hamming_editable": None,
+    }])], ignore_index=True)
+    assert dirty["contrastable"].dtype == object, "the fixture must reproduce the dtype collapse"
+
+    mask = _flag(dirty, "contrastable")
+    assert mask.dtype == bool
+    assert list(~mask) == [False, False, False, False, True]      # a real complement
+
+    clean_block = read_mechanism(clean, delta=0.036, floor=32,
+                                 cap=128)["proteins"]["5ZHV_B"]["endpoint_change"]
+    dirty_block = read_mechanism(dirty, delta=0.036, floor=32,
+                                 cap=128)["proteins"]["5ZHV_B"]["endpoint_change"]
+    assert dirty_block["n_prefixes_scored"] == clean_block["n_prefixes_scored"] == 4
+    assert dirty_block["free"]["mean"] == pytest.approx(clean_block["free"]["mean"])
+    assert dirty_block["unanalyzable_reasons"] == {"band refused": 1}

@@ -118,6 +118,18 @@ def provenance(frame: pd.DataFrame) -> dict:
     }
 
 
+def _flag(rows: pd.DataFrame, column: str) -> pd.Series:
+    """A real boolean mask, whatever the column's storage dtype is.
+
+    An unscorable row carries nulls in every metric column, so as soon as ONE prefix fails, a
+    concatenation of batches turns `contrastable` from bool into object.  Masks of object dtype
+    still index correctly, but `~mask` on them is INTEGER negation -- it silently yields -1/-2
+    rather than the complement.  The primary analysis should not rest on which of those two
+    operations a caller happens to reach for.
+    """
+    return rows[column].fillna(False).astype(bool)
+
+
 def prefix_means(rows: pd.DataFrame, *, column: str) -> pd.Series:
     """One number per source prefix: the mean over that prefix's matched forks.
 
@@ -164,11 +176,11 @@ def read_mechanism(frame: pd.DataFrame, *, delta: float, floor: int, cap: int) -
     for protein_id, protein_rows in frame.groupby("protein_id"):
         per_view: dict = {}
         for view, view_rows in protein_rows.groupby("view"):
-            analyzable = view_rows[view_rows["analyzable"].fillna(False)]
+            analyzable = view_rows[_flag(view_rows, "analyzable")]
             # A pair whose two arms received byte-identical inputs is a STRUCTURAL zero, not
             # evidence of no transmission.  Excluded by this pre-registered rule, and counted so
             # the exclusion is visible rather than merely applied.
-            scored = analyzable[analyzable["contrastable"].fillna(False)]
+            scored = analyzable[_flag(analyzable, "contrastable")]
             n_prefixes_seen = int(view_rows.groupby("source_index").ngroups)
             n_prefixes_scored = int(scored.groupby("source_index").ngroups) if len(scored) else 0
             per_view[view] = {
@@ -180,7 +192,7 @@ def read_mechanism(frame: pd.DataFrame, *, delta: float, floor: int, cap: int) -
                 "contrastable_fraction": (
                     None if not n_prefixes_seen else n_prefixes_scored / n_prefixes_seen),
                 "unanalyzable_reasons": (
-                    view_rows[~view_rows["analyzable"].fillna(False)]["reason"]
+                    view_rows[~_flag(view_rows, "analyzable")]["reason"]
                     .value_counts().to_dict()),
                 "free_domain_size": (
                     None if not len(scored) else float(scored["n_free"].mean())),
