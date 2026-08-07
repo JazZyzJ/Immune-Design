@@ -1008,10 +1008,65 @@ Traceable to the executed Canary (jobs `12094327–30`): one cell ≈ 2 min wall
 MaxRSS 27.5–30.4 GB; refold of a 302-aa design dominates a cycle's marginal cost (~94%). A prefix is
 about three cells, so 16 prefixes × 2 proteins ≈ 1.5–2 GPU-hours for batch 1.
 
-### 7.8 Only then
+### 7.8 Realized result (2026-08-07) — `transmission_demonstrated`
 
-Only if transmission holds: freeze the production `FeedbackSupportPolicySpec` (PLAN §2.5's eight
-required elements) and only then open `D>1`.
+Jobs `12098724`/`12098725` (batch 1, prefixes 0-15) and `12099604`/`12099605` (batch 2, prefixes
+16-55), analysed as ONE sample per the internal-pilot design.
+
+| | scored | contrastable | mean | CI95 lower | residues | $\hat\sigma_d$ |
+|---|---|---:|---:|---:|---:|---:|
+| `5ZHV_B` `endpoint_change` | 38/56 | 0.679 | 0.06233 | **0.04903** | 3.4 / 54.3 | 0.04046 |
+| `Q00511` `endpoint_change` | 39/56 | 0.696 | 0.09355 | **0.07783** | 14.8 / 158.2 | 0.04850 |
+| `5ZHV_B` `source_shuffle` | 55/56 | 0.982 | 0.31985 | 0.30566 | — | 0.05247 |
+| `Q00511` `source_shuffle` | 56/56 | 1.000 | 0.22182 | 0.21349 | — | 0.03107 |
+
+**The gate passes on all four components.** Both primaries clear the $\delta = 0.036$ margin by
+their two-sided 95% CI lower bound; both positive controls are wide awake. Realized
+$\hat\sigma_d^{\max} = 0.0485$ gives an unclipped 15, so 38 and 39 scored prefixes exceed the
+32-prefix floor the design was powered on — the study is not underpowered by its own rule.
+
+**What was demonstrated, stated narrowly.** ONE amino acid, written at the lowest-indexed masked
+position and protected until `c_next`, measurably steers the completion: 3.4 downstream residues on
+`5ZHV_B` and 14.8 on `Q00511`, on domains of 54 and 158. In batch 1 not one of the 22 scored
+prefixes across both proteins produced an exact zero.
+
+**The domain choice was load-bearing, and it is now measured rather than argued.** For
+`endpoint_change`, `n_diff_editable` equals `n_diff_free` fork by fork — every difference the
+endpoint channel produced lies inside the free domain. For `source_shuffle`, the whole-editable
+reading is 0.594 / 0.529 against 0.320 / 0.222 on the free domain, the gap being exactly the
+permuted source bytes that reach both projections by construction. A $\delta = 0.036$ gate on the
+editable denominator would have passed the positive control on construction alone.
+
+**Two batches, two code revisions, one sample.** Batch 1 ran under `af83803f0a38` and batch 2 under
+`2844d0edad3d`; the only run-path difference is the loop bound that selects WHICH prefix indices a
+batch runs. Established by evidence rather than by reading the diff: prefix 0 replayed under the
+later revision (job `12099520`) is **byte-identical** to batch 1's prefix 0 in every contrast column
+including the descendant sequence digests.
+
+### 7.9 The secondary is INCONCLUSIVE, and that is what shuts `D>1`
+
+| | depth-0 pool | descendants |
+|---|---:|---:|
+| `5ZHV_B` | 211/224 = 94.2% | 592/880 = **67.3%** |
+| `Q00511` | 202/224 = 90.2% | 576/892 = **64.6%** |
+
+Descendants fold ~26 points worse than the pool they came from, on both proteins. §7.6's three-way
+reading cannot be completed on this design: **every descendant-producing arm is feedback-on**,
+because a feedback-disabled cycle stops after the A2 view and produces no descendant at all. So
+"projection damages structure" and "resumed propagation to `c_next` loses structure" are not
+separated here, and the drop cannot be attributed.
+
+Separating them needs one more arm that this executor does not run: propagate the captured source
+from `r_d` to `c_next` and complete it **without any projection**, matched on source, fork seeds and
+horizon. Until that exists, §7.8's precondition is unmet on the structure side regardless of the
+primary, and `D>1` stays shut.
+
+### 7.10 Only then
+
+Transmission holds (§7.8).  The other precondition does NOT: §7.9's structure secondary is
+inconclusive by construction, so nothing here authorizes freezing the production
+`FeedbackSupportPolicySpec` or opening `D>1`.  The next experiment is the missing arm §7.9 names --
+a descendant produced with no projection at all, matched on source, fork seeds and horizon.
 
 `allow_production_depth_gt_1` is never granted by the oracle factory. Opening it is a runbook
 decision that also requires the FeedbackSupportPolicy directionality gate. Nothing in §7 authorizes
