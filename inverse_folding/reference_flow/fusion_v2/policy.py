@@ -363,6 +363,19 @@ class FeedbackSupportPolicy(Protocol):
                coordinates: CycleCoordinates) -> PolicyResult:
         """Propose support sets for one projection, or decline."""
 
+    def __call__(self, source: LivePartialState, endpoint: CompleteEndpoint,
+                 coordinates: CycleCoordinates) -> PolicyResult:
+        """The shape ``run_one_cycle`` actually invokes: positional, and callable.
+
+        The kernel types its ``support_policy`` parameter as ``Callable[..., Any]`` and calls it
+        directly.  This Protocol declared only ``decide``, so an implementation could satisfy the
+        declared interface and still be unusable by the only thing that consumes it -- which is
+        what happened: every cycle-level test passes a bare function or a fake with ``__call__``,
+        so the divergence was invisible until the real policy reached a real projection on the
+        cluster and raised ``'StateDerivedProbePolicy' object is not callable``.  Declaring both
+        here makes "implements the Protocol" and "the kernel can use it" the same statement.
+        """
+
 
 @dataclass(frozen=True)
 class ExplicitProbePolicy:
@@ -431,6 +444,11 @@ class ExplicitProbePolicy:
             reason_by_pos=self.reason_by_pos,
             policy=self.identity(),
         )
+
+    def __call__(self, source: LivePartialState, endpoint: CompleteEndpoint,
+                 coordinates: CycleCoordinates) -> PolicyResult:
+        """``run_one_cycle`` calls the policy positionally; ``decide`` is the named contract."""
+        return self.decide(source=source, endpoint=endpoint, coordinates=coordinates)
 
 
 @dataclass(frozen=True)
@@ -595,3 +613,8 @@ class StateDerivedProbePolicy:
             reopen=tuple(reopen), carry_from_source=tuple(carry),
             reason_by_pos=reasons, policy=self.identity(),
         )
+
+    def __call__(self, source: LivePartialState, endpoint: CompleteEndpoint,
+                 coordinates: CycleCoordinates) -> PolicyResult:
+        """``run_one_cycle`` calls the policy positionally; ``decide`` is the named contract."""
+        return self.decide(source=source, endpoint=endpoint, coordinates=coordinates)

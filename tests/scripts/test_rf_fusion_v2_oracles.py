@@ -39,6 +39,35 @@ def _config(**over):
 # --------------------------------------------------------------------------------------------
 
 
+def test_the_registry_returns_a_policy_the_KERNEL_can_actually_invoke():
+    """REGRESSION. `run_one_cycle` calls `support_policy(source, endpoint, coordinates)`.
+
+    `StateDerivedProbePolicy` declared only `decide(*, source, endpoint, coordinates)` — keyword-only
+    and differently named — so it satisfied the `FeedbackSupportPolicy` Protocol and was still
+    unusable by the one thing that consumes it. Every cycle-level test passes a bare function or a
+    fake with `__call__`, so the divergence was invisible until a real projection on the cluster
+    raised `'StateDerivedProbePolicy' object is not callable` — after the structure gate had already
+    admitted an endpoint, which is the most expensive place in the cycle to find out.
+
+    The signature is checked positionally against what the kernel passes, not merely `callable()`:
+    an object with a `__call__` taking different parameter names would pass a callability check and
+    fail identically at the call site.
+    """
+    import inspect
+
+    from inverse_folding.reference_flow.fusion_v2_runtime import cycle as kernel
+
+    policy = resolve_support_policy(_config(), band_table=F.band_table(), stratum_key=F.STRATUM)
+    assert callable(policy), type(policy)
+    assert hasattr(policy, "identity")
+    parameters = list(inspect.signature(type(policy).__call__).parameters)
+    assert parameters == ["self", "source", "endpoint", "coordinates"], parameters
+    # And the kernel really does call it positionally -- read from the source, so a future kernel
+    # that switched to `.decide(...)` makes this test wrong rather than silently vacuous.
+    source = inspect.getsource(kernel.run_one_cycle)
+    assert "support_policy(" in source, "the kernel no longer calls the policy directly"
+
+
 def test_the_declared_policy_is_the_one_that_gets_built():
     policy = resolve_support_policy(_config(), band_table=F.band_table(), stratum_key=F.STRATUM)
     assert policy.identity().policy_id == _config().projection.support_policy_id

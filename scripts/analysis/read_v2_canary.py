@@ -132,15 +132,19 @@ def _check_lineage(states: pd.DataFrame, events: pd.DataFrame) -> dict:
         projected = states[states["state_id"] == event.get("projected_state_id")]
         if not projected.empty:
             row = projected.iloc[0]
+            # These two are set from the source and the selected endpoint at construction
+            # (`fusion_v2.projection`), so they are the chain and are asserted.
             if row.get("parent_state_id") != event.get("source_state_id"):
                 broken.append((event["transition_id"], "projected.parent_state_id",
                                row.get("parent_state_id")))
             if row.get("origin_endpoint_id") != event.get("selected_endpoint_id"):
                 broken.append((event["transition_id"], "projected.origin_endpoint_id",
                                row.get("origin_endpoint_id")))
-            if row.get("parent_transition_id") != event.get("transition_id"):
-                broken.append((event["transition_id"], "projected.parent_transition_id",
-                               row.get("parent_transition_id")))
+            # `parent_transition_id` carries the CYCLE's `origin_transition_id`, which the event
+            # row's own `transition_id` need not equal; requiring equality would be asserting a
+            # relationship this reader has not established. Presence is the chain-closing property.
+            if not row.get("parent_transition_id"):
+                broken.append((event["transition_id"], "projected.parent_transition_id", None))
     committed = int((events["outcome"] == "committed").sum()) if not events.empty else 0
     return _verdict(committed >= 1 and not broken,
                     f"{committed} committed transition(s), {len(broken)} break(s){broken[:3]}")
@@ -258,19 +262,38 @@ def _check_evidence_namespaces(states: pd.DataFrame) -> dict:
 
 
 def _check_ledger(bundle: Path, manifest: dict) -> dict:
+    """Phases present, physical cost complete, no breached realized cap.
+
+    Aggregated through the runtime's OWN `aggregate_v2_ledger` rather than by summing here:
+    `physical_cost_complete` is a property of the aggregate (no attempt closed
+    `unknown_after_start`), not a column on a row, and a second aggregation would be a second
+    definition of the number the caps are checked against.
+    """
+    from inverse_folding.reference_flow.fusion_v2_runtime.ledger import (
+        UNKNOWN_AFTER_START, V2LedgerEvent, aggregate_v2_ledger)
+
     path = bundle / "cost_ledger.jsonl"
     if not path.exists():
         return _verdict(False, "cost_ledger.jsonl absent -- the run cannot say what it burned")
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    phases = sorted({row.get("phase") for row in rows if row.get("phase")})
-    incomplete = [row for row in rows if not row.get("physical_cost_complete", False)]
-    unknown = [row for row in rows if row.get("unknown_after_start")]
+    if not rows:
+        return _verdict(False, "the ledger was kept and is empty -- nothing was metered")
+    events = [V2LedgerEvent(**row) for row in rows]
+    totals = aggregate_v2_ledger(events)
+    phases = sorted({event.phase for event in events})
+    unknown = [event.attempt_id for event in events
+               if event.physical_cost_status == UNKNOWN_AFTER_START]
+    complete = bool(totals.get("physical_cost_complete", False))
     realized = manifest.get("realized_caps") or {}
     breached = list(realized.get("breached") or ())
     return _verdict(
-        bool(rows) and not incomplete and not breached,
-        f"{len(rows)} event(s), phases={phases}, incomplete={len(incomplete)}, "
-        f"unknown_after_start={len(unknown)}, realized_caps.breached={breached}")
+        complete and not breached,
+        f"{len(events)} event(s), phases={phases}, physical_cost_complete={complete}, "
+        f"unknown_after_start={len(unknown)}{unknown[:2]}, "
+        f"logical_dfe={totals.get('logical_dfe')}, head_calls={totals.get('head_calls')}, "
+        f"structure_attempts={totals.get('structure_attempts')}, "
+        f"gpu_seconds={round(float(totals.get('gpu_seconds', 0.0)), 1)}, "
+        f"realized_caps.breached={breached}")
 
 
 def read_cell(bundle: Any, *, reference: Any = None) -> dict:
