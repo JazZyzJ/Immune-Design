@@ -99,6 +99,57 @@ def test_a_cuda_process_with_no_gpu_clock_is_refused_rather_than_credited_with_z
             sys.modules["torch"] = original
 
 
+def test_the_factory_names_a_gpu_instrument_that_a_cuda_process_can_actually_use():
+    """REGRESSION. `OracleSeams.resolved()` handed back the REFUSAL sentinel.
+
+    The refusal is right in itself, but the driver injects no seams, so the production stack had no
+    instrument at all: every cluster launch reached `CostMeter`, called the clock on the first
+    attempt, and died with "no GPU clock was supplied" — after the checkpoints were resident. A
+    guard that no production path can satisfy does not protect the measurement; it prevents it.
+    """
+    import sys
+
+    from scripts import rf_fusion_v2_oracles as mod
+
+    fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(
+        is_available=lambda: True, is_initialized=lambda: True, device_count=lambda: 1))
+    original = sys.modules.get("torch")
+    sys.modules["torch"] = fake_torch
+    try:
+        clock = OracleSeams().resolved()["gpu_clock"]
+        first, second = clock(), clock()
+        assert second >= first >= 0.0, (first, second)
+    finally:
+        if original is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = original
+
+
+def test_the_gpu_clock_scales_with_the_devices_the_allocation_holds():
+    """Reserved seconds, not busy seconds: two reserved devices burn two GPU-seconds per second."""
+    import sys
+
+    from scripts import rf_fusion_v2_oracles as mod
+
+    original = sys.modules.get("torch")
+    try:
+        sys.modules["torch"] = types.SimpleNamespace(cuda=types.SimpleNamespace(
+            is_available=lambda: False, is_initialized=lambda: False, device_count=lambda: 0))
+        assert mod.reserved_gpu_seconds_clock()() == 0.0
+
+        sys.modules["torch"] = types.SimpleNamespace(cuda=types.SimpleNamespace(
+            is_available=lambda: True, is_initialized=lambda: True, device_count=lambda: 2))
+        one, two = mod.reserved_gpu_seconds_clock(), mod.reserved_gpu_seconds_clock()
+        del one
+        assert two() > 0.0
+    finally:
+        if original is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = original
+
+
 def test_a_process_that_never_touched_cuda_truthfully_reports_zero():
     """The guard must not be satisfiable by refusing every run: a CPU process really does burn no
     GPU seconds, and saying so is a measurement rather than a default."""

@@ -53,6 +53,7 @@ __all__ = [
     "assert_constraint_class_matches_band",
     "build_production_oracles",
     "fixed_token_policy_label",
+    "reserved_gpu_seconds_clock",
     "resolve_reference",
     "resolve_stratum",
     "resolve_support_policy",
@@ -159,7 +160,12 @@ class OracleSeams:
             "load_band_table": self.load_band_table or load_band_table,
             "head_scorer": self.head_scorer,
             "structure_evaluator": self.structure_evaluator,
-            "gpu_clock": self.gpu_clock or _default_gpu_clock,
+            # A real instrument, not the refusal sentinel.  ``_default_gpu_clock`` answers "nobody
+            # named an instrument", and on a GPU node that is a refusal -- correctly, but it left
+            # the PRODUCTION stack with no way to run at all: the driver injects no seams, so every
+            # cluster launch died in ``CostMeter`` the moment the first attempt opened.  The factory
+            # owns device placement, so the factory is what must name the instrument.
+            "gpu_clock": self.gpu_clock or reserved_gpu_seconds_clock(),
         }
 
 
@@ -306,12 +312,48 @@ def assert_constraint_class_matches_band(*, band_table: Any, fixed_tokens: Any,
     return None
 
 
+def reserved_gpu_seconds_clock():
+    """The production GPU instrument: cumulative RESERVED GPU-seconds for this allocation.
+
+    ``CostMeter`` reads this at the start and end of every attempt and charges the DIFFERENCE, so
+    it must be a cumulative counter rather than a duration; the origin is therefore arbitrary and
+    only monotonicity and scale matter.
+
+    **What it measures, stated exactly.** Wall time this process has been running, multiplied by
+    the number of CUDA devices visible to it.  On a SLURM ``--gres=gpu:N`` allocation those devices
+    are reserved for this job and nobody else may use them, so reserved seconds -- not busy seconds
+    -- are the quantity ``max_gpu_seconds`` budgets and the quantity the cluster bills.  It
+    over-counts relative to device UTILIZATION, and deliberately: a cap sized on utilization would
+    authorize a run that holds a GPU idle for a day.  A process with no CUDA device returns ``0.0``,
+    which is a measurement and not a default -- it really burned none.
+
+    Device count is read on every call rather than latched, so a process that has not yet placed a
+    model is not credited with GPU seconds it could not have spent.
+    """
+    import time
+
+    origin = time.monotonic()
+
+    def clock() -> float:
+        try:
+            import torch  # noqa: PLC0415 - deferred so importing this module loads no torch
+        except ImportError:
+            return 0.0
+        if not torch.cuda.is_available():
+            return 0.0
+        return (time.monotonic() - origin) * float(torch.cuda.device_count())
+
+    return clock
+
+
 def _default_gpu_clock():
-    """Cumulative GPU seconds, or a refusal when nothing can measure them.
+    """The REFUSAL sentinel: what a stack that named no instrument gets.
 
     ``check_caps`` treats GPU-seconds as a MEASURED quantity, so a fabricated ``0.0`` would let the
     GPU cap read as satisfied on a number nobody took.  A process that has not initialized CUDA
-    truthfully burns none; one that HAS must supply a real instrument.
+    truthfully burns none; one that HAS must supply a real instrument -- which the production
+    factory now does, via :func:`reserved_gpu_seconds_clock`.  This remains the answer only for a
+    caller that reaches past the factory and declines to name one.
     """
     import torch
 

@@ -476,10 +476,13 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     cell passes.
 
 24. `scripts/analysis/read_v2_canary.py` — applies runbook §6's checks to one or more Canary
-    bundles (`--bundle <RUN>/v2_canary/<CELL> ...`, optional `--json-out`) and reads NOTHING else.
+    bundles (`--bundle DIR[=REFERENCE.seq] ...`, optional `--json-out`) and reads NOTHING else.
     Nine verdicts: a `committed` outcome exists per protein; every hard anchor survives into every
-    endpoint (anchors read off the STATES, so a manifest that never reached the sampler cannot pass
-    by agreeing with itself); replay hashes present and fork seeds distinct; the
+    endpoint — the anchored POSITIONS read off the states (so a manifest that never reached the
+    sampler cannot pass by agreeing with itself) and the RESIDUE they must hold taken from the
+    reference sequence, since the manifest's policy is exact-WT hard fix and comparing the run's
+    token ids against its own would only prove self-consistency; replay hashes present and fork
+    seeds distinct; the
     source → endpoint → projected → propagated chain closes on IDs that exist; and assimilation as
     FOUR separate checks — `pending_assimilation` with a NULL score at projection, `assimilated`
     with a finite one after the first propagation, every temporary-protection grant expiring at

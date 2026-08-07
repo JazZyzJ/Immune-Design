@@ -70,32 +70,40 @@ def _check_non_null(events: pd.DataFrame) -> dict:
     return _verdict(committed >= 1, f"outcomes={counts}")
 
 
-def _check_anchors(states: pd.DataFrame, endpoints: pd.DataFrame) -> dict:
-    """Every hard anchor's identity must survive into every endpoint sequence.
+def _check_anchors(states: pd.DataFrame, endpoints: pd.DataFrame,
+                   reference: str | None) -> dict:
+    """Every hard anchor's WT identity must survive into every endpoint sequence.
 
-    Anchors are read off the states rather than off the manifest on purpose: what matters is that
-    the positions the RUN treated as anchored are the ones preserved, so a manifest that never
-    reached the sampler cannot pass this by agreeing with itself.
+    The anchored POSITIONS are read off the states, not off the manifest: what matters is which
+    positions the RUN treated as anchored, so a manifest that never reached the sampler cannot pass
+    this by agreeing with itself. The RESIDUE those positions must hold comes from the reference
+    sequence, because the manifest's enforcement policy is exact-WT hard fix -- comparing the run's
+    own token ids against the run's own token ids would only prove it was self-consistent.
+
+    `hard_anchors_json` is `[[position, token_id], ...]`; the token ids are the sampler's alphabet
+    and are deliberately NOT decoded here, since decoding would need the DPLM alphabet and a second
+    decode path is how two spellings of the same residue appear.
     """
-    anchors: dict[int, str] = {}
-    for _, row in states.iterrows():
-        tokens = _json(row.get("tokens_json"), []) or []
-        for position in _json(row.get("hard_anchors_json"), []) or []:
-            index = int(position)
-            if index < len(tokens) and tokens[index] is not None:
-                anchors[index] = str(tokens[index])
-    if not anchors:
+    positions = sorted({int(pair[0])
+                        for _, row in states.iterrows()
+                        for pair in (_json(row.get("hard_anchors_json"), []) or [])})
+    if not positions:
         return _verdict(True, "unconstrained cell: no hard anchors declared")
+    if reference is None:
+        return _verdict(False, f"{len(positions)} anchored position(s) but no --reference given, "
+                               "so their WT identity cannot be checked")
     violations = []
     for _, row in endpoints.iterrows():
         sequence = str(row["sequence"])
-        for index, token in sorted(anchors.items()):
-            if index >= len(sequence):
-                violations.append((row["endpoint_id"], index, "out of range"))
-            elif len(token) == 1 and sequence[index] != token:
-                violations.append((row["endpoint_id"], index, f"{sequence[index]} != {token}"))
+        if len(sequence) != len(reference):
+            violations.append((row["endpoint_id"], "length", len(sequence), len(reference)))
+            continue
+        for index in positions:
+            if sequence[index] != reference[index]:
+                violations.append((row["endpoint_id"], index,
+                                   f"{sequence[index]} != WT {reference[index]}"))
     return _verdict(not violations,
-                    f"{len(anchors)} anchors x {len(endpoints)} endpoints, "
+                    f"{len(positions)} anchors x {len(endpoints)} endpoints vs WT, "
                     f"{len(violations)} violation(s){violations[:3]}")
 
 
@@ -265,9 +273,11 @@ def _check_ledger(bundle: Path, manifest: dict) -> dict:
         f"unknown_after_start={len(unknown)}, realized_caps.breached={breached}")
 
 
-def read_cell(bundle: Any) -> dict:
+def read_cell(bundle: Any, *, reference: Any = None) -> dict:
     bundle = Path(bundle)
     manifest = json.loads((bundle / "run_manifest.json").read_text())
+    reference_sequence = (Path(reference).read_text(encoding="ascii").strip()
+                          if reference else None)
     states = pd.read_parquet(bundle / "partial_states.parquet")
     endpoints = pd.read_parquet(bundle / "complete_endpoints.parquet")
     events = pd.read_parquet(bundle / "feedback_events.parquet")
@@ -275,7 +285,7 @@ def read_cell(bundle: Any) -> dict:
 
     checks = {
         "non_null_transition": _check_non_null(events),
-        "anchors": _check_anchors(states, endpoints),
+        "anchors": _check_anchors(states, endpoints, reference_sequence),
         "replay": _check_replay(states, endpoints),
         "lineage": _check_lineage(states, events),
         "assimilation_projected": _check_assimilation_projected(states, events),
@@ -310,15 +320,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="read_v2_canary",
         description="apply runbook §6's checks to one or more V2 Canary bundles")
-    parser.add_argument("--bundle", nargs="+", required=True,
-                        help="one <RUN>/v2_canary/<CELL> directory per cell")
+    parser.add_argument("--bundle", nargs="+", required=True, metavar="DIR[=REFERENCE.seq]",
+                        help="one <RUN>/v2_canary/<CELL> directory per cell, optionally with the "
+                             "protein's canonical reference sequence; without it an ANCHORED cell "
+                             "cannot have its WT identities checked and the anchor row fails")
     parser.add_argument("--json-out", default=None, help="write the full report here")
     return parser
 
 
+def _split(item: str) -> tuple[str, str | None]:
+    path, sep, reference = str(item).partition("=")
+    return path, (reference or None) if sep else None
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    report = [read_cell(path) for path in args.bundle]
+    report = [read_cell(path, reference=reference)
+              for path, reference in (_split(item) for item in args.bundle)]
     payload = {"cells": report, "all_pass": all(cell["all_pass"] for cell in report)}
     text = json.dumps(payload, indent=2, sort_keys=True, default=str)
     if args.json_out:
