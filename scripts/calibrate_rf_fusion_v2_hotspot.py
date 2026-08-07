@@ -51,6 +51,7 @@ oracles behave is a cluster check.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import sys
@@ -67,6 +68,12 @@ from inverse_folding.reference_flow.fusion_v2.errors import V2Error  # noqa: E40
 __all__ = [
     "V2HotspotCalibrationError",
     "THRESHOLD_STATISTIC",
+    "THRESHOLD_STATISTIC_BY_POPULATION",
+    "RESUMED_SAMPLING_UNIT",
+    "Draw",
+    "full_trajectory_draws",
+    "resumed_draws",
+    "source_variance",
     "SEED_NAMESPACE",
     "CalibrationSeams",
     "q90_higher_order_statistic",
@@ -76,9 +83,28 @@ __all__ = [
     "main",
 ]
 
-#: The ONE admissible value.  A closed enum rather than a free-form label: the producer must
-#: interpret it exactly as runbook §2.1 step 5 and reject anything else.
-THRESHOLD_STATISTIC = "per_protein_feedback_disabled_head_valid_q90_higher"
+#: The ONE admissible value PER POPULATION.  A closed map rather than a free-form label: the
+#: producer must interpret each exactly as runbook §2.1 step 5 and reject anything else.
+#:
+#: There are two because there are two populations, and the first Canary MEASURED that they differ.
+#: `full_trajectory` draws one complete de novo trajectory per replicate; `resumed` captures a
+#: source prefix at `c_source` and forks feedback-off completions from it -- which is what a
+#: mechanism run's endpoints actually are. On the structure axis the two differ by ~0.05 scTM at the
+#: median, so a threshold measured on one is not automatically a threshold for the other. The
+#: statistic name carries the population so a config can never silently mix them.
+THRESHOLD_STATISTIC_BY_POPULATION = {
+    "full_trajectory": "per_protein_feedback_disabled_head_valid_q90_higher",
+    "resumed": "per_protein_resumed_feedback_off_head_valid_q90_higher",
+}
+
+#: Back-compatible alias: the original frozen statistic, which is the `full_trajectory` one.
+THRESHOLD_STATISTIC = THRESHOLD_STATISTIC_BY_POPULATION["full_trajectory"]
+
+#: In the `resumed` population the SOURCE PREFIX is the sampling unit. Sixty-four siblings of one
+#: prefix are one sample of the prefix distribution, not sixty-four samples: within a Canary cell
+#: the four lookaheads share fifty committed steps, which is why "no admissible endpoint" behaved
+#: like a per-cell coin flip rather than the 4th power of a per-endpoint rate.
+RESUMED_SAMPLING_UNIT = "source_prefix"
 
 #: Disjoint from every sampling namespace the Canary itself draws from, so calibration draws and
 #: run draws can never collide (PLAN §2.6's exclusion law applies to this producer too).
@@ -140,9 +166,16 @@ def q90_higher_order_statistic(values: Sequence[float]) -> tuple[float, int]:
     return ordered[rank - 1], rank
 
 
-def source_id_for(protein_id: str) -> str:
-    """Protein-specific, because the threshold is."""
-    return f"v2-canary-hotspot-head-valid-q90-higher-v1:{protein_id}"
+def source_id_for(protein_id: str, *, population: str = "full_trajectory") -> str:
+    """Protein-specific because the threshold is, and POPULATION-specific because it is too.
+
+    The two nulls measure different distributions of the same quantity, so a config that named only
+    the protein could carry one population's threshold under the other's name and nothing would
+    contradict it.
+    """
+    if population == "full_trajectory":
+        return f"v2-canary-hotspot-head-valid-q90-higher-v1:{protein_id}"
+    return f"v2-{population}-hotspot-head-valid-q90-higher-v1:{protein_id}"
 
 
 def summarize(values: Sequence[float]) -> dict:
@@ -292,9 +325,152 @@ def _definitive_feasible(outcome: Any) -> bool:
     return bool(getattr(outcome, "evaluated", False)) and bool(getattr(outcome, "feasible", False))
 
 
+# --------------------------------------------------------------------------------------------
+# the two populations
+# --------------------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class Draw:
+    """One attempted endpoint: its labels, and either a sequence or the reason there is none.
+
+    Generation is separated from scoring so the two POPULATIONS differ in exactly one place. The
+    scoring law -- Head validity, the anchor check, `N_H^whole`, the structure verdict, the floor
+    and the Q0.90 -- is then provably the same for both, rather than the same by inspection.
+    """
+
+    labels: dict
+    sequence: str | None = None
+    error: str | None = None
+
+
+def full_trajectory_draws(*, protein_id, n_completions, master_seed, model, seams):
+    """One complete de novo trajectory per replicate -- the original frozen law, unchanged."""
+    draws = []
+    for replicate in range(int(n_completions)):
+        seed = int(seams["derive_seed"](
+            SEED_NAMESPACE, protein_id, str(master_seed), str(replicate)))
+        labels = {"replicate_index": replicate, "seed": seed,
+                  "source_index": None, "fork_index": None, "source_state_id": None,
+                  "source_unresolved_editable": None}
+        try:
+            draws.append(Draw(labels, sequence=seams["generate_completion"](
+                model=model, protein_id=protein_id, seed=seed)))
+        except Exception as exc:                                # noqa: BLE001 - recorded, not lost
+            draws.append(Draw(labels, error=str(exc)[:200]))
+    return draws
+
+
+def resumed_draws(*, protein_id, n_sources, completions_per_source, c_source, master_seed,
+                  cycle_kwargs, seams):
+    """`n_sources` independent prefixes captured at `c_source`, each forked `k` ways.
+
+    This is the population a mechanism run's depth-0 endpoints ACTUALLY come from, and it is built
+    through the same two runtime functions the cycle uses -- `capture_depth_zero` and
+    `generate_lookaheads` -- so it cannot drift into being a different generative process that
+    merely resembles one.
+
+    A capture that fails costs its whole fork group, and every lost endpoint is recorded as a draw
+    with a reason rather than silently shrinking the sample.
+    """
+    from inverse_folding.reference_flow.fusion_v2_runtime.capture import capture_depth_zero
+    from inverse_folding.reference_flow.fusion_v2_runtime.lookahead import generate_lookaheads
+
+    draws, replicate = [], 0
+    for source_index in range(int(n_sources)):
+        source_seed = int(seams["derive_seed"](
+            SEED_NAMESPACE, protein_id, str(master_seed), "source", str(source_index)))
+        fork_seeds = [int(seams["derive_seed"](
+            SEED_NAMESPACE, protein_id, str(master_seed), "fork", str(source_index), str(k)))
+            for k in range(int(completions_per_source))]
+        # The SOURCE seed varies per prefix; the sampler config is otherwise the run's own.
+        source_config = dataclasses.replace(
+            cycle_kwargs["config"],
+            sampler=dataclasses.replace(cycle_kwargs["config"].sampler, seed=source_seed))
+        labels_base = {"source_index": source_index, "source_seed": source_seed}
+        try:
+            source = capture_depth_zero(
+                sampler=cycle_kwargs["sampler"], denoiser=cycle_kwargs["denoiser"],
+                config=source_config, sequence_length=cycle_kwargs["sequence_length"],
+                h_values=cycle_kwargs["h_values"],
+                residue_token_ids=cycle_kwargs["residue_token_ids"], at_step=int(c_source),
+                fixed_tokens=cycle_kwargs["fixed_tokens"], lineage=cycle_kwargs["lineage"],
+                mask_token_id=cycle_kwargs["mask_token_id"],
+                aa_token_ids=cycle_kwargs["aa_token_ids"],
+                conditioning=cycle_kwargs["conditioning"],
+                safety_reference=cycle_kwargs["safety_reference"],
+                cost_event_ids=(f"resumed-null:{protein_id}:source{source_index}",))
+        except Exception as exc:                                # noqa: BLE001
+            for k in range(int(completions_per_source)):
+                draws.append(Draw({**labels_base, "replicate_index": replicate, "fork_index": k,
+                                   "seed": fork_seeds[k], "source_state_id": None,
+                                   "source_unresolved_editable": None},
+                                  error=f"capture failed: {str(exc)[:180]}"))
+                replicate += 1
+            continue
+        common = {**labels_base, "source_state_id": source.state_id,
+                  "source_unresolved_editable": int(source.maturity.n_unresolved_editable)}
+        try:
+            completions = generate_lookaheads(
+                source=source, sampler=cycle_kwargs["sampler"],
+                denoiser=cycle_kwargs["denoiser"], config=cycle_kwargs["config"],
+                h_values=cycle_kwargs["h_values"],
+                residue_token_ids=cycle_kwargs["residue_token_ids"],
+                fork_seeds=fork_seeds, alphabet=cycle_kwargs["alphabet"])
+        except Exception as exc:                                # noqa: BLE001
+            for k in range(int(completions_per_source)):
+                draws.append(Draw({**common, "replicate_index": replicate, "fork_index": k,
+                                   "seed": fork_seeds[k]},
+                                  error=f"fork failed: {str(exc)[:180]}"))
+                replicate += 1
+            continue
+        for k, completion in enumerate(completions):
+            draws.append(Draw({**common, "replicate_index": replicate, "fork_index": k,
+                               "seed": fork_seeds[k]}, sequence=completion.sequence))
+            replicate += 1
+    return draws
+
+
+def source_variance(rows) -> dict:
+    """Within-source vs between-source spread of `N_H^whole`, on the head-valid rows.
+
+    The number that says whether 64 endpoints are 64 samples or 32. If between-source variance
+    dominates, the effective sample size is the number of PREFIXES and any interval computed as
+    though the endpoints were independent is too narrow.
+    """
+    import statistics
+
+    groups: dict[Any, list[float]] = {}
+    for row in rows:
+        if row.get("status") != "head_valid" or row.get("source_index") is None:
+            continue
+        groups.setdefault(int(row["source_index"]), []).append(float(row["n_h_whole"]))
+    usable = {key: values for key, values in groups.items() if len(values) >= 2}
+    if len(groups) < 2:
+        return {"n_sources": len(groups), "note": "fewer than two sources; not estimable"}
+    means = [statistics.fmean(values) for values in groups.values()]
+    between = statistics.variance(means) if len(means) >= 2 else 0.0
+    within = (statistics.fmean([statistics.variance(v) for v in usable.values()])
+              if usable else 0.0)
+    total = between + within
+    return {
+        "n_sources": len(groups),
+        "n_endpoints": sum(len(v) for v in groups.values()),
+        "between_source_variance": float(between),
+        "within_source_variance": float(within),
+        # Intraclass correlation: 1.0 means every endpoint of a prefix is the same measurement.
+        "icc_between_over_total": (float(between / total) if total > 0 else None),
+        "effective_sample_size_note": (
+            "if ICC is near 1 the effective n is the number of SOURCES, not endpoints"),
+    }
+
+
 def calibrate_protein(
-    *, protein_id: str, n_completions: int, min_head_valid: int, master_seed: int,
+    *, protein_id: str, min_head_valid: int,
     reference_sequence: str, reference_digest: str, head_identity: Any, model: Any, seams: dict,
+    draws: Sequence["Draw"] | None = None,
+    n_completions: int | None = None, master_seed: Any = None,
+    population: str = "full_trajectory", native_structure: Any = None,
 ) -> tuple[list[dict], dict]:
     """Run the frozen law for ONE protein and return ``(rows, summary)``.
 
@@ -320,6 +496,20 @@ def calibrate_protein(
         whole_landscape_new_hotspot,
     )
 
+    if draws is None:
+        # The original law's convenience path: `full_trajectory` draws are fully determined by
+        # (protein, master_seed, n_completions), so a caller that names those has named the
+        # population. `resumed` has no such shorthand -- it needs a captured source stack -- and
+        # must hand its draws in.
+        if n_completions is None:
+            raise V2HotspotCalibrationError(
+                "pass either `draws` or `n_completions`; a calibration over an unnamed population "
+                "is not a calibration")
+        draws = full_trajectory_draws(
+            protein_id=protein_id, n_completions=n_completions, master_seed=master_seed,
+            model=model, seams=seams)
+    draws = list(draws)
+
     reference_score = _score_one(seams["head_scorer"], protein_id, reference_sequence)
     _assert_declared_window_domain(reference_score, head_identity, protein_id=protein_id)
     binding_id = f"ref:calib:{protein_id}:{reference_digest[:12]}"
@@ -330,21 +520,21 @@ def calibrate_protein(
     def _fail(kind: str) -> None:
         failures[kind] = failures.get(kind, 0) + 1
 
-    for replicate in range(int(n_completions)):
-        seed = int(seams["derive_seed"](
-            SEED_NAMESPACE, protein_id, str(master_seed), str(replicate)))
+    for draw in draws:
+        replicate = int(draw.labels["replicate_index"])
         row: dict[str, Any] = {
-            "protein_id": protein_id, "replicate_index": replicate, "seed": seed,
+            "protein_id": protein_id, "population": population,
+            **{key: draw.labels.get(key) for key in (
+                "replicate_index", "seed", "source_index", "source_seed", "fork_index",
+                "source_state_id", "source_unresolved_editable")},
             "reference_digest": reference_digest,
             "head_evaluator_digest": head_identity.digest(),
         }
-        try:
-            sequence = seams["generate_completion"](
-                model=model, protein_id=protein_id, seed=seed)
-        except Exception as exc:                                # noqa: BLE001 - recorded, not lost
+        if draw.sequence is None:
             _fail("generation")
-            rows.append({**row, "status": "generation_failed", "failure": str(exc)[:200]})
+            rows.append({**row, "status": "generation_failed", "failure": draw.error})
             continue
+        sequence = draw.sequence
         row["sequence_md5"] = sequence_md5(sequence)
 
         anchors = model.fixed_tokens(protein_id) or {}
@@ -386,7 +576,7 @@ def calibrate_protein(
         for row in rows:
             by_status[row["status"]] = by_status.get(row["status"], 0) + 1
         raise V2HotspotFloorNotMet(
-            f"{protein_id}: only {len(head_valid)} of {n_completions} endpoints yielded a valid "
+            f"{protein_id}: only {len(head_valid)} of {len(draws)} endpoints yielded a valid "
             f"Head measurement, below the frozen floor of {min_head_valid}.  Runbook §2.1: write no "
             "calibration artifact and do not relax the floor -- a Q0.90 over a thin sample is close "
             "to its own second-largest value and is not a distribution.  "
@@ -400,7 +590,9 @@ def calibrate_protein(
     # "structure was not checked" -- it was checked on all of them, and here is how it went.
     n_definitive = sum(1 for row in rows if row.get("structure_definitive_feasible"))
     summary.update({
-        "n_attempted": int(n_completions),
+        "population": population,
+        "sampling_unit": (RESUMED_SAMPLING_UNIT if population == "resumed" else "trajectory"),
+        "n_attempted": len(draws),
         "n_head_valid": len(head_valid),
         "failure_counts": dict(sorted(failures.items())),
         "structure_operability": {
@@ -410,7 +602,91 @@ def calibrate_protein(
                     "threshold's population",
         },
     })
+    if population == "resumed":
+        summary["source_variance"] = source_variance(rows)
+        summary["mechanism_stage_structure"] = mechanism_stage_structure_gates(
+            rows, native_structure=native_structure)
     return rows, summary
+
+
+def _metric_values(rows, name: str) -> list[float]:
+    values = []
+    for row in rows:
+        if row.get("status") != "head_valid":
+            continue
+        metrics = json.loads(row.get("structure_metrics_json") or "{}")
+        if metrics.get(name) is not None:
+            values.append(float(metrics[name]))
+    return values
+
+
+def mechanism_stage_structure_gates(rows, *, native_structure: Any = None) -> dict:
+    """The mechanism-stage structure gates, measured on THIS null (owner's ruling, 2026-08-06).
+
+    Two changes from the v0 contract, and one thing that does not change.
+
+    The anchor gate stops being an absolute number. `Q00511`'s native scores 1.791 A under this
+    same backend, so of a 2.0 A band only 0.209 A is anything but backend and rotamer error --
+    the gate was mostly measuring the predictor. Admission moves to the native-relative excess
+    `Delta_anchor(y) = RMSD_anchor(y) - RMSD_anchor(native)`, thresholded at the upper tail of the
+    feedback-off null; raw absolute RMSD stays reported in full so nothing is hidden by the
+    subtraction. The ordinary protein's `scTM_min` comes from the LOWER tail of the same null,
+    because a floor calibrated on a population that folds better rejects most of this one.
+
+    **Hard-anchor residue IDENTITY is untouched and remains an absolute hard gate.** This
+    recalibrates a geometric tolerance, never the requirement that an anchored residue is the WT
+    residue.
+
+    These are MECHANISM-OPERABILITY gates for the transmission experiment only. They may not be
+    carried into capability or holdout: a threshold set at the 10th percentile of a null is chosen
+    so the experiment can run, not so the product is safe.
+    """
+    native_metrics = dict(getattr(native_structure, "metrics", None) or {})
+    sctm = _metric_values(rows, "scTM")
+    anchor = _metric_values(rows, "max_anchor_sidechain_RMSD")
+    native_anchor = native_metrics.get("max_anchor_sidechain_RMSD")
+    gates: dict[str, Any] = {
+        "authority": "mechanism_operability_only -- NOT capability, NOT holdout",
+        "hard_anchor_identity": "absolute hard gate, unchanged and not recalibrated here",
+        "native_metrics": {k: float(v) for k, v in native_metrics.items()},
+        "scTM": ({"n": len(sctm), "q10_lower": _quantile_lower(sctm, 0.10),
+                  "q50": _quantile_lower(sctm, 0.50), "min": min(sctm), "max": max(sctm),
+                  "proposed_scTM_min": _quantile_lower(sctm, 0.10)} if sctm else None),
+    }
+    if anchor and native_anchor is not None:
+        excess = [value - float(native_anchor) for value in anchor]
+        gates["delta_anchor"] = {
+            "definition": "RMSD_anchor(y) - RMSD_anchor(native), same backend and protocol",
+            "native_absolute": float(native_anchor),
+            "n": len(excess),
+            "q50": _quantile_lower(excess, 0.50),
+            "q90_higher": q90_higher_order_statistic(excess)[0],
+            "max": max(excess),
+            "absolute_rmsd": {"q50": _quantile_lower(anchor, 0.50), "min": min(anchor),
+                              "max": max(anchor)},
+            "proposed_delta_anchor_max": q90_higher_order_statistic(excess)[0],
+        }
+    elif anchor:
+        gates["delta_anchor"] = {
+            "unmeasurable": "the native was not evaluated under this backend, so the "
+                            "native-relative excess has no baseline; absolute RMSD only",
+            "absolute_rmsd": {"n": len(anchor), "q50": _quantile_lower(anchor, 0.50),
+                              "min": min(anchor), "max": max(anchor)},
+        }
+    return gates
+
+
+def _quantile_lower(values: Sequence[float], level: float) -> float | None:
+    """The order statistic at or BELOW `level` -- the mirror of the `higher` convention.
+
+    A floor and a ceiling must round in opposite directions, or one of them silently admits a
+    sample it was meant to exclude.
+    """
+    ordered = sorted(float(v) for v in values)
+    if not ordered:
+        return None
+    rank = max(1, math.floor(level * len(ordered)))
+    return float(ordered[rank - 1])
 
 
 # --------------------------------------------------------------------------------------------
@@ -428,7 +704,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--master-seed", type=int, required=True)
     parser.add_argument("--seed-namespace", required=True, choices=(SEED_NAMESPACE,),
                         help="disjoint from every namespace the Canary itself draws from")
-    parser.add_argument("--threshold-statistic", required=True, choices=(THRESHOLD_STATISTIC,),
+    parser.add_argument("--threshold-statistic", required=True,
+                        choices=tuple(sorted(THRESHOLD_STATISTIC_BY_POPULATION.values())),
                         help="a closed enum, not a label: the producer interprets it exactly as "
                              "runbook §2.1 step 5 and rejects any other value.  There is "
                              "deliberately no --quantile override -- two ways to say this is two "
@@ -476,6 +753,23 @@ def build_parser() -> argparse.ArgumentParser:
                         help="omit for an unconstrained protein; supply the exact manifest for an "
                              "anchored one")
     parser.add_argument("--device", default="cuda")
+    # The population is a SCIENTIFIC choice with no default: `full_trajectory` is the original
+    # frozen law, `resumed` is the population a mechanism run's endpoints actually come from, and
+    # the first Canary measured that the two differ.
+    parser.add_argument("--population", required=True,
+                        choices=sorted(THRESHOLD_STATISTIC_BY_POPULATION),
+                        help="which null to measure; the statistic name carries it")
+    parser.add_argument("--v2-config", default=None,
+                        help="resumed only: the resolved cell config the oracle stack is built "
+                             "from, so the null runs on the declared substrate")
+    parser.add_argument("--shard-input", nargs="*", default=(), metavar="NAME=PATH",
+                        help="resumed only: the same shard inputs the Canary launcher passes")
+    parser.add_argument("--c-source", type=int, default=None,
+                        help="resumed only: the step each source prefix is captured at")
+    parser.add_argument("--n-sources", type=int, default=None,
+                        help="resumed only: INDEPENDENT source prefixes -- the sampling unit")
+    parser.add_argument("--completions-per-source", type=int, default=None,
+                        help="resumed only: feedback-off completions forked from each prefix")
     parser.add_argument("--out-rows", required=True, help="canonical raw table (parquet)")
     parser.add_argument("--out-json", required=True)
     parser.add_argument("--code-revision", required=True)
@@ -484,6 +778,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    # Argument-only checks FIRST, before a path is opened or a model is touched.  A gate that
+    # refuses after the oracles are built has already spent the allocation it exists to protect.
+    expected_statistic = THRESHOLD_STATISTIC_BY_POPULATION[args.population]
+    if args.threshold_statistic != expected_statistic:
+        print(f"--threshold-statistic {args.threshold_statistic!r} does not name the "
+              f"--population {args.population!r} law, which is {expected_statistic!r}; two "
+              "independently settable names for one choice is how a resumed threshold ends up "
+              "wearing the full-trajectory label", file=sys.stderr)
+        return 2
+    if args.population == "resumed":
+        missing = [name for name, value in (
+            ("--v2-config", args.v2_config), ("--c-source", args.c_source),
+            ("--n-sources", args.n_sources),
+            ("--completions-per-source", args.completions_per_source)) if value is None]
+        if missing or not args.shard_input:
+            print(f"the resumed population needs {missing or ['--shard-input']}: it is generated "
+                  "through the cycle's own capture and fork, which need the declared substrate",
+                  file=sys.stderr)
+            return 2
+
     resolved = (seams or CalibrationSeams()).resolved()
 
     from inverse_folding.reference_flow.fusion_v2.config import (
@@ -531,12 +846,40 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
     scorer = resolved["head_scorer"]
     head_identity: HeadEvaluatorIdentity = scorer.evaluator_identity()
 
+    native_structure = None
+    if args.population == "resumed":
+        # The resumed population is generated through the CYCLE's own two functions, reached via
+        # the production oracle factory, so the null cannot drift into a generative process that
+        # merely resembles the one a mechanism run uses.
+        from scripts.rf_fusion_v2_cohort import ShardInputs
+        from scripts.rf_fusion_v2_oracles import build_v2_oracles
+        from scripts.rf_fusion_v2_preflight import load_v2_config_file
+
+        shard_inputs = ShardInputs(**dict(
+            pair.split("=", 1) for pair in args.shard_input))
+        oracles = build_v2_oracles(
+            protein_id=args.protein_id, config=load_v2_config_file(args.v2_config),
+            inputs=shard_inputs)
+        draws = resumed_draws(
+            protein_id=args.protein_id, n_sources=args.n_sources,
+            completions_per_source=args.completions_per_source, c_source=args.c_source,
+            master_seed=args.master_seed, cycle_kwargs=oracles["cycle_kwargs"], seams=resolved)
+        # The native under the SAME backend and protocol: without it the native-relative anchor
+        # excess has no baseline, and an absolute band is exactly what the ruling replaced.
+        native_structure = resolved["structure_gate"](
+            _oracle_request(args.protein_id, reference_sequence))
+    else:
+        draws = full_trajectory_draws(
+            protein_id=args.protein_id, n_completions=args.n_completions,
+            master_seed=args.master_seed, model=model, seams=resolved)
+
     try:
         rows, summary = calibrate_protein(
-            protein_id=args.protein_id, n_completions=args.n_completions,
-            min_head_valid=args.min_head_valid, master_seed=args.master_seed,
+            protein_id=args.protein_id, draws=draws,
+            min_head_valid=args.min_head_valid,
             reference_sequence=reference_sequence, reference_digest=reference_digest,
             head_identity=head_identity, model=model, seams=resolved,
+            population=args.population, native_structure=native_structure,
         )
     except V2HotspotFloorNotMet as exc:
         # The THRESHOLD is withheld; the EVIDENCE is not.  Without this the only record of why the
@@ -575,7 +918,8 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
         window_k_max=head_identity.window_k_max, calibration_data_digest=data_digest,
     )
     value = summary["q90_higher"]
-    source_id = source_id_for(args.protein_id)
+    statistic = THRESHOLD_STATISTIC_BY_POPULATION[args.population]
+    source_id = source_id_for(args.protein_id, population=args.population)
     delta_new = {
         "value": value, "unit": head_identity.score_scale,
         "source_kind": "measured_calibration", "source_id": source_id,
@@ -588,7 +932,7 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({
         "delta_new": delta_new, "protein_id": args.protein_id,
-        "code_revision": args.code_revision, "threshold_statistic": THRESHOLD_STATISTIC,
+        "code_revision": args.code_revision, "threshold_statistic": statistic,
         "seed_namespace": SEED_NAMESPACE, "master_seed": args.master_seed,
         "min_head_valid": args.min_head_valid,
         "rows_path": str(args.out_rows), **summary,

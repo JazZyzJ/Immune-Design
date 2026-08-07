@@ -350,6 +350,26 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `tests/scripts/test_rf_fusion_v2_cohort.py`.
 
 21. `scripts/calibrate_rf_fusion_v2_hotspot.py` — the PER-PROTEIN V2 whole-landscape hotspot
+    calibration producer. **`--population` is required and has no default**: `full_trajectory`
+    is the original frozen law (one complete de novo trajectory per replicate), `resumed`
+    captures `--n-sources` INDEPENDENT prefixes at `--c-source` and forks
+    `--completions-per-source` feedback-off completions from each — the population a mechanism
+    run's endpoints actually come from, and one the first Canary measured to differ from the
+    other on both axes. The SOURCE PREFIX is the sampling unit; 64 siblings of one prefix are
+    not 64 samples, and `source_variance` reports the between/within split and the ICC so the
+    effective n is visible. `--threshold-statistic` must NAME the declared population — two
+    independently settable names for one choice is how a resumed threshold ends up wearing the
+    full-trajectory label — and that check plus the resumed-flag check run before a path is
+    opened or a model is touched. The resumed population is generated through the CYCLE's own
+    `capture_depth_zero` + `generate_lookaheads`, reached via `build_v2_oracles` from a resolved
+    cell config and its shard inputs, so the null cannot drift into a generative process that
+    merely resembles the real one; a lost capture is recorded as draws with a reason rather than
+    silently shrinking the sample. In `resumed` mode it also evaluates the NATIVE under the same
+    backend and emits `mechanism_stage_structure`: the native-relative anchor excess
+    `Delta_anchor = RMSD_anchor(y) - RMSD_anchor(native)` at `Q0.90(higher)` and `scTM_min` at
+    `Q0.10(lower)`, with raw absolute RMSD still reported in full and hard-anchor residue
+    IDENTITY untouched as an absolute hard gate. Those are mechanism-operability gates only and
+    say so in the artifact; capability and holdout still need their own frozen structure gate.
     calibration producer, implementing the frozen law of `doc/RF_Fusion_v2_Cluster_Runbook.md`
     §2.1. **The population is every HEAD-VALID endpoint, not the structure-feasible subset**: the
     two gates answer independent safety questions, and conditioning the Head null on the structure

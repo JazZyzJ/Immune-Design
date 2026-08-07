@@ -761,17 +761,102 @@ until it is non-zero the two arms are not compute-matched.
 
 ---
 
-## 7. After the Canary
+## 7. The powered one-cycle mechanism cohort
 
-1. A small **one-cycle mechanism cohort**, keeping a trimmed `endpoint_change` + `source_shuffle` +
-   `feedback_off`. `source_change` (fixed-support ablation) is admissible only where arm A carried a
-   resolved position; where it is not, the row says so in its own words and `source_shuffle` carries
-   PLAN §2.6's intervention 2.
-2. Only if **source transmission** holds: freeze the production `FeedbackSupportPolicySpec`
-   (PLAN §2.5's eight required elements) and only then open `D>1`.
+The Canary answered "does it execute". This answers "does it transmit", and it is the only stage
+whose result can open `D>1`. Everything below is the design; the numbers marked **[from §7.4]** are
+computed from the resumed null, not chosen.
+
+### 7.1 The unit of analysis is a MATCHED PAIR, not a run
+
+One pair = one source prefix, carried through the cycle twice:
+
+| | arm A (`feedback_on`) | arm B (`feedback_off`) |
+|---|---|---|
+| source prefix at `c_source` | identical bytes | identical bytes |
+| lookahead pool + selected endpoint | identical | identical |
+| support partition | the policy's | **the same positions**, written from the SOURCE rather than the endpoint |
+| descendant fork seeds | identical | identical |
+| propagation horizon `c_next` | identical | identical |
+
+Everything except the ORIGIN of the injected identities is held fixed, so a difference between the
+arms is attributable to the feedback content and to nothing else. `a2_views.matched_extra_lookaheads`
+must be non-zero for the pair to be compute-matched — it is `0` in every Canary cell, which is
+exactly why no Canary contrast is licensed.
+
+This is what makes the descendant observation testable. `0.798 → 0.712` from the Canary compares a
+depth-0 pool against a descendant pool: **different stages of different populations, and not a
+causal claim.** The paired design compares descendant against descendant.
+
+### 7.2 Two readouts, read in a fixed order
+
+**Primary — source transmission.** Does the propagated state carry information from the source that
+a feedback-off propagation does not? Per PLAN §2.6 the interventions are `endpoint_change`,
+`source_shuffle` and `feedback_off`; `source_change` (fixed-support ablation) is admissible only
+where arm A carried a resolved position, and where it is not, the row says so in its own words and
+`source_shuffle` carries intervention 2.
+
+**Secondary — structure non-damage**, three-way and pre-registered:
+
+| observation | reading |
+|---|---|
+| both arms' descendants drop vs their own depth-0 pool | the resumed / no-remask **generation geometry**, not the mechanism |
+| only arm A drops | projection or policy is **damaging structure**; `D>1` stays shut regardless of transmission |
+| no stable paired difference | the four Canary descendants were **small-sample** |
+
+The secondary is read even if the primary fails, because "feedback transmits nothing" and "feedback
+damages structure" call for different next experiments.
+
+### 7.3 Gates, in the units the mechanism stage uses
+
+Admission runs on the **mechanism-operability gates of §7.5**, not on the v0 contract — a floor
+calibrated on a population that folds better rejects most of this one, and the Canary measured
+exactly that. Hard-anchor residue identity remains an absolute hard gate. The Head gate keeps the
+resumed threshold, and §5.2's finding that it does not bite at this operating point is itself a
+result to report, not a reason to lower it.
+
+### 7.4 Power comes from the measured variance, not from a round number
+
+`source_variance` in the resumed-null artifact reports between-source and within-source variance of
+`N_H^whole` and the intraclass correlation. The pair count is derived, not picked:
+
+$$
+n_{\text{pairs}} \;=\; \left\lceil \frac{2\,(z_{1-\alpha/2} + z_{1-\beta})^{2}\,\sigma_{d}^{2}}{\delta^{2}} \right\rceil
+$$
+
+with $\sigma_d$ the **paired** standard deviation (within-source, because the pair holds the source
+fixed) and $\delta$ the smallest effect worth detecting. Two consequences of the clustering the
+Canary exposed:
+
+* if the ICC is near 1, endpoints of one prefix are one measurement and the effective $n$ is the
+  number of **prefixes** — an interval computed as though endpoints were independent is too narrow;
+* the pairing is what buys the power here, because it removes exactly the between-source component
+  that dominates when ICC is high.
+
+$\delta$ is a scientific choice and is **pre-registered before the cohort runs**, not read off it.
+
+### 7.5 Cost model, from measured unit costs
+
+Traceable to the executed Canary (jobs `12094327–30`) and to the calibration:
+
+| unit | measured |
+|---|---|
+| one cell: 8 lookahead + descendant endpoints, 8 definitive refolds | ~2 min wall, 8.6–35.9 GPU-s, MaxRSS 27.5–30.4 GB |
+| one full-trajectory calibration replicate (completion + refold) | ~4 s (`5ZHV_B`) to ~5 s (`Q00511`) amortized |
+| refold, 302 aa, cold cache | dominates a cycle's marginal cost (~94%) |
+
+A pair costs about two cells, so $n_{\text{pairs}}$ pairs × 2 proteins ≈ $4n$ cell-equivalents ≈
+$8n$ minutes of one rtx6000 at 4 cores / 40 GB. At $n = 30$ that is roughly 4 GPU-hours per
+protein — cheap enough that the sample size should be set by §7.4 and not by budget.
+
+### 7.6 Only then
+
+Only if **source transmission** holds: freeze the production `FeedbackSupportPolicySpec`
+(PLAN §2.5's eight required elements) and only then open `D>1`.
 
 `allow_production_depth_gt_1` is never granted by the oracle factory. Opening it is a runbook
-decision that also requires the FeedbackSupportPolicy directionality gate.
+decision that also requires the FeedbackSupportPolicy directionality gate. Nothing in §7 authorizes
+it, and a green secondary readout authorizes nothing at all.
 
 ---
 

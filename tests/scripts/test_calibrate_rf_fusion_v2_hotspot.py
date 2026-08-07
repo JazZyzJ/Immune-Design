@@ -68,11 +68,33 @@ def test_an_empty_retained_set_is_refused():
 # --------------------------------------------------------------------------------------------
 
 
-def test_the_statistic_is_a_closed_enum_with_exactly_one_admissible_value():
-    """§2.1: "a closed enum for this Canary, not a free-form label"."""
+def test_the_statistic_is_a_closed_enum_with_one_admissible_value_PER_POPULATION():
+    """§2.1: "a closed enum for this Canary, not a free-form label".
+
+    Widened to two entries because there are two POPULATIONS, and the first Canary measured that
+    they differ. Still closed, still required -- and the statistic must now agree with the declared
+    population, because two independently settable names for one choice is exactly how a resumed
+    threshold ends up wearing the full-trajectory label.
+    """
+    from scripts.calibrate_rf_fusion_v2_hotspot import THRESHOLD_STATISTIC_BY_POPULATION
+
     action = next(a for a in build_parser()._actions if a.dest == "threshold_statistic")
-    assert tuple(action.choices) == (THRESHOLD_STATISTIC,)
+    assert set(action.choices) == set(THRESHOLD_STATISTIC_BY_POPULATION.values())
     assert action.required is True
+    population = next(a for a in build_parser()._actions if a.dest == "population")
+    assert set(population.choices) == set(THRESHOLD_STATISTIC_BY_POPULATION)
+    assert population.required is True
+
+
+def test_a_statistic_that_does_not_name_its_population_is_refused(tmp_path, capsys):
+    """The cross-check, not just the enum: both flags are settable, so both must agree."""
+    from scripts.calibrate_rf_fusion_v2_hotspot import THRESHOLD_STATISTIC_BY_POPULATION
+
+    code = main(_argv(tmp_path, **{
+        "--population": "resumed",
+        "--threshold-statistic": THRESHOLD_STATISTIC_BY_POPULATION["full_trajectory"]}))
+    assert code == 2
+    assert "does not name the" in capsys.readouterr().err
 
 
 def test_no_independent_quantile_override_exists():
@@ -401,7 +423,8 @@ def _reference_manifest(tmp_path, protein_id="5ZHV_B", sequence="ACDEFA"):
 
 def _argv(tmp_path, **over):
     args = {
-        "--protein-id": "5ZHV_B", "--n-completions": "64", "--master-seed": "20260806",
+        "--protein-id": "5ZHV_B", "--population": "full_trajectory",
+        "--n-completions": "64", "--master-seed": "20260806",
         "--seed-namespace": SEED_NAMESPACE, "--threshold-statistic": THRESHOLD_STATISTIC,
         "--min-head-valid": "60", "--checkpoint": "/nx/dplm.ckpt",
         "--rf-config": "/nx/rf.yaml", "--test-set": "/nx/test.parquet", "--pdb-root": "/nx/pdbs",
@@ -625,3 +648,128 @@ def test_an_empty_window_grid_is_refused_rather_than_scored():
     seams["head_scorer"] = _NoWindows()
     with pytest.raises(V2HotspotCalibrationError, match="no windows"):
         _run_law(seams=seams)
+
+
+# --------------------------------------------------------------------------------------------
+# the RESUMED population (owner's ruling, 2026-08-06): the source prefix is the sampling unit
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_statistic_and_the_source_id_carry_the_population():
+    """Two populations of the same quantity. A config that named only the protein could carry one
+    population's threshold under the other's name and nothing would contradict it."""
+    from scripts.calibrate_rf_fusion_v2_hotspot import (
+        THRESHOLD_STATISTIC_BY_POPULATION, source_id_for)
+
+    assert (THRESHOLD_STATISTIC_BY_POPULATION["full_trajectory"]
+            != THRESHOLD_STATISTIC_BY_POPULATION["resumed"])
+    assert source_id_for("Q00511") != source_id_for("Q00511", population="resumed")
+    # The original law's id is unchanged, so the executed artifacts stay valid.
+    assert source_id_for("Q00511") == "v2-canary-hotspot-head-valid-q90-higher-v1:Q00511"
+
+
+def test_source_variance_reports_how_many_samples_64_endpoints_actually_are():
+    """Sixty-four siblings of one prefix are one sample of the prefix distribution. If between-
+    source variance dominates, the effective n is the number of PREFIXES."""
+    from scripts.calibrate_rf_fusion_v2_hotspot import source_variance
+
+    # Two prefixes, tight within and far apart between: ICC must be near 1.
+    rows = [{"status": "head_valid", "source_index": 0, "n_h_whole": v} for v in (1.0, 1.1)]
+    rows += [{"status": "head_valid", "source_index": 1, "n_h_whole": v} for v in (20.0, 20.1)]
+    clustered = source_variance(rows)
+    assert clustered["n_sources"] == 2 and clustered["n_endpoints"] == 4
+    assert clustered["icc_between_over_total"] > 0.99, clustered
+
+    # Same spread, but it lives WITHIN each prefix: ICC must be near 0.
+    rows = [{"status": "head_valid", "source_index": 0, "n_h_whole": v} for v in (1.0, 20.0)]
+    rows += [{"status": "head_valid", "source_index": 1, "n_h_whole": v} for v in (1.1, 20.1)]
+    spread = source_variance(rows)
+    assert spread["icc_between_over_total"] < 0.01, spread
+
+    assert "not estimable" in source_variance(
+        [{"status": "head_valid", "source_index": 0, "n_h_whole": 1.0}])["note"]
+
+
+def test_a_floor_and_a_ceiling_round_in_opposite_directions():
+    """`scTM_min` is a FLOOR taken from the lower tail and the anchor band is a CEILING from the
+    upper tail. Rounding both the same way silently admits a sample one of them meant to exclude."""
+    from scripts.calibrate_rf_fusion_v2_hotspot import (
+        _quantile_lower, q90_higher_order_statistic)
+
+    values = [float(i) for i in range(1, 11)]          # 1..10
+    assert q90_higher_order_statistic(values)[0] == 9.0     # ceil(0.90*10) = 9th
+    assert _quantile_lower(values, 0.10) == 1.0             # floor(0.10*10) = 1st
+
+
+def test_the_anchor_gate_is_native_relative_and_says_so_when_it_cannot_be():
+    """`Q00511`'s native scores ~1.79 A under this backend, so of a 2.0 A band only ~0.2 A is
+    anything but predictor error. Admission moves to the excess over the native -- and when the
+    native was never evaluated, the artifact must SAY the baseline is missing rather than fall back
+    to an absolute number."""
+    import types as _types
+
+    from scripts.calibrate_rf_fusion_v2_hotspot import mechanism_stage_structure_gates
+
+    rows = [{"status": "head_valid",
+             "structure_metrics_json": json.dumps(
+                 {"scTM": 0.80 + 0.01 * i, "max_anchor_sidechain_RMSD": 1.9 + 0.05 * i})}
+            for i in range(10)]
+    native = _types.SimpleNamespace(metrics={"max_anchor_sidechain_RMSD": 1.791, "scTM": 0.9764})
+
+    gates = mechanism_stage_structure_gates(rows, native_structure=native)
+    assert gates["authority"].startswith("mechanism_operability_only")
+    assert "absolute hard gate" in gates["hard_anchor_identity"]
+    delta = gates["delta_anchor"]
+    assert delta["native_absolute"] == 1.791
+    # The excess, not the raw value: every design here is ABOVE 1.9 A absolute, and the proposed
+    # ceiling is a fraction of an angstrom because that is what the designs add to the native.
+    assert delta["proposed_delta_anchor_max"] < 1.0, delta
+    assert delta["absolute_rmsd"]["max"] > 2.0, "raw absolute RMSD must still be reported in full"
+    # A floor from the LOWER tail, so the null's own worst folds are not excluded by their own gate.
+    assert gates["scTM"]["proposed_scTM_min"] <= gates["scTM"]["q50"]
+
+    blind = mechanism_stage_structure_gates(rows, native_structure=None)
+    assert "unmeasurable" in blind["delta_anchor"]
+    assert "proposed_delta_anchor_max" not in blind["delta_anchor"]
+
+
+def test_a_lost_source_is_recorded_as_draws_rather_than_shrinking_the_sample():
+    """A capture that fails costs its whole fork group. Dropping those endpoints would make the
+    head-valid floor pass on a sample smaller than the one that was requested."""
+    from scripts.calibrate_rf_fusion_v2_hotspot import resumed_draws
+
+    def _boom(**_):
+        raise RuntimeError("no checkpoint was captured at step 50")
+
+    import scripts.calibrate_rf_fusion_v2_hotspot as mod
+    import inverse_folding.reference_flow.fusion_v2_runtime.capture as capture_mod
+
+    original = capture_mod.capture_depth_zero
+    capture_mod.capture_depth_zero = _boom
+    try:
+        draws = resumed_draws(
+            protein_id="Q00511", n_sources=3, completions_per_source=2, c_source=50,
+            master_seed=1, cycle_kwargs={"config": _types_config()},
+            seams={"derive_seed": lambda *parts: abs(hash(parts)) % (2 ** 31)})
+    finally:
+        capture_mod.capture_depth_zero = original
+
+    assert len(draws) == 6, "three lost sources must still account for six endpoints"
+    assert all(d.sequence is None and "capture failed" in d.error for d in draws)
+    assert [d.labels["replicate_index"] for d in draws] == list(range(6))
+
+
+@dataclasses.dataclass(frozen=True)
+class _FakeSampler:
+    seed: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class _FakeRfConfig:
+    sampler: _FakeSampler = dataclasses.field(default_factory=_FakeSampler)
+
+
+def _types_config():
+    """A real dataclass: `resumed_draws` reseeds the sampler with `dataclasses.replace`, and a
+    SimpleNamespace would make the test pass on a shape production never sees."""
+    return _FakeRfConfig()
