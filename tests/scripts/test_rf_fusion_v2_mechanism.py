@@ -611,3 +611,51 @@ def test_a_prefix_start_without_a_mechanism_run_is_refused():
 def test_the_shard_loops_the_offset_range():
     source = (__import__("pathlib").Path("scripts/rf_fusion_v2_cohort.py")).read_text()
     assert "range(prefix_start, prefix_start + n_prefixes)" in source
+
+
+# --------------------------------------------------------------------------------------------
+# merging batches is a provenance claim
+# --------------------------------------------------------------------------------------------
+
+
+def _bundle(tmp_path, name, frame, *, code_revision="rev1"):
+    d = tmp_path / name
+    d.mkdir()
+    frame.to_parquet(d / "mechanism_contrasts.parquet")
+    (d / "run_manifest.json").write_text(json.dumps(
+        {"code_revision": code_revision, "config_digest": "cfg-" + code_revision}))
+    return d
+
+
+def test_a_prefix_index_reused_across_batches_is_refused(tmp_path):
+    """The reader groups on source_index; a collision averages two prefixes into one unit."""
+    from scripts.analysis.read_v2_mechanism import load_contrasts
+
+    b1 = _bundle(tmp_path, "b1", _frame({0: [0.05], 1: [0.05]}))
+    b2 = _bundle(tmp_path, "b2", _frame({1: [0.09], 2: [0.09]}))   # 1 overlaps
+    with pytest.raises(SystemExit) as exc:
+        load_contrasts([str(b1), str(b2)])
+    assert "5ZHV_B:1" in str(exc.value)
+
+
+def test_disjoint_batches_merge_into_one_sample(tmp_path):
+    from scripts.analysis.read_v2_mechanism import load_contrasts, prefix_means
+
+    b1 = _bundle(tmp_path, "b1", _frame({0: [0.05], 1: [0.05]}))
+    b2 = _bundle(tmp_path, "b2", _frame({16: [0.09], 17: [0.09]}))
+    merged = load_contrasts([str(b1), str(b2)])
+    assert prefix_means(merged, column="hamming_free").size == 4
+
+
+def test_a_merge_across_code_revisions_is_visible_not_silent(tmp_path):
+    """Legitimate only when the generative path is the same -- which must be stated, not assumed."""
+    from scripts.analysis.read_v2_mechanism import load_contrasts, provenance
+
+    b1 = _bundle(tmp_path, "b1", _frame({0: [0.05]}), code_revision="aaa")
+    b2 = _bundle(tmp_path, "b2", _frame({16: [0.05]}), code_revision="bbb")
+    prov = provenance(load_contrasts([str(b1), str(b2)]))
+    assert prov["single_code_revision"] is False
+    assert prov["code_revisions"] == ["aaa", "bbb"]
+
+    same = provenance(load_contrasts([str(b1)]))
+    assert same["single_code_revision"] is True
