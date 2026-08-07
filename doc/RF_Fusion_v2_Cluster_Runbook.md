@@ -1008,7 +1008,7 @@ Traceable to the executed Canary (jobs `12094327–30`): one cell ≈ 2 min wall
 MaxRSS 27.5–30.4 GB; refold of a 302-aa design dominates a cycle's marginal cost (~94%). A prefix is
 about three cells, so 16 prefixes × 2 proteins ≈ 1.5–2 GPU-hours for batch 1.
 
-### 7.8 Realized result (2026-08-07) — `transmission_demonstrated`
+### 7.8 Realized result (2026-08-07) — `transmission_demonstrated` AT `r = 40`
 
 Jobs `12098724`/`12098725` (batch 1, prefixes 0-15) and `12099604`/`12099605` (batch 2, prefixes
 16-55), analysed as ONE sample per the internal-pilot design.
@@ -1025,10 +1025,20 @@ their two-sided 95% CI lower bound; both positive controls are wide awake. Reali
 $\hat\sigma_d^{\max} = 0.0485$ gives an unclipped 15, so 38 and 39 scored prefixes exceed the
 32-prefix floor the design was powered on — the study is not underpowered by its own rule.
 
-**What was demonstrated, stated narrowly.** ONE amino acid, written at the lowest-indexed masked
+**What was demonstrated, and at what.** ONE amino acid, written at the lowest-indexed masked
 position and protected until `c_next`, measurably steers the completion: 3.4 downstream residues on
 `5ZHV_B` and 14.8 on `Q00511`, on domains of 54 and 158. In batch 1 not one of the 22 scored
 prefixes across both proteins produced an exact zero.
+
+**The scope is ONE COORDINATE, and the numbers are a point on an unmeasured curve.** Everything
+above was measured at `r = 40`, `c_source = 50`, `c_next = 60`, `D = 1`, under one policy with a
+write cardinality of 1 and 4 lookaheads. The only factor with two levels is the protein
+(unconstrained / anchored). `r` is very unlikely to be inert: a deeper re-entry leaves more forward
+steps after the injection, so the effect plausibly grows as `r` falls -- and the band pins more
+reopens there too (the Canary measured 50 reopens at `r = 30` against 21 at `r = 40` on `Q00511`),
+so the STRUCTURE cost plausibly grows with it as well. **A result at `r = 40` licenses nothing at
+`r = 30`, and the effect size is not a property of V2 but of this coordinate.** The `r`-curve is
+the obvious next axis and has not been run.
 
 **The domain choice was load-bearing, and it is now measured rather than argued.** For
 `endpoint_change`, `n_diff_editable` equals `n_diff_free` fork by fork — every difference the
@@ -1056,10 +1066,13 @@ because a feedback-disabled cycle stops after the A2 view and produces no descen
 "projection damages structure" and "resumed propagation to `c_next` loses structure" are not
 separated here, and the drop cannot be attributed.
 
-Separating them needs one more arm that this executor does not run: propagate the captured source
-from `r_d` to `c_next` and complete it **without any projection**, matched on source, fork seeds and
-horizon. Until that exists, §7.8's precondition is unmet on the structure side regardless of the
-primary, and `D>1` stays shut.
+Separating them needs one more arm that this executor does not run: re-mask the SAME reopen
+positions, leave the endpoint-written position masked, and propagate `r_d -> c_next` and complete,
+matched on source, fork seeds and horizon. That arm is not a flag away -- `SupportPartition` refuses
+an empty `write_from_endpoint` and `q_phi` refuses a feedback event that writes nothing, both
+deliberately, so the control is not a projection at all and needs its own path. Until it exists,
+§7.10's precondition is unmet on the structure side regardless of the primary, and `D>1` stays shut
+-- at `r = 40`, which is the only coordinate any of this was measured at.
 
 ### 7.10 Only then
 
