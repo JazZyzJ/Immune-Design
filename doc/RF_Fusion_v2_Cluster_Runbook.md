@@ -1053,33 +1053,59 @@ batch runs. Established by evidence rather than by reading the diff: prefix 0 re
 later revision (job `12099520`) is **byte-identical** to batch 1's prefix 0 in every contrast column
 including the descendant sequence digests.
 
-### 7.9 The secondary is INCONCLUSIVE, and that is what shuts `D>1`
+### 7.9 The secondary, CORRECTED (2026-08-07)
 
-| | depth-0 pool | descendants |
-|---|---:|---:|
-| `5ZHV_B` | 211/224 = 94.2% | 592/880 = **67.3%** |
-| `Q00511` | 202/224 = 90.2% | 576/892 = **64.6%** |
+**The first reading of this section was wrong, and the error changed its conclusion.** It reported
+"descendants fold ~26 points worse than their depth-0 pool" from a descendant population that
+POOLED every arm -- including `source_shuffle` arm B, whose source's resolved bytes are permuted by
+construction. That arm folds at **0.9% / 0.0%**, which is what a scrambled source is supposed to do:
+it is the assay's positive control, not a V2 descendant. Pooling it manufactured most of the drop.
 
-Descendants fold ~26 points worse than the pool they came from, on both proteins. §7.6's three-way
-reading cannot be completed on this design: **every descendant-producing arm is feedback-on**,
-because a feedback-disabled cycle stops after the A2 view and produces no descendant at all. So
-"projection damages structure" and "resumed propagation to `c_next` loses structure" are not
-separated here, and the drop cannot be attributed.
+Split by arm, under the same frozen mechanism gate:
 
-Separating them needs one more arm that this executor does not run: re-mask the SAME reopen
-positions, leave the endpoint-written position masked, and propagate `r_d -> c_next` and complete,
-matched on source, fork seeds and horizon. That arm is not a flag away -- `SupportPartition` refuses
-an empty `write_from_endpoint` and `q_phi` refuses a feedback event that writes nothing, both
-deliberately, so the control is not a projection at all and needs its own path. Until it exists,
-§7.10's precondition is unmet on the structure side regardless of the primary, and `D>1` stays shut
--- at `r = 40`, which is the only coordinate any of this was measured at.
+| | depth-0 pool | `endpoint_change` arm A (**the V2 descendant**) | arm B | `source_shuffle` arm A | arm B |
+|---|---:|---:|---:|---:|---:|
+| `5ZHV_B` `r=40` | 94.2% | **90.0%** | 88.2% | 90.0% | 0.9% |
+| `5ZHV_B` `r=30` | 94.2% | **93.3%** | 94.2% | 93.3% | 3.6% |
+| `Q00511` `r=40` | 90.2% | **85.9%** | 86.4% | 86.2% | 0.0% |
+| `Q00511` `r=30` | 90.2% | **85.5%** | 85.9% | 85.7% | 0.0% |
+
+**One V2 cycle costs about 4 percentage points of structural feasibility, not 26.** Two internal
+checks pass: `endpoint_change` arm A and `source_shuffle` arm A are the same configuration
+(as-selected endpoint, intact source) and agree to within 0.3 points; and arm B of `source_shuffle`
+collapsing to ~0% shows the gate discriminates rather than admitting everything.
+
+Three candidate explanations for even that 4 points were tested and TWO are eliminated:
+
+| candidate | test | result |
+|---|---|---|
+| re-run steps / reopen count (**geometry**) | paired `r=30` vs `r=40`, a 2.5-4.7x dose contrast | **ruled out** -- feasibility flat (`5ZHV_B` +0.032 p=0.41, `Q00511` -0.005 p=0.79) |
+| completing from `c_next=60` rather than `c=50` (**stage**) | natural completions captured at `c=60` vs at `c=50`, same gate | **ruled out** -- 93.8% vs 92.2% on `5ZHV_B`; starting later costs nothing |
+| how much the feedback propagated | Spearman(hamming, feasibility) per prefix | **null** (-0.17 p=0.32, +0.04 p=0.80) |
+
+So the residual ~4 points is the projection's own cost, it does not scale with rollback depth, and it
+does not scale with how much was transmitted. **What is NOT measured is whether it COMPOUNDS across
+cycles** -- which is precisely what `D>1` does, and no run has produced a second cycle.
+
+The measured `r`-dependence of the primary is the other half of this section: transmission GROWS with
+depth -- 3.42 -> 5.95 residues on `5ZHV_B` and 14.79 -> 19.93 on `Q00511`, paired Wilcoxon
+p = 2.3e-4 and 2.0e-4. `B(r)` is calibrated only at `r in {30, 40}` and `lookup_band` never
+interpolates, so this is **two points, not a curve**; a third depth needs a new §1 band scan.
 
 ### 7.10 Only then
 
-Transmission holds (§7.8).  The other precondition does NOT: §7.9's structure secondary is
-inconclusive by construction, so nothing here authorizes freezing the production
-`FeedbackSupportPolicySpec` or opening `D>1`.  The next experiment is the missing arm §7.9 names --
-a descendant produced with no projection at all, matched on source, fork seeds and horizon.
+Transmission holds at `r=40` and grows toward `r=30` (§7.8, §7.9).  The structure cost of one cycle
+is now MEASURED rather than unattributed: about 4 percentage points, insensitive to rollback depth
+and to how much was transmitted.  That is small.  It is still not a licence, for one reason:
+**nothing has measured whether it compounds.**  A fixed 4-point cost per cycle is tolerable; a cost
+that multiplies is not, and `D>1` is exactly the experiment that would find out -- so it cannot be
+its own precondition.
+
+The next experiment is therefore a **two-cycle run with the compounding read as its primary**, on
+the same prefixes, not the no-projection arm this section previously called for.  That arm was
+proposed to explain a 26-point drop which turned out to be a pooling error, and it is no longer the
+question.  `D>1` stays launch-disabled until a `D=2` cohort measures the second cycle's cost against
+the first.
 
 `allow_production_depth_gt_1` is never granted by the oracle factory. Opening it is a runbook
 decision that also requires the FeedbackSupportPolicy directionality gate. Nothing in §7 authorizes

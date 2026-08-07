@@ -4093,3 +4093,27 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - Two prefixes produced typed nulls from a band refusal at `r=40` and are recorded and excluded, not hidden.
   - The claim is narrow on purpose, on two axes at once. ONE token steers the completion, at ONE coordinate (`r=40`), at `D=1`, under this policy. It says nothing about whether the steering is toward better designs -- that is capability, and the mechanism-stage gates carry no capability authority -- and nothing about any other re-entry depth.
   - The missing structure control is NOT a flag away, contrary to a first estimate made before reading the type: `SupportPartition` refuses an empty `write_from_endpoint` and `q_phi` refuses a feedback event that writes nothing, both deliberately. The control is not a projection, so it needs its own path -- re-mask the same reopens, leave the written position masked, propagate and complete.
+
+### L0148
+- timestamp: 2026-08-07T07:30:00-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: Owner asked for a conservative reading given that everything was measured at one coordinate. Scoping the claim to `r=40` led to an `r`-sweep, and the sweep's diagnostics exposed an ERROR in L0147's structure secondary.
+- change_summary: **L0147's structure secondary was wrong and its conclusion is retracted.** It reported "descendants fold ~26 points worse than their depth-0 pool" from a descendant population that pooled EVERY arm, including `source_shuffle` arm B -- whose source's resolved bytes are permuted by construction and which folds at 0.9% / 0.0%. That arm is the assay's positive control, not a V2 descendant. Split by arm, one V2 cycle costs about **4 percentage points**, not 26.
+- rationale: A scrambled-source arm belongs in the population that validates the readout, never in the population that measures the treatment. Pooling it manufactured most of the drop, and the drop was the stated reason `D>1` stayed shut -- so the error changed a conclusion, not just a number.
+- artifacts:
+  - `doc/RF_Fusion_v2_Cluster_Runbook.md` §7.9 (rewritten as a correction), §7.10 (reconciled)
+  - `<RUN>/inverse_folding/v2_mechanism_r30/{5zhv_mech_r30,q00511_mech_r30}/` (the `r=30` sweep)
+  - `<WORK>/v2_canary/stage_control_c60/<PID>/` (natural completions captured at `c=60`)
+- evidence: Per-arm feasibility under the same frozen mechanism gate. `5ZHV_B` `r=40`: pool 94.2%, `endpoint_change` arm A **90.0%**, arm B 88.2%, `source_shuffle` arm A 90.0%, arm B **0.9%**. `Q00511` `r=40`: pool 90.2%, arm A **85.9%**, arm B 86.4%, shuffle arm A 86.2%, shuffle arm B **0.0%**. Two internal checks pass: `endpoint_change` arm A and `source_shuffle` arm A are the same configuration and agree within 0.3 points; the shuffled arm collapsing to ~0% shows the gate discriminates. Two candidate causes of the residual 4 points are ELIMINATED -- geometry, by a paired `r=30` vs `r=40` sweep at a 2.5-4.7x reopen dose (`5ZHV_B` +0.032 p=0.41, `Q00511` -0.005 p=0.79 on the canonical arm); and stage, by natural completions captured at `c=60` scoring 93.8% against `c=50`'s 92.2% on `5ZHV_B` under the same gate, so starting later costs nothing. Transmission GROWS with rollback depth: 3.42 -> 5.95 residues (`5ZHV_B`) and 14.79 -> 19.93 (`Q00511`), paired Wilcoxon p = 2.3e-4 / 2.0e-4.
+- impact:
+  - scope: documentation and interpretation only; no code behaviour change. `read_v2_mechanism.py` never computed the pooled figure -- it was an ad-hoc diagnostic that reached the runbook.
+  - risk: low
+  - confidence: 0.90
+- status: done -- `D>1` still launch-disabled, for a REPLACED reason.
+- next_action: A `D=2` cohort on the same prefixes, with the SECOND cycle's structure cost against the first as its primary. The no-projection control arm L0147 called for is withdrawn: it was proposed to explain a 26-point drop that was a pooling error. A fixed 4-point per-cycle cost is tolerable; a compounding one is not, and only a two-cycle run can tell them apart -- so `D>1` cannot be its own precondition.
+- refs:
+  - The `r`-sweep is TWO POINTS, not a curve: `B(r)` is calibrated only at `r in {30, 40}` and `lookup_band` never interpolates. A third depth needs a new §1 band scan.
+  - The paired design worked and is checkable: source seeds do not include `r`, so the same prefix index yields the same source prefix and the same lookahead pool at both depths -- the depth-0 pool feasibility is identical (94.2% / 90.2%) across the two runs.
+  - The stage control needed NO new code: `calibrate_rf_fusion_v2_hotspot.py --population resumed` already takes `--c-source`, and the exact prior invocation was recovered from `sacct --batch-script`.
+  - Its printed `structure-operability` diagnostic is under the **v0** gate (56.2% at both `c=50` and `c=60`), not the mechanism gate; the comparable numbers were recomputed offline from `structure_metrics_json` against the frozen `scTM_min`. Reading the printed figure against the mechanism-gated cohort would have compared two different gates.
