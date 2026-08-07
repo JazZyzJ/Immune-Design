@@ -735,6 +735,8 @@ Two things follow, and a third does not:
 * The Head gate is **currently non-binding in the mechanism regime**. That is safe in the sense
   that it will not wrongly reject; it is not safe in the sense of providing protection, because a
   gate that never fires is not evidence that nothing was caught.
+  **CORRECTED by §7.11** — on 4456 endpoints the gate fires on 7–12%. This bullet was a
+  28-endpoint artefact.
 * Structure quality and hotspot creation are **not co-monotone** here: resumed endpoints fold worse
   AND create fewer new hotspots than full trajectories. Whatever the prefix constrains, it
   constrains both — and not in the same direction.
@@ -1119,15 +1121,105 @@ not a licence, for one reason: **nothing has measured whether it compounds.**  A
 cycle is tolerable; a cost that multiplies is not, and `D>1` is exactly the experiment that would
 find out -- so it cannot be its own precondition.
 
-The next experiment is therefore a **two-cycle run with the compounding read as its primary**, on
-the same prefixes, not the no-projection arm this section previously called for.  That arm was
-proposed to explain a 26-point drop which turned out to be a pooling error, and it is no longer the
-question.  `D>1` stays launch-disabled until a `D=2` cohort measures the second cycle's cost against
-the first.
+This section previously named a `D=2` compounding cohort as the next experiment. **§7.11 supersedes
+that.** With the reward channel measured inert at one cycle, a second cycle would compound a
+transport that carries no preference — it would price a cost with no benefit on the other side of
+the ledger. The `D=2` cohort is withdrawn; `D>1` stays launch-disabled, now for a stronger reason
+than the unmeasured cost.
+
+(The no-projection arm this section called for before that was proposed to explain a 26-point drop
+which turned out to be a pooling error. It is not the question either.)
 
 `allow_production_depth_gt_1` is never granted by the oracle factory. Opening it is a runbook
 decision that also requires the FeedbackSupportPolicy directionality gate. Nothing in §7 authorizes
 it, and a green secondary readout authorizes nothing at all.
+
+### 7.11 Reward directionality at one cycle — `not_demonstrated` (2026-08-07)
+
+**Purpose.** §7.8 showed the channel TRANSMITS: what the endpoint carries reaches the descendant.
+It never asked whether what arrives is *better*. Transmission is a claim about identity; a
+capability claim needs one about VALUE. This section asks the second question, at one cycle, on
+both scoring axes.
+
+**Method.** No new generation run — the `endpoint_change` view already IS the reward-ordered
+contrast. `select_family_representatives` sorts admissible endpoints by
+`(head_global_risk, endpoint_id)` ascending, so arm A (`endpoint_rank=0`) is the Head-BEST endpoint
+and arm B (`endpoint_rank=1`) the next-best. Both arms run off one source object, one scored
+endpoint pool, identical realized propagation and lookahead seeds, one horizon, and support
+cardinality forced equal by `required_support_budget`. Measured `n_input_diff in {0, 1}`: the two
+arms' projected states differ by **exactly one token**; the zeros are structural (the two endpoints
+agree at the written position) and are dropped by the pre-registered `contrastable` rule.
+
+Two readouts, both paired on the source prefix:
+
+* the **primary** — arm A minus arm B on the descendant;
+* the **transmission slope** — regress `(desc_A - desc_B)` on `(parent_A - parent_B)` across
+  prefixes. The slope is the FRACTION of an injected score gap that reaches the descendants. Being
+  dimensionless, it does not loosen if the dose is raised.
+
+`N_H^whole` was recomputed for all 4456 mechanism endpoints with
+`scripts/analysis/recompute_v2_nh_whole.py` (job 12113292; live-Head drift 0.011 raw logits under
+`--verify-designs`). `source_shuffle` arm B is EXCLUDED throughout — its source is scrambled and its
+structure collapses to 0.9% / 0.0%, and pooling it is what produced the retracted 26-point figure of
+§7.9.
+
+**Evidence.** Injected dose, `rank0 - rank1`: `head_global_risk` -0.944 (`5ZHV_B`) / -2.596
+(`Q00511`) against a within-pool SD of 4.30; `N_H^whole` -1.94 / -3.61. Lower is better on both.
+
+| cell | primary `head_global_risk` | slope | primary `N_H^whole` | slope |
+|---|---:|---:|---:|---:|
+| `5ZHV_B` r40 | -0.083 [-0.507, +0.341] | +0.003 [-0.170, +0.177] | +0.047 [-0.442, +0.536] | -0.046 [-0.189, +0.097] |
+| `Q00511` r40 | -0.228 [-0.717, +0.261] | +0.027 [-0.127, +0.181] | -0.368 [-0.920, +0.184] | -0.060 [-0.191, +0.071] |
+| `5ZHV_B` r30 | -0.078 [-0.414, +0.258] | +0.034 [-0.100, +0.168] | -0.308 [-0.799, +0.183] | +0.064 [-0.080, +0.209] |
+| `Q00511` r30 | +0.356 [-0.480, +1.191] | +0.029 [-0.234, +0.293] | +0.518 [-0.470, +1.506] | +0.017 [-0.219, +0.252] |
+
+95% CIs. `n = 38 / 39 / 39 / 39` prefixes for the primary (contrastable and analyzable),
+`55 / 55 / 56 / 55` for the slope. **Every primary CI straddles zero** (min `p = 0.19`) and the sign
+is a coin flip — three of four lean the right way on `head_global_risk`, two of four on `N_H^whole`.
+**Every slope point estimate is `|.| <= 0.064` with `R^2 <= 0.016`.**
+
+One trap worth recording: the RAW parent-to-descendant correlation is `r = 0.54 / 0.48`,
+`p < 1e-7` at `r=40`. That is prefix-level confounding — a hot source yields hot endpoints AND hot
+descendants — and it vanishes within prefix. Read as transmission it is simply wrong.
+
+Single-cycle expectation, arm A best-of-4 against its OWN depth-0 pool best-of-4 (**not
+compute-matched**; feedback spends an extra generation round): protein-split and null on both axes.
+`5ZHV_B` +0.69 / +1.00 (worse), `Q00511` -0.66 / -0.68 (better) at `r=40`. Nothing clears
+`p < 0.05` except one Wilcoxon (`5ZHV_B`, `head_global_risk`, `p = 0.010`) the t-test does not
+corroborate (`p = 0.087`).
+
+Artifacts: `<WORK>/v2_canary/nh_mechanism/{mechanism_endpoints_nh.parquet,summary.json}`.
+
+**Conclusion — the channel transmits identity and not value.** One token in produces 2.4–14.1
+differing residues out (§7.8), while 0–6% of the injected score gap arrives and the CI excludes
+anything above ~25% on both axes. This is not an underpowered null: the bound is FRACTIONAL, so
+raising `K` or widening the endpoint spread does not relax it.
+
+The mechanism is not surprising once stated. The only endpoint-dependent quantity in the entire
+projection is the amino acid at ONE position, and even that position comes from the source's mask
+geometry — the verified policy rule is `write=min_source_masked; carry=inherited_masks+commit_lt_r;
+inject=commit_ge_r; reopen=band_pinned_latest_committed`, with no Head or reward term anywhere. The
+Head enters only at `select_family_representatives`: it ranks ENDPOINTS, never positions. PLAN
+§2.5's `residual Head window-to-residue attribution` — the component that would make position choice
+reward-directed — is not implemented.
+
+**What this does NOT say.** It does not show feedback is harmful. It shows the reward channel is
+inert at `D=1`, on two proteins, two re-entry points, one cycle, one Head. It says nothing about
+compounding, which no run has produced.
+
+**Side finding — the Head gate is binding after all, correcting §5.2.** On the clean populations,
+`7-12%` of endpoints exceed the full-trajectory threshold (15.738 / 20.083):
+
+| cell | depth-0 pool | arm A descendant | arm B descendant | Δ(A - own pool), Wilcoxon |
+|---|---:|---:|---:|---:|
+| `5ZHV_B` r40 | 19/224  8.5% | 18/152  11.8% | 17/152  11.2% | +3.9 pt, p=0.41 |
+| `Q00511` r40 | 16/224  7.1% | 13/156   8.3% | 11/156   7.1% | +0.6 pt, p=0.68 |
+| `5ZHV_B` r30 | 19/224  8.5% | 17/156  10.9% | 13/156   8.3% | +2.6 pt, p=0.54 |
+| `Q00511` r30 | 16/224  7.1% | 12/156   7.7% | 13/156   8.3% | +0.0 pt, p=0.98 |
+
+§5.2's "a gate that never fires" came from 28 endpoints. Descendants breach slightly more often than
+their own pool on every cell, but no cell is significant: **no evidence that feedback worsens
+safety, which is not the same as evidence that it does not.**
 
 ---
 
@@ -1137,6 +1229,10 @@ it, and a green secondary readout authorizes nothing at all.
   forked family inherits its parent's `reference_binding_id` or opens its own.
 - `reward_ordered` / `policy_source_off` mechanism views raise `NotYetFrozenError` until the
   production policy spec is frozen (PLAN §8.4); a placeholder would yield a number that looks like
-  evidence.
+  evidence. The reward-ordering QUESTION is nonetheless answered — §7.11 reaches it through
+  `endpoint_change`, which needs no freeze.
+- `source_change` (PLAN §2.6 intervention 2 — endpoint AND support pinned, source ablated) is
+  implemented in `paired.py` but has never been executed. `source_shuffle` does not substitute for
+  it: its arm B collapses structure to 0.9% / 0.0%, so any outcome read on that arm is confounded.
 - Nothing in V2 has run on a cluster. Every local suite uses fake oracles and validates **wiring
   only**.
