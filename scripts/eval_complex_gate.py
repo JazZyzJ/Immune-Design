@@ -48,6 +48,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -74,6 +75,54 @@ XPROT_W1 = {"Asn255": 254}
 FUNC_ATOM = {"Lys11": "NZ", "Thr58": "OG1", "His257": "NE2", "Asn255": "ND2"}
 # parents whose residue numbering matches the Q00511 manifest exactly
 Q00511_NUMBERING_PARENTS = {"Q00511"}
+
+
+def load_catalytic_map(path: str) -> dict[str, dict[str, int]]:
+    """Load per-parent catalytic residue indices: parent -> {label: index_0b}.
+
+    Accepts a long table (parquet/csv) with columns ``parent``, ``label``, ``index_0b``.
+    Labels use the Q00511 nomenclature (``Lys11``/``Thr58``/``His257``/``Asn255``) so a parent's
+    own index can be substituted positionally; the Active-15 constraint manifests emit exactly
+    this under ``biological_role: functional_analog_lock``.
+
+    A duplicated (parent, label) is a hard error: silently keeping one of two candidate indices
+    is how a pocket measurement ends up on the wrong residue.
+    """
+    p = Path(path)
+    table = pd.read_parquet(p) if p.suffix == ".parquet" else pd.read_csv(p)
+    missing = {"parent", "label", "index_0b"} - set(table.columns)
+    if missing:
+        raise ValueError(f"catalytic map is missing columns: {sorted(missing)}")
+    dup = table.duplicated(subset=["parent", "label"], keep=False)
+    if dup.any():
+        offenders = table[dup][["parent", "label"]].drop_duplicates().to_dict("records")
+        raise ValueError(f"catalytic map has duplicate (parent,label) rows: {offenders[:5]}")
+    out: dict[str, dict[str, int]] = {}
+    for r in table.itertuples():
+        out.setdefault(str(r.parent), {})[str(r.label)] = int(r.index_0b)
+    return out
+
+
+def resolve_catalytic_residues(
+    parent: str, catalytic_map: Mapping[str, Mapping[str, int]] | None
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Return (core_residues, partner_residues) in this PARENT's own numbering.
+
+    Without a map only Q00511 resolves, and it resolves to the legacy hardcoded panel so the
+    historical behaviour is byte-identical. Every other parent returns empty, which makes the
+    caller SKIP the catalytic/ligand-distance panel instead of measuring it against Q00511's
+    indices. That distinction matters: measured on the Active-15 manifests, 13 of 15 parents
+    put Lys11/Thr58/His257/Asn255 at different indices (A0A9P8P4R1 is off by 26), and the old
+    unconditional call emitted plausible-looking distances to the wrong residues.
+    """
+    if catalytic_map and parent in catalytic_map:
+        m = catalytic_map[parent]
+        core = {k: int(m[k]) for k in CATALYTIC_CORE if k in m}
+        partner = {k: int(m[k]) for k in XPROT_W1 if k in m}
+        return core, partner
+    if parent in Q00511_NUMBERING_PARENTS:
+        return dict(CATALYTIC_CORE), dict(XPROT_W1)
+    return {}, {}
 # NOTE: manifest index_0b == crystal resSeq == predicted res_id in the NATIVE mature frame, so the
 # residue panels below are shifted by --crystal-offset (0 = native/mature, 1 = legacy leading-Met).
 
@@ -260,17 +309,29 @@ def _atom_coord(arr, chain, res_id, atom, fallback="CA"):
     return None
 
 
-def xprot_as_distances(arr, pchains, resid_offset: int = 0) -> dict:
+def xprot_as_distances(arr, pchains, resid_offset: int = 0, *,
+                       core_residues: Mapping[str, int] | None = None,
+                       partner_residues: Mapping[str, int] | None = None) -> dict:
     """For each protein chain's catalytic core, distance to the NEAREST neighbour-chain Asn255-ND2.
     Returns per-core median over chains (the interfacial catalytic geometry).
 
     ``resid_offset`` maps manifest ``index_0b`` to the predicted ``res_id``; it is 0 when the
     prediction uses the native mature frame (index_0b == res_id == crystal resSeq, the standard),
     and 1 for a legacy leading-Met prediction that shifts every residue by one.
+
+    ``core_residues``/``partner_residues`` carry THIS parent's own indices under the Q00511 label
+    nomenclature; they default to the Q00511 panel so existing callers are unchanged. Passing
+    another parent's protein with Q00511 indices measures the wrong residues silently, so callers
+    must resolve the parent's own numbering (``resolve_catalytic_residues``) rather than rely on
+    the default.
     """
-    asn_id = XPROT_W1["Asn255"] + resid_offset
+    core_residues = dict(core_residues if core_residues is not None else CATALYTIC_CORE)
+    partner_residues = dict(partner_residues if partner_residues is not None else XPROT_W1)
+    if "Asn255" not in partner_residues:
+        return {}
+    asn_id = partner_residues["Asn255"] + resid_offset
     per_core = {}
-    for core_lab, core_id0 in CATALYTIC_CORE.items():
+    for core_lab, core_id0 in core_residues.items():
         core_id = core_id0 + resid_offset
         dists = []
         for ch in pchains:
@@ -387,6 +448,13 @@ def main() -> None:
         help="chain-pair long-table parquet (default: <out stem>_interface_pairs.parquet)",
     )
     ap.add_argument(
+        "--catalytic-map", default=None,
+        help="long table (parquet/csv: parent,label,index_0b) giving each parent's OWN catalytic "
+             "residue indices under the Q00511 label nomenclature. Without it only Q00511 gets "
+             "the cross-protomer distance panel and ligand-to-catalytic distances; every other "
+             "parent's panel is omitted rather than measured against Q00511's numbering.",
+    )
+    ap.add_argument(
         "--crystal-offset", type=int, default=0,
         help="added to crystal residue ids to reach prediction residue ids. 0 when the prediction "
              "uses the same frame as the crystal (the standard: uricase predicted at its native "
@@ -497,6 +565,14 @@ def main() -> None:
         if str(row.get("kind", "")).upper() == "WT" and row["name"] in best:
             wt_name_by_parent[row["parent"]] = row["name"]
 
+    catalytic_map = load_catalytic_map(args.catalytic_map) if args.catalytic_map else None
+    if catalytic_map is not None:
+        covered = sorted(set(man["parent"]) & set(catalytic_map))
+        uncovered = sorted(set(man["parent"]) - set(catalytic_map))
+        print(f"[catalytic map] {len(catalytic_map)} parents loaded; "
+              f"covering {len(covered)}/{man['parent'].nunique()} manifest parents"
+              + (f"; NO panel for {uncovered}" if uncovered else ""))
+
     # crystal pocket reference (built once; needs a holo reference with its ligand)
     crystal_ref = None
     if args.crystal_ref and not args.no_ligand_metrics:
@@ -576,9 +652,14 @@ def main() -> None:
                 rec["complex_TM_vs_crystal"] = usalign_complex_tm(
                     args.usalign, cif, Path(args.crystal_ref)
                 )
-            # cross-protomer active-site distances (Q00511-numbering parents only)
-            if parent in Q00511_NUMBERING_PARENTS:
-                xd = xprot_as_distances(arr, pchains, resid_offset=args.crystal_offset)
+            # cross-protomer active-site distances, in THIS parent's own numbering
+            cat_core, cat_partner = resolve_catalytic_residues(parent, catalytic_map)
+            rec["catalytic_numbering_resolved"] = bool(cat_core)
+            if cat_core:
+                xd = xprot_as_distances(
+                    arr, pchains, resid_offset=args.crystal_offset,
+                    core_residues=cat_core, partner_residues=cat_partner,
+                )
                 for lab, v in xd.items():
                     rec[f"xprot_{lab}_dist"] = v
             # chain-pair PAE / gPDE / ipTM blocks, incl. the protein-ligand off-diagonal
@@ -591,12 +672,17 @@ def main() -> None:
             # ligand pocket geometry (prediction-intrinsic) + crystal-referenced pocket RMSD
             if not args.no_ligand_metrics:
                 try:
+                    # Pocket-contact counts need no residue panel, but every *_to_core /
+                    # lig_min_dist_<label> column is defined by the catalytic indices. Feeding
+                    # Q00511's indices to another parent produces distances to unrelated
+                    # residues with no error, so an unresolved parent gets an empty panel and
+                    # the distance columns are simply absent.
                     sites = ligand_site_metrics(
                         arr, pchains,
                         core_residues={k: v + args.crystal_offset
-                                       for k, v in CATALYTIC_CORE.items()},
+                                       for k, v in cat_core.items()},
                         partner_residues={k: v + args.crystal_offset
-                                          for k, v in XPROT_W1.items()},
+                                          for k, v in cat_partner.items()},
                         contact_cutoff=args.ligand_contact_cutoff,
                     )
                 except Exception as exc:

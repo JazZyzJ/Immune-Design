@@ -17,6 +17,12 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
+# 240G is the historical request; MEASURED peak is far lower (74-query shards on ailab, 2026-08-07:
+# MaxRSS 45.9-55.8 GB, 7m15s-7m47s each). --db-load-mode 2 sizes memory by the DB, not the query
+# count, so a bigger batch does not scale this up much. On a contended ailab (1500G / 8 GPUs =
+# ~187G fair share per GPU) a 240G ask exceeds one GPU's share and delays scheduling for nothing;
+# override with `sbatch --mem=96G` for sharded batches. Left at 240G here only because no
+# large-batch measurement exists yet.
 #SBATCH --mem=240G
 #SBATCH --time=04:00:00
 set -eo pipefail   # NOT -u: colabfold conda activation references unset $PS1

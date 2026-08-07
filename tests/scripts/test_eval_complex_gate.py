@@ -334,3 +334,73 @@ def test_reference_rosetta_requires_separate_run_and_log_roots(tmp_path, capsys)
 
     assert _paths_overlap(tmp_path / "run", tmp_path / "run" / "nested")
     assert not _paths_overlap(tmp_path / "run", tmp_path / "logs")
+
+
+# --------------------------------------------------------------------------------------
+# Per-parent catalytic numbering.
+#
+# The Q00511 catalytic panel (Lys11/Thr58/His257 + cross-protomer Asn255) is hardcoded at
+# index_0b 10/57/256/254. Measured against the Active-15 constraint manifests, only 2 of the
+# 15 parents actually sit at those indices (Q00511 and Q0CXR4); A0A9P8P4R1 is offset by 26
+# (Lys11 -> 36). Applying the Q00511 numbers to another parent silently measures the ligand
+# to the WRONG residues, so an unresolvable parent must yield NO catalytic panel rather than
+# a plausible-looking wrong one.
+# --------------------------------------------------------------------------------------
+
+def test_catalytic_residues_default_to_the_legacy_panel_only_for_q00511():
+    from scripts.eval_complex_gate import CATALYTIC_CORE, XPROT_W1, resolve_catalytic_residues
+
+    core, partner = resolve_catalytic_residues("Q00511", None)
+    assert core == CATALYTIC_CORE
+    assert partner == XPROT_W1
+
+
+def test_catalytic_residues_are_absent_for_an_unmapped_non_q00511_parent():
+    from scripts.eval_complex_gate import resolve_catalytic_residues
+
+    core, partner = resolve_catalytic_residues("A0A9P8P4R1", None)
+    assert core == {} and partner == {}
+
+
+def test_catalytic_residues_come_from_the_map_when_supplied():
+    from scripts.eval_complex_gate import resolve_catalytic_residues
+
+    cat_map = {
+        "A0A9P8P4R1": {"Lys11": 36, "Thr58": 84, "His257": 287, "Asn255": 285},
+        "Q00511": {"Lys11": 10, "Thr58": 57, "His257": 256, "Asn255": 254},
+    }
+    core, partner = resolve_catalytic_residues("A0A9P8P4R1", cat_map)
+    assert core == {"Lys11": 36, "Thr58": 84, "His257": 287}
+    assert partner == {"Asn255": 285}
+    # the map must win over the legacy constants even for Q00511 itself
+    core_q, partner_q = resolve_catalytic_residues("Q00511", cat_map)
+    assert core_q == {"Lys11": 10, "Thr58": 57, "His257": 256}
+    assert partner_q == {"Asn255": 254}
+
+
+def test_catalytic_map_loads_per_parent_indices_from_a_manifest_table(tmp_path):
+    from scripts.eval_complex_gate import load_catalytic_map
+
+    p = tmp_path / "catmap.parquet"
+    pd.DataFrame([
+        {"parent": "Q00511", "label": "Lys11", "index_0b": 10},
+        {"parent": "Q00511", "label": "Asn255", "index_0b": 254},
+        {"parent": "P25689", "label": "Lys11", "index_0b": 22},
+        {"parent": "P25689", "label": "Asn255", "index_0b": 261},
+    ]).to_parquet(p, index=False)
+    m = load_catalytic_map(str(p))
+    assert m["Q00511"]["Lys11"] == 10
+    assert m["P25689"]["Asn255"] == 261
+
+
+def test_catalytic_map_rejects_a_parent_whose_panel_is_incomplete(tmp_path):
+    """A half-populated parent must fail loudly, not silently fall back to Q00511 numbering."""
+    from scripts.eval_complex_gate import load_catalytic_map
+
+    p = tmp_path / "partial.parquet"
+    pd.DataFrame([
+        {"parent": "P25689", "label": "Lys11", "index_0b": 22},
+        {"parent": "P25689", "label": "Lys11", "index_0b": 23},
+    ]).to_parquet(p, index=False)
+    with pytest.raises(ValueError, match="duplicate"):
+        load_catalytic_map(str(p))

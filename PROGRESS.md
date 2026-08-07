@@ -414,8 +414,46 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 
 ## RF-Refine Fusion V2 — trajectory-coupled pre-terminal feedback (PLAN_RF_REFINE_FUSION_V2.md)
 
-> **STATE-TRANSITION CANARY EXECUTED ON CLUSTER (2026-08-06, `4dd0922`) — THE MECHANISM
-> EXECUTES.** Branch `fusion_rf_refine`, worktree `/Users/jerry/Project/MHC-IF-fusion`. Two
+> **MECHANISM COHORT CLOSED (2026-08-07, `e359ea0`) — transmission demonstrated AT `r=40`, and it
+> GROWS toward `r=30`; per-cycle structure cost near zero; `D>1` still shut, now only on the
+> COMPOUNDING question.**
+>
+> `endpoint_change` is the mechanism test, and the whole endpoint channel at `D=1` is **one amino
+> acid** (`write_from_endpoint` is a single position by construction).
+>
+> | | scored | CI95 lower (δ=0.036) | residues `r=40` | residues `r=30` | paired p |
+> |---|---|---:|---:|---:|---:|
+> | `5ZHV_B` | 38/56 | **0.04903** | 3.42 | **5.95** | 2.3e-4 |
+> | `Q00511` | 39/56 | **0.07783** | 14.79 | **19.93** | 2.0e-4 |
+>
+> `source_shuffle` (assay positive control) 0.320 / 0.222, both clear of zero; its scrambled arm
+> folds at 0.9% / 0.0%, which is what validates the structure gate as discriminating.
+>
+> **Structure, against a STAGE-MATCHED control** (natural completions captured at `c=60`, no
+> projection, same frozen gate, n=128): control 93.8% / 85.9% vs descendant 90.0% / **85.9%** at
+> `r=40` and 93.3% / 85.5% at `r=30`. `Q00511` matches exactly. **One cycle costs 0–4 points,
+> centred near zero.** Two candidate causes eliminated: geometry (paired `r` sweep at 2.5–4.7×
+> reopen dose, flat, p=0.41 / 0.79) and stage.
+>
+> **Two corrections are on the record, both of which changed a conclusion.** (1) An earlier
+> "descendants fold ~26 points worse" pooled `source_shuffle` arm B — the scrambled-source positive
+> control — into the descendant population (LOG L0148). (2) The 4-point replacement still compared
+> a step-60 descendant against a step-50 pool, i.e. carried the stage difference it meant to exclude.
+>
+> **Scope, and it is narrow:** `c_source=50`, `c_next=60`, `D=1`, one policy, write cardinality 1,
+> 4 lookaheads. `B(r)` is calibrated only at `r ∈ {30, 40}` and `lookup_band` never interpolates, so
+> the `r` result is **two points, not a curve**. Cross-run absolute comparisons carry several points
+> of sampling noise (the two "natural `c=50`" estimates disagree by 9 points on `Q00511`); only the
+> within-run paired `r` comparison is tight.
+>
+> **Next: a `D=2` cohort on the same prefixes, with the second cycle's cost against the first as its
+> primary.** The no-projection control arm is WITHDRAWN — it was proposed to explain the 26 points.
+> A near-zero per-cycle cost is tolerable; a compounding one is not, and `D>1` cannot be its own
+> precondition.
+>
+> **STATE-TRANSITION CANARY CLOSED (2026-08-06, `4dd0922`) —
+> `WIRING_PASS_WITH_POPULATION_MISMATCH_DIAGNOSTIC`.** Both proteins produced a legal transition
+> with every state/anchor/lineage/assimilation invariant closed. NOT to be rerun. Branch `fusion_rf_refine`, worktree `/Users/jerry/Project/MHC-IF-fusion`. Two
 > packages: `fusion_v2/` (typed contracts + `q_phi`, torch-free) and `fusion_v2_runtime/`
 > (torch-aware). `inverse_folding/reference_flow/sampler.py` is byte-identical to HEAD — V1 is not
 > touched.
