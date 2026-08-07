@@ -1080,12 +1080,30 @@ Three candidate explanations for even that 4 points were tested and TWO are elim
 | candidate | test | result |
 |---|---|---|
 | re-run steps / reopen count (**geometry**) | paired `r=30` vs `r=40`, a 2.5-4.7x dose contrast | **ruled out** -- feasibility flat (`5ZHV_B` +0.032 p=0.41, `Q00511` -0.005 p=0.79) |
-| completing from `c_next=60` rather than `c=50` (**stage**) | natural completions captured at `c=60` vs at `c=50`, same gate | **ruled out** -- 93.8% vs 92.2% on `5ZHV_B`; starting later costs nothing |
 | how much the feedback propagated | Spearman(hamming, feasibility) per prefix | **null** (-0.17 p=0.32, +0.04 p=0.80) |
+| completing from step 60 rather than step 50 (**stage**) | natural completions captured at `c=60`, same gate, n=128 | **this is most of the 4 points** -- see below |
 
-So the residual ~4 points is the projection's own cost, it does not scale with rollback depth, and it
-does not scale with how much was transmitted. **What is NOT measured is whether it COMPOUNDS across
-cycles** -- which is precisely what `D>1` does, and no run has produced a second cycle.
+**Against a STAGE-MATCHED comparator the cost is near zero.** The 4 points above compare a
+descendant finished from step 60 against a pool finished from step 50. Completions captured
+naturally at `c=60` -- no projection anywhere -- score:
+
+| | natural `c=50` | **natural `c=60`** | V2 descendant `r=40` | V2 descendant `r=30` |
+|---|---:|---:|---:|---:|
+| `5ZHV_B` | 92.2% | **93.8%** | 90.0% | 93.3% |
+| `Q00511` | 81.2% | **85.9%** | **85.9%** | 85.5% |
+
+`Q00511`'s descendant matches its stage-matched control exactly; `5ZHV_B`'s is 3.8 points below at
+`r=40` and 0.5 below at `r=30`. So one V2 cycle's structural cost is somewhere in **0-4 points and
+centred near zero**, not the 26 first reported and not clearly separable from zero.
+
+**Noise warning, stated because it bounds every absolute number here.** The two independent
+estimates of "natural completions from `c=50`" disagree -- 90.2% (the mechanism cohort's own depth-0
+pool) against 81.2% (the resumed null, a different seed namespace) on `Q00511`. Cross-run absolute
+comparisons therefore carry several points of sampling noise. The reliable comparison is the
+WITHIN-run paired one across `r`, and it says flat.
+
+**What is NOT measured is whether the per-cycle cost COMPOUNDS** -- which is precisely what `D>1`
+does, and no run has produced a second cycle.
 
 The measured `r`-dependence of the primary is the other half of this section: transmission GROWS with
 depth -- 3.42 -> 5.95 residues on `5ZHV_B` and 14.79 -> 19.93 on `Q00511`, paired Wilcoxon
@@ -1095,11 +1113,11 @@ interpolates, so this is **two points, not a curve**; a third depth needs a new 
 ### 7.10 Only then
 
 Transmission holds at `r=40` and grows toward `r=30` (§7.8, §7.9).  The structure cost of one cycle
-is now MEASURED rather than unattributed: about 4 percentage points, insensitive to rollback depth
-and to how much was transmitted.  That is small.  It is still not a licence, for one reason:
-**nothing has measured whether it compounds.**  A fixed 4-point cost per cycle is tolerable; a cost
-that multiplies is not, and `D>1` is exactly the experiment that would find out -- so it cannot be
-its own precondition.
+is now MEASURED rather than unattributed: **0-4 points against a stage-matched control, centred near
+zero**, insensitive to rollback depth and to how much was transmitted.  That is small.  It is still
+not a licence, for one reason: **nothing has measured whether it compounds.**  A near-zero cost per
+cycle is tolerable; a cost that multiplies is not, and `D>1` is exactly the experiment that would
+find out -- so it cannot be its own precondition.
 
 The next experiment is therefore a **two-cycle run with the compounding read as its primary**, on
 the same prefixes, not the no-projection arm this section previously called for.  That arm was
