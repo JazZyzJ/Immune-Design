@@ -56,6 +56,7 @@ __all__ = [
     "partial_state_rows",
     "complete_endpoint_rows",
     "archive_rows",
+    "structure_evaluation_rows",
     "feedback_event_rows",
     "a2_view_rows",
     "terminal_validation_rows",
@@ -131,6 +132,23 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
          "matching_status", "matching_detail", "unmatched_components_json"],
         ["a2_view_id"],
     ),
+    # Every structure evaluation the run performed, PASSED OR FAILED.
+    #
+    # The endpoint table cannot carry this: the state layer allows an evaluated structure outcome
+    # only on a DEFINITIVE endpoint, so a rejected design keeps ``structure_evaluated=false`` and
+    # empty metrics -- deliberately, because "evaluated and failed" is bookkeeping about a design
+    # rather than a property of it.  The consequence, measured on the first Canary, is that the one
+    # cell that most needs diagnosing is the one whose bundle cannot say why: `5zhv_r30` folded
+    # four endpoints, rejected all four, and its own artifacts recorded no scTM at all.  Recovering
+    # them meant reaching into the refold cache by content key, which is evidence recovery by
+    # side-channel.  This table is the evidence, and it changes no endpoint semantics.
+    "structure_evaluations": _schema(
+        ["endpoint_id", "protein_id", "depth", "sequence_md5", "evaluated", "feasible",
+         "failure_reason", "cache_status", "model_executed", "walltime_s", "metrics_json",
+         "feasibility_level", "admission_reason",
+         "structure_backend_digest", "v0_structure_gate_config_digest"],
+        ["endpoint_id"],
+    ),
     "terminal_validation": _schema(
         ["endpoint_id", "sequence_md5", "structure_definitive", "structure_feasible",
          "structure_metrics_json", "immune_evaluator", "immune_global_risk", "immune_passed",
@@ -156,10 +174,11 @@ V2_COLUMN_TYPES: dict[str, str] = {
     **{name: "uint" for name in ("fork_seed", "replay_fork_seed", "descendant_fork_seed")},
     **{name: "float" for name in ("rho_edit", "head_global_risk", "immune_global_risk",
                                   "whole_landscape_max_increase",
-                                  "whole_landscape_positive_mass")},
+                                  "whole_landscape_positive_mass", "walltime_s")},
     **{name: "bool" for name in (
         "structure_evaluated", "structure_feasible", "structure_definitive", "is_elite",
         "is_diversity_frontier", "may_become_ancestry", "policy_is_diagnostic", "immune_passed",
+        "evaluated", "feasible", "model_executed",
     )},
 }
 
@@ -361,6 +380,52 @@ def archive_rows(archive: Any, *, admission_by_endpoint: Mapping[str, str] | Non
             "may_become_ancestry": bool(archive.may_become_ancestry(entry.endpoint_id)),
             "admission_reason": reasons.get(entry.endpoint_id),
             **({} if endpoint is None else {}),
+        })
+    return rows
+
+
+def structure_evaluation_rows(
+    archive: Any, *, admission_by_endpoint: Mapping[str, str] | None = None,
+    conditioning: Any = None,
+) -> list[dict]:
+    """One row per endpoint the structure gate looked at -- including every one it rejected.
+
+    Read off the ARCHIVE rather than off the endpoints, because that is where a failed verdict is
+    kept: ``ExactArchive.promote`` stores the outcome for every endpoint regardless of level, while
+    the endpoint record is allowed to carry one only when DEFINITIVE.  Reading the archive
+    therefore needs no new plumbing through the cycle and cannot disagree with the decision the run
+    made.
+
+    The backend and gate-config digests are repeated on every row on purpose.  They are also in the
+    manifest, but this table is the one that gets carried off alone to answer "why did nothing pass"
+    -- and a table of structure verdicts that cannot say which model produced them is an anecdote.
+    """
+    reasons = dict(admission_by_endpoint or {})
+    backend = getattr(conditioning, "structure_backend", None)
+    gate_config = getattr(conditioning, "v0_structure_gate_config", None)
+    rows: list[dict] = []
+    for entry in archive.raw_rows():
+        outcome = archive.structure_outcome(entry.endpoint_id)
+        metrics = dict(getattr(outcome, "metrics", None) or {}) if outcome is not None else {}
+        rows.append({
+            "endpoint_id": entry.endpoint_id,
+            "protein_id": entry.lineage.protein_id,
+            "depth": int(entry.first_depth_seen),
+            "sequence_md5": entry.sequence_equivalence_key,
+            # ``evaluated`` false with no outcome at all means the gate never ran for this
+            # endpoint; false WITH an outcome means it ran and could not produce a verdict.  The
+            # two are different facts and the row keeps them apart.
+            "evaluated": bool(getattr(outcome, "evaluated", False)),
+            "feasible": bool(getattr(outcome, "feasible", False)),
+            "failure_reason": getattr(outcome, "failure_reason", None),
+            "cache_status": getattr(outcome, "cache_status", None),
+            "model_executed": bool(getattr(outcome, "model_executed", False)),
+            "walltime_s": float(getattr(outcome, "walltime_s", 0.0) or 0.0),
+            "metrics_json": _json({k: float(v) for k, v in metrics.items()}),
+            "feasibility_level": entry.feasibility_level.value,
+            "admission_reason": reasons.get(entry.endpoint_id),
+            "structure_backend_digest": backend,
+            "v0_structure_gate_config_digest": gate_config,
         })
     return rows
 

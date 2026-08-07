@@ -583,7 +583,17 @@ SLURM: follow `scripts/submit_benchmark.slurm`. `--output/--error` go to `logs/`
 
 ---
 
-## 5.1 EXECUTED (2026-08-06, `4dd0922`) — the mechanism EXECUTES
+## 5.1 EXECUTED (2026-08-06, `4dd0922`) — `WIRING_PASS_WITH_POPULATION_MISMATCH_DIAGNOSTIC`
+
+**The Canary is CLOSED and will not be rerun.** Its one question was whether the mechanism
+executes, and both proteins produced at least one legal transition with every state, anchor,
+lineage and assimilation invariant closed. The population mismatch below belongs to the DEFINITION
+of the next experiment's population, not to whether the Canary passed.
+
+`5zhv_r30` is retained as the real diagnostic it is — of the structure gate and of sibling
+correlation. Re-seeding it to obtain a fourth green cell would be post-outcome rescue: it adds no
+wiring evidence and only makes the table look better.
+
 
 Jobs `12094327–30`, `rtx6000` / `immune-design-blackwell`, ~2 min and 8.6–35.9 GPU-s per cell.
 Read with `scripts/analysis/read_v2_canary.py`; report at
@@ -649,6 +659,46 @@ supports:
 
 Neither licenses reading a structure rejection as feedback-mechanism failure (§2.3 stands), and
 neither is authority to change `n_lookaheads`, the band, or the gate.
+
+#### What follows from it (owner's ruling, 2026-08-06)
+
+The structure axis is now a MEASURED mismatch, so the mechanism stage gets its own null measured on
+the population it will actually enforce on. The Head axis is only a suspicion; it is answered
+cheaply first, from the bundles already on disk.
+
+1. **Recompute `N_H^whole` on the existing bundles** — every depth-0 lookahead (admitted AND
+   rejected) and every propagated descendant, through the same Head, the same 12–25 grid and the
+   same native reference. A diagnostic, not a recalibration.
+2. **Failed structure evidence must land on disk.** A separate `structure_evaluations` artifact
+   records every endpoint regardless of verdict — id, metrics, gate verdict and reason, cache and
+   model provenance. Endpoint state semantics are unchanged; what changes is that a cell which
+   admitted nothing can say WHY from its own bundle instead of through the refold cache.
+3. **A resumed-null calibration, with the SOURCE PREFIX as the sampling unit**: per protein,
+   **32 independent `c=50` prefixes × 2 feedback-off completions = 64 endpoints**. Sixty-four
+   siblings of one prefix are not sixty-four samples. It measures `N_H^whole`, scTM/pLDDT, the
+   `Q00511` anchor side-chain metric, and within-source vs between-source variance. `r` does not
+   affect the depth-0 endpoint population, so it is not repeated per `r`.
+4. **Mechanism-stage gates, frozen from that null.** The `Q00511` side-chain gate stops being an
+   absolute number: the native scores **1.791 Å** under the same backend, so of a 2.0 Å band only
+   0.209 Å is anything but backend and rotamer error. Admission moves to the native-relative excess
+
+   $$
+   \Delta_{\mathrm{anchor}}(y) = \mathrm{RMSD}_{\mathrm{anchor}}(y) - \mathrm{RMSD}_{\mathrm{anchor}}(\mathrm{native})
+   $$
+
+   thresholded at `Q0.90(higher)` of the resumed feedback-off null; the ordinary protein's
+   `scTM_min` becomes `Q0.10(lower)` of the same null. **Hard-anchor residue identity remains an
+   absolute hard gate** and raw absolute RMSD is still reported in full. These are
+   **mechanism-operability gates for the transmission experiment only** — they may not be carried
+   into capability or holdout, where the production structure gate still has to be frozen
+   independently.
+5. **The descendant drop is not yet causal.** `0.798 → 0.712` compares different stages of
+   different populations. The mechanism cohort must compare a feedback-on descendant against a
+   MATCHED feedback-off descendant at identical source, support, fork seed and propagation horizon.
+   Both drop → the resumed / no-remask generation geometry. Only feedback-on drops → projection or
+   policy is damaging structure, and `D>1` stays shut. No stable difference → these four
+   descendants were small-sample.
+6. `D>1` remains launch-disabled throughout.
 
 ---
 

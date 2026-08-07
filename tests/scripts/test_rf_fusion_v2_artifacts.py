@@ -19,7 +19,9 @@ audit.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import types
 
 import pytest
 
@@ -32,6 +34,7 @@ from scripts.rf_fusion_v2_artifacts import (  # noqa: E402
     V2ArtifactError,
     a2_view_rows,
     archive_rows,
+    structure_evaluation_rows,
     complete_endpoint_rows,
     feedback_event_rows,
     partial_state_rows,
@@ -195,6 +198,58 @@ def test_archive_rows_carry_membership_feasibility_and_the_depth_span():
     assert row["first_depth_seen"] == 0 and row["last_depth_seen"] == 0
     assert row["family_id"] == F.endpoint().lineage.family_id
     assert row["sequence_equivalence_key"] == F.endpoint().sequence_md5
+
+
+def test_a_REJECTED_endpoint_s_structure_metrics_survive_into_the_evaluations_table():
+    """The whole point of the table: the endpoint record is allowed to carry an evaluated structure
+    outcome only when DEFINITIVE, so a rejected design keeps `structure_evaluated=false` and empty
+    metrics. Measured on the first Canary: `5zhv_r30` folded four endpoints, rejected all four, and
+    its bundle recorded no scTM anywhere -- the numbers had to be recovered from the refold cache by
+    content key, which is evidence recovery by side-channel.
+    """
+    from inverse_folding.reference_flow.fusion.v1_admission import StructureOutcome
+    from inverse_folding.reference_flow.fusion_v2.state import FeasibilityLevel
+    from inverse_folding.reference_flow.fusion_v2_runtime.archive import ExactArchive
+
+    archive = ExactArchive()
+    # Admitted UNVALIDATED, which is what a real lookahead is before the gate runs; the fixture's
+    # default endpoint is already DEFINITIVE and the archive rightly refuses to regress it.
+    endpoint = dataclasses.replace(
+        F.endpoint(), feasibility_level=FeasibilityLevel.UNVALIDATED,
+        structure_outcome=None, endpoint_id=None)
+    archive.admit(endpoint, depth=0)
+    rejected = StructureOutcome(
+        feasible=False, cache_status="miss", model_executed=True,
+        failure_reason="scTM 0.7885 < 0.85", walltime_s=12.5, evaluated=True,
+        metrics={"scTM": 0.7885, "pLDDT": 64.48},
+    )
+    archive.promote(endpoint.endpoint_id, feasibility_level=FeasibilityLevel.UNVALIDATED,
+                    structure_outcome=rejected, depth=0)
+
+    conditioning = types.SimpleNamespace(structure_backend="b" * 64,
+                                         v0_structure_gate_config="g" * 64)
+    row = structure_evaluation_rows(
+        archive, admission_by_endpoint={endpoint.endpoint_id: "structure not definitively feasible"},
+        conditioning=conditioning)[0]
+
+    assert row["evaluated"] is True and row["feasible"] is False
+    assert json.loads(row["metrics_json"]) == {"scTM": 0.7885, "pLDDT": 64.48}
+    assert row["failure_reason"] == "scTM 0.7885 < 0.85"
+    assert row["feasibility_level"] == "unvalidated"
+    assert row["admission_reason"] == "structure not definitively feasible"
+    assert row["cache_status"] == "miss" and row["model_executed"] is True
+    # Carried per row: this table gets read on its own, and structure verdicts that cannot name the
+    # model that produced them are an anecdote.
+    assert row["structure_backend_digest"] == "b" * 64
+    assert row["v0_structure_gate_config_digest"] == "g" * 64
+
+
+def test_the_evaluations_table_is_written_even_when_every_endpoint_failed():
+    """A bundle whose cell admitted nothing is exactly the bundle that must explain itself."""
+    from scripts.rf_fusion_v2_artifacts import V2_TABLE_SCHEMAS
+
+    assert "structure_evaluations" in V2_TABLE_SCHEMAS, (
+        "write_v2_bundle refuses a missing table, so registration is what makes it mandatory")
 
 
 def test_an_a2_row_records_the_exact_pre_feedback_membership_and_the_extra_allocation():

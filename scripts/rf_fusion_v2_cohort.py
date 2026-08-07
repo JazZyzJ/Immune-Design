@@ -422,6 +422,7 @@ def run_v2_shard(
         complete_endpoint_rows,
         feedback_event_rows,
         partial_state_rows,
+        structure_evaluation_rows,
         terminal_validation_rows,
     )
 
@@ -521,6 +522,16 @@ def run_v2_shard(
             outcome.archive,
             admission_by_endpoint={
                 endpoint_id: admission.reason for endpoint_id, admission in admissions.items()},
+        ),
+        # Every structure verdict, PASSED OR FAILED.  A rejected endpoint keeps
+        # ``structure_evaluated=false`` and empty metrics by design, so without this table a cell
+        # that admitted nothing cannot say WHY from its own bundle -- the first Canary's
+        # `5zhv_r30` folded four endpoints, rejected all four, and recorded no scTM anywhere.
+        "structure_evaluations": structure_evaluation_rows(
+            outcome.archive,
+            admission_by_endpoint={
+                endpoint_id: admission.reason for endpoint_id, admission in admissions.items()},
+            conditioning=oracles["cycle_kwargs"].get("conditioning"),
         ),
         "a2_views": a2_view_rows(
             [record.cycle.a2_view for record in outcome.cycles],

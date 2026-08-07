@@ -257,6 +257,16 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `tests/scripts/test_rf_fusion_model_factory.py`.
 
 14. `scripts/rf_fusion_v2_artifacts.py` — V2 evidence bundle schemas and row builders (PLAN §5.3).
+    Carries a `structure_evaluations` table: EVERY endpoint the structure gate looked at, passed
+    or failed, with metrics, verdict, failure reason, cache/execution facts and the backend +
+    gate-config digests repeated per row. The endpoint record cannot hold this — the state layer
+    allows an evaluated structure outcome only on a DEFINITIVE endpoint, so a rejected design
+    keeps `structure_evaluated=false` and empty metrics by design. Measured consequence on the
+    first Canary: `5zhv_r30` folded four endpoints, rejected all four, and its own bundle
+    recorded no scTM anywhere; the numbers had to be recovered from the refold cache by content
+    key. Rows are read off the ARCHIVE (`ExactArchive.promote` retains the outcome at every
+    level), so no new plumbing crosses the cycle and the table cannot disagree with the decision
+    the run made. Endpoint state semantics are unchanged.
     Frozen `V2_TABLE_SCHEMAS` for `partial_states` / `complete_endpoints` / `archive` /
     `feedback_events` / `a2_views` / `terminal_validation`, plus `run_manifest` (JSON) and the
     JSONL cost ledger. Per-position evidence (tokens, origin kinds, commits, active scores and
@@ -455,6 +465,21 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `INPUT_FILES`/`SHARD_INPUTS` vectors, `source`-able from SLURM — because those vectors must
     agree with the frozen/runtime declaration the same script just made, and two hands maintaining
     that agreement is how it drifts.
+
+26. `scripts/analysis/recompute_v2_nh_whole.py` — recomputes `N_H^whole` for EVERY endpoint of one
+    or more V2 bundles against the native reference (`--bundle DIR=REFERENCE.seq`, repeatable). A
+    diagnostic, not a recalibration: it writes no threshold, it reports a distribution beside the
+    one the threshold came from. Design windows are read from each endpoint's stored
+    `head_score_json` — the scores the run actually used — while the reference is scored live with
+    the production Head, and `--verify-designs` re-scores every design and refuses on any drift, so
+    "the stored score" and "what this Head produces" cannot silently differ. `N_H` comes from
+    `fusion_v2.safety.whole_landscape_new_hotspot`, the function the admission gate itself calls,
+    and the evaluator identity is read off the SCORER rather than hand-typed. Rows are labelled
+    `role` (`depth0_lookahead` vs `descendant` — different stages, and collapsing them would hide
+    the gradient in question) and `admitted`, with rejected endpoints kept in the population
+    because the null is over all feedback-off endpoints. Emits a parquet plus a summary that puts
+    the resumed distribution next to the full-trajectory hotspot artifact and counts how many
+    resumed endpoints exceed its threshold.
 
 25. `scripts/preflight_v2_canary_assembly.py` — the gate `--dry-run` cannot be.
     `run_rf_fusion_v2.py --dry-run` deliberately loads no model, so it returns BEFORE

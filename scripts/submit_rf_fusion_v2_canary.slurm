@@ -4,10 +4,14 @@
 #SBATCH --partition=rtx6000
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=96G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=40G
 #SBATCH --gres=gpu:1
 #SBATCH --time=02:00:00
+# Sized on MEASURED usage, not on headroom-by-habit: the four executed cells peaked at
+# MaxRSS 27.5-30.4 GB and a cell finishes in ~2 min, so 96G/8-core requests were ~3x over and only
+# bought queue time on a busy rtx6000. The work is GPU-bound (DPLM + ESMC-6B + ESMFold2); the CPUs
+# were idle. Raise `--mem` again if a longer protein pushes past ~35 GB.
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/fusion_v2/v2canary_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/fusion_v2/v2canary_%j.err
 
