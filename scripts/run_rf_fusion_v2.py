@@ -160,6 +160,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="run the runbook §7 MECHANISM cohort instead of the depth ladder: "
                              "N independent source prefixes per protein, each carried through the "
                              "matched arms (0 = the ordinary ladder run)")
+    parser.add_argument("--mechanism-prefix-start", type=int, default=0, metavar="I",
+                        help="first prefix index of this BATCH (default 0).  A second batch "
+                             "continues the sequence rather than repeating it: prefix seeds are "
+                             "derived from the index, so restarting at 0 reproduces batch 1")
     return parser
 
 
@@ -174,9 +178,16 @@ def select_runner(args, *, ladder, mechanism):
     n_prefixes = int(getattr(args, "mechanism_prefixes", 0) or 0)
     if n_prefixes < 0:
         raise V2DriverError(f"--mechanism-prefixes must be >= 0, got {n_prefixes}")
+    start = int(getattr(args, "mechanism_prefix_start", 0) or 0)
+    if start < 0:
+        raise V2DriverError(f"--mechanism-prefix-start must be >= 0, got {start}")
     if not n_prefixes:
+        if start:
+            raise V2DriverError(
+                "--mechanism-prefix-start is meaningless without --mechanism-prefixes; a ladder "
+                "run has no prefix sequence to continue")
         return ladder
-    return functools.partial(mechanism, n_prefixes=n_prefixes)
+    return functools.partial(mechanism, n_prefixes=n_prefixes, prefix_start=start)
 
 
 def decide_exit_code(report, *, requested: int) -> int:

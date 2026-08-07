@@ -626,6 +626,7 @@ def run_v2_mechanism_shard(
     inputs: ShardInputs | None = None,
     oracles_factory=None,
     n_prefixes: int = 16,
+    prefix_start: int = 0,
     views: Any = None,
 ) -> tuple[str, Mapping[str, Any]]:
     """Runbook §7: ``n_prefixes`` INDEPENDENT source prefixes, each through the matched arms.
@@ -670,6 +671,14 @@ def run_v2_mechanism_shard(
     n_prefixes = int(n_prefixes)
     if n_prefixes < 1:
         raise V2CohortError(f"n_prefixes must be >= 1, got {n_prefixes}")
+    # A second BATCH continues the prefix sequence instead of repeating it.  Seeds are derived from
+    # the prefix index, so re-running from 0 would reproduce batch 1 exactly -- identical results
+    # for the price of the compute, and colliding `source_index` values if the two bundles are then
+    # read together.  Offsetting keeps the sampling unit's identity unique across batches, which is
+    # what lets an internal pilot analyse both batches as one sample.
+    prefix_start = int(prefix_start)
+    if prefix_start < 0:
+        raise V2CohortError(f"prefix_start must be >= 0, got {prefix_start}")
     requested_views = tuple(views) if views is not None else MECHANISM_CONTRAST_VIEWS
     unknown = [v for v in requested_views if v not in MECHANISM_CONTRAST_VIEWS]
     if unknown:
@@ -722,7 +731,7 @@ def run_v2_mechanism_shard(
     a2_views: list[Any] = []
     n_scorable = 0
 
-    for prefix_index in range(n_prefixes):
+    for prefix_index in range(prefix_start, prefix_start + n_prefixes):
         # The SOURCE seed is what makes prefixes independent; everything else about the sampler is
         # the run's own declared configuration.  Same construction as the resumed-null calibration,
         # so the two populations are the same generative process measured twice.
@@ -861,6 +870,7 @@ def run_v2_mechanism_shard(
             "unverifiable": list(verdict.unverifiable), "detail": verdict.detail,
         },
         "n_prefixes_requested": n_prefixes,
+        "prefix_start": prefix_start,
         "n_scorable_contrasts": n_scorable,
         "stopping_reason": "mechanism_cohort_complete",
         "depth_reached": 1 if n_scorable else 0,

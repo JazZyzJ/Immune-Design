@@ -308,9 +308,9 @@ def test_the_flag_selects_the_mechanism_shard_and_binds_the_prefix_count():
     def mechanism(**kw):
         return kw
 
-    chosen = select_runner(types.SimpleNamespace(mechanism_prefixes=16),
+    chosen = select_runner(types.SimpleNamespace(mechanism_prefixes=16, mechanism_prefix_start=0),
                            ladder="LADDER", mechanism=mechanism)
-    assert chosen() == {"n_prefixes": 16}
+    assert chosen() == {"n_prefixes": 16, "prefix_start": 0}
 
 
 def test_a_negative_prefix_count_is_refused():
@@ -580,3 +580,34 @@ def test_the_shard_holds_rows_not_archives():
     body = source.split("def run_v2_mechanism_shard")[1]
     assert "archives.append" not in body
     assert "archive_rows_by_id.setdefault" in body
+
+
+def test_batch_two_continues_the_prefix_sequence_instead_of_repeating_it():
+    """Prefix seeds are derived from the INDEX, so restarting at 0 reproduces batch 1 exactly.
+
+    Worse than the wasted compute: the two bundles would then collide on `source_index`, and the
+    reader groups on it -- two different prefixes would be averaged into one sampling unit.
+    """
+    from scripts.run_rf_fusion_v2 import select_runner
+
+    def mechanism(**kw):
+        return kw
+
+    chosen = select_runner(
+        types.SimpleNamespace(mechanism_prefixes=31, mechanism_prefix_start=16),
+        ladder="LADDER", mechanism=mechanism)
+    assert chosen() == {"n_prefixes": 31, "prefix_start": 16}
+
+
+def test_a_prefix_start_without_a_mechanism_run_is_refused():
+    """It would silently do nothing, and reading the flag back would suggest it had."""
+    from scripts.run_rf_fusion_v2 import V2DriverError, select_runner
+
+    with pytest.raises(V2DriverError):
+        select_runner(types.SimpleNamespace(mechanism_prefixes=0, mechanism_prefix_start=16),
+                      ladder="LADDER", mechanism="MECH")
+
+
+def test_the_shard_loops_the_offset_range():
+    source = (__import__("pathlib").Path("scripts/rf_fusion_v2_cohort.py")).read_text()
+    assert "range(prefix_start, prefix_start + n_prefixes)" in source

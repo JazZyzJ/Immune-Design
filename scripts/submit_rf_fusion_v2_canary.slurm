@@ -58,6 +58,9 @@ DEVICE="${DEVICE:-cuda}"
 #   MECHANISM_PREFIXES=16 CELL=q00511_mech \
 #     sbatch --time=04:00:00 --mem=64G scripts/submit_rf_fusion_v2_canary.slurm
 MECHANISM_PREFIXES="${MECHANISM_PREFIXES:-0}"
+# First prefix index of THIS batch.  Batch 2 continues the sequence (e.g. 16) rather
+# than repeating batch 1, whose seeds are derived from the index.
+MECHANISM_PREFIX_START="${MECHANISM_PREFIX_START:-0}"
 
 OUT_DIR="${RUNDIR}/${CELL}"
 ARGS_FILE="${WORK}/resolved_configs/${CELL}.args.sh"
@@ -85,7 +88,7 @@ echo "[v2canary] cell=${CELL} cohort=${V2_COHORT} config=${V2_CONFIG}"
 echo "[v2canary] git=$(git rev-parse HEAD) env=${CONDA_ENV} node=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES}"
+echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START}"
 
 set +e
 python scripts/run_rf_fusion_v2.py \
@@ -93,6 +96,7 @@ python scripts/run_rf_fusion_v2.py \
   --out-dir     "${OUT_DIR}" \
   --cohort      "${V2_COHORT}" \
   --mechanism-prefixes "${MECHANISM_PREFIXES}" \
+  --mechanism-prefix-start "${MECHANISM_PREFIX_START}" \
   --input-file  "${INPUT_FILES[@]}" \
   --shard-input "${SHARD_INPUTS[@]}" \
                 "journal_dir=${OUT_DIR}/journals" \
