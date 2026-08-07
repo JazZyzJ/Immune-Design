@@ -146,7 +146,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--esmfold2-site-packages", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--verify-designs", action="store_true",
-                        help="re-score every design with the live Head and refuse on any drift")
+                        help="re-score every design with the live Head and refuse on drift beyond "
+                             "--verify-tolerance; the observed drift is reported either way")
+    parser.add_argument("--verify-tolerance", type=float, default=0.05,
+                        help="max |z| difference treated as reduction-order noise rather than a "
+                             "different measurement (raw logits; measured drift is ~4e-3)")
     return parser
 
 
@@ -219,11 +223,20 @@ def main(argv=None) -> int:
                 stored, fresh = row["_score"], live[row["sequence_md5"]]
                 drift = max(abs(a.z - float(b.z))
                             for a, b in zip(stored.windows, tuple(fresh.windows)))
-                if drift > 0:
+                # NOT bit-equality. The frozen Head runs ESMC-6B in bf16 without fused kernels, and
+                # its own startup warning puts the attention reduction-order difference at ~1 bf16
+                # ULP per block compounded over 80 blocks; re-scoring in a different batch shape
+                # changes that order. Measured drift on the Canary endpoints: 4.3e-3 raw logits,
+                # against window scores of order 10 and thresholds of order 16-20. Demanding zero
+                # would refuse a correct artifact for arithmetic noise; the tolerance is what says
+                # how much noise is still not a different measurement.
+                if drift > float(args.verify_tolerance):
                     raise SystemExit(
                         f"{row['endpoint_id']}: stored window scores differ from the live Head by "
-                        f"{drift:.3e}; the stored score is not what this Head produces")
-                row["stored_matches_live_head"] = True
+                        f"{drift:.3e}, over the {args.verify_tolerance:.3e} tolerance; that is "
+                        "larger than reduction-order noise and the stored score is not what this "
+                        "Head produces")
+                row["live_head_max_window_drift"] = float(drift)
 
         for row in mine:
             evidence = whole_landscape_new_hotspot(
@@ -250,6 +263,9 @@ def main(argv=None) -> int:
                             "q90_higher": _quantile(all_values, 0.90), "max": max(all_values)},
             "by_role": by_role,
             "admitted": {"n": sum(1 for r in mine if r["admitted"])},
+            "live_head_max_window_drift": (
+                max((r["live_head_max_window_drift"] for r in mine
+                     if "live_head_max_window_drift" in r), default=None)),
             "evaluator": {"allele": identity.allele, "score_scale": identity.score_scale,
                           "window_k_min": identity.window_k_min,
                           "window_k_max": identity.window_k_max,

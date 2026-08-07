@@ -651,11 +651,8 @@ supports:
 1. The 50% structure-operability figure recorded in §2.3 does not describe the Canary's endpoints.
    A cell's four lookaheads also share a 50-step prefix, so they are correlated and
    "no admissible endpoint" is a per-cell coin-flip rather than a rare tail.
-2. **Open, not concluded:** the hotspot threshold was calibrated on the full-trajectory population
-   and enforces on the resumed one. Whether the two differ in Head landscape the way they differ
-   structurally is unmeasured — the artifact records `head_global_risk`, not `N_H^whole`, for
-   Canary endpoints. This is the same population-matching question §2.1 already answered once for
-   the structure axis; it has not been asked for the Head axis.
+2. **Now measured — see §5.2.** The hotspot threshold was calibrated on the full-trajectory
+   population and enforces on the resumed one, and the two differ on the Head axis as well.
 
 Neither licenses reading a structure rejection as feedback-mechanism failure (§2.3 stands), and
 neither is authority to change `n_lookaheads`, the band, or the gate.
@@ -699,6 +696,45 @@ cheaply first, from the bundles already on disk.
    policy is damaging structure, and `D>1` stays shut. No stable difference → these four
    descendants were small-sample.
 6. `D>1` remains launch-disabled throughout.
+
+---
+
+## 5.2 `N_H^whole` on the resumed population (2026-08-06, `9c8b042`) — the Head gate does not bite here
+
+`scripts/analysis/recompute_v2_nh_whole.py`, all 28 Canary endpoints, same Head, k = 12–25, same
+native reference, through `whole_landscape_new_hotspot` — the function the admission gate itself
+calls. Artifacts: `<WORK>/v2_canary/nh_recompute/{canary_endpoints_nh.parquet,summary.json}`.
+
+| | full-trajectory null (n=64) | resumed, all | depth-0 lookahead | descendant |
+|---|---:|---:|---:|---:|
+| **`5ZHV_B`** q50 / q90 / max | 5.966 / **15.738** / 18.486 | 2.037 / 10.550 / 11.699 | 1.319 / 11.699 / 11.699 | 2.037 / 7.893 / 7.893 |
+| | | n=12 | n=8 | n=4 |
+| **`Q00511`** q50 / q90 / max | 16.587 / **20.083** / 20.627 | 14.767 / 19.894 / 19.899 | 13.551 / 18.371 / 18.371 | 14.881 / 19.899 / 19.899 |
+| | | n=16 | n=8 | n=8 |
+
+**Resumed endpoints are uniformly LESS hot than the population the threshold came from, and
+`0/12` and `0/16` reach it.** The mismatch is real on both axes, but it points opposite ways:
+structure is calibrated LOOSE and rejects most of what it sees, while the Head is calibrated HIGH
+and rejects nothing. On `5ZHV_B` the entire resumed range (max 11.699) sits below the threshold
+(15.738) — the gate cannot fire at this operating point. `Q00511` is closer (max 19.899 vs 20.083)
+but still under.
+
+Two things follow, and a third does not:
+
+* The Head gate is **currently non-binding in the mechanism regime**. That is safe in the sense
+  that it will not wrongly reject; it is not safe in the sense of providing protection, because a
+  gate that never fires is not evidence that nothing was caught.
+* Structure quality and hotspot creation are **not co-monotone** here: resumed endpoints fold worse
+  AND create fewer new hotspots than full trajectories. Whatever the prefix constrains, it
+  constrains both — and not in the same direction.
+* It does **not** follow that feedback lowers `N_H`. `n = 12` and `16`, from two source prefixes
+  each, with no matched control. Descendants are marginally higher than depth-0 on both proteins;
+  that is an observation, not a direction.
+
+The live Head re-scored every design and agreed with the stored artifact to `0.00e+00` (`5ZHV_B`,
+102 aa) and `7.07e-03` (`Q00511`, 302 aa) raw logits — reduction-order noise in a bf16 ESMC-6B
+stack without fused kernels, length-dependent as expected, and four orders below the thresholds.
+Bit-equality is the wrong bar here and the tolerance says so explicitly.
 
 ---
 
