@@ -963,6 +963,14 @@ passes at a fraction of the sample. Reference scale at $\delta = 0.02$:
 Past the cap the run is declared `underpowered_unresolved`. **$\delta$ is never raised to fit the
 sample.**
 
+**Realized, batch 1 (2026-08-07, jobs `12098724`/`12098725`, 16 prefixes per protein).**
+$\hat\sigma_d$ = 0.02432 (`5ZHV_B`) and 0.04285 (`Q00511`); the max gives an unclipped 12, so the
+**floor governs and $n_{\text{pairs}} = 32$ scored prefixes per protein**. Batch 1 scored 11 each at
+a contrastable rate of 0.688, so batch 2 is fixed at **40 generated prefixes per protein (indices
+16-55)**: the naive 21/0.688 ≈ 31 reaches the target only 63% of the time, 40 reaches it 99% of the
+time. The count is chosen from the measured rate BEFORE batch 2 runs and does not move afterwards;
+every scored prefix enters the analysis, and $n_{\text{pairs}}$ is a power floor rather than a cap.
+
 ### 7.6 The gate, pre-registered
 
 **$\delta = 0.036$ on the free domain** — about 2 residues on `5ZHV_B` (free ≈ 55 at `r=40`) and
