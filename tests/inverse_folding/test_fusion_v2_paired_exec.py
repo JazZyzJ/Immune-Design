@@ -563,3 +563,49 @@ def test_the_ablated_position_really_lost_its_source_byte():
 
     mask = ablation.arm_b.cycle.source.mask_token_id
     assert all(b_tokens[i] == mask for i in changed)
+
+
+# --------------------------------------------------------------------------------------------
+# each arm is its own transition
+# --------------------------------------------------------------------------------------------
+
+
+def test_each_arm_runs_under_its_own_transition_id():
+    """Arm A and arm B are two transitions, not one attempted twice.
+
+    The ledger keys its event ids on the transition id and counts a repeat under one event as a
+    RETRY -- a guard that exists to stop one arm from silently drawing more compute than its match.
+    Sharing the id across arms blinds exactly that guard: on the cluster a matched two-view run
+    read as 13 retries against a 2-retry cap with nothing retried at all (job 12098305).
+    """
+    seen = []
+    for result in _exec():
+        for arm in (result.arm_a, result.arm_b):
+            projected = arm.cycle.projected
+            if projected is not None:
+                seen.append((result.axes.mechanism_view, arm.arm_slot,
+                             projected.origin_transition_id))
+    assert seen, "no arm produced a projection; the fixture cannot prove anything"
+    ids = [txn for _, _, txn in seen]
+    assert len(set(ids)) == len(ids), f"transition ids collide across arms: {seen}"
+
+
+def test_no_arm_reuses_the_callers_transition_id_for_its_own_projection():
+    """The caller's id belongs to the shared pre-feedback stage, which is A2 and ran once."""
+    for result in _exec():
+        for arm in (result.arm_a, result.arm_b):
+            projected = arm.cycle.projected
+            if projected is not None:
+                assert projected.origin_transition_id != F.TXN
+
+
+def test_an_arm_transition_id_is_a_well_formed_transition_id():
+    """It must stay parseable as the identity layer's own format, not a suffixed string."""
+    from inverse_folding.reference_flow.fusion_v2 import identity as ident
+
+    for result in _exec():
+        for arm in (result.arm_a, result.arm_b):
+            projected = arm.cycle.projected
+            if projected is not None:
+                assert ident.id_namespace(projected.origin_transition_id)
+                assert ":txn:d0:" in projected.origin_transition_id

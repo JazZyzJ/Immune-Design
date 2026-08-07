@@ -598,11 +598,37 @@ def run_mechanism_views(
     )
     shared = run_one_cycle(**dict(shared_kwargs, feedback_enabled=False))
 
+    # Each ARM gets its own transition id, derived from the caller's.
+    #
+    # Arm A and arm B produce different projected states, different propagated states and
+    # different descendants: they are two transitions, not one transition attempted twice.  The
+    # ledger keys its event ids on the transition id and counts a repeat under one event as a
+    # RETRY -- whose whole purpose is to stop one arm from silently drawing more compute than its
+    # match.  Sharing the id across arms blinded exactly that guard: a matched two-view run reads
+    # as 13 retries of a 2-retry cap when nothing was retried at all (measured, job 12098305).
+    # Deriving per arm restores the guard's meaning, and makes per-position provenance name the
+    # arm that wrote it.
+    from ..fusion_v2.identity import canonical_digest, make_transition_id
+
+    lineage = cycle_kwargs["lineage"]
+    caller_transition_id = cycle_kwargs["origin_transition_id"]
+
+    def _arm_transition_id(*, intervention_kind: str, arm_slot: str) -> str:
+        return make_transition_id(
+            str(lineage.protein_id), str(lineage.family_id), depth=int(context.depth),
+            r_step=int(r_step), c_next_step=int(c_next_step),
+            content_digest=canonical_digest({
+                "caller_transition_id": str(caller_transition_id),
+                "intervention_kind": intervention_kind, "arm_slot": arm_slot}),
+        )
+
     results: list[MechanismViewResult] = []
     for contrast in contrasts:
         view = contrast.axes.mechanism_view
         base_kwargs = dict(
             shared_kwargs,
+            origin_transition_id=_arm_transition_id(
+                intervention_kind=contrast.intervention_kind, arm_slot=contrast.arm_a.arm_slot),
             descendant_propagation_seed=contrast.arm_a.realized_propagation_seed,
             descendant_fork_seeds=contrast.arm_a.realized_lookahead_seeds,
             # Every arm READS the one realized pool: the same source state object and the same
@@ -626,6 +652,10 @@ def run_mechanism_views(
         # feedback_off is exempt: its B arm has no projection at all, by definition.
         required = (SupportBudget.of(arm_a_cycle.projected.support)
                     if arm_a_cycle.projected is not None and view != "feedback_off" else None)
+        # From here ``base_kwargs`` is arm B's, so it takes arm B's transition id.  Arm A has
+        # already run above and keeps the id it ran under.
+        base_kwargs = dict(base_kwargs, origin_transition_id=_arm_transition_id(
+            intervention_kind=contrast.intervention_kind, arm_slot=contrast.arm_b.arm_slot))
         if required is not None:
             base_kwargs = dict(base_kwargs, required_support_budget=required)
 
