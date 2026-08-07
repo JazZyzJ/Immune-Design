@@ -408,8 +408,12 @@ def resumed_draws(*, protein_id, n_sources, completions_per_source, c_source, ma
                                   error=f"capture failed: {str(exc)[:180]}"))
                 replicate += 1
             continue
+        # ``realized_maturity``, not ``maturity``: a LivePartialState derives its maturity from its
+        # own tokens and stores none. The continuation CHECKPOINT has a ``.maturity``, the adapted
+        # state does not, and reading the wrong one costs a whole GPU allocation to discover.
         common = {**labels_base, "source_state_id": source.state_id,
-                  "source_unresolved_editable": int(source.maturity.n_unresolved_editable)}
+                  "source_unresolved_editable":
+                      int(source.realized_maturity.n_unresolved_editable)}
         try:
             completions = generate_lookaheads(
                 source=source, sampler=cycle_kwargs["sampler"],

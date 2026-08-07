@@ -773,3 +773,23 @@ def _types_config():
     """A real dataclass: `resumed_draws` reseeds the sampler with `dataclasses.replace`, and a
     SimpleNamespace would make the test pass on a shape production never sees."""
     return _FakeRfConfig()
+
+
+def test_resumed_draws_read_maturity_off_the_state_the_capture_returns():
+    """REGRESSION. `resumed_draws` read `source.maturity`, which a `LivePartialState` does not have:
+    it DERIVES `realized_maturity` from its own tokens and stores nothing. The continuation
+    checkpoint has `.maturity`; the adapted state does not. Cost: one GPU allocation."""
+    import ast
+    import inspect
+
+    from inverse_folding.reference_flow.fusion_v2.state import LivePartialState
+    from scripts.calibrate_rf_fusion_v2_hotspot import resumed_draws
+
+    tree = ast.parse(inspect.getsource(resumed_draws))
+    read = sorted({node.attr for node in ast.walk(tree)
+                   if isinstance(node, ast.Attribute)
+                   and isinstance(node.value, ast.Name) and node.value.id == "source"})
+    declared = set(dir(LivePartialState)) | set(
+        getattr(LivePartialState, "__annotations__", {}))
+    missing = [name for name in read if name not in declared]
+    assert not missing, f"resumed_draws reads source.{missing}; LivePartialState carries {read}"
