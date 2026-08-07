@@ -36,8 +36,14 @@ __all__ = [
     "V2PairedError",
     "NotYetFrozenError",
     "MECHANISM_VIEWS",
+    "POLICY_QUALIFICATION_VIEWS",
+    "ALL_VIEWS",
+    "SUPPORT_LAW_VIEW",
     "ENDPOINT_RELATIONS",
     "POLICY_VARIANTS",
+    "PolicyQualificationResult",
+    "assert_write_reopen_parity",
+    "run_policy_qualification_view",
     "InterventionAxes",
     "SupportBudget",
     "assert_support_parity",
@@ -71,6 +77,18 @@ MECHANISM_VIEWS: tuple[str, ...] = (
     #: Same endpoint and support shape, the source's editable bytes permuted.
     "source_shuffle",
 )
+
+#: V2F5A's contrast, deliberately NOT one of the four above.  The four hold the support LAW fixed
+#: and perturb what it is given; this one holds source, donor, cardinalities, horizon, band and
+#: seeds fixed and changes the LAW itself.  It is kept off ``MECHANISM_VIEWS`` so the mechanism
+#: cohort's default set is unchanged and so nothing can run it through ``run_mechanism_views``,
+#: whose B arm re-uses one policy object -- the qualification's B arm needs a different policy AND a
+#: different declared identity.
+SUPPORT_LAW_VIEW = "support_law"
+POLICY_QUALIFICATION_VIEWS: tuple[str, ...] = (SUPPORT_LAW_VIEW,)
+
+#: Everything ``InterventionAxes`` will accept as a mechanism view.
+ALL_VIEWS: tuple[str, ...] = MECHANISM_VIEWS + POLICY_QUALIFICATION_VIEWS
 
 #: AXIS 2 -- which endpoint the arm was handed.  A reward-ordered pair is a claim about SELECTION,
 #: not about the mechanism; keeping it on its own axis stops it from reading as a sibling of
@@ -112,7 +130,7 @@ class InterventionAxes:
 
     def __post_init__(self) -> None:
         for name, allowed in (
-            ("mechanism_view", MECHANISM_VIEWS),
+            ("mechanism_view", ALL_VIEWS),
             ("endpoint_relation", ENDPOINT_RELATIONS),
             ("policy_variant", POLICY_VARIANTS),
         ):
@@ -173,6 +191,40 @@ def assert_support_parity(budgets: Sequence[SupportBudget]) -> None:
             "support parity violated: the arms used different action vectors "
             f"{sorted(map(str, distinct))}; a contrast whose arms changed different NUMBERS of "
             "positions cannot attribute its difference to the intervention"
+        )
+
+
+def assert_write_reopen_parity(budgets: Sequence[SupportBudget]) -> None:
+    """The parity a SUPPORT-LAW contrast can actually hold: equal write and reopen counts.
+
+    Full action-vector parity is the wrong contract here, and demanding it would kill every arm.
+    The two laws reopen DIFFERENT positions by construction -- that is the treatment -- and a
+    reopened position is drawn from the source-resolved set, which the temporal law then splits into
+    ``inject_from_source_feedback`` (committed at or after ``r_d``) and ``carry_from_source``
+    (committed before it).  Reopening a late-committed position instead of an early-committed one
+    therefore moves exactly one position between inject and carry while their SUM is fixed at
+    ``|resolved| - m_reopen``.
+
+    So the quantities PLAN §8.4 names -- "realized write/reopen cardinalities" -- are matched here,
+    the total support size is matched as a consequence, and the inject/carry split is allowed to
+    differ because it is downstream of the identity choice being tested.
+    """
+    pairs = {(b.n_write_from_endpoint, b.n_reopen) for b in budgets}
+    if len(pairs) > 1:
+        raise V2PairedError(
+            "write/reopen parity violated: the arms realized different (writes, reopens) "
+            f"{sorted(pairs)}; a support-law contrast whose arms applied different DOSES cannot "
+            "attribute its difference to the support identity"
+        )
+    totals = {
+        b.n_write_from_endpoint + b.n_inject_from_source_feedback + b.n_reopen
+        + b.n_carry_from_source
+        for b in budgets
+    }
+    if len(totals) > 1:
+        raise V2PairedError(
+            f"the arms partitioned different editable domains {sorted(totals)}; they are not two "
+            "views of one source state"
         )
 
 
@@ -572,6 +624,15 @@ def run_mechanism_views(
     )
     for axes in axes_list:
         axes.assert_executable()
+        if axes.mechanism_view in POLICY_QUALIFICATION_VIEWS:
+            # This runner's B arm re-uses ONE policy object and one declared identity; the
+            # support-law contrast needs a second of each, so running it here would silently
+            # produce two arms under the same law and report a null that means nothing.
+            raise V2PairedError(
+                f"mechanism_view={axes.mechanism_view!r} is a policy-qualification contrast and "
+                "must be run through run_policy_qualification_view, which builds the matched "
+                "control policy and its own declared identity"
+            )
 
     contrasts = build_paired_contrasts(
         context=context, fork_index=fork_index, c_source_step=c_source_step,
@@ -767,3 +828,215 @@ def run_mechanism_views(
             verdict=verdict, parity_violation=violation,
         ))
     return tuple(results)
+
+
+# --------------------------------------------------------------------------------------------
+# V2F5A: the one-cycle policy-qualification contrast
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PolicyQualificationResult:
+    """One matched Head-directed-vs-source-geometry contrast (PLAN §2.6, §8.4).
+
+    ``verdict`` here is NOT a directionality claim.  A committed pair proves the two support laws
+    ran under matched source, donor, cardinalities, band and seeds; whether the descendant Head
+    distribution shifts is a COHORT statistic over many such pairs, frozen in the runbook before the
+    cohort is inspected.  This type carries the evidence that the pair is admissible into that
+    statistic, and nothing more.
+    """
+
+    axes: InterventionAxes
+    treatment: PairedArmRun
+    control: PairedArmRun
+    realized_writes: int
+    realized_reopens: int
+    #: The claim the artifact must be able to PROVE, not merely assert: every treatment write
+    #: carried positive frozen-Head contribution evidence and the control consulted none.
+    treatment_writes_are_head_directed: bool
+    control_is_head_blind: bool
+    parity_violation: str = ""
+
+    @property
+    def contrastable(self) -> bool:
+        return (not self.parity_violation
+                and self.treatment.cycle.projected is not None
+                and self.control.cycle.projected is not None)
+
+
+def _support_law_evidence(cycle: Any) -> tuple[bool, bool]:
+    """``(writes_are_head_directed, head_evidence_consulted)`` read off one arm's decision record.
+
+    Read from the evidence the POLICY emitted rather than from the policy object, because the
+    object could be re-inspected after the fact and the record is what actually ran.  A missing
+    record answers ``(False, False)``: an arm that recorded nothing has proved nothing.
+    """
+    evidence = getattr(cycle, "policy_evidence", None)
+    if evidence is None:
+        return False, False
+    consulted = bool(getattr(evidence, "head_evidence_consulted", False))
+    selected = [row for row in getattr(evidence, "write_candidates", ()) if row.selected]
+    directed = bool(selected) and all(
+        row.contribution is not None and row.contribution > 0.0 for row in selected)
+    return directed, consulted
+
+
+def run_policy_qualification_view(
+    *,
+    context: FeedbackPairSeedContext,
+    fork_index: int,
+    c_source_step: int,
+    r_step: int,
+    c_next_step: int,
+    control_policy_factory: Any,
+    control_declared_policy: Any,
+    **cycle_kwargs: Any,
+) -> PolicyQualificationResult:
+    """Run the Head-directed treatment and its source-geometry control off ONE realized pool.
+
+    The scientific treatment is support IDENTITY (PLAN §2.6), so everything else is held by
+    construction rather than by convention:
+
+    * **one pre-feedback stage** -- source prefix, K lookaheads, Head batch and structure gate run
+      ONCE with feedback disabled, and both arms read the same realized endpoints.  Re-executing per
+      arm would compare against two different pools under a non-deterministic Head and a stateful
+      refold cache, while reporting a matched contrast;
+    * **one donor** -- both arms receive the same ``endpoint_rank``, and the control re-runs the
+      same donor gate, so neither arm can run on endpoints the other refused;
+    * **one seed draw** -- both arms take ``context``-derived seeds that no treatment identity can
+      reach (PLAN §2.6's exclusion law); and
+    * **one dose** -- the control is built from the treatment's REALIZED ``(m_write, m_reopen)``.
+
+    ``control_policy_factory(required_writes, required_reopens)`` builds the control; it is injected
+    rather than constructed here so this module keeps no dependency on the oracle stack.
+    ``control_declared_policy`` is the run's DECLARED control identity (``V2Config.
+    declared_control_policy()``): the kernel refuses an answering policy the run never declared, and
+    fabricating a declaration here would let an arm run under an identity the config cannot name.
+    """
+    from .cycle import run_one_cycle
+
+    if control_policy_factory is None or not callable(control_policy_factory):
+        raise V2PairedError(
+            "control_policy_factory must be callable(required_writes, required_reopens); without "
+            "the matched control there is no comparison, only a single-arm run"
+        )
+    if control_declared_policy is None:
+        raise V2PairedError(
+            "control_declared_policy is required: the projection kernel refuses a policy the run "
+            "did not declare, and a declaration invented here would name an identity the config "
+            "cannot"
+        )
+
+    # ``policy_variant`` stays ``as_configured``: it describes what a single ARM's policy was
+    # allowed to see, and here the two arms differ on exactly that -- so the difference belongs to
+    # the pair's mechanism view, which both arms share, and not to a level that would have to be
+    # two values at once.
+    axes = InterventionAxes(mechanism_view=SUPPORT_LAW_VIEW)
+    contrasts = build_paired_contrasts(
+        context=context, fork_index=fork_index, c_source_step=c_source_step,
+        interventions=(axes,),
+    )
+    contrast = contrasts[0]
+
+    shared_kwargs = dict(
+        cycle_kwargs, c_source_step=c_source_step, r_step=r_step, c_next_step=c_next_step,
+        descendant_propagation_seed=contrast.arm_a.realized_propagation_seed,
+        descendant_fork_seeds=contrast.arm_a.realized_lookahead_seeds,
+    )
+    shared = run_one_cycle(**dict(shared_kwargs, feedback_enabled=False))
+
+    from ..fusion_v2.identity import canonical_digest, make_transition_id
+
+    lineage = cycle_kwargs["lineage"]
+    caller_transition_id = cycle_kwargs["origin_transition_id"]
+
+    def _arm_transition_id(arm_slot: str) -> str:
+        return make_transition_id(
+            str(lineage.protein_id), str(lineage.family_id), depth=int(context.depth),
+            r_step=int(r_step), c_next_step=int(c_next_step),
+            content_digest=canonical_digest({
+                "caller_transition_id": str(caller_transition_id),
+                "intervention_kind": contrast.intervention_kind, "arm_slot": arm_slot}),
+        )
+
+    base_kwargs = dict(
+        shared_kwargs, feedback_enabled=True,
+        source_override=shared.source, source_endpoints=shared.endpoints,
+        archive=shared.archive.fork_view(),
+        origin_transition_id=_arm_transition_id(contrast.arm_a.arm_slot),
+    )
+    treatment_cycle = run_one_cycle(**base_kwargs)
+
+    projected = treatment_cycle.projected
+    if projected is None:
+        # The treatment stalled (no better donor, no positive local write, band infeasible...).
+        # The control is NOT run: with no realized cardinalities there is nothing to match, and a
+        # control run at invented counts would be a second treatment.  The stall is the result.
+        return PolicyQualificationResult(
+            axes=axes,
+            treatment=PairedArmRun(
+                arm_slot=contrast.arm_a.arm_slot,
+                treatment_identity=contrast.arm_a.treatment_identity,
+                realized_propagation_seed=contrast.arm_a.realized_propagation_seed,
+                cycle=treatment_cycle, support_budget=None),
+            control=PairedArmRun(
+                arm_slot=contrast.arm_b.arm_slot,
+                treatment_identity=contrast.arm_b.treatment_identity,
+                realized_propagation_seed=contrast.arm_b.realized_propagation_seed,
+                cycle=shared, support_budget=None),
+            realized_writes=0, realized_reopens=0,
+            treatment_writes_are_head_directed=False, control_is_head_blind=False,
+            parity_violation=(
+                "the treatment arm produced no projection, so there are no realized cardinalities "
+                f"to match a control against: {treatment_cycle.detail}"
+            ),
+        )
+
+    realized = SupportBudget.of(projected.support)
+    control_policy = control_policy_factory(
+        required_writes=realized.n_write_from_endpoint, required_reopens=realized.n_reopen)
+    control_cycle = run_one_cycle(**dict(
+        base_kwargs,
+        origin_transition_id=_arm_transition_id(contrast.arm_b.arm_slot),
+        support_policy=control_policy,
+        declared_policy=control_declared_policy,
+    ))
+
+    budgets = tuple(
+        SupportBudget.of(cycle.projected.support) if cycle.projected is not None else None
+        for cycle in (treatment_cycle, control_cycle)
+    )
+    violation = ""
+    present = [budget for budget in budgets if budget is not None]
+    if len(present) == 2:
+        try:
+            assert_write_reopen_parity(present)
+        except V2PairedError as exc:
+            violation = str(exc)
+    else:
+        violation = (
+            "the control arm produced no projection under the treatment's realized cardinalities: "
+            f"{control_cycle.detail}"
+        )
+
+    treatment_directed, treatment_consulted = _support_law_evidence(treatment_cycle)
+    _control_directed, control_consulted = _support_law_evidence(control_cycle)
+    del _control_directed, treatment_consulted
+    return PolicyQualificationResult(
+        axes=axes,
+        treatment=PairedArmRun(
+            arm_slot=contrast.arm_a.arm_slot,
+            treatment_identity=contrast.arm_a.treatment_identity,
+            realized_propagation_seed=contrast.arm_a.realized_propagation_seed,
+            cycle=treatment_cycle, support_budget=budgets[0]),
+        control=PairedArmRun(
+            arm_slot=contrast.arm_b.arm_slot,
+            treatment_identity=contrast.arm_b.treatment_identity,
+            realized_propagation_seed=contrast.arm_b.realized_propagation_seed,
+            cycle=control_cycle, support_budget=budgets[1]),
+        realized_writes=realized.n_write_from_endpoint,
+        realized_reopens=realized.n_reopen,
+        treatment_writes_are_head_directed=treatment_directed,
+        control_is_head_blind=not control_consulted,
+        parity_violation=violation,
+    )

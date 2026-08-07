@@ -125,7 +125,22 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
          "n_carry_from_source",
          "assimilation_json", "temporary_protection_json",
          "r_step", "c_source_step", "c_next_step", "declared_band_id", "declared_band_digest",
-         "pair_id", "arm_slot", "treatment_identity", "descendant_fork_seed"],
+         "pair_id", "arm_slot", "treatment_identity", "descendant_fork_seed",
+         # V2F5A (PLAN §5.3, A.5): "Every directional transition must preserve enough evidence to
+         # reconstruct why each support position was chosen."  Null for every policy that emits
+         # only the four support sets -- the diagnostic probe has no candidate ranking to record --
+         # and populated on a typed STALL as well as on a decision, because a stall that kept no
+         # rejected-candidate counts cannot be told from a policy nobody asked.
+         "policy_stall_reason", "head_evidence_consulted",
+         "incumbent_id", "incumbent_sequence_md5", "incumbent_global_risk",
+         "safety_reference_sequence_md5", "donor_gate_passed", "donor_gate_reason",
+         "donor_gate_margin", "donor_gate_epsilon",
+         "incumbent_window_evidence_digest", "safety_window_evidence_digest",
+         "u_target", "band_center_rule", "write_cap", "n_legal_write_candidates",
+         "n_positive_contributions", "m_band_min", "m_band_max", "required_reopen",
+         "n_legal_reopen_candidates", "policy_head_calls",
+         "write_candidate_evidence_json", "reopen_candidate_evidence_json",
+         "policy_calibration_json"],
         # ``arm_slot`` and ``treatment_identity`` are part of the KEY, not merely columns.  A
         # matched pair runs both arms off one source through one transition id, so without them two
         # arms of the same contrast collide on the join key and the bundle refuses a table whose
@@ -198,17 +213,23 @@ V2_COLUMN_TYPES: dict[str, str] = {
         "whole_landscape_positive_count", "whole_landscape_n_windows",
         "source_index", "n_free", "n_diff_free", "n_editable_scored", "n_diff_editable",
         "n_input_diff", "source_unresolved_editable",
+        "u_target", "write_cap", "n_legal_write_candidates", "n_positive_contributions",
+        "m_band_min", "m_band_max", "required_reopen", "n_legal_reopen_candidates",
+        "policy_head_calls",
     )},
     **{name: "uint" for name in ("fork_seed", "replay_fork_seed", "descendant_fork_seed",
                                  "source_seed")},
     **{name: "float" for name in ("rho_edit", "head_global_risk", "immune_global_risk",
                                   "whole_landscape_max_increase",
                                   "whole_landscape_positive_mass", "walltime_s",
-                                  "hamming_free", "hamming_editable")},
+                                  "hamming_free", "hamming_editable",
+                                  "incumbent_global_risk", "donor_gate_margin",
+                                  "donor_gate_epsilon")},
     **{name: "bool" for name in (
         "structure_evaluated", "structure_feasible", "structure_definitive", "is_elite",
         "is_diversity_frontier", "may_become_ancestry", "policy_is_diagnostic", "immune_passed",
         "evaluated", "feasible", "model_executed", "analyzable", "contrastable",
+        "head_evidence_consulted", "donor_gate_passed",
     )},
 }
 
@@ -527,8 +548,64 @@ def feedback_event_rows(events: Iterable[Mapping[str, Any]]) -> list[dict]:
             "treatment_identity": event.get("treatment_identity"),
             "descendant_fork_seed": (
                 None if projected is None else int(projected.descendant_fork_seed)),
+            **_policy_evidence_columns(event.get("policy_evidence")),
         })
     return rows
+
+
+#: Every V2F5A evidence column, so a bundle whose policy emits none still has the same SHAPE.  A
+#: schema that grew or shrank with the policy would make two arms of one campaign unjoinable.
+_POLICY_EVIDENCE_COLUMNS = (
+    "policy_stall_reason", "head_evidence_consulted", "incumbent_id", "incumbent_sequence_md5",
+    "incumbent_global_risk", "safety_reference_sequence_md5", "donor_gate_passed",
+    "donor_gate_reason", "donor_gate_margin", "donor_gate_epsilon",
+    "incumbent_window_evidence_digest", "safety_window_evidence_digest", "u_target",
+    "band_center_rule", "write_cap", "n_legal_write_candidates", "n_positive_contributions",
+    "m_band_min", "m_band_max", "required_reopen", "n_legal_reopen_candidates",
+    "policy_head_calls", "write_candidate_evidence_json", "reopen_candidate_evidence_json",
+    "policy_calibration_json",
+)
+
+
+def _policy_evidence_columns(evidence: Any) -> dict:
+    """Flatten one ``HeadDirectedDecisionEvidence`` into the feedback-event row.
+
+    The scalar decision inputs become columns so a cohort can be filtered and aggregated in SQL --
+    "how many sources had at least one legal positive write" must not require parsing JSON in every
+    row -- while the per-position candidate tables stay JSON, because their length varies per
+    transition and a wide table would be mostly nulls.
+    """
+    if evidence is None:
+        return {name: None for name in _POLICY_EVIDENCE_COLUMNS}
+    payload = evidence.canonical_payload()
+    gate = payload.get("donor_gate") or {}
+    return {
+        "policy_stall_reason": payload.get("stall_reason"),
+        "head_evidence_consulted": bool(payload.get("head_evidence_consulted")),
+        "incumbent_id": payload.get("incumbent_id"),
+        "incumbent_sequence_md5": payload.get("incumbent_sequence_md5"),
+        "incumbent_global_risk": gate.get("incumbent_global_risk"),
+        "safety_reference_sequence_md5": payload.get("safety_reference_sequence_md5"),
+        "donor_gate_passed": None if not gate else bool(gate.get("passed")),
+        "donor_gate_reason": gate.get("reason"),
+        "donor_gate_margin": gate.get("margin"),
+        "donor_gate_epsilon": gate.get("epsilon_r"),
+        "incumbent_window_evidence_digest": payload.get("incumbent_window_evidence_digest"),
+        "safety_window_evidence_digest": payload.get("safety_window_evidence_digest"),
+        "u_target": payload.get("u_target"),
+        "band_center_rule": payload.get("band_center_rule"),
+        "write_cap": payload.get("write_cap"),
+        "n_legal_write_candidates": payload.get("n_legal_write_candidates"),
+        "n_positive_contributions": payload.get("n_positive_contributions"),
+        "m_band_min": payload.get("m_band_min"),
+        "m_band_max": payload.get("m_band_max"),
+        "required_reopen": payload.get("required_reopen"),
+        "n_legal_reopen_candidates": payload.get("n_legal_reopen_candidates"),
+        "policy_head_calls": payload.get("head_calls"),
+        "write_candidate_evidence_json": _json(payload.get("write_candidates", [])),
+        "reopen_candidate_evidence_json": _json(payload.get("reopen_candidates", [])),
+        "policy_calibration_json": _json(payload.get("calibration", {})),
+    }
 
 
 def a2_view_rows(

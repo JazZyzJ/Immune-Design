@@ -36,11 +36,12 @@ __all__ = [
     "CoordinateLaw", "HistoryKey", "CycleCoordinates", "DepthSchedule",
     "QuantileLevels", "BandInterval", "ScheduleBand", "BandProvenance", "ScheduleBandTable",
     "MaturityRecord", "BandVerdictReason", "BandVerdict", "UnresolvedInterval",
-    "AdmissibleMaskLoad",
+    "AdmissibleMaskLoad", "BandCenterRule", "BandCenterTarget",
     "history_key", "make_cycle", "make_depth_schedule", "make_band", "make_band_table",
     "bind_band_table", "band_table_content_digest", "band_table_payload", "load_band_table",
     "lookup_band", "observe_maturity", "gate_projected_maturity", "pinned_unresolved_interval",
     "admissible_reopen_cardinality", "validate_realized_mask_load",
+    "band_center_target", "required_reopen_count",
     "segment_cost", "screening_cost",
 ]
 
@@ -1104,6 +1105,106 @@ def admissible_reopen_cardinality(
         n_endpoint_writes_over_masked=a, min_newly_masked=lo, max_newly_masked=hi,
         feasible=feasible, infeasible_reason=reason,
     )
+
+
+class BandCenterRule(str, enum.Enum):
+    """How the integer unresolved target is read off the pinned interval.
+
+    PLAN §2.5 requires the calibration to "materialize one content-bound integer unresolved target
+    ``u_target`` at the declared center of ``B(r_d)``, including its rounding/tie law".  The interval
+    is over integer position counts, so an even-width interval has no integer midpoint and the
+    rounding direction is a scientific choice: it decides whether the projected state sits one
+    position more or less mature than the band's centre, and therefore how many positions the
+    reopen equation demands.  It is declared, never defaulted.
+    """
+
+    #: ``floor((lo + hi) / 2)`` -- an even-width interval resolves toward the LOWER unresolved
+    #: count, i.e. the MORE mature side.
+    MIDPOINT_TIE_LOW = "midpoint_tie_low"
+    #: ``ceil((lo + hi) / 2)`` -- an even-width interval resolves toward the HIGHER unresolved
+    #: count, i.e. the LESS mature side.
+    MIDPOINT_TIE_HIGH = "midpoint_tie_high"
+
+
+@dataclass(frozen=True)
+class BandCenterTarget:
+    """The single integer unresolved mass a projection at ``r_d`` must realize.
+
+    Content-bound, not merely computed: the record carries the calibration identity and digest of
+    the table the interval came from, so a target quoted in an artifact can be checked against the
+    band it claims to come from rather than taken on trust.  ``n_editable`` is part of the identity
+    because the pinned interval is a function of it -- two proteins under one band have two targets.
+    """
+
+    u_target: int
+    pinned: UnresolvedInterval
+    rule: BandCenterRule
+    step: int
+    stratum_key: str
+    n_editable: int
+    calibration_id: str
+    calibration_content_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.rule, BandCenterRule):
+            raise V2ScheduleError("rule must be a BandCenterRule")
+        if not isinstance(self.pinned, UnresolvedInterval):
+            raise V2ScheduleError("pinned must be an UnresolvedInterval")
+        _require_index(self.u_target, "u_target", minimum=1)
+        if not (self.pinned.min_unresolved <= self.u_target <= self.pinned.max_unresolved):
+            raise V2ScheduleError(
+                f"u_target={self.u_target} is outside the pinned interval "
+                f"[{self.pinned.min_unresolved}, {self.pinned.max_unresolved}]; a target off its "
+                "own band would put every projection outside B(r_d) while claiming the band's name"
+            )
+
+
+def band_center_target(
+    *, table: ScheduleBandTable, step: int, stratum_key: str, n_editable: int,
+    rule: BandCenterRule,
+) -> BandCenterTarget:
+    """The declared integer centre of ``B(r_d)``, bound to the calibration it was read from.
+
+    Derived from the content-verified table rather than stored as a fourth quantile: the table's
+    digest already signs the interval this is a pure function of, and adding a field would create a
+    second number that can disagree with the interval it summarizes.  The rounding/tie law is
+    supplied by the caller from frozen config, so the derivation is total and the choice is visible.
+    """
+    if not isinstance(table, ScheduleBandTable):
+        raise V2ScheduleError("table must be a content-verified ScheduleBandTable")
+    if not isinstance(rule, BandCenterRule):
+        raise V2ScheduleError(
+            "rule must be a BandCenterRule; the rounding/tie law is declared by the run, and an "
+            "implicit one would silently move the target by one position (PLAN §2.5)"
+        )
+    band = lookup_band(table, step=step, stratum_key=stratum_key)
+    pinned = pinned_unresolved_interval(band=band, n_editable=n_editable)
+    total = pinned.min_unresolved + pinned.max_unresolved
+    if rule is BandCenterRule.MIDPOINT_TIE_LOW:
+        target = total // 2
+    else:
+        target = -((-total) // 2)
+    return BandCenterTarget(
+        u_target=int(target), pinned=pinned, rule=rule, step=band.step, stratum_key=stratum_key,
+        n_editable=int(n_editable), calibration_id=table.provenance.calibration_id,
+        calibration_content_digest=table.provenance.calibration_content_digest,
+    )
+
+
+def required_reopen_count(*, u_target: int, n_unresolved_source: int, n_writes: int) -> int:
+    """``m_reopen = u_target - u_src + m_d`` (PLAN §2.5), as an exact integer identity.
+
+    A separate function rather than an expression at the call site because it is the one place the
+    equation exists: the projection's own byte-level identity is ``u_proj = u_src - a + b_new``, and
+    with every endpoint write landing on a source-masked position (``a == m_d``) this is the unique
+    ``b_new`` that lands exactly on the target.  A negative result is returned AS a negative number
+    rather than clamped -- the caller must fail closed on it, and a silent ``max(0, ...)`` would
+    produce a projection that misses the declared target while reporting the target's name.
+    """
+    _require_index(u_target, "u_target", minimum=1)
+    _require_index(n_unresolved_source, "n_unresolved_source")
+    _require_index(n_writes, "n_writes")
+    return int(u_target) - int(n_unresolved_source) + int(n_writes)
 
 
 def validate_realized_mask_load(

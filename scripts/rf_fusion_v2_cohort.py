@@ -500,6 +500,7 @@ def run_v2_shard(
         dict(source=record.cycle.source, endpoint=record.cycle.selected_endpoint,
              projected=record.cycle.projected, propagated=record.cycle.propagated,
              policy=_policy_identity(record, config=config),
+             policy_evidence=getattr(record.cycle, "policy_evidence", None),
              outcome=record.cycle.outcome.value, detail=record.cycle.detail,
              pair_id=None, arm_slot=None, treatment_identity=config.arm.arm_role)
         for record in outcome.cycles
@@ -834,6 +835,7 @@ def run_v2_mechanism_shard(
                     source=arm.cycle.source, endpoint=arm.cycle.selected_endpoint,
                     projected=arm.cycle.projected, propagated=arm.cycle.propagated,
                     policy=_policy_identity(_ArmRecord(0, arm.cycle), config=config),
+                    policy_evidence=getattr(arm.cycle, "policy_evidence", None),
                     outcome=arm.cycle.outcome.value, detail=arm.cycle.detail,
                     pair_id=context.pair_id, arm_slot=arm.arm_slot,
                     treatment_identity=arm.treatment_identity))

@@ -457,6 +457,23 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     digest cannot sign a two-protein cohort's two references. Tested:
     `tests/scripts/test_rf_fusion_v2_oracles.py`.
 
+29. `scripts/analysis/replay_v2_head_directed_policy.py` — the V2F5A OFFLINE COVERAGE GATE
+    (`--bundle DIR ...`, `--config`, `--band-table`, `--stratum-key`, `--reference-sequence`,
+    optional `--protein-id`/`--out`, and a `--head-*` group). PLAN §8.4 puts this before any
+    descendant is generated: it replays `HeadDirectedCappedPolicy` over every recorded LIVE source
+    state in an existing bundle and reports how often the policy would actually FIRE — sources with
+    a legal write candidate, sources with a positive frozen-Head contribution, the realized $m_d$
+    distribution and what bound it (positives / cap / band), the contribution distribution, the
+    required-versus-legal reopen counts, and the overlap with the Head-blind write S7 made. It
+    executes the policy's own `select` code path over a `SourceView` rebuilt from the recorded
+    per-position vectors, so a coverage number here describes the policy that would run rather than
+    a second implementation of its law. It generates NO descendants and loads neither the denoiser
+    nor the structure backend; the frozen Head is loaded only for the leave-one-out counterfactual,
+    and when one is loaded the INSTRUMENT defines the evaluator identity (a Head whose frozen
+    digests disagree with the run's config is refused as a different instrument). A low-coverage
+    result returns to policy design and may not be rescued by treating the cap as a quota. Tested:
+    `tests/inverse_folding/test_fusion_v2_head_directed_policy.py`.
+
 28. `scripts/analysis/read_v2_mechanism.py` — reads a runbook §7 mechanism cohort
     (`--bundle DIR ...`, `--delta`, `--floor`, `--cap`, `--confirmatory`, `--out`). One number per
     SOURCE PREFIX: matched forks are averaged WITHIN a prefix before prefixes are treated as the

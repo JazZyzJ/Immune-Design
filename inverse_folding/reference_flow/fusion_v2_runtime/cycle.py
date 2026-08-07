@@ -133,6 +133,12 @@ class CycleOutcome:
     #: the policy object afterwards is a SECOND source that can disagree with the answer the kernel
     #: actually acted on.  PLAN §5.3 makes the policy a load-bearing field of every feedback event.
     policy_identity: Any = None
+    #: The policy's own per-position decision record, when it produced one (PLAN §5.3, V2F5A:
+    #: "per-position decision evidence for every accepted and rejected write/reopen candidate").
+    #: ``None`` for every policy that emits only the four support sets -- the diagnostic probe has
+    #: no candidate ranking to record.  Present on a STALL as well as on a decision: PLAN §2.5
+    #: requires a typed stall to preserve its rejected-candidate counts rather than vanish.
+    policy_evidence: Any = None
     detail: str = ""
 
     @property
@@ -476,9 +482,29 @@ def run_one_cycle(
         )
     selected = admissible[rank]
 
-    decision = support_override if support_override is not None else support_policy(
-        source, selected, coordinates)
+    if support_override is not None:
+        decision = support_override
+    elif getattr(support_policy, "consumes_runtime", False):
+        # PLAN §5.4: a policy that calls the frozen Head while deciding (V2F5A's leave-one-out
+        # counterfactual) must journal that batch like any other oracle request.  The meter is
+        # created per shard, long after the oracle factory built the policy, so it cannot be a
+        # constructor field -- and an unjournaled Head batch would spend real GPU work against a
+        # cap the run's own accounting cannot see.  Only policies that ASK for the runtime get it;
+        # every other policy keeps the three-argument call shape the kernel has always used.
+        from ..fusion_v2.policy import PolicyRuntime
+
+        decision = support_policy(
+            source, selected, coordinates,
+            runtime=PolicyRuntime(cost_meter=cost_meter,
+                                  event_prefix=f"{origin_transition_id}:policy"),
+        )
+    else:
+        decision = support_policy(source, selected, coordinates)
     policy_identity = getattr(decision, "policy", None)
+    # The policy's own per-position decision record (PLAN §5.3, V2F5A).  Read off the DECISION the
+    # kernel acted on rather than off the policy object afterwards: the second is a different
+    # source that can disagree with the answer that actually ran.
+    policy_evidence = getattr(decision, "decision_evidence", None)
     if required_support_budget is not None and hasattr(decision, "reopen"):
         from .paired import SupportBudget, V2PairedError, assert_support_parity
 
@@ -495,7 +521,7 @@ def run_one_cycle(
                 outcome=TransitionOutcome.NULL_INVALID_POLICY_RESULT, source=source,
                 endpoints=endpoints, a2_view=a2_view, archive=archive, cost=_cost(),
                 selected_endpoint=selected, detail=str(exc), admissions=admissions,
-                policy_identity=policy_identity,
+                policy_identity=policy_identity, policy_evidence=policy_evidence,
             )
     endpoint_tokens = tuple(
         evidence.token for evidence in selected.endpoint_provenance_evidence_by_pos
@@ -513,6 +539,7 @@ def run_one_cycle(
             outcome=projection.outcome, source=source, endpoints=endpoints, a2_view=a2_view,
             archive=archive, cost=_cost(), selected_endpoint=selected, detail=projection.detail,
             admissions=admissions, policy_identity=projection.policy,
+            policy_evidence=policy_evidence,
         )
 
     projected = projection.projected
@@ -543,6 +570,7 @@ def run_one_cycle(
             cost=_cost(segment_logical_dfe=segment_dfe),
             selected_endpoint=selected, projected=projected, segment=segment,
             admissions=admissions, policy_identity=policy_identity,
+            policy_evidence=policy_evidence,
             detail=(
                 f"the propagation segment resolved every editable position by step "
                 f"{c_next_step}; the capture is a terminal endpoint, not a live partial state, so "
@@ -591,4 +619,5 @@ def run_one_cycle(
         projected=projected, segment=segment, propagated=propagated,
         descendant_endpoints=descendants, admissions=admissions,
         descendant_admissions=descendant_admissions, policy_identity=policy_identity,
+        policy_evidence=policy_evidence,
     )

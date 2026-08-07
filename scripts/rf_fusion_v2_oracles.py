@@ -57,6 +57,8 @@ __all__ = [
     "resolve_reference",
     "resolve_stratum",
     "resolve_support_policy",
+    "bind_lineage_incumbent",
+    "build_source_geometry_control",
     "build_v2_oracles",
 ]
 
@@ -78,7 +80,7 @@ class V2OracleError(V2Error):
 # only typed nulls.  ``state_derived_probe`` is what actually runs the first diagnostic.
 
 
-def _build_state_derived_probe(*, band_table, stratum_key, config):
+def _build_state_derived_probe(*, band_table, stratum_key, config, **_context):
     from inverse_folding.reference_flow.fusion_v2.policy import StateDerivedProbePolicy
 
     # The SPEC digest is the run's DECLARED ``projection_policy_spec`` content role -- the sha256 of
@@ -92,22 +94,125 @@ def _build_state_derived_probe(*, band_table, stratum_key, config):
         policy_spec_digest=_content_digest(config, "projection_policy_spec"))
 
 
-def _registry() -> dict[str, Callable[..., Any]]:
-    from inverse_folding.reference_flow.fusion_v2.policy import STATE_DERIVED_PROBE_POLICY_ID
+def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, evaluator,
+                           lineage_id):
+    """``I_0`` under the run's DECLARED depth-0 rule (PLAN §3.1, V2F5A).
 
-    return {STATE_DERIVED_PROBE_POLICY_ID: _build_state_derived_probe}
+    PLAN §3.1 leaves the depth-zero binding an OPEN decision, so this factory refuses to choose one:
+    the rule comes from ``config.projection.head_directed.lineage_incumbent_depth0_rule``, and the
+    only rule it can execute today is ``cumulative_safety_reference`` -- the frozen complete
+    reference the run already content-binds for the safety ratchet, which is frozen before any
+    depth-0 endpoint is scored by construction.
+
+    ``predeclared_external_design`` is a legal declaration in the vocabulary and is deliberately NOT
+    executed here: it would need its own content-bound input role for the design's bytes and its own
+    Head scoring pass, and inventing either would put an unsigned sequence in the position that
+    decides which donors may open feedback.
+    """
+    from inverse_folding.reference_flow.fusion_v2.reward import (
+        bind_incumbent_from_safety_reference,
+    )
+
+    block = config.projection.head_directed
+    if block is None:
+        raise V2OracleError(
+            "config.projection.head_directed is absent, so the run declared no depth-0 incumbent "
+            "rule; the Head-directed policy cannot be built without one"
+        )
+    rule = block.lineage_incumbent_depth0_rule
+    if rule != "cumulative_safety_reference":
+        raise V2OracleError(
+            f"depth-0 incumbent rule {rule!r} is declared in the vocabulary but has no authorized "
+            "runtime binding: it needs its own content-bound input role for the predeclared "
+            "design's bytes and its own frozen-Head scoring pass.  Declare "
+            "'cumulative_safety_reference' or add the role -- an unsigned sequence may not decide "
+            "which donors open feedback"
+        )
+    return bind_incumbent_from_safety_reference(
+        reference=cumulative_reference, reference_sequence=reference_sequence,
+        lineage_id=lineage_id, evaluator=evaluator, rule=rule,
+    )
+
+
+def _build_head_directed_capped(*, band_table, stratum_key, config, head_oracle=None,
+                                incumbent=None, safety_reference_score=None, evaluator=None,
+                                window_grid_digest=None, **_context):
+    """V2F5A's production policy.  Every scientific input arrives bound; none is derived here."""
+    from inverse_folding.reference_flow.fusion_v2.policy import HeadDirectedCappedPolicy
+    from inverse_folding.reference_flow.fusion_v2_runtime.contribution import (
+        CounterfactualHeadScorer,
+    )
+
+    missing = [name for name, value in (
+        ("head_oracle", head_oracle), ("incumbent", incumbent),
+        ("safety_reference_score", safety_reference_score), ("evaluator", evaluator),
+        ("window_grid_digest", window_grid_digest),
+    ) if value is None]
+    if missing:
+        raise V2OracleError(
+            f"the Head-directed policy needs {missing} from the oracle stack; without the frozen "
+            "Head and the bound lineage incumbent it has no applied-dose evidence and no donor "
+            "gate, which is the Head-blind law V2F5A exists to replace"
+        )
+    calibration = config.head_directed_calibration()
+    if calibration is None:                                # pragma: no cover - loader guarantees it
+        raise V2OracleError("config.projection.head_directed is required for this policy")
+    return HeadDirectedCappedPolicy(
+        band_table=band_table, stratum_key=stratum_key, incumbent=incumbent,
+        safety_reference_score=safety_reference_score, evaluator=evaluator,
+        window_grid_digest=window_grid_digest, calibration=calibration,
+        counterfactual_scorer=CounterfactualHeadScorer(head_oracle=head_oracle),
+        policy_spec_digest=_content_digest(config, "projection_policy_spec"),
+        policy_version=config.projection.support_policy_version,
+    )
+
+
+def build_source_geometry_control(*, treatment_policy, required_writes, required_reopens):
+    """The matched Head-blind control, pinned to the treatment arm's REALIZED cardinalities.
+
+    Built from the treatment policy object rather than from the config alone, so the two arms
+    provably share one band table, one stratum, one incumbent and one calibration: a control
+    assembled independently could agree today and drift with the next config edit.
+    """
+    from inverse_folding.reference_flow.fusion_v2.policy import SourceGeometryControlPolicy
+
+    return SourceGeometryControlPolicy(
+        band_table=treatment_policy.band_table, stratum_key=treatment_policy.stratum_key,
+        incumbent=treatment_policy.incumbent, evaluator=treatment_policy.evaluator,
+        calibration=treatment_policy.calibration,
+        required_writes=int(required_writes), required_reopens=int(required_reopens),
+        policy_spec_digest=treatment_policy.policy_spec_digest,
+        policy_version=treatment_policy.policy_version,
+    )
+
+
+def _registry() -> dict[str, Callable[..., Any]]:
+    from inverse_folding.reference_flow.fusion_v2.policy import (
+        HEAD_DIRECTED_CAPPED_POLICY_ID,
+        STATE_DERIVED_PROBE_POLICY_ID,
+    )
+
+    return {
+        STATE_DERIVED_PROBE_POLICY_ID: _build_state_derived_probe,
+        HEAD_DIRECTED_CAPPED_POLICY_ID: _build_head_directed_capped,
+    }
 
 
 #: Read through :func:`resolve_support_policy` so the refusal message can name what IS available.
 SUPPORT_POLICY_REGISTRY = _registry
 
 
-def resolve_support_policy(config: Any, *, band_table: Any, stratum_key: str):
+def resolve_support_policy(config: Any, *, band_table: Any, stratum_key: str, **context: Any):
     """Build the policy the run DECLARED, or refuse naming what is implemented.
 
     The kernel matches the answering identity against ``config.declared_policy()``, so a factory
     that quietly substituted a different policy would produce transitions the run's own declaration
     does not describe -- and the artifact would name the declared one.
+
+    ``context`` carries the bound objects only some policies need (the frozen Head, the lineage
+    incumbent, the safety reference's own score).  Passed as keywords rather than positionally so a
+    policy that does not need them is unaffected, and so adding one later cannot silently reorder
+    what an existing policy receives.
     """
     registry = SUPPORT_POLICY_REGISTRY()
     declared = config.projection.support_policy_id
@@ -119,7 +224,7 @@ def resolve_support_policy(config: Any, *, band_table: Any, stratum_key: str):
             "review, never a config string -- a policy that drives real feedback transitions may "
             "not authorize itself"
         )
-    policy = build(band_table=band_table, stratum_key=stratum_key, config=config)
+    policy = build(band_table=band_table, stratum_key=stratum_key, config=config, **context)
     identity = policy.identity()
     if identity.policy_version != config.projection.support_policy_version:
         raise V2OracleError(
@@ -789,6 +894,18 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
     )
     safety_gate = SafetyGate(policy=policy, ledger=open_lineage_ledger(cumulative))
 
+    # ``I_0``, bound under the run's declared depth-0 rule and BEFORE any endpoint is scored -- the
+    # reference it comes from is already frozen, which is what PLAN §3.1 requires of the reward
+    # baseline.  ``None`` for every policy that does not consume one; ``resolve_support_policy``
+    # refuses only if the DECLARED policy needs it.
+    incumbent = None
+    if config.projection.head_directed is not None:
+        incumbent = bind_lineage_incumbent(
+            config=config, cumulative_reference=cumulative,
+            reference_sequence=reference_sequence, evaluator=head_identity,
+            lineage_id=f"{protein_id}:fam0",
+        )
+
     return {
         "gpu_clock": resolved["gpu_clock"],
         # Capability is not authorization: the ladder still refuses production D>1 unless the
@@ -814,7 +931,10 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
             safety_reference=cumulative.binding,
             head_oracle=resolved["head_scorer"], structure_oracle=resolved["structure_evaluator"],
             support_policy=resolve_support_policy(
-                config, band_table=band_table, stratum_key=stratum_key),
+                config, band_table=band_table, stratum_key=stratum_key,
+                head_oracle=resolved["head_scorer"], incumbent=incumbent,
+                safety_reference_score=reference_head_score, evaluator=head_identity,
+                window_grid_digest=cumulative.binding.head_binding.window_grid_digest),
             band_table=band_table, stratum_key=stratum_key,
             declared_band_id=band_table.provenance.calibration_id,
             declared_band_digest=band_table.provenance.calibration_content_digest,

@@ -209,6 +209,43 @@ def assert_launch_feasible(projection: BudgetProjection) -> None:
         )
 
 
+def _head_directed_payload(config: Any) -> dict | None:
+    """The V2F5A block as ``--print-config`` reports it, or ``None`` for any other policy.
+
+    ``counterfactual_head_calls_per_cycle`` is deliberately a WORD, not a number: the leave-one-out
+    batch scores one counterfactual per LEGAL write candidate, and how many of those a realized
+    source carries is not knowable before the source exists.  A fabricated estimate here would
+    enter the budget projection and read as a bound the run does not have; the offline replay
+    (``scripts/analysis/replay_v2_head_directed_policy.py``) measures the real distribution on an
+    existing cohort, which is where that number belongs.
+    """
+    block = config.projection.head_directed
+    if block is None:
+        return None
+    return {
+        "support_policy_id": config.projection.support_policy_id,
+        "control_policy_id": block.control_policy_id,
+        "control_policy_version": block.control_policy_version,
+        "write_cap_editable_fraction": float(block.write_cap_editable_fraction.value),
+        "write_cap_source_ref": block.write_cap_editable_fraction.source_ref,
+        "donor_improvement_epsilon": float(block.donor_improvement_epsilon.value),
+        "donor_improvement_source_ref": block.donor_improvement_epsilon.source_ref,
+        "donor_improvement_measurement_kind":
+            block.donor_improvement_epsilon.artifact.measurement_kind,
+        "local_contribution_tolerance": float(block.local_contribution_tolerance.value),
+        "local_contribution_source_ref": block.local_contribution_tolerance.source_ref,
+        "local_contribution_measurement_kind":
+            block.local_contribution_tolerance.artifact.measurement_kind,
+        "band_center_rule": block.band_center_rule,
+        "lineage_incumbent_depth0_rule": block.lineage_incumbent_depth0_rule,
+        "lineage_incumbent_update_law": block.lineage_incumbent_update_law,
+        "write_candidate_window_rule": block.write_candidate_window_rule,
+        "reopen_count_law": block.reopen_count_law,
+        "reopen_priority_law": block.reopen_priority_law,
+        "counterfactual_head_calls_per_cycle": "one per legal write candidate; not projected",
+    }
+
+
 def print_config_payload(
     config: Any, *, n_proteins: int, declared_inputs: Sequence[Any] = (),
     code_revision: str = "unknown",
@@ -241,6 +278,11 @@ def print_config_payload(
             "remask_enabled": bool(config.substrate.remask_enabled),
             "remask_fraction_scale": float(config.substrate.remask_fraction_scale),
         },
+        # V2F5A.  Echoed so ``--print-config`` shows the operator the frozen cap, the calibrated
+        # margins and the tie law WITHOUT loading anything; every identity behind them was already
+        # validated by ``load_v2_config`` (the typed artifact, the unit against the Head's own
+        # score scale, and the source_ref that binds the value to its measurement).
+        "head_directed": _head_directed_payload(config),
         "budget_projection": {
             "n_proteins": projection.n_proteins,
             "root_capture_logical_dfe": projection.root_capture_logical_dfe,

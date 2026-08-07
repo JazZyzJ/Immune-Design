@@ -472,9 +472,30 @@ disabled — a matched control VIEW, not a second run.
 | V2F5 one-cycle runner + paired mechanism executor | done; A2 made a shared-pool view 2026-08-05 |
 | V2F6 general D>=1 ladder + stationary comparator | done; production `D>1` launch-disabled |
 | V2F7 artifacts / ledger / resume / driver / preflight | done |
+| V2F5A minimal capped Head-directed policy + matched source-geometry control | code done 2026-08-07; offline replay and cluster qualification NOT yet run |
 
-Tests: 1164 V2 tests pass. Repo-wide failing set is identical to clean HEAD (47 entries,
-all missing-dependency or missing-fixture-file), i.e. no regression.
+Tests: 1250 V2 tests pass (+86 for V2F5A); V1/v0 regressions green (666). Repo-wide failing set is
+identical to clean HEAD (47 entries, all missing-dependency or missing-fixture-file).
+
+**V2F5A, what landed 2026-08-07** (answers the S7 §7.11 `not_demonstrated` verdict, whose cause was
+a Head-BLIND support law under a Head-ranked donor):
+
+| Piece | Where |
+|---|---|
+| `HeadDirectedCappedPolicy`: donor gate `R_H(Y*) < R_H(I_d) - eps_R`, raw aligned-window screen, frozen-Head leave-one-out `a_i`, `m_d = min(n_positive, ceil(f*N_editable), m_band)`, typed stalls | `fusion_v2/policy.py` |
+| `SourceGeometryControlPolicy`: same donor, same realized `(m_write, m_reopen)`, positions by the FORMER lowest-index / latest-commit law, `head_evidence_consulted=false` on the record | `fusion_v2/policy.py` |
+| Lineage reward incumbent `I_d` + donor gate + update law, non-interchangeable with `ybar` | `fusion_v2/reward.py` |
+| Same-scale aligned-window evidence + leave-one-out counterfactual (never `residue_hotspot`) | `fusion_v2/evidence.py` |
+| Integer band centre `u_target` with a declared tie law; `m_reopen = u_target - u_src + m_d` | `fusion_v2/schedule.py` |
+| `projection.head_directed` config block: required for this policy, forbidden for any other; every scalar bound to a typed `PolicyCalibrationArtifact` | `fusion_v2/config.py` |
+| Per-position decision evidence on every feedback event, committed or stalled (25 new columns) | `scripts/rf_fusion_v2_artifacts.py` |
+| One-cycle matched contrast `run_policy_qualification_view` (`support_law` view) | `fusion_v2_runtime/paired.py` |
+| Offline coverage gate (PLAN §8.4), no descendants, no denoiser, no refold | `scripts/analysis/replay_v2_head_directed_policy.py` |
+
+**Still unmeasured (V2F5A):** the offline replay has never been run on the S7 bundles, so the
+realized `m_d`, the `a_i` distribution and the legal-positive-write coverage are all TBD; `eps_R`
+and the local tolerance have no measured values yet (the config demands typed calibration artifacts
+and refuses invented ones); and the one-cycle matched cluster comparison has not been launched.
 
 **Open gaps:**
 
@@ -485,6 +506,8 @@ all missing-dependency or missing-fixture-file), i.e. no regression.
 | `reward_ordered` / `policy_source_off` mechanism views are interface-only (`NotYetFrozenError`) | **Correctly deferred, not a todo.** PLAN §2.5 + §8.4 sequence the `FeedbackSupportPolicySpec` freeze AFTER positive source transmission; running a placeholder would "yield a number that looks like evidence" | `fusion_v2_runtime/paired.py` |
 | No production oracle factory, so the driver cannot launch a real run | **CLOSED** — the launch surface is `materialize_v2_canary_config.py` → `preflight_v2_canary_assembly.py` → `submit_rf_fusion_v2_canary.slurm` → `analysis/read_v2_canary.py`, runbook §3–§6 | `doc/SCRIPTS.md` 22–25 |
 | The structure gate is calibrated on a different population than it enforces on | **OPEN, decision pending.** Calibrated on full de novo trajectories (`5ZHV_B` scTM median 0.8528, 50% pass); enforces on completions RESUMED from a captured source state (median ≈0.798, 1/8 pass; descendants ≈0.712). This is why `5zhv_r30` admitted nothing | runbook §5.1 |
+| Depth-0 lineage incumbent `I_0` binding | **OPEN by PLAN §3.1, declared not defaulted.** The config must state `lineage_incumbent_depth0_rule`; the vocabulary is `cumulative_safety_reference` (implemented: `I_0 = ybar`, frozen before any endpoint is scored) and `predeclared_external_design` (declarable, refused by the oracle factory until it has its own content-bound input role) | `fusion_v2/reward.py`, `scripts/rf_fusion_v2_oracles.py` |
+| `eps_R` and the local contribution tolerance have no measured values | **OPEN, blocks launch.** PLAN §2.5 requires them from the frozen Head's repeatability / numeric floor; the loader refuses a value whose artifact claims another measurement kind, so no run can start on an invented one | `fusion_v2/config.py` |
 | The SAME population question on the Head axis | **OPEN, unmeasured.** The hotspot threshold was calibrated on full trajectories and enforces on resumed ones; the artifact records `head_global_risk`, not `N_H^whole`, for Canary endpoints, so this run does not answer it | runbook §5.1 |
 
 ### Executed Canary (jobs `12094327–30`, rtx6000 / `immune-design-blackwell`, ~2 min + 8.6–35.9 GPU-s per cell)

@@ -48,6 +48,9 @@ __all__ = [
     "CALIBRATION_SCOPES", "INCREMENTAL_REFERENCE_KIND", "INCREMENTAL_REFERENCE_LABEL",
     "DIAGNOSTIC_VALUE_PREFIX", "DIAGNOSTIC_ALLOWED_PHASES", "CONTENT_BINDINGS",
     "HotspotCalibrationArtifact", "CalibratedScalar", "calibration_source_ref",
+    "V2_POLICY_CALIBRATION_SCHEMA_VERSION", "POLICY_MEASUREMENT_KINDS",
+    "PolicyCalibrationArtifact", "PolicyCalibratedScalar", "policy_calibration_source_ref",
+    "V2HeadDirectedConfig",
     "ContentIdentity", "V2IdentityConfig",
     "V2SubstrateConfig", "V2ArmConfig", "DepthSchedulePoint", "V2ScheduleConfig",
     "V2ProjectionConfig", "V2HeadConfig", "V2SafetyConfig", "V2CapsConfig", "V2Config",
@@ -87,6 +90,20 @@ A2_RESOURCE_COMPONENTS = frozenset({
     "logical_dfe", "head_calls", "definitive_refolds", "gpu_seconds", "walltime_s",
 })
 MASK_LOAD_UNITS = frozenset({"absolute_positions", "normalized_editable_fraction"})
+
+#: V2F5A policy-calibration vocabulary.  Separate from the hotspot artifact's, because a number
+#: measured as a Head repeatability floor may not authorize a whole-landscape gate, nor the reverse.
+V2_POLICY_CALIBRATION_SCHEMA_VERSION = "v2-policy-calibration-1"
+POLICY_MEASUREMENT_KINDS = frozenset({
+    #: Repeat scorings of one sequence through the frozen Head: its own reproducibility floor.
+    "frozen_head_repeatability",
+    #: The numerical precision floor of the Head's score at this scale.
+    "frozen_head_numeric_floor",
+    #: A declared editable-domain fraction, frozen in the working note and signed by the file that
+    #: froze it.  Not a measurement of the Head, so it carries its own kind rather than borrowing
+    #: one that claims to be.
+    "frozen_declared_fraction",
+})
 RETRY_SCOPES = frozenset({"per_request", "per_run"})
 CALIBRATION_SOURCE_KINDS = frozenset({"measured_calibration", "runbook_frozen"})
 FORBIDDEN_SOURCE_KINDS = frozenset({"inherited_v0", "default", "placeholder", "guess"})
@@ -479,6 +496,158 @@ class V2ScheduleConfig:
 
 
 @dataclass(frozen=True)
+class PolicyCalibrationArtifact:
+    """Typed identity of the measurement that calibrated one V2F5A policy scalar.
+
+    Deliberately NOT :class:`HotspotCalibrationArtifact`.  That type signs a whole-landscape
+    new-hotspot threshold and hard-codes ``gate_kind`` accordingly; ``epsilon_R`` is a repeatability
+    or precision floor of the frozen Head and the local tolerance is a floor on a leave-one-out
+    contribution.  Reusing the hotspot artifact would let a number measured for one gate authorize
+    another, which is exactly the laundering ``FORBIDDEN_CALIBRATION_SOURCE_IDS`` exists to stop.
+    """
+
+    schema_version: str
+    measurement_kind: str
+    allele: str
+    score_scale: str
+    #: What was actually measured over: e.g. how many repeat scorings, on how many sequences.
+    n_observations: int
+    calibration_data_digest: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != V2_POLICY_CALIBRATION_SCHEMA_VERSION:
+            raise V2ConfigError(
+                f"policy calibration schema must be {V2_POLICY_CALIBRATION_SCHEMA_VERSION!r}, got "
+                f"{self.schema_version!r}"
+            )
+        if self.measurement_kind not in POLICY_MEASUREMENT_KINDS:
+            raise V2ConfigError(
+                f"policy calibration measurement_kind must be one of "
+                f"{sorted(POLICY_MEASUREMENT_KINDS)}, got {self.measurement_kind!r}; PLAN §2.5 "
+                "requires epsilon_R to come from the frozen Head's repeatability or numerical "
+                "precision floor and forbids inventing it from the desired experimental effect"
+            )
+        for name in ("allele", "score_scale"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, str) or not value.strip():
+                raise V2ConfigError(f"policy calibration {name} must be a non-empty str")
+        if isinstance(self.n_observations, bool) or not isinstance(self.n_observations, int) \
+                or self.n_observations < 1:
+            raise V2ConfigError(
+                "policy calibration n_observations must be a positive int; a calibration over "
+                "zero observations is a number nobody measured"
+            )
+        require_digest(self.calibration_data_digest, "calibration_data_digest")
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "measurement_kind": self.measurement_kind,
+            "allele": self.allele,
+            "score_scale": self.score_scale,
+            "n_observations": self.n_observations,
+            "calibration_data_digest": self.calibration_data_digest,
+        }
+
+
+@dataclass(frozen=True)
+class PolicyCalibratedScalar:
+    """A V2F5A policy scalar bound to its own typed measurement, on the Head's own score scale."""
+
+    value: float
+    unit: str
+    source_kind: str
+    source_id: str
+    source_ref: str
+    artifact: PolicyCalibrationArtifact
+
+    def __post_init__(self) -> None:
+        if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
+            raise V2ConfigError("calibrated value must be a real number")
+        value = float(self.value)
+        if value != value or value in (float("inf"), float("-inf")) or value < 0.0:
+            raise V2ConfigError(f"calibrated value must be finite and >= 0, got {self.value!r}")
+        object.__setattr__(self, "value", value)
+        for name in ("unit", "source_id"):
+            text = getattr(self, name)
+            if isinstance(text, bool) or not isinstance(text, str) or not text.strip():
+                raise V2ConfigError(f"policy calibration {name} must be a non-empty str")
+        if self.source_kind in FORBIDDEN_SOURCE_KINDS:
+            raise V2ConfigError(
+                f"source_kind {self.source_kind!r} is not a calibration; PLAN §2.5 requires "
+                "epsilon_R and the local tolerance to be MEASURED, not chosen to make an effect "
+                "appear"
+            )
+        if self.source_kind not in CALIBRATION_SOURCE_KINDS:
+            raise V2ConfigError(f"source_kind must be one of {sorted(CALIBRATION_SOURCE_KINDS)}")
+        if not isinstance(self.artifact, PolicyCalibrationArtifact):
+            raise V2ConfigError("artifact must be a PolicyCalibrationArtifact")
+        require_digest(self.source_ref, "source_ref")
+        expected = policy_calibration_source_ref(
+            value=value, unit=self.unit, source_kind=self.source_kind,
+            source_id=self.source_id, artifact=self.artifact,
+        )
+        if self.source_ref != expected:
+            raise V2ConfigError(
+                "source_ref does not equal the canonical digest of the value and its typed "
+                "calibration artifact; a provenance label is not content binding"
+            )
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "value": self.value, "unit": self.unit, "source_kind": self.source_kind,
+            "source_id": self.source_id, "source_ref": self.source_ref,
+            "artifact": self.artifact.canonical_payload(),
+        }
+
+
+def policy_calibration_source_ref(
+    *, value: float, unit: str, source_kind: str, source_id: str,
+    artifact: PolicyCalibrationArtifact,
+) -> str:
+    """Bind a policy scalar's source reference to all of its decision-relevant content."""
+    return canonical_digest({
+        "value": float(value),
+        "unit": unit,
+        "source_kind": source_kind,
+        "source_id": source_id,
+        "artifact": artifact.canonical_payload(),
+    })
+
+
+@dataclass(frozen=True)
+class V2HeadDirectedConfig:
+    """PLAN §5.1's ``HeadDirectedCappedPolicy`` block, required exactly when that policy runs.
+
+    Present only for the Head-directed policy and REFUSED for any other, for the same reason
+    ``delta_new_incremental`` is refused when the incremental gate is off: a dormant threshold in a
+    config reads as a knob that was set, and nothing downstream would say it was never consulted.
+    """
+
+    #: PLAN §2.5's frozen ``ceil(0.05 * N_editable)`` cap, as its fraction plus its provenance.
+    write_cap_editable_fraction: PolicyCalibratedScalar
+    #: ``epsilon_R``: the donor-improvement margin.
+    donor_improvement_epsilon: PolicyCalibratedScalar
+    #: The floor ``a_i`` must exceed to count as positive local evidence.
+    local_contribution_tolerance: PolicyCalibratedScalar
+    #: The declared rounding/tie law for the integer band centre ``u_target``.
+    band_center_rule: str
+    #: How ``I_0`` is bound before any depth-0 endpoint outcome is inspected.  PLAN §3.1 leaves this
+    #: OPEN, so the run must state which rule it used; there is no library default.
+    lineage_incumbent_depth0_rule: str
+    #: How ``I_d`` moves after depth 0.
+    lineage_incumbent_update_law: str
+    #: The write-candidate window screen, named so an artifact records which screen ran.
+    write_candidate_window_rule: str
+    #: The reopen count equation and priority order, likewise named.
+    reopen_count_law: str
+    reopen_priority_law: str
+    #: The matched Head-blind control this treatment is compared against (PLAN §2.5, §8.4).
+    control_policy_id: str
+    control_policy_version: str
+
+
+@dataclass(frozen=True)
 class V2ProjectionConfig:
     support_policy_id: str
     support_policy_version: str
@@ -486,6 +655,8 @@ class V2ProjectionConfig:
     temporal_history_rule: str
     assimilation_rule: str
     admissible_mask_load_unit: str
+    #: ``None`` for every policy but ``head_directed_capped``.
+    head_directed: V2HeadDirectedConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -545,7 +716,20 @@ class V2Config:
                 "min_lookahead_tail_steps": self.schedule.min_lookahead_tail_steps,
                 "points": [vars(point) for point in self.schedule.points],
             },
-            "projection": vars(self.projection),
+            "projection": {
+                **{name: value for name, value in vars(self.projection).items()
+                   if name != "head_directed"},
+                "head_directed": (
+                    None if self.projection.head_directed is None else {
+                        **{name: value
+                           for name, value in vars(self.projection.head_directed).items()
+                           if not isinstance(value, PolicyCalibratedScalar)},
+                        **{name: value.canonical_payload()
+                           for name, value in vars(self.projection.head_directed).items()
+                           if isinstance(value, PolicyCalibratedScalar)},
+                    }
+                ),
+            },
             "head": vars(self.head),
             "safety": {
                 "cumulative_reference_kind": self.safety.cumulative_reference_kind,
@@ -575,6 +759,49 @@ class V2Config:
             policy_id=self.projection.support_policy_id,
             policy_version=self.projection.support_policy_version,
             is_diagnostic=self.projection.support_policy_is_diagnostic,
+            phase=self.identity.phase,
+        )
+
+    def head_directed_calibration(self):
+        """The pure calibration record :class:`~fusion_v2.policy.HeadDirectedCappedPolicy` reads.
+
+        The policy may not import this module (PLAN §2.5), so the config resolves each typed
+        artifact and hands the values down as plain floats together with the ``source_ref`` digests
+        that bind them.  Nothing is defaulted here either: a run without the block gets ``None`` and
+        the oracle factory refuses to build the policy at all.
+        """
+        from .policy import HeadDirectedCalibration
+        from .schedule import BandCenterRule
+
+        block = self.projection.head_directed
+        if block is None:
+            return None
+        return HeadDirectedCalibration(
+            write_cap_editable_fraction=float(block.write_cap_editable_fraction.value),
+            write_cap_source_ref=block.write_cap_editable_fraction.source_ref,
+            epsilon_r=float(block.donor_improvement_epsilon.value),
+            epsilon_source_ref=block.donor_improvement_epsilon.source_ref,
+            local_contribution_tolerance=float(block.local_contribution_tolerance.value),
+            local_contribution_source_ref=block.local_contribution_tolerance.source_ref,
+            band_center_rule=BandCenterRule(block.band_center_rule),
+        )
+
+    def declared_control_policy(self) -> DeclaredPolicy | None:
+        """The matched control's declaration, for the arm that runs it (PLAN §2.5, §8.4).
+
+        The projection kernel requires the ANSWERING policy to be the run's DECLARED one, and the
+        control arm answers with a different identity by design -- that difference IS the treatment.
+        So the control is declared in config too, and the paired executor builds arm B's declaration
+        from here rather than fabricating one: a control identity the run never declared would be a
+        transition produced by a policy the artifact cannot name.
+        """
+        block = self.projection.head_directed
+        if block is None:
+            return None
+        return DeclaredPolicy(
+            policy_id=block.control_policy_id,
+            policy_version=block.control_policy_version,
+            is_diagnostic=policy_id_is_diagnostic(block.control_policy_id),
             phase=self.identity.phase,
         )
 
@@ -733,7 +960,8 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
     proj_node = _section(payload, "projection", "config")
     _reject_unknown(proj_node, ("support_policy_id", "support_policy_version",
                                 "support_policy_is_diagnostic", "temporal_history_rule",
-                                "assimilation_rule", "admissible_mask_load_unit"),
+                                "assimilation_rule", "admissible_mask_load_unit",
+                                "head_directed"),
                     "config.projection")
     policy_id = _text(proj_node, "support_policy_id", "config.projection")
     is_diagnostic = _bool(proj_node, "support_policy_is_diagnostic", "config.projection")
@@ -759,6 +987,7 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
         assimilation_rule=_text(proj_node, "assimilation_rule", "config.projection"),
         admissible_mask_load_unit=_text(proj_node, "admissible_mask_load_unit",
                                         "config.projection", allowed=MASK_LOAD_UNITS),
+        head_directed=_head_directed(proj_node, policy_id=policy_id),
     )
 
     head_node = _section(payload, "head", "config")
@@ -772,6 +1001,8 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
     )
     if head.window_k_max < head.window_k_min:
         raise V2ConfigError("config.head.window_k_max is below window_k_min")
+    if projection.head_directed is not None:
+        _assert_policy_calibration_matches(projection.head_directed, head=head)
 
     safety_node = _section(payload, "safety", "config")
     _reject_unknown(safety_node, ("cumulative_reference_kind", "cumulative_reference_label",
@@ -845,6 +1076,151 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
         schedule=schedule, projection=projection, head=head, safety=safety, caps=caps,
         content=content,
     )
+
+
+def _policy_calibrated(node: Mapping[str, Any], key: str, path: str) -> PolicyCalibratedScalar:
+    raw = _require(node, key, path)
+    if not isinstance(raw, Mapping):
+        raise V2ConfigError(f"{path}.{key} must be a mapping carrying value and provenance")
+    where = f"{path}.{key}"
+    _reject_unknown(raw, ("value", "unit", "source_kind", "source_id", "source_ref", "artifact"),
+                    where)
+    artifact_raw = _require(raw, "artifact", where)
+    if not isinstance(artifact_raw, Mapping):
+        raise V2ConfigError(f"{where}.artifact must be a mapping")
+    artifact_path = f"{where}.artifact"
+    _reject_unknown(artifact_raw, ("schema_version", "measurement_kind", "allele", "score_scale",
+                                   "n_observations", "calibration_data_digest"), artifact_path)
+    artifact = PolicyCalibrationArtifact(
+        schema_version=_text(artifact_raw, "schema_version", artifact_path),
+        measurement_kind=_text(artifact_raw, "measurement_kind", artifact_path),
+        allele=_text(artifact_raw, "allele", artifact_path),
+        score_scale=_text(artifact_raw, "score_scale", artifact_path),
+        n_observations=_int(artifact_raw, "n_observations", artifact_path, minimum=1),
+        calibration_data_digest=_text(artifact_raw, "calibration_data_digest", artifact_path),
+    )
+    return PolicyCalibratedScalar(
+        value=_float(raw, "value", where), unit=_text(raw, "unit", where),
+        source_kind=_text(raw, "source_kind", where), source_id=_text(raw, "source_id", where),
+        source_ref=_text(raw, "source_ref", where), artifact=artifact,
+    )
+
+
+def _head_directed(proj_node: Mapping[str, Any], *, policy_id: str) -> V2HeadDirectedConfig | None:
+    """Parse ``config.projection.head_directed``, required exactly for the Head-directed policy.
+
+    Both directions are refused.  A run that declares ``head_directed_capped`` without the block
+    has no ``epsilon_R``, no cap and no tie law, and PLAN §5.1 forbids a library default for any of
+    them.  A run that carries the block under another policy has thresholds nothing will read, and
+    the config would read as if the Head-directed law were in force when it is not.
+    """
+    from .policy import (
+        HEAD_DIRECTED_CAPPED_POLICY_ID,
+        REOPEN_COUNT_LAW,
+        REOPEN_PRIORITY_LAW,
+        SOURCE_GEOMETRY_CONTROL_POLICY_ID,
+        WRITE_WINDOW_RULE,
+    )
+    from .reward import DEPTH0_INCUMBENT_RULES, INCUMBENT_UPDATE_LAWS
+    from .schedule import BandCenterRule
+
+    present = "head_directed" in proj_node
+    wanted = policy_id == HEAD_DIRECTED_CAPPED_POLICY_ID
+    if wanted and not present:
+        raise V2ConfigError(
+            f"config.projection.head_directed is required when support_policy_id is "
+            f"{HEAD_DIRECTED_CAPPED_POLICY_ID!r}: the write cap, epsilon_R, the local contribution "
+            "tolerance and the band-centre tie law are scientific inputs with no library default "
+            "(PLAN §5.1)"
+        )
+    if present and not wanted:
+        raise V2ConfigError(
+            f"config.projection.head_directed is forbidden under policy {policy_id!r}; a block of "
+            "thresholds no policy reads would describe a run that never applied them"
+        )
+    if not present:
+        return None
+
+    node = _section(proj_node, "head_directed", "config.projection")
+    path = "config.projection.head_directed"
+    _reject_unknown(node, (
+        "write_cap_editable_fraction", "donor_improvement_epsilon",
+        "local_contribution_tolerance", "band_center_rule", "lineage_incumbent_depth0_rule",
+        "lineage_incumbent_update_law", "write_candidate_window_rule", "reopen_count_law",
+        "reopen_priority_law", "control_policy_id", "control_policy_version"), path)
+
+    config = V2HeadDirectedConfig(
+        write_cap_editable_fraction=_policy_calibrated(node, "write_cap_editable_fraction", path),
+        donor_improvement_epsilon=_policy_calibrated(node, "donor_improvement_epsilon", path),
+        local_contribution_tolerance=_policy_calibrated(
+            node, "local_contribution_tolerance", path),
+        band_center_rule=_text(node, "band_center_rule", path,
+                               allowed=frozenset(m.value for m in BandCenterRule)),
+        lineage_incumbent_depth0_rule=_text(node, "lineage_incumbent_depth0_rule", path,
+                                            allowed=DEPTH0_INCUMBENT_RULES),
+        lineage_incumbent_update_law=_text(node, "lineage_incumbent_update_law", path,
+                                           allowed=INCUMBENT_UPDATE_LAWS),
+        write_candidate_window_rule=_text(node, "write_candidate_window_rule", path,
+                                          allowed=frozenset({WRITE_WINDOW_RULE})),
+        reopen_count_law=_text(node, "reopen_count_law", path,
+                               allowed=frozenset({REOPEN_COUNT_LAW})),
+        reopen_priority_law=_text(node, "reopen_priority_law", path,
+                                  allowed=frozenset({REOPEN_PRIORITY_LAW})),
+        control_policy_id=_text(node, "control_policy_id", path,
+                                allowed=frozenset({SOURCE_GEOMETRY_CONTROL_POLICY_ID})),
+        control_policy_version=_text(node, "control_policy_version", path),
+    )
+    fraction = float(config.write_cap_editable_fraction.value)
+    if not 0.0 < fraction <= 1.0:
+        raise V2ConfigError(
+            f"{path}.write_cap_editable_fraction.value must lie in (0, 1], got {fraction}"
+        )
+    return config
+
+
+def _assert_policy_calibration_matches(
+    block: V2HeadDirectedConfig, *, head: V2HeadConfig,
+) -> None:
+    """Both Head-scale thresholds must be measured on THIS run's Head, and on its own scale.
+
+    ``epsilon_R`` and the local tolerance are compared against differences of ``global_risk``, so a
+    value carrying another allele's or another scale's units would gate one instrument's margins
+    with another's noise floor.  The cap fraction is not a Head quantity at all, so it is required to
+    say so rather than borrow a Head unit it never had.
+    """
+    path = "config.projection.head_directed"
+    for name in ("donor_improvement_epsilon", "local_contribution_tolerance"):
+        scalar: PolicyCalibratedScalar = getattr(block, name)
+        if scalar.unit != head.score_scale:
+            raise V2ConfigError(
+                f"{path}.{name}.unit={scalar.unit!r} does not match Head "
+                f"score_scale={head.score_scale!r}; the threshold gates a difference of Head risks"
+            )
+        if scalar.artifact.allele != head.allele or scalar.artifact.score_scale != head.score_scale:
+            raise V2ConfigError(
+                f"{path}.{name} was calibrated for "
+                f"({scalar.artifact.allele!r}, {scalar.artifact.score_scale!r}) but the run declares "
+                f"({head.allele!r}, {head.score_scale!r}); a margin measured on one instrument does "
+                "not bound another"
+            )
+        if scalar.artifact.measurement_kind == "frozen_declared_fraction":
+            raise V2ConfigError(
+                f"{path}.{name} carries a declared-fraction artifact; PLAN §2.5 requires it to be "
+                "measured from the frozen Head's repeatability or numerical precision floor, not "
+                "declared"
+            )
+    cap = block.write_cap_editable_fraction
+    if cap.unit != "editable_fraction":
+        raise V2ConfigError(
+            f"{path}.write_cap_editable_fraction.unit must be 'editable_fraction', got "
+            f"{cap.unit!r}; the cap is a fraction of the editable domain, not a Head score"
+        )
+    if cap.artifact.measurement_kind != "frozen_declared_fraction":
+        raise V2ConfigError(
+            f"{path}.write_cap_editable_fraction.artifact.measurement_kind must be "
+            "'frozen_declared_fraction'; the 0.05 cap is a frozen decision, and labelling it a Head "
+            "measurement would claim a calibration nobody ran"
+        )
 
 
 def _assert_frozen_substrate(substrate: V2SubstrateConfig) -> None:
