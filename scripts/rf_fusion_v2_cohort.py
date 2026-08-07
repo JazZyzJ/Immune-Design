@@ -653,6 +653,10 @@ def run_v2_mechanism_shard(
         partial_state_rows,
         structure_evaluation_rows,
     )
+    from inverse_folding.reference_flow.fusion_v2.identity import (
+        canonical_digest,
+        make_transition_id,
+    )
     from inverse_folding.reference_flow.fusion_v2.seeds import (
         V2_SEED_ENCODING_VERSION,
         FeedbackPairSeedContext,
@@ -701,12 +705,19 @@ def run_v2_mechanism_shard(
     point = _depth0_point(config)
     master_seed = int(config.identity.master_seed)
     base_config = cycle_kwargs["config"]
+    # The three the LADDER supplies on top of the factory's ``cycle_kwargs`` and that
+    # ``run_mechanism_views`` does not add for us.  ``lineage`` is NOT among them -- the factory
+    # provides it and the ladder merely pops and re-passes it.  Kept honest by
+    # ``test_the_mechanism_shard_supplies_every_kwarg_the_ladder_does``, which reads the ladder's
+    # own call site rather than a hand-kept list.
+    coordinate_law = build_depth_plan(config).law
+    lineage = cycle_kwargs["lineage"]
 
     contrast_rows: list[dict] = []
-    endpoints_by_id: dict[str, tuple[Any, int]] = {}
-    states_by_id: dict[str, Any] = {}
-    admissions: dict[str, Any] = {}
-    archives: list[Any] = []
+    endpoint_rows_by_id: dict[str, dict] = {}
+    state_rows_by_id: dict[str, dict] = {}
+    archive_rows_by_id: dict[str, dict] = {}
+    structure_rows_by_id: dict[str, dict] = {}
     events: list[dict] = []
     a2_views: list[Any] = []
     n_scorable = 0
@@ -737,6 +748,15 @@ def run_v2_mechanism_shard(
             protein_id=str(protein_id), source_index=prefix_index, source_seed=source_seed,
             source_state_id=None, source_unresolved_editable=None,
         )
+        # One transition per PREFIX: every view and every arm of this prefix acts on the same
+        # coordinate, and giving them separate ids would claim they were separate transitions.
+        # This is why `feedback_events` keys on arm_slot/treatment_identity as well.
+        origin_transition_id = make_transition_id(
+            str(lineage.protein_id), str(lineage.family_id), depth=0,
+            r_step=int(point.r_step), c_next_step=int(point.c_next_step),
+            content_digest=canonical_digest({
+                "mechanism_prefix": prefix_index, "source_seed": source_seed,
+                "r": int(point.r_step), "c": int(point.c_next_step)}))
         try:
             results = run_mechanism_views(
                 **dict(cycle_kwargs,
@@ -745,6 +765,8 @@ def run_v2_mechanism_shard(
                        c_source_step=int(point.c_source_step), r_step=int(point.r_step),
                        c_next_step=int(point.c_next_step),
                        source_fork_seeds=source_fork_seeds,
+                       origin_transition_id=origin_transition_id,
+                       coordinate_law=coordinate_law,
                        interventions=requested_views,
                        declared_policy=config.declared_policy(),
                        feedback_enabled=True, cost_meter=cost_meter))
@@ -776,12 +798,27 @@ def run_v2_mechanism_shard(
 
             for arm in (result.arm_a, result.arm_b):
                 outcome = _ArmOutcome(arm.cycle)
+                # Converted to ROWS here, not retained as objects.  A 16-prefix run forks two
+                # archives per view per prefix and each holds its endpoints; keeping them all until
+                # the end held ~39 GiB against a 40 GiB allocation on ONE prefix.  Rows are small,
+                # already de-duplicated by join key, and are all the bundle ever needed.
+                local = _admissions(outcome)
+                reasons = {eid: adm.reason for eid, adm in local.items()}
+                by_depth: dict[int, list] = {}
                 for endpoint, depth in _endpoints_by_depth(outcome):
-                    endpoints_by_id.setdefault(endpoint.endpoint_id, (endpoint, depth))
-                for state in _partial_states(outcome):
-                    states_by_id.setdefault(state.state_id, state)
-                admissions.update(_admissions(outcome))
-                archives.append(outcome.archive)
+                    if endpoint.endpoint_id not in endpoint_rows_by_id:
+                        by_depth.setdefault(depth, []).append(endpoint)
+                for depth in sorted(by_depth):
+                    for row in complete_endpoint_rows(by_depth[depth], depth=depth):
+                        endpoint_rows_by_id.setdefault(row["endpoint_id"], row)
+                for state_row in partial_state_rows(_partial_states(outcome)):
+                    state_rows_by_id.setdefault(state_row["state_id"], state_row)
+                for row in archive_rows(outcome.archive, admission_by_endpoint=reasons):
+                    archive_rows_by_id.setdefault(row["endpoint_id"], row)
+                for row in structure_evaluation_rows(
+                        outcome.archive, admission_by_endpoint=reasons,
+                        conditioning=cycle_kwargs.get("conditioning")):
+                    structure_rows_by_id.setdefault(row["endpoint_id"], row)
                 if arm.cycle.a2_view is not None:
                     a2_views.append(arm.cycle.a2_view)
                 events.append(dict(
@@ -792,35 +829,19 @@ def run_v2_mechanism_shard(
                     pair_id=context.pair_id, arm_slot=arm.arm_slot,
                     treatment_identity=arm.treatment_identity))
 
-    admission_by_endpoint = {eid: adm.reason for eid, adm in admissions.items()}
-    by_depth: dict[int, list] = {}
-    for endpoint, depth in endpoints_by_id.values():
-        by_depth.setdefault(depth, []).append(endpoint)
-    endpoint_rows: list[dict] = []
-    for depth in sorted(by_depth):
-        endpoint_rows.extend(complete_endpoint_rows(by_depth[depth], depth=depth))
-
     ledger_events = _ledger_rows(journal_path)
     verdict = check_caps(
         aggregate_v2_ledger(tuple(V2LedgerEvent(**row) for row in ledger_events)), config.caps)
 
     payload = {
         "mechanism_contrasts": contrast_rows,
-        "complete_endpoints": endpoint_rows,
-        "partial_states": partial_state_rows(states_by_id.values()),
-        "feedback_events": feedback_event_rows(events),
         # Every arm forks the shared archive, so the same endpoint appears in many of them.  First
         # write wins: the shared pool is one pool, and duplicating it would multiply every join.
-        "archive": _first_by(
-            [row for archive in archives
-             for row in archive_rows(archive, admission_by_endpoint=admission_by_endpoint)],
-            "endpoint_id"),
-        "structure_evaluations": _first_by(
-            [row for archive in archives
-             for row in structure_evaluation_rows(
-                 archive, admission_by_endpoint=admission_by_endpoint,
-                 conditioning=cycle_kwargs.get("conditioning"))],
-            "endpoint_id"),
+        "complete_endpoints": list(endpoint_rows_by_id.values()),
+        "partial_states": list(state_rows_by_id.values()),
+        "feedback_events": feedback_event_rows(events),
+        "archive": list(archive_rows_by_id.values()),
+        "structure_evaluations": list(structure_rows_by_id.values()),
         "a2_views": _first_by(
             a2_view_rows(
                 a2_views, matched_extra_lookaheads=EXECUTED_A2_EXTRA_LOOKAHEADS,

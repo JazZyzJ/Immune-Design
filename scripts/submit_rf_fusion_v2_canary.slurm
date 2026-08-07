@@ -51,10 +51,12 @@ RUNDIR="${RUNDIR:-${SCRATCH_BASE}/run/inverse_folding/v2_canary}"
 CONDA_ENV="${CONDA_ENV:-immune-design-blackwell}"
 DEVICE="${DEVICE:-cuda}"
 # 0 = the ordinary depth ladder (the Canary).  N > 0 = the runbook §7 MECHANISM cohort: N
-# independent source prefixes, each carried through the matched arms.  The mechanism run is roughly
-# three cells per prefix, so pass a matching wall clock at submit time -- the SBATCH header below is
-# static and sized for a Canary cell:
-#   MECHANISM_PREFIXES=16 CELL=q00511_mech sbatch --time=04:00:00 scripts/submit_rf_fusion_v2_canary.slurm
+# independent source prefixes, each carried through the matched arms.  A prefix runs five cycles
+# where a Canary cell runs one, so it needs both more wall clock and more memory than the static
+# header below, which stays sized for a Canary cell (MEASURED: a Canary cell peaks 27.5-30.4 GB, a
+# one-prefix mechanism run peaked 39.2 GiB against a 40 GiB cap -- too close to run 16 of them):
+#   MECHANISM_PREFIXES=16 CELL=q00511_mech \
+#     sbatch --time=04:00:00 --mem=64G scripts/submit_rf_fusion_v2_canary.slurm
 MECHANISM_PREFIXES="${MECHANISM_PREFIXES:-0}"
 
 OUT_DIR="${RUNDIR}/${CELL}"

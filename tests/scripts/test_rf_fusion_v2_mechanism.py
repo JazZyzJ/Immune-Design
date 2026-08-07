@@ -485,3 +485,98 @@ def test_a_null_arm_carries_the_cycles_own_reason():
     assert row["analyzable"] is False
     assert "null_no_admissible_endpoint" in row["reason"]
     assert "only 1 admissible" in row["reason"]
+
+
+# --------------------------------------------------------------------------------------------
+# the kwargs contract, read out of production source
+# --------------------------------------------------------------------------------------------
+
+
+def _call_keywords(path, callee):
+    """Keyword names supplied at every call site of `callee`, including `dict(**base, k=v)` splats."""
+    import ast
+
+    tree = ast.parse(__import__("pathlib").Path(path).read_text())
+    names, seen = set(), False
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == callee):
+            continue
+        seen = True
+        names |= {kw.arg for kw in node.keywords if kw.arg}
+        for kw in node.keywords:
+            if kw.arg is None and isinstance(kw.value, ast.Call) and \
+                    getattr(kw.value.func, "id", "") == "dict":
+                names |= {inner.arg for inner in kw.value.keywords if inner.arg}
+    assert seen, f"no call to {callee}() found in {path}"
+    return names
+
+
+def _dict_literal_keys(path):
+    """Every `dict(..., k=v)` key in a module -- how the paired executor builds its arm kwargs."""
+    import ast
+
+    tree = ast.parse(__import__("pathlib").Path(path).read_text())
+    return {kw.arg
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "dict"
+            for kw in node.keywords if kw.arg}
+
+
+def _popped_from_cycle_kwargs(path):
+    """Names the ladder pops out of `cycle_kwargs` -- i.e. what the ORACLE FACTORY provides."""
+    import ast
+
+    tree = ast.parse(__import__("pathlib").Path(path).read_text())
+    return {node.args[0].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "pop"
+            and getattr(node.func.value, "id", "") == "cycle_kwargs"
+            and node.args and isinstance(node.args[0], ast.Constant)}
+
+
+LADDER = "inverse_folding/reference_flow/fusion_v2_runtime/ladder.py"
+PAIRED = "inverse_folding/reference_flow/fusion_v2_runtime/paired.py"
+COHORT = "scripts/rf_fusion_v2_cohort.py"
+
+
+def test_the_mechanism_shard_supplies_every_kwarg_the_ladder_does():
+    """The defect this exists for cost a GPU allocation to discover.
+
+    `run_one_cycle` takes 31 required keyword-only arguments.  The oracle factory supplies most of
+    them and the LADDER supplies the rest at its own call site, so a second caller that only
+    forwards `cycle_kwargs` is missing exactly the ladder's extras.  Locally invisible, because the
+    paired-executor tests pass every argument explicitly; on the cluster it is a TypeError after
+    both checkpoints are resident (measured: job 12098131, `origin_transition_id`).
+
+    Every term is read from production source, so the check cannot go stale: what the ladder
+    passes, what the paired executor adds per arm, and what the factory provides -- the last being
+    exactly the names the ladder pops back out of `cycle_kwargs`.
+    """
+    required = _call_keywords(LADDER, "run_one_cycle")
+    shard = _call_keywords(COHORT, "run_mechanism_views")
+    executor = _dict_literal_keys(PAIRED)
+    from_factory = _popped_from_cycle_kwargs(LADDER)
+
+    assert "lineage" in from_factory, "the ladder no longer reads lineage off the factory"
+    missing = required - shard - executor - from_factory
+    assert not missing, (
+        f"the mechanism shard forwards cycle_kwargs but never supplies {sorted(missing)}, "
+        "which the ladder passes explicitly and run_one_cycle requires"
+    )
+
+
+def test_the_executor_credit_is_real_and_not_a_blanket_exemption():
+    """The exemption above is only sound if the executor genuinely sets these per arm."""
+    executor = _dict_literal_keys(PAIRED)
+    for name in ("descendant_propagation_seed", "descendant_fork_seeds", "source_override",
+                 "source_endpoints", "archive", "feedback_enabled"):
+        assert name in executor, f"run_mechanism_views no longer supplies {name}"
+
+
+def test_the_shard_holds_rows_not_archives():
+    """A 16-prefix run forks tens of archives; retaining them peaked ~39 GiB on ONE prefix."""
+    source = (__import__("pathlib").Path("scripts/rf_fusion_v2_cohort.py")).read_text()
+    body = source.split("def run_v2_mechanism_shard")[1]
+    assert "archives.append" not in body
+    assert "archive_rows_by_id.setdefault" in body
