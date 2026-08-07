@@ -583,6 +583,75 @@ SLURM: follow `scripts/submit_benchmark.slurm`. `--output/--error` go to `logs/`
 
 ---
 
+## 5.1 EXECUTED (2026-08-06, `4dd0922`) — the mechanism EXECUTES
+
+Jobs `12094327–30`, `rtx6000` / `immune-design-blackwell`, ~2 min and 8.6–35.9 GPU-s per cell.
+Read with `scripts/analysis/read_v2_canary.py`; report at
+`<WORK>/v2_canary/canary_read_v1.json`.
+
+| cell | outcome | write/inject/reopen/carry | Σ | definitive | §6 |
+|---|---|---|---:|---:|---|
+| `5zhv_r30` | `null_no_admissible_endpoint` | — | — | 0/4 | non-null FAILS; the rest not reached |
+| `5zhv_r40` | **`committed`** | 1 / 9 / 1 / 91 | **102** | 1/8 | all pass |
+| `q00511_r30` | **`committed`** | 1 / 10 / 50 / 217 | **278** | 4/8 | all pass |
+| `q00511_r40` | **`committed`** | 1 / 10 / 21 / 246 | **278** | 2/8 | all pass |
+
+`Σ` is the editable domain, exactly: 102 for `5ZHV_B`, and **278 = 302 − 24** for `Q00511` — hard
+anchors are in no support class, by construction and now by measurement.
+
+**The band pinned the reopen cardinality, and the coupled identity closes to the digit.**
+`u_proj = u_src − a + b_new` with `a = 1` in every cell:
+
+| cell | `u_src(c50)` | reopened | `u_proj(r)` | `B(r)` unresolved | `ρ_proj` | `B(r)` ρ |
+|---|---:|---:|---:|---|---:|---|
+| `5zhv_r40` | 55 | 1 | **55** | [53, 70] ✓ | 0.461 | [0.315, 0.480] ✓ |
+| `q00511_r30` | 138 | 50 | **187** | [186, 208] ✓ | 0.327 | [0.253, 0.330] ✓ |
+| `q00511_r40` | 138 | 21 | **158** | [157, 179] ✓ | 0.432 | [0.357, 0.435] ✓ |
+
+Every §6 invariant holds wherever a transition occurred: anchors 24 × 8 endpoints against WT with
+**0 violations** in both `Q00511` cells; lineage source → endpoint → projected → propagated closed;
+injected positions `pending_assimilation` with a **null** score at projection and `assimilated` with
+a finite one after the first propagation; every temporary-protection grant expiring at `c_{d+1}`
+exactly; the endpoint's own `evidence_logprob` never equal to an active sampler score; ledger
+`physical_cost_complete` with all six phases and no breached cap. `a2_matched_extra_lookaheads = 0`
+in all four cells, so **no Head contrast from this Canary is licensed** and the reader refuses to
+compute one.
+
+Per §6's own wording the non-null condition is per PROTEIN: both proteins transitioned.
+`5zhv_r30` is a cell that admitted nothing, which is the next section.
+
+#### The structure gate is measured on a different population than it enforces on
+
+`5zhv_r30`'s four lookaheads scored scTM `0.784 / 0.788 / 0.810 / 0.812` against a `0.85` floor;
+`5zhv_r40`'s single admitted endpoint scored `0.8516` — **1.6 × 10⁻³ above the gate**. Recovered
+from the refold cache (`{protein_id}_{sha256(seq)[:12]}`), because a failed verdict is recorded on
+the archive row and the endpoint keeps `structure_evaluated=false` with empty metrics by design.
+
+| population | n | scTM median | pLDDT median | ≥ 0.85 |
+|---|---:|---:|---:|---:|
+| calibration, full de novo trajectory | 64 | **0.8528** | 71.7 | 32 (50%) |
+| Canary depth-0 lookahead (resumed at `c=50`) | 8 | **≈0.798** | ≈65 | 1 (12.5%) |
+| Canary descendant (after projection → `c=60`) | 4 | **≈0.712** | ≈64 | 0 |
+
+The calibrator draws one complete trajectory per replicate (`sampler.sample`, step 0 → 100); the
+Canary's endpoints are completions RESUMED from a captured source state. Those are different
+populations, and they measure differently. Two consequences, stated at the strength the evidence
+supports:
+
+1. The 50% structure-operability figure recorded in §2.3 does not describe the Canary's endpoints.
+   A cell's four lookaheads also share a 50-step prefix, so they are correlated and
+   "no admissible endpoint" is a per-cell coin-flip rather than a rare tail.
+2. **Open, not concluded:** the hotspot threshold was calibrated on the full-trajectory population
+   and enforces on the resumed one. Whether the two differ in Head landscape the way they differ
+   structurally is unmeasured — the artifact records `head_global_risk`, not `N_H^whole`, for
+   Canary endpoints. This is the same population-matching question §2.1 already answered once for
+   the structure axis; it has not been asked for the Head axis.
+
+Neither licenses reading a structure rejection as feedback-mechanism failure (§2.3 stands), and
+neither is authority to change `n_lookaheads`, the band, or the gate.
+
+---
+
 ## 6. What to read, and what NOT to conclude
 
 Read **only** these, per PLAN §8.3:
