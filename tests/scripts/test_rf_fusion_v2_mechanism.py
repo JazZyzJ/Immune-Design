@@ -468,3 +468,20 @@ def test_a_clean_pass_needs_both_the_margin_and_a_live_control():
     verdict = confirmatory_verdict(report, delta=0.036)
     assert verdict["passed"] is True
     assert verdict["reading"] == "transmission_demonstrated"
+
+
+def test_a_null_arm_carries_the_cycles_own_reason():
+    """The commonest null is `endpoint_rank=1` on a one-endpoint pool -- a coverage fact.
+
+    Reporting it as a bare "no projection" would make it indistinguishable from a band refusal or
+    a policy rejection, and those call for opposite next actions.
+    """
+    projected = F.projected()
+    dead = types.SimpleNamespace(
+        projected=None, descendant_endpoints=(),
+        outcome=types.SimpleNamespace(value="null_no_admissible_endpoint"),
+        detail="endpoint_rank=1 but only 1 admissible endpoint(s) exist")
+    row, = _rows(_arm(projected, [_descendant(projected)]), dead)
+    assert row["analyzable"] is False
+    assert "null_no_admissible_endpoint" in row["reason"]
+    assert "only 1 admissible" in row["reason"]

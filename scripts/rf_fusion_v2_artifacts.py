@@ -681,8 +681,18 @@ def mechanism_contrast_rows(
     projected_a = getattr(arm_a, "projected", None)
     projected_b = getattr(arm_b, "projected", None)
     if projected_a is None or projected_b is None:
-        missing = "A" if projected_a is None else "B"
-        return unscorable(f"arm {missing} produced no projection; the cycle stopped before feedback")
+        # Carry the CYCLE's own words.  The commonest way arm B has no projection is
+        # ``endpoint_rank=1`` on a pool with one admissible endpoint -- a fact about how many
+        # lookaheads cleared the gate, not about the mechanism -- and a generic "no projection"
+        # would make that indistinguishable from a band refusal or a policy rejection.
+        arm = arm_a if projected_a is None else arm_b
+        slot = "A" if projected_a is None else "B"
+        outcome = getattr(getattr(arm, "outcome", None), "value", None)
+        detail = str(getattr(arm, "detail", "") or "").strip()
+        said = f" [{outcome}]" if outcome else ""
+        said += f" {detail}" if detail else ""
+        return unscorable(
+            f"arm {slot} produced no projection; the cycle stopped before feedback.{said}")
 
     free = free_domain(projected_a)
     if free != free_domain(projected_b):
