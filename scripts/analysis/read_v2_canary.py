@@ -130,13 +130,32 @@ def _check_replay(states: pd.DataFrame, endpoints: pd.DataFrame) -> dict:
     stray = int(projected["replay_state_hash"].notna().sum())
     missing_states = int(sampled["replay_state_hash"].isna().sum())
     missing_endpoints = int(endpoints["replay_state_hash"].isna().sum())
-    seeds = endpoints["replay_fork_seed"].dropna().tolist()
-    distinct = len(set(seeds)) == len(seeds)
+    seeded = endpoints[endpoints["replay_fork_seed"].notna()]
+    seeds = seeded["replay_fork_seed"].tolist()
+    # Distinctness is a WITHIN-STATE property, not a global one.
+    #
+    # The collision that matters is two forks of ONE state drawing the same seed: their endpoints
+    # would then be identical for a reason that is not the design. Across states a repeat is the
+    # opposite of a fault in a paired run -- a matched treatment/control pair is REQUIRED to share
+    # realized fork seeds (§9.0), and each arm's descendants hang off its own propagated state, so
+    # every matched fork shows up as one seed under two `source_state_id`s. Demanding global
+    # distinctness failed the whole V2F5A qualification on exactly that matching: 220 of 664 seeds
+    # on `5ZHV_B` and 132 of 488 on `Q00511`, which is precisely (paired transitions x forks).
+    #
+    # A seed under THREE or more states is still a defect: no legal shape produces it, since a
+    # matched pair is two. So the width is bounded rather than ignored.
+    per_state = seeded.groupby("source_state_id")["replay_fork_seed"]
+    within_state_collisions = int((per_state.size() - per_state.nunique()).sum())
+    width = seeded["replay_fork_seed"].value_counts()
+    overshared = int((width > 2).sum())
+    matched_shares = int((width == 2).sum())
     return _verdict(
-        missing_states == 0 and missing_endpoints == 0 and distinct and bool(seeds)
-        and stray == 0,
+        missing_states == 0 and missing_endpoints == 0 and bool(seeds)
+        and within_state_collisions == 0 and overshared == 0 and stray == 0,
         f"sampled states missing hash={missing_states}, endpoints missing hash="
-        f"{missing_endpoints}, fork seeds {len(seeds)} total / {len(set(seeds))} distinct, "
+        f"{missing_endpoints}, fork seeds {len(seeds)} total / {len(set(seeds))} distinct "
+        f"({within_state_collisions} within-state collision(s), {matched_shares} shared by a "
+        f"matched pair, {overshared} shared by 3+ states), "
         f"{len(projected)} projected state(s) carry none by construction"
         + (f" -- but {stray} DID, which nothing sampled" if stray else ""))
 
@@ -145,9 +164,8 @@ def _check_lineage(states: pd.DataFrame, events: pd.DataFrame) -> dict:
     """source -> selected endpoint -> projected -> propagated, closed on IDs that exist."""
     by_id = set(states["state_id"])
     broken = []
-    for _, event in events.iterrows():
-        if event["outcome"] != "committed":
-            continue
+    transitions, views = _committed_transitions(events)
+    for _, event in transitions.iterrows():
         for field in ("source_state_id", "projected_state_id", "propagated_state_id"):
             value = event.get(field)
             if not value or value not in by_id:
@@ -168,12 +186,13 @@ def _check_lineage(states: pd.DataFrame, events: pd.DataFrame) -> dict:
             # relationship this reader has not established. Presence is the chain-closing property.
             if not row.get("parent_transition_id"):
                 broken.append((event["transition_id"], "projected.parent_transition_id", None))
-    n_committed = int((events["outcome"] == "committed").sum()) if not events.empty else 0
+    n_committed = len(transitions)
     if n_committed == 0:
-        return _not_applicable("no committed transition, so there is no chain to close")
-    committed = n_committed
-    return _verdict(committed >= 1 and not broken,
-                    f"{committed} committed transition(s), {len(broken)} break(s){broken[:3]}")
+        return _not_applicable(
+            f"no committed transition, so there is no chain to close{_view_only(views)}")
+    return _verdict(n_committed >= 1 and not broken,
+                    f"{n_committed} committed transition(s), {len(broken)} break(s){broken[:3]}"
+                    f"{_view_only(views)}")
 
 
 def _injected_positions(event: pd.Series) -> list[int]:
@@ -187,15 +206,41 @@ def _state_row(states: pd.DataFrame, state_id: Any):
     return None if hit.empty else hit.iloc[0]
 
 
+def _committed_transitions(events: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Committed rows that actually PROJECTED, plus how many were view-only.
+
+    A feedback-off A2 row is `committed` — the view is a real, completed observation — but it
+    performs no projection, so `projected_state_id`, `propagated_state_id` and every transition
+    coordinate are null. The three checks below are about what a PROJECTION did; applied to a view
+    row they report "state absent" for a state that was never meant to exist, and
+    `_check_protection_expiry` crashed outright on `int(NaN)` — which is how the V2F5A qualification
+    lost its whole integrity verdict, because a stalled treatment arm leaves the control slot
+    holding exactly such a row.
+
+    Filtered here rather than inside each check so the three cannot disagree, and the count is
+    surfaced in every verdict so these rows are visibly excluded rather than quietly dropped.
+    """
+    committed = events[events["outcome"] == "committed"]
+    if committed.empty or "projected_state_id" not in committed.columns:
+        return committed, 0
+    projected = committed["projected_state_id"].notna()
+    return committed[projected], int((~projected).sum())
+
+
+def _view_only(n: int) -> str:
+    return f", {n} feedback-off view row(s) excluded" if n else ""
+
+
 def _check_assimilation_projected(states: pd.DataFrame, events: pd.DataFrame) -> dict:
     """At projection: injected positions are `pending_assimilation` and carry NO score.
 
     A number there would mean the projected state was ranked on evidence it has not yet earned
     through a forward pass of its own.
     """
-    committed = events[events["outcome"] == "committed"]
+    committed, views = _committed_transitions(events)
     if committed.empty:
-        return _not_applicable("no committed transition, so nothing was injected to assimilate")
+        return _not_applicable(
+            f"no committed transition, so nothing was injected to assimilate{_view_only(views)}")
     problems, checked = [], 0
     for _, event in committed.iterrows():
         row = _state_row(states, event.get("projected_state_id"))
@@ -212,14 +257,16 @@ def _check_assimilation_projected(states: pd.DataFrame, events: pd.DataFrame) ->
             if position < len(scores) and scores[position] is not None:
                 problems.append((position, "score not null", scores[position]))
     return _verdict(checked > 0 and not problems,
-                    f"{checked} injected position(s), {len(problems)} problem(s){problems[:3]}")
+                    f"{checked} injected position(s), {len(problems)} problem(s){problems[:3]}"
+                    f"{_view_only(views)}")
 
 
 def _check_assimilation_propagated(states: pd.DataFrame, events: pd.DataFrame) -> dict:
     """After the first propagation forward: those positions are `assimilated` with a FINITE score."""
-    committed = events[events["outcome"] == "committed"]
+    committed, views = _committed_transitions(events)
     if committed.empty:
-        return _not_applicable("no committed transition, so nothing was injected to assimilate")
+        return _not_applicable(
+            f"no committed transition, so nothing was injected to assimilate{_view_only(views)}")
     problems, checked = [], 0
     for _, event in committed.iterrows():
         row = _state_row(states, event.get("propagated_state_id"))
@@ -238,14 +285,16 @@ def _check_assimilation_propagated(states: pd.DataFrame, events: pd.DataFrame) -
                 if value is None or not float(value) == float(value):  # NaN-safe
                     problems.append((position, "score not finite", value))
     return _verdict(checked > 0 and not problems,
-                    f"{checked} injected position(s), {len(problems)} problem(s){problems[:3]}")
+                    f"{checked} injected position(s), {len(problems)} problem(s){problems[:3]}"
+                    f"{_view_only(views)}")
 
 
 def _check_protection_expiry(states: pd.DataFrame, events: pd.DataFrame) -> dict:
     """Every grant expires at `c_{d+1}` exactly -- not before it, and not carried past it."""
-    committed = events[events["outcome"] == "committed"]
+    committed, views = _committed_transitions(events)
     if committed.empty:
-        return _not_applicable("no committed transition, so no protection was granted")
+        return _not_applicable(
+            f"no committed transition, so no protection was granted{_view_only(views)}")
     problems, grants = [], 0
     for _, event in committed.iterrows():
         c_next = int(event["c_next_step"])
@@ -270,7 +319,8 @@ def _check_protection_expiry(states: pd.DataFrame, events: pd.DataFrame) -> dict
             problems.append(("not expired at c_next", sorted(granted_positions - expired_positions)))
         if granted_positions & still_held:
             problems.append(("carried past c_next", sorted(granted_positions & still_held)))
-    return _verdict(not problems, f"{grants} grant(s), {len(problems)} problem(s){problems[:3]}")
+    return _verdict(not problems, f"{grants} grant(s), {len(problems)} problem(s){problems[:3]}"
+                                  f"{_view_only(views)}")
 
 
 def _check_evidence_namespaces(states: pd.DataFrame) -> dict:
