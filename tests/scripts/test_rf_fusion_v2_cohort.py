@@ -140,7 +140,6 @@ def _factory(**over):
         del protein_id, config, inputs
         return {
             "cycle_kwargs": _cycle_kwargs(**over.pop("cycle_kwargs", {})),
-            "allow_production_depth_gt_1": True,
             "gpu_clock": lambda: 0.0,
             **over,
         }
@@ -151,8 +150,9 @@ def _factory(**over):
 def _shard(tmp_path, *, config=None, **over):
     resolved = config or _v2_config()
     return run_v2_shard(
-        protein_id=PROTEIN, config=resolved, signature=_signature(resolved), out_dir=tmp_path,
-        oracles_factory=_factory(**over),
+        protein_id=PROTEIN, config=resolved,
+        signature=_signature(resolved, production_depth_authorized=True), out_dir=tmp_path,
+        oracles_factory=_factory(**over), production_depth_authorized=True,
     )
 
 
@@ -230,6 +230,23 @@ def test_the_treatment_arm_still_projects(tmp_path):
     assert any(row["projected_state_id"] is not None for row in payload["feedback_events"])
 
 
+def test_depth_one_shard_needs_no_authorization_marker(tmp_path):
+    """The exceptional D>1 seam must not widen or break the ordinary D=1 production surface."""
+    config = _v2_config()
+    config = dataclasses.replace(
+        config,
+        schedule=dataclasses.replace(
+            config.schedule, depth_cap=1, points=(config.schedule.points[0],)),
+    )
+    status, payload = run_v2_shard(
+        protein_id=PROTEIN, config=config, signature=_signature(config), out_dir=tmp_path,
+        oracles_factory=_factory(),
+    )
+    assert status == "ok"
+    assert payload["production_depth_authorized"] is False
+    assert payload["exploratory_depth_override"] is False
+
+
 @pytest.mark.parametrize("owned", ["feedback_enabled", "cost_meter"])
 def test_a_factory_may_not_override_the_runs_arm_identity_or_its_journal(tmp_path, owned):
     """The factory builds oracles; it does not get to say which arm this is.
@@ -268,8 +285,9 @@ def test_a_gpu_run_that_cannot_name_its_instrument_is_refused(tmp_path, monkeypa
     with pytest.raises(V2CohortError, match="gpu_clock"):
         config = _v2_config()
         run_v2_shard(
-            protein_id=PROTEIN, config=config, signature=_signature(config), out_dir=tmp_path,
-            oracles_factory=_factory(gpu_clock=None),
+            protein_id=PROTEIN, config=config,
+            signature=_signature(config, production_depth_authorized=True), out_dir=tmp_path,
+            oracles_factory=_factory(gpu_clock=None), production_depth_authorized=True,
         )
 
 
@@ -279,9 +297,11 @@ def test_the_journal_path_is_a_runtime_input_not_a_hardcoded_location(tmp_path):
     elsewhere = tmp_path / "scratch" / "journals"
     _shard(tmp_path / "out", inputs=None)  # warm the default location
     run_v2_shard(
-        protein_id=PROTEIN, config=_v2_config(), signature=_signature(),
+        protein_id=PROTEIN, config=_v2_config(),
+        signature=_signature(production_depth_authorized=True),
         out_dir=tmp_path / "out2",
         inputs=ShardInputs(journal_dir=elsewhere), oracles_factory=_factory(),
+        production_depth_authorized=True,
     )
     assert sorted(p.name for p in elsewhere.rglob("*.jsonl")) == [f"{PROTEIN}.attempts.jsonl"]
 
@@ -299,11 +319,11 @@ def test_journal_rows_from_another_run_signature_are_not_aggregated(tmp_path):
         attempt_id, status="ok", physical_forwards=999, gpu_seconds=0.0, walltime_s=0.0,
     )
 
-    signature = _signature()
+    signature = _signature(production_depth_authorized=True)
     _, payload = run_v2_shard(
         protein_id=PROTEIN, config=_v2_config(), signature=signature,
         out_dir=tmp_path / "out", inputs=ShardInputs(journal_dir=journal_root),
-        oracles_factory=_factory(),
+        oracles_factory=_factory(), production_depth_authorized=True,
     )
     assert "evt:stale" not in {row["event_id"] for row in payload["ledger_events"]}
     assert (journal_root / signature.value / f"{PROTEIN}.attempts.jsonl").exists()

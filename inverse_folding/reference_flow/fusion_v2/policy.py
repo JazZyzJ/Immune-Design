@@ -29,7 +29,7 @@ from __future__ import annotations
 import enum
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, runtime_checkable
 
 from .errors import V2Error
@@ -43,7 +43,9 @@ from .evidence import (
 from .identity import HeadEvaluatorIdentity, ProjectionPolicyIdentity, require_digest
 from .reward import (
     DonorGateVerdict,
+    INCUMBENT_UPDATE_LAWS,
     LineageIncumbent,
+    advance_incumbent,
     donor_gate,
 )
 from .schedule import (
@@ -1128,6 +1130,10 @@ class HeadDirectedCappedPolicy:
     evaluator: HeadEvaluatorIdentity
     window_grid_digest: str
     calibration: HeadDirectedCalibration
+    #: The config-frozen update law for ``I_d -> I_{d+1}``.  It belongs on the runtime policy,
+    #: rather than being looked up by the ladder from a second config object, so the same object
+    #: that gates a donor also owns the only lawful way to advance its reference.
+    incumbent_update_law: str
     #: ``scorer(protein_id, sequences) -> results``.  Injected so this module stays free of the
     #: runtime's request type, of torch, and of the cost journal.
     counterfactual_scorer: Any
@@ -1168,6 +1174,11 @@ class HeadDirectedCappedPolicy:
             )
         if not isinstance(self.calibration, HeadDirectedCalibration):
             raise V2PolicyError("calibration must be a HeadDirectedCalibration")
+        if self.incumbent_update_law not in INCUMBENT_UPDATE_LAWS:
+            raise V2PolicyError(
+                f"incumbent_update_law {self.incumbent_update_law!r} is not declared; "
+                f"available: {sorted(INCUMBENT_UPDATE_LAWS)}"
+            )
         if self.counterfactual_scorer is None or not callable(self.counterfactual_scorer):
             raise V2PolicyError(
                 "counterfactual_scorer must be callable: without the frozen-Head leave-one-out "
@@ -1200,12 +1211,29 @@ class HeadDirectedCappedPolicy:
                 "band_calibration_digest": self.band_table.provenance.calibration_content_digest,
                 "calibration": self.calibration.canonical_payload(),
                 "incumbent": self.incumbent.canonical_payload(),
+                "incumbent_update_law": self.incumbent_update_law,
                 "head_identity_digest": self.evaluator.digest(),
                 "window_grid_digest": self.window_grid_digest,
             }),
             policy_spec_digest=self.policy_spec_digest,
             is_diagnostic_only=False,
         )
+
+    def advance_lineage_incumbent(
+        self, *, donor: Any, verdict: DonorGateVerdict, accepted_at_depth: int,
+    ) -> "HeadDirectedCappedPolicy":
+        """Return the policy for the next rung after adopting one accepted donor.
+
+        The policy is immutable, so replacing its incumbent makes the depth boundary explicit and
+        gives the next decision a new identity digest.  A refused verdict returns ``self`` exactly:
+        stalled/null cycles must not manufacture a new lineage reference.
+        """
+        advanced = advance_incumbent(
+            incumbent=self.incumbent, donor=donor, verdict=verdict,
+            evaluator=self.evaluator, accepted_at_depth=int(accepted_at_depth),
+            law=self.incumbent_update_law,
+        )
+        return self if advanced is self.incumbent else replace(self, incumbent=advanced)
 
     # -- the decision -----------------------------------------------------------------------
 

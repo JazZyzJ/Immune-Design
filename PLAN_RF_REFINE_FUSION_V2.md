@@ -1200,6 +1200,27 @@ reward-directionality qualification. After both gates, freeze the first small br
 and the A2/v0 comparison in the runbook; do not retrofit thresholds after seeing the capability
 result.
 
+#### 8.6.1 Explicit non-confirmatory sandbox exception
+
+An operator may explicitly authorize one **unblinded, non-confirmatory recursive sandbox** while
+the qualification gate above is still running. This is a deployment/capability stress test, not a
+scientific bypass. It is admissible only when all of the following are true:
+
+- the config declares `phase=capability_ladder` and an explicitly exploratory split role;
+- the driver receives a separate exploratory-recursion authorization flag whose value is recorded
+  in the run signature, fragments, checkpoint, and manifest; the default remains disabled;
+- the schedule, cohort, Head, policy calibration, structure gate, safety references, constraints,
+  and hard caps are frozen before any sandbox outcome is inspected;
+- the sandbox does not read, alter, rescue, or tune the Section 8.4 / runbook qualification gate;
+- its results cannot authorize a holdout, establish source transmission or reward directionality,
+  or be promoted into a definitive V2 claim; and
+- any later confirmatory capability experiment is separately frozen after the qualification gate.
+
+The sandbox may report attainable immune/structure endpoints and operational stopping behavior,
+and may inform a later development schedule. It must remain labelled `exploratory` in every
+downstream facade and analysis artifact. A successful sandbox does not turn the conditional gate
+above into a pass; a failed sandbox does not turn the qualified one-cycle mechanism into a fail.
+
 ---
 
 ## 9. Coder Completion Checklist

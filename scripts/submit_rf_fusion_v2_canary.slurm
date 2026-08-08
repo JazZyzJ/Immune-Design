@@ -82,6 +82,26 @@ case "${QUALIFICATION}" in
     ;;
 esac
 
+# Explicit, identity-bound exception for the non-confirmatory recursive capability sandbox in
+# runbook §10.  It is never inferred from a D>1 config: both the resolved capability identity and
+# this separate launch flag are required by the driver.
+EXPLORATORY_DEPTH_OVERRIDE="${EXPLORATORY_DEPTH_OVERRIDE:-0}"
+EXPLORATORY_DEPTH_ARGS=()
+case "${EXPLORATORY_DEPTH_OVERRIDE}" in
+  0) ;;
+  1)
+    if [[ "${MECHANISM_PREFIXES}" -ne 0 || "${QUALIFICATION}" -ne 0 ]]; then
+      echo "EXPLORATORY_DEPTH_OVERRIDE=1 cannot be combined with mechanism/qualification mode" >&2
+      exit 4
+    fi
+    EXPLORATORY_DEPTH_ARGS+=(--exploratory-depth-override)
+    ;;
+  *)
+    echo "EXPLORATORY_DEPTH_OVERRIDE must be exactly 0 or 1, got ${EXPLORATORY_DEPTH_OVERRIDE}" >&2
+    exit 4
+    ;;
+esac
+
 OUT_DIR="${RUNDIR}/${CELL}"
 ARGS_FILE="${WORK}/resolved_configs/${CELL}.args.sh"
 
@@ -108,7 +128,7 @@ echo "[v2canary] cell=${CELL} cohort=${V2_COHORT} config=${V2_CONFIG}"
 echo "[v2canary] git=$(git rev-parse HEAD) env=${CONDA_ENV} node=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START} qualification=${QUALIFICATION}"
+echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START} qualification=${QUALIFICATION} exploratory_depth_override=${EXPLORATORY_DEPTH_OVERRIDE}"
 
 set +e
 python scripts/run_rf_fusion_v2.py \
@@ -118,6 +138,7 @@ python scripts/run_rf_fusion_v2.py \
   --mechanism-prefixes "${MECHANISM_PREFIXES}" \
   --mechanism-prefix-start "${MECHANISM_PREFIX_START}" \
   "${QUALIFICATION_ARGS[@]}" \
+  "${EXPLORATORY_DEPTH_ARGS[@]}" \
   --input-file  "${INPUT_FILES[@]}" \
   --shard-input "${SHARD_INPUTS[@]}" \
                 "journal_dir=${OUT_DIR}/journals" \

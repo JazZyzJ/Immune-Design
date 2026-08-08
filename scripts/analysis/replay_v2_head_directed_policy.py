@@ -290,6 +290,7 @@ def replay_bundle(
         safety_reference_score=reference_score, evaluator=evaluator,
         window_grid_digest=ident.window_grid_digest(reference_score.windows),
         calibration=calibration,
+        incumbent_update_law=config.projection.head_directed.lineage_incumbent_update_law,
         counterfactual_scorer=_replay_scorer(head_oracle),
         policy_spec_digest=policy_spec_digest,
         policy_version=config.projection.support_policy_version,

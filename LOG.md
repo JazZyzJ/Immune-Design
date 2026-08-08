@@ -4190,3 +4190,42 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.88
 - status: done locally; cluster Steps 3-5 pending.
 - next_action: Follow runbook §9 in order: Head repeatability calibration -> S7 offline coverage replay -> two simultaneous 56-prefix one-cycle qualification jobs -> confirmatory Head reader. Stop before generation if either replay has fewer than 32 committed decisions or any counterfactual-budget stall.
+
+### L0152
+- timestamp: 2026-08-07T23:42:10-04:00
+- type: FEATURE
+- module: RF/FUSION_V2
+- trigger: The owner requested an aggressive, non-confirmatory recursive Uricase capability run in parallel with the unchanged §9 policy qualification, with the final read restricted to immune and structure outcomes.
+- change_summary: Added a closed `uricase_d4_k12_r40` materialization profile and an explicit exploratory `D>1` launch identity. The progressive single-lineage ladder now advances the Head reward incumbent after each accepted donor, while fragments/checkpoints/resume/manifest bind the exploratory marker separately from production authorization. Added an exact archive-to-Phase-C facade exporter and a concise runbook §10 handoff for a 24-protein `D=4`, `K=12`, no-background-remask sandbox.
+- rationale: A recursive run must compare each new donor against the current lineage incumbent, not repeatedly against `I_0`. The exploratory exception allows descriptive capability measurement without falsely opening production recursion or altering the independent §9 gate. The direct V2 archive is the primary scientific object; an automatic v0 suffix would confound trajectory feedback with complete-state refinement.
+- artifacts:
+  - `inverse_folding/reference_flow/fusion_v2/{policy.py}` and `fusion_v2_runtime/ladder.py`
+  - `scripts/{materialize_v2_canary_config.py,run_rf_fusion_v2.py,rf_fusion_v2_cohort.py,rf_fusion_v2_resume.py,rf_fusion_v2_artifacts.py,submit_rf_fusion_v2_canary.slurm}`
+  - `scripts/materialize_v2_archive_facade.py`
+  - `PLAN_RF_REFINE_FUSION_V2.md`, `doc/RF_Fusion_v2_Cluster_Runbook.md` §10, `doc/SCRIPTS.md`, `PROGRESS.md`
+- evidence: Broad V2 regression `1317 passed`; focused release gate `263 passed`; archive/Phase-C/v0 facade contract gate `60 passed`; `py_compile`, launcher `bash -n`, CLI help and `git diff --check` pass.
+- impact:
+  - scope: additive. Ordinary `D=1`, mechanism, qualification and production-depth routes retain their prior authorization behavior.
+  - risk: medium -- real-model `D=4` remains unrun and is explicitly unblinded/non-confirmatory.
+  - confidence: 0.86
+- status: done locally; cluster sandbox not yet run.
+- next_action: Cluster agent resolves the existing §9 content-bound inputs, materializes and dry-runs all 24 cells, submits the frozen §10 sandbox, then returns only the direct V2 archive's common Head/NMP/structure read against the unmatched historical B1Aopen reference.
+
+### L0153
+- timestamp: 2026-08-07T23:58:06-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: Release review found that the recursive Uricase materializer could inherit v0's implicit ESMFold2 protocol, the §9 two-protein counterfactual ceiling could be reused on a larger cohort, and the archive exporter could merge bundles from different recursive experiments when their Head identity happened to match.
+- change_summary: Exploratory materialization now requires and signs the realized ESMFold2 model selector and protocol alongside the local snapshot digest, then passes those exact values to the worker. The Uricase handoff re-emits the policy calibration over the same §9 evidence with the characterized-24 editable-domain ceiling. Archive export now validates run-manifest campaign, code, schedule, exploratory authorization and common structure identities before reading endpoint tables.
+- rationale: A descriptive capability result is still uninterpretable if it silently changes the structure instrument, stalls because a smaller cohort's policy ceiling was copied, or concatenates cells from different schedules. These are experiment-identity guards, not additional scientific arms.
+- artifacts:
+  - `scripts/materialize_v2_canary_config.py`, `scripts/materialize_v2_archive_facade.py`, `scripts/rf_fusion_v2_artifacts.py`
+  - `doc/RF_Fusion_v2_Cluster_Runbook.md` §9.8 / §10, `PROGRESS.md`
+  - `tests/scripts/test_materialize_v2_policy_qualification.py`, `tests/scripts/test_materialize_v2_archive_facade.py`, `tests/scripts/test_rf_fusion_v2_artifacts.py`
+- evidence: Combined focused V2 gate `242 passed`; materializer/config/preflight gate `72 passed`; facade/manifest gate `44 passed`; `py_compile`, launcher `bash -n`, both CLI help paths and git whitespace checks pass.
+- impact:
+  - scope: exploratory recursive profile and archive export only; ordinary D1/qualification behavior remains compatible.
+  - risk: low -- the new paths fail closed on missing or mixed identity.
+  - confidence: 0.91
+- status: done locally; real D4/K12 GPU execution pending.
+- next_action: Reconcile the four remote §9 execution commits, materialize all characterized-24 cells from the same §9 Head/structure instrument with the cohort-specific policy ceiling, dry-run, then submit runbook §10.

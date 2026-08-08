@@ -243,7 +243,8 @@ V2_COLUMN_TYPES: dict[str, str] = {
 
 def run_manifest(
     *, config: Any, code_revision: str, content_identities: Mapping[str, str],
-    seed_namespaces: Sequence[str],
+    seed_namespaces: Sequence[str], production_depth_authorized: bool = False,
+    exploratory_depth_override: bool = False,
 ) -> dict:
     """The run's whole identity, derivable with no model and no file access (PLAN §5.1, §5.3).
 
@@ -263,9 +264,12 @@ def run_manifest(
         "arm_role": config.arm.arm_role,
         "feedback_enabled": bool(config.arm.feedback_enabled),
         "a2_matching_resource": config.arm.a2_matching_resource,
+        "schedule_id": config.schedule.schedule_id,
         "coordinate_law": config.schedule.coordinate_law.value,
         "depth_cap": int(config.schedule.depth_cap),
         "active_population_width": int(config.schedule.active_population_width),
+        "production_depth_authorized": bool(production_depth_authorized),
+        "exploratory_depth_override": bool(exploratory_depth_override),
         "caps": {
             "max_logical_dfe": int(config.caps.max_logical_dfe),
             "max_head_calls": int(config.caps.max_head_calls),

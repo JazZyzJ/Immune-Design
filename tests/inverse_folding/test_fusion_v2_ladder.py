@@ -22,6 +22,9 @@ Production ``D>1`` ships behind an explicit launch flag that defaults to off.
 
 from __future__ import annotations
 
+import dataclasses
+import types
+
 import numpy as np
 import pytest
 
@@ -229,6 +232,35 @@ def test_the_flag_is_recorded_on_the_outcome():
     assert _run().production_depth_authorized is True
 
 
+def test_exploratory_depth_override_is_narrow_and_separately_recorded():
+    """An exploratory launch is not evidence that the production gate passed."""
+    outcome = _run(
+        allow_production_depth_gt_1=False,
+        exploratory_depth_override=True,
+        phase="capability_ladder",
+        split_role="exploratory_deep_smoke",
+    )
+    assert outcome.production_depth_authorized is False
+    assert outcome.exploratory_depth_override is True
+
+
+@pytest.mark.parametrize(
+    ("phase", "split_role"),
+    [
+        ("policy_qualification", "exploratory_deep_smoke"),
+        ("capability_ladder", "dev"),
+    ],
+)
+def test_exploratory_depth_override_refuses_non_exploratory_identity(phase, split_role):
+    with pytest.raises(ProductionDepthDisabledError, match="exploratory|capability_ladder"):
+        _run(
+            allow_production_depth_gt_1=False,
+            exploratory_depth_override=True,
+            phase=phase,
+            split_role=split_role,
+        )
+
+
 # --------------------------------------------------------------------------------------------
 # the ladder runs and both laws share one executor
 # --------------------------------------------------------------------------------------------
@@ -238,6 +270,44 @@ def test_the_progressive_ladder_reaches_the_declared_depth():
     outcome = _run()
     assert outcome.depth_reached == 2
     assert len(outcome.cycles) == 2
+
+
+def test_the_next_rung_uses_the_advanced_policy_identity():
+    """A committed donor must become the reference encoded by the next policy answer.
+
+    This is intentionally a ladder wiring test rather than a second reward-law test: the exact
+    Head gate is covered in ``test_fusion_v2_head_directed_policy``.  Here a tiny policy exposes
+    only an immutable generation in its identity and advances after a passing typed verdict.  If
+    the ladder kept reusing its construction-time policy, both feedback events would carry the
+    same digest and this test would fail.
+    """
+    calls = []
+
+    class AdvancingProbe:
+        def __init__(self, generation=0):
+            self.generation = generation
+
+        def __call__(self, source, endpoint, coordinates):
+            decision = _support_policy(source, endpoint, coordinates)
+            identity = dataclasses.replace(
+                decision.policy,
+                policy_config_digest=F.digest(f"incumbent-generation-{self.generation}"),
+            )
+            evidence = types.SimpleNamespace(donor_gate=f"pass-{self.generation}")
+            return dataclasses.replace(
+                decision, policy=identity, decision_evidence=evidence)
+
+        def advance_lineage_incumbent(self, *, donor, verdict, accepted_at_depth):
+            calls.append((self.generation, donor.endpoint_id, verdict, accepted_at_depth))
+            return AdvancingProbe(self.generation + 1)
+
+    outcome = _run(support_policy=AdvancingProbe())
+    assert [record.cycle.policy_identity.policy_config_digest for record in outcome.cycles] == [
+        F.digest("incumbent-generation-0"),
+        F.digest("incumbent-generation-1"),
+    ]
+    assert calls[0][0] == 0
+    assert calls[0][2:] == ("pass-0", 1)
 
 
 def test_the_stationary_ladder_reaches_the_declared_depth():
@@ -475,9 +545,16 @@ def test_a_null_branch_does_not_empty_the_archive():
 
     from tests.inverse_folding.test_fusion_v2_cycle import _policy_identity
 
-    declining = lambda source, endpoint, coordinates: PolicyRejection(  # noqa: E731
-        reason="declined", policy=_policy_identity())
-    outcome = _run(support_policy=declining)
+    class DecliningPolicy:
+        def __call__(self, source, endpoint, coordinates):
+            del source, endpoint, coordinates
+            return PolicyRejection(reason="declined", policy=_policy_identity())
+
+        def advance_lineage_incumbent(self, **kwargs):
+            del kwargs
+            raise AssertionError("a null/stalled cycle must not advance the incumbent")
+
+    outcome = _run(support_policy=DecliningPolicy())
     assert outcome.stopping_reason is StoppingReason.INVALID_PROJECTION
     assert outcome.archive.raw_rows()
 

@@ -170,6 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "source-geometry control, at the treatment's own realized write and "
                              "reopen cardinalities.  Requires --mechanism-prefixes and a config "
                              "declaring projection.head_directed")
+    parser.add_argument(
+        "--exploratory-depth-override", action="store_true",
+        help="explicitly permit an exploratory real-model D>1 ladder. This is not production "
+             "authorization and is accepted only for phase=capability_ladder with an "
+             "exploratory* split_role; it is bound into resume and manifest identity",
+    )
     return parser
 
 
@@ -223,6 +229,38 @@ def execution_replicates(args) -> int:
             "prefix exists to qualify"
         )
     return 2 * n_prefixes if qualification else 1
+
+
+def depth_authorization(args, *, config) -> tuple[bool, bool]:
+    """Resolve the two non-interchangeable ways a D>1 ladder may be opened.
+
+    This driver exposes only the exploratory override.  Production authorization remains false
+    until the authority/runbook gates are revised; keeping both booleans explicit prevents an
+    exploratory artifact from being read as such a revision.
+    """
+    exploratory = bool(getattr(args, "exploratory_depth_override", False))
+    production = False
+    if not exploratory:
+        return production, exploratory
+    if int(getattr(args, "mechanism_prefixes", 0) or 0) or bool(
+        getattr(args, "qualification", False)
+    ):
+        raise V2DriverError(
+            "--exploratory-depth-override applies only to the ordinary capability ladder, not "
+            "the mechanism or policy-qualification runners"
+        )
+    if int(config.schedule.depth_cap) <= 1:
+        raise V2DriverError(
+            "--exploratory-depth-override is only meaningful for a D>1 schedule"
+        )
+    if (config.identity.phase != "capability_ladder"
+            or not str(config.identity.split_role).startswith("exploratory")):
+        raise V2DriverError(
+            "--exploratory-depth-override requires identity.phase='capability_ladder' and an "
+            f"identity.split_role beginning with 'exploratory'; got "
+            f"{config.identity.phase!r}/{config.identity.split_role!r}"
+        )
+    return production, exploratory
 
 
 def decide_exit_code(report, *, requested: int) -> int:
@@ -402,7 +440,11 @@ def realized_cap_verdict(ledger_events, *, caps):
     return check_caps(aggregate_v2_ledger(events), caps)
 
 
-def _signatures(config, cohort, *, arm_role, code_revision, inputs):
+def _signatures(
+    config, cohort, *, arm_role, code_revision, inputs,
+    production_depth_authorized: bool = False,
+    exploratory_depth_override: bool = False,
+):
     if not inputs:
         # PLAN §5.2: "Missing content identity fails closed."  A sentinel signature would be shared
         # by every run that declared nothing, so two experiments over different data would resume
@@ -421,6 +463,8 @@ def _signatures(config, cohort, *, arm_role, code_revision, inputs):
             protein_id=protein_id,
             input_signature=signature,
             code_revision=code_revision,
+            production_depth_authorized=bool(production_depth_authorized),
+            exploratory_depth_override=bool(exploratory_depth_override),
         )
         for protein_id in cohort
     }
@@ -458,6 +502,8 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         declared = parse_declared_inputs(args.input_file, config=config)
         code_revision = resolve_code_revision(args.code_revision, config=config)
         budget_replicates = execution_replicates(args)
+        production_depth_authorized, exploratory_depth_override = depth_authorization(
+            args, config=config)
     except (V2Error, OSError) as exc:
         print(f"declared input refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
@@ -476,6 +522,8 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
             payload = print_config_payload(
                 config, n_proteins=len(cohort), declared_inputs=declared,
                 code_revision=code_revision, execution_replicates=budget_replicates)
+            payload["production_depth_authorized"] = production_depth_authorized
+            payload["exploratory_depth_override"] = exploratory_depth_override
         except (V2Error, OSError) as exc:
             print(f"preflight refused: {exc}", file=sys.stderr)
             return EXIT_UNLAUNCHABLE
@@ -507,7 +555,9 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
 
     try:
         expected = _signatures(config, cohort, arm_role=config.arm.arm_role,
-                               code_revision=code_revision, inputs=declared)
+                               code_revision=code_revision, inputs=declared,
+                               production_depth_authorized=production_depth_authorized,
+                               exploratory_depth_override=exploratory_depth_override)
     except (V2Error, OSError) as exc:
         print(f"run signature refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
@@ -545,11 +595,19 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                 if verdict.records_success:
                     continue
             try:
-                status, payload = runner(
+                runner_kwargs = dict(
                     protein_id=protein_id, config=config, signature=signature,
                     out_dir=out_dir, inputs=shard_inputs,
                     oracles_factory=oracles_factory,
                 )
+                # Preserve the long-standing injected-runner surface for ordinary runs while
+                # making the exceptional path explicit all the way into the cohort runner.
+                if production_depth_authorized or exploratory_depth_override:
+                    runner_kwargs.update(
+                        production_depth_authorized=production_depth_authorized,
+                        exploratory_depth_override=exploratory_depth_override,
+                    )
+                status, payload = runner(**runner_kwargs)
             except V2Error as exc:
                 status, payload = "failed", {"error": f"{type(exc).__name__}: {exc}"}
             write_fragment(fragment_path, signature=signature, status=status, payload=payload)
@@ -580,6 +638,8 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                 content_identities=_content_identities(provenance),
                 seed_namespaces=("v2_depth0_root", "v2_lookahead", "a2_extra_lookahead",
                                  "matched_descendant"),
+                production_depth_authorized=production_depth_authorized,
+                exploratory_depth_override=exploratory_depth_override,
             ),
             # Per PLAN §5.2 ROLE, with the declared identity and the observed one side by side.
             # A digest that was never observed is null: "" would read as a value.

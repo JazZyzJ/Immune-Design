@@ -179,6 +179,74 @@ def test_qualification_without_a_prefix_is_refused_before_preflight():
         execution_replicates(args)
 
 
+def test_exploratory_depth_override_requires_capability_phase_and_split(tmp_path):
+    bad_phase = _write_config(
+        tmp_path,
+        **{
+            "identity.split_role": "exploratory_deep_smoke",
+        },
+    )
+    assert _run(
+        tmp_path,
+        config_path=bad_phase,
+        extra=["--exploratory-depth-override", "--dry-run"],
+    ) == EXIT_UNLAUNCHABLE
+
+    bad_split = _write_config(
+        tmp_path,
+        **{
+            "identity.phase": "capability_ladder",
+            "projection.support_policy_id": "source_writeback_v1",
+            "projection.support_policy_is_diagnostic": False,
+        },
+    )
+    assert _run(
+        tmp_path,
+        config_path=bad_split,
+        extra=["--exploratory-depth-override", "--dry-run"],
+    ) == EXIT_UNLAUNCHABLE
+
+
+def test_exploratory_depth_override_reaches_runner_and_manifest(tmp_path):
+    config_path = _write_config(
+        tmp_path,
+        **{
+            "identity.phase": "capability_ladder",
+            "identity.split_role": "exploratory_deep_smoke",
+            "projection.support_policy_id": "source_writeback_v1",
+            "projection.support_policy_is_diagnostic": False,
+        },
+    )
+    observed = []
+
+    def runner(*, protein_id, config, signature, out_dir, inputs=None,
+               oracles_factory=None, exploratory_depth_override=False,
+               production_depth_authorized=False):
+        observed.append((signature, exploratory_depth_override,
+                         production_depth_authorized))
+        return "ok", {
+            "complete_endpoints": [{"endpoint_id": f"{protein_id}:0"}],
+            "production_depth_authorized": production_depth_authorized,
+            "exploratory_depth_override": exploratory_depth_override,
+        }
+
+    assert _run(
+        tmp_path,
+        config_path=config_path,
+        runner=runner,
+        extra=["--exploratory-depth-override"],
+    ) == EXIT_OK
+    signature, exploratory, production = observed[0]
+    assert exploratory is True
+    assert production is False
+    assert signature.exploratory_depth_override is True
+    assert signature.production_depth_authorized is False
+
+    manifest = json.loads((tmp_path / "out" / "run_manifest.json").read_text())
+    assert manifest["exploratory_depth_override"] is True
+    assert manifest["production_depth_authorized"] is False
+
+
 def test_a_malformed_config_is_refused_before_anything_runs(tmp_path):
     path = tmp_path / "bad.yaml"
     path.write_text(yaml.safe_dump({"schema_version": "nope"}))
@@ -626,6 +694,7 @@ def test_a_shard_that_stops_without_a_definitive_design_is_not_a_success(tmp_pat
     empty_ladder = types.SimpleNamespace(
         cycles=(), archive=_EmptyArchive(), stopping_reason=types.SimpleNamespace(value="no_ok"),
         depth_reached=0, total_logical_dfe=0, substrate_digest="d" * 64, best_definitive=None,
+        production_depth_authorized=False, exploratory_depth_override=False,
     )
 
     import scripts.rf_fusion_v2_cohort as cohort_mod

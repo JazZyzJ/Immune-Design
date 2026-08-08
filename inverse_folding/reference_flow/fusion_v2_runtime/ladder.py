@@ -160,6 +160,9 @@ class LadderOutcome:
     total_logical_dfe: int
     substrate_digest: str
     production_depth_authorized: bool
+    #: A deliberately non-production D>1 launch.  Kept separate from production authorization so
+    #: an exploratory result can never be relabelled as evidence that the mechanism gates passed.
+    exploratory_depth_override: bool
     #: The depth-0 prefix the LADDER paid, captured here rather than inside the first cycle.  It is
     #: its own field because it is the one piece of work no ``DepthRecord`` owns, and folding it
     #: into a rung would put it back on a record that did not run it.
@@ -190,7 +193,9 @@ def run_depth_ladder(
     campaign_id: str,
     split_role: str,
     master_seed: int,
+    phase: str | None = None,
     allow_production_depth_gt_1: bool = False,
+    exploratory_depth_override: bool = False,
     **cycle_kwargs: Any,
 ) -> LadderOutcome:
     """Run the declared ladder, one rung at a time, through the one segment executor.
@@ -203,7 +208,25 @@ def run_depth_ladder(
 
     if not isinstance(plan, DepthPlan):
         raise V2LadderError("plan must be a DepthPlan")
-    if plan.depth_cap > 1 and not allow_production_depth_gt_1:
+    exploratory = bool(exploratory_depth_override)
+    production = bool(allow_production_depth_gt_1)
+    if exploratory and production:
+        raise ProductionDepthDisabledError(
+            "production_depth_authorized and exploratory_depth_override are mutually exclusive; "
+            "an exploratory result may not carry a production authorization label"
+        )
+    if exploratory:
+        if plan.depth_cap <= 1:
+            raise ProductionDepthDisabledError(
+                "exploratory_depth_override is only meaningful for D>1; depth-one execution is "
+                "already allowed without an override"
+            )
+        if phase != "capability_ladder" or not str(split_role).startswith("exploratory"):
+            raise ProductionDepthDisabledError(
+                "exploratory D>1 requires phase='capability_ladder' and a split_role beginning "
+                f"with 'exploratory'; got phase={phase!r}, split_role={split_role!r}"
+            )
+    if plan.depth_cap > 1 and not (production or exploratory):
         raise ProductionDepthDisabledError(
             f"depth_cap={plan.depth_cap} requires production D>1, which is launch-disabled: PLAN "
             "V2F6 unlocks it only after a powered one-cycle source-transmission gate and the "
@@ -400,6 +423,23 @@ def run_depth_ladder(
         for record in (cycle.admissions or ()) + (cycle.descendant_admissions or ()):
             admission_by_endpoint[record.endpoint_id] = record
 
+        # ---- advance the reward incumbent one depth (PLAN §2.5 / V2F5A) --------------------
+        # The safety ratchet above and the reward incumbent are deliberately different objects.
+        # For HeadDirectedCappedPolicy the donor that entered this lineage becomes I_{d+1}; if the
+        # policy object remained the factory-built depth-zero instance, every deeper rung would
+        # compare against I0 and could adopt a donor that regresses from the current lineage.
+        support_policy = cycle_kwargs["support_policy"]
+        advance_reward = getattr(support_policy, "advance_lineage_incumbent", None)
+        if advance_reward is not None:
+            verdict = getattr(cycle.policy_evidence, "donor_gate", None)
+            if verdict is None:
+                raise V2LadderError(
+                    "a committed incumbent-aware policy emitted no donor-gate verdict; the next "
+                    "depth cannot know which reference its reward comparison advanced from"
+                )
+            cycle_kwargs["support_policy"] = advance_reward(
+                donor=selected, verdict=verdict, accepted_at_depth=depth + 1)
+
         source_override = cycle.propagated
         # Depth d's descendant pool IS depth d+1's source pool: re-screening the same state would
         # charge its tail twice (PLAN §3.4) and mint colliding endpoint ids.
@@ -443,7 +483,8 @@ def run_depth_ladder(
         # PLAN §4.5: any stop returns the best existing definitive archive state.
         best_definitive=archive.elite(),
         total_logical_dfe=total, substrate_digest=substrate,
-        production_depth_authorized=bool(allow_production_depth_gt_1),
+        production_depth_authorized=production,
+        exploratory_depth_override=exploratory,
         final_safety_ledger=safety_gate.ledger, detail=detail,
         root_capture_logical_dfe=root_capture_dfe,
     )

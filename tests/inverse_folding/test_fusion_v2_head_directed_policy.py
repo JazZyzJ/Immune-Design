@@ -321,6 +321,7 @@ def _policy(*, incumbent=None, calibration=None, band_table=None, head=None, **o
         safety_reference_score=_score(incumbent.sequence), evaluator=_evaluator(),
         window_grid_digest=ident.window_grid_digest(_windows(incumbent.sequence)),
         calibration=calibration or _calibration(),
+        incumbent_update_law="strict_improvement_by_epsilon",
         counterfactual_scorer=_scorer(head), policy_spec_digest=F.digest("pspec"),
     )
     kw.update(over)
@@ -458,6 +459,55 @@ def test_the_incumbent_moves_only_on_a_passing_gate():
         incumbent=incumbent, donor=worse, verdict=refused, evaluator=_evaluator(),
         accepted_at_depth=1, law="strict_improvement_by_epsilon")
     assert kept is incumbent, "a refused gate must return the SAME object, not a copy"
+
+
+def test_an_advanced_policy_rejects_a_donor_that_only_beats_depth_zero():
+    """The recursive ladder must compare depth ``d+1`` against ``I_{d+1}``, not forever ``I_0``.
+
+    The second donor is genuinely better than the frozen depth-zero reference but worse than the
+    endpoint already admitted into this lineage.  It would pass if the production policy object
+    kept its construction-time incumbent, which is the exact regression this test guards.
+    """
+    source = _source(SOURCE_SEQ)
+    policy = _policy()
+    risk0 = float(policy.incumbent.head_global_risk)
+
+    first = _donor(source=source)
+    first = dataclasses.replace(
+        first,
+        head_score=dataclasses.replace(first.head_score, global_risk=risk0 - 1.0),
+        head_global_risk=risk0 - 1.0,
+    )
+    first_gate = rw.donor_gate(
+        donor=first, incumbent=policy.incumbent, epsilon_r=0.0,
+        epsilon_source_ref=F.digest("eps"),
+    )
+    assert first_gate.passed
+
+    advanced = policy.advance_lineage_incumbent(
+        donor=first, verdict=first_gate, accepted_at_depth=1)
+    assert advanced.incumbent.source_endpoint_id == first.endpoint_id
+    assert advanced.identity().policy_config_digest != policy.identity().policy_config_digest
+
+    second = _donor("ACDEFGHIKLMN", source=source, fork_index=1, fork_seed=99)
+    second = dataclasses.replace(
+        second,
+        head_score=dataclasses.replace(second.head_score, global_risk=risk0 - 0.5),
+        head_global_risk=risk0 - 0.5,
+    )
+    assert rw.donor_gate(
+        donor=second, incumbent=policy.incumbent, epsilon_r=0.0,
+        epsilon_source_ref=F.digest("eps"),
+    ).passed, "the counterexample must beat I0"
+    refused = rw.donor_gate(
+        donor=second, incumbent=advanced.incumbent, epsilon_r=0.0,
+        epsilon_source_ref=F.digest("eps"),
+    )
+    assert refused.passed is False
+    assert refused.reason is rw.DonorGateReason.STALL_NO_BETTER_DONOR
+    kept = advanced.advance_lineage_incumbent(
+        donor=second, verdict=refused, accepted_at_depth=2)
+    assert kept is advanced, "a stalled depth must not mint a new policy/incumbent identity"
 
 
 def test_an_incumbent_cannot_be_advanced_on_another_endpoints_verdict():

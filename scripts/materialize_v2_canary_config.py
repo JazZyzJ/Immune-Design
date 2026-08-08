@@ -55,6 +55,43 @@ __all__ = [
 ]
 
 
+# This is deliberately one named, closed exploratory profile rather than a bag of schedule flags.
+# It is an unblinded capability run, not another way to edit the V2F5A qualification cell.  The
+# phase/split identity is therefore part of the materialized config, while the separate runtime
+# launch override remains required by the driver.
+EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
+    "uricase_d4_k12_r40": {
+        "phase": "capability_ladder",
+        "split_role": "exploratory_uricase",
+        "schedule": {
+            "schedule_id": "exploratory-uricase-d4-k12-r40-v1",
+            "coordinate_law": "progressive_checkpoint",
+            "depth_cap": 4,
+            "active_population_width": 1,
+            "min_lookahead_tail_steps": 10,
+            "points": [
+                {"depth": 0, "r_step": 40, "c_source_step": 50, "c_next_step": 60,
+                 "n_lookaheads": 12, "band_key": "step40"},
+                {"depth": 1, "r_step": 40, "c_source_step": 60, "c_next_step": 70,
+                 "n_lookaheads": 12, "band_key": "step40"},
+                {"depth": 2, "r_step": 40, "c_source_step": 70, "c_next_step": 80,
+                 "n_lookaheads": 12, "band_key": "step40"},
+                {"depth": 3, "r_step": 40, "c_source_step": 80, "c_next_step": 90,
+                 "n_lookaheads": 12, "band_key": "step40"},
+            ],
+        },
+        # Exact plan: 1,990 logical DFE and 60 definitive endpoint refolds per protein.  These are
+        # close fail-closed ceilings with small operational slack, not the template's broad cohort
+        # qualification caps.  Head calls remain a CLI-bound quantity because the counterfactual
+        # ceiling is calibrated from the realized cohort's editable domains.
+        "caps": {
+            "max_logical_dfe": 2200,
+            "max_definitive_refolds": 64,
+        },
+    },
+}
+
+
 class MaterializeError(RuntimeError):
     """A resolved config this producer refuses to write."""
 
@@ -66,6 +103,61 @@ def file_digest(path: Any) -> str:
         for chunk in iter(lambda: handle.read(1 << 22), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _structure_runtime_protocol(args) -> dict[str, Any]:
+    """Validate the explicit ESMFold2 selector/protocol required by an exploratory run."""
+    model = getattr(args, "esmfold2_model", None)
+    if not isinstance(model, str) or not model.strip():
+        raise MaterializeError(
+            "--esmfold2-model is required by an exploratory profile; relying on v0's parser "
+            "default would leave the executed structure model outside the run identity"
+        )
+    values: dict[str, int] = {}
+    for field, flag, minimum in (
+        ("num_loops", "--esmfold2-num-loops", 1),
+        ("num_sampling_steps", "--esmfold2-num-sampling-steps", 1),
+        ("num_diffusion_samples", "--esmfold2-num-diffusion-samples", 1),
+        ("seed", "--esmfold2-seed", 0),
+    ):
+        value = getattr(args, f"esmfold2_{field}", None)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise MaterializeError(
+                f"{flag} must be an integer >= {minimum} for an exploratory profile, got "
+                f"{value!r}"
+            )
+        values[field] = int(value)
+    return {"model_selector": model.strip(), "protocol": values}
+
+
+def _structure_runtime_bytes(payload: dict[str, Any]) -> bytes:
+    """Canonical bytes signed by both the config content row and the run input signature."""
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _structure_runtime_identity(args) -> tuple[Path, dict[str, Any], str]:
+    """Bind the realized ESMFold2 selector/protocol to the supplied local model snapshot.
+
+    The selector may be a registry id (for example ``biohub/ESMFold2``), so this producer cannot
+    prove that the registry name resolves to the supplied local file.  It can, however, make both
+    immutable inputs part of ONE signed content artifact.  The worker's realized metadata remains
+    the runtime proof of how that selector resolved on the cluster.
+    """
+    declared = _structure_runtime_protocol(args)
+    snapshot = Path(args.structure_backend)
+    if not snapshot.is_file():
+        raise MaterializeError(
+            f"--structure-backend must be the local ESMFold2 model snapshot file, got {snapshot}"
+        )
+    payload = {
+        "schema_version": "v2-esmfold2-runtime-1",
+        "backend": "esmfold2_live",
+        **declared,
+        "local_model_snapshot_sha256": file_digest(snapshot),
+    }
+    raw = _structure_runtime_bytes(payload)
+    path = Path(args.out).with_suffix(".structure_runtime.json")
+    return path, payload, hashlib.sha256(raw).hexdigest()
 
 
 def head_config_hash(config_dir: Any) -> str:
@@ -145,7 +237,9 @@ def _delta_new_block(hotspot_json: Any, *, head: dict) -> dict:
     return json.loads(json.dumps(block))  # a plain, YAML-safe copy
 
 
-def resolve_content_bindings(args) -> tuple[dict[str, str | None], dict[str, str]]:
+def resolve_content_bindings(
+    args, *, structure_runtime_identity: tuple[Path, dict[str, Any], str] | None = None,
+) -> tuple[dict[str, str | None], dict[str, str]]:
     """`role -> frozen digest or None`, plus `role -> the runtime file that supplies it`.
 
     A role appears in exactly one of the two.  The split is not cosmetic: a frozen role is bound
@@ -185,10 +279,16 @@ def resolve_content_bindings(args) -> tuple[dict[str, str | None], dict[str, str
         "tokenizer": str(args.dplm_checkpoint),
         "structure_config": str(args.structure_config),
         "v0_structure_gate_config": str(args.v0_structure_gate_config),
-        # The weights that fold every endpoint -- a single content-addressed file, which is a
-        # stronger identity for the backend than the name of the code that calls it.
-        "structure_backend": str(args.structure_backend),
     }
+    if getattr(args, "exploratory_profile", None):
+        identity = structure_runtime_identity or _structure_runtime_identity(args)
+        # Unlike an ordinary Canary, the recursive sandbox refuses v0 defaults.  Its config digest
+        # freezes a canonical artifact containing BOTH the local snapshot digest and the actual
+        # selector/protocol handed to the worker.
+        frozen["structure_backend"] = identity[2]
+    else:
+        # Existing D1 behavior: the supplied local weight file itself is the runtime-bound role.
+        runtime["structure_backend"] = str(args.structure_backend)
     if constrained:
         runtime["constraint_manifest"] = str(args.constraint_manifest)
         runtime["fixed_token_policy"] = str(args.constraint_manifest)
@@ -210,9 +310,60 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
     if getattr(args, "campaign_id", None):
         config["identity"]["campaign_id"] = str(args.campaign_id)
 
+    profile_name = getattr(args, "exploratory_profile", None)
+    profile = EXPLORATORY_PROFILES.get(profile_name) if profile_name else None
+    if profile_name and profile is None:
+        raise MaterializeError(
+            f"unknown --exploratory-profile {profile_name!r}; allowed values are "
+            f"{sorted(EXPLORATORY_PROFILES)}"
+        )
+    if profile is None and getattr(args, "run_max_head_calls", None) is not None:
+        raise MaterializeError(
+            "--run-max-head-calls requires an explicit --exploratory-profile; an ordinary "
+            "Canary/qualification materialization may not silently consume or ignore an "
+            "exploratory run cap"
+        )
+    if profile is not None:
+        _structure_runtime_protocol(args)
+        if int(args.r_step) != 40:
+            raise MaterializeError(
+                f"exploratory profile {profile_name!r} requires --r-step 40, got {args.r_step}; "
+                "all four depths are bound to the measured B(40) cell"
+            )
+        substrate = config.get("substrate") or {}
+        required_substrate = {
+            "n_steps": 100,
+            "amplification_form": "constant_one",
+            "controller_enabled": False,
+            # Keep the post-step lifecycle but set the remask fraction to zero: this is the
+            # project's frozen no-remask spelling, not remask_enabled=false.
+            "remask_enabled": True,
+            "remask_fraction_scale": 0.0,
+        }
+        mismatch = {
+            key: (substrate.get(key), value)
+            for key, value in required_substrate.items() if substrate.get(key) != value
+        }
+        if mismatch:
+            raise MaterializeError(
+                f"exploratory profile {profile_name!r} requires the frozen 100-step null/no-remask "
+                f"substrate, but the template disagrees: {mismatch}"
+            )
+
     policy_calibration = getattr(args, "policy_calibration_json", None)
+    if profile is not None and not policy_calibration:
+        raise MaterializeError(
+            f"exploratory profile {profile_name!r} requires --policy-calibration-json; "
+            "head_directed_capped may not run from invented thresholds"
+        )
     if policy_calibration:
-        payload = json.loads(Path(policy_calibration).read_text(encoding="utf-8"))
+        calibration_path = Path(policy_calibration)
+        if not calibration_path.is_file():
+            raise MaterializeError(
+                f"policy calibration artifact does not exist or is not a file: "
+                f"{calibration_path}"
+            )
+        payload = json.loads(calibration_path.read_text(encoding="utf-8"))
         if payload.get("schema_version") != "v2-head-policy-calibration-bundle/1":
             raise MaterializeError(
                 f"{policy_calibration} is not a v2-head-policy-calibration-bundle/1 artifact"
@@ -248,30 +399,47 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
                 f"{payload.get('policy_spec_sha256')!r}, but this cell supplies "
                 f"{frozen['projection_policy_spec']!r}"
             )
-        config["identity"]["phase"] = "policy_qualification"
-        config["identity"]["split_role"] = "policy_qualification"
+        config["identity"]["phase"] = (
+            str(profile["phase"]) if profile is not None else "policy_qualification"
+        )
+        config["identity"]["split_role"] = (
+            str(profile["split_role"]) if profile is not None else "policy_qualification"
+        )
         config["projection"].update({
             "support_policy_id": "head_directed_capped",
             "support_policy_version": "v1",
             "support_policy_is_diagnostic": False,
             "head_directed": json.loads(json.dumps(block)),
         })
-        head_cap = getattr(args, "qualification_max_head_calls", None)
+        head_cap = (
+            getattr(args, "run_max_head_calls", None)
+            if profile is not None
+            else getattr(args, "qualification_max_head_calls", None)
+        )
         if isinstance(head_cap, bool) or not isinstance(head_cap, int) or head_cap < 1:
+            flag = (
+                "--run-max-head-calls" if profile is not None
+                else "--qualification-max-head-calls"
+            )
             raise MaterializeError(
-                "--qualification-max-head-calls is required with --policy-calibration-json; "
-                "the one-cycle paired cohort must carry an explicit cohort Head cap"
+                f"{flag} is required with --policy-calibration-json"
+                + (" for an explicit exploratory run Head cap" if profile is not None else
+                   "; the one-cycle paired cohort must carry an explicit cohort Head cap")
             )
         config["caps"]["max_head_calls"] = int(head_cap)
 
-    points = config["schedule"]["points"]
-    if len(points) != 1:
-        raise MaterializeError(
-            f"the template declares {len(points)} schedule points; a Canary cell is ONE "
-            "(protein, r_step) and a multi-point template cannot be resolved into one"
-        )
-    points[0]["r_step"] = int(args.r_step)
-    points[0]["band_key"] = f"step{int(args.r_step)}"
+    if profile is not None:
+        config["schedule"] = json.loads(json.dumps(profile["schedule"]))
+        config["caps"].update(json.loads(json.dumps(profile["caps"])))
+    else:
+        points = config["schedule"]["points"]
+        if len(points) != 1:
+            raise MaterializeError(
+                f"the template declares {len(points)} schedule points; a Canary cell is ONE "
+                "(protein, r_step) and a multi-point template cannot be resolved into one"
+            )
+        points[0]["r_step"] = int(args.r_step)
+        points[0]["band_key"] = f"step{int(args.r_step)}"
 
     config["safety"]["delta_new_cumulative"] = _delta_new_block(
         args.hotspot_json, head=config["head"])
@@ -307,7 +475,10 @@ def _placeholders(node: Any, path: str = "") -> list[str]:
     return [path] if isinstance(node, str) and node.startswith("REPLACE") else []
 
 
-def _args_script(args, *, frozen: dict, runtime: dict, config_path: Path) -> str:
+def _args_script(
+    args, *, frozen: dict, runtime: dict, config_path: Path,
+    structure_runtime_identity: tuple[Path, dict[str, Any], str] | None = None,
+) -> str:
     """The driver argument vectors this config requires, as a `source`-able shell fragment.
 
     `--input-file ROLE=PATH` signs the run and is checked against any frozen digest; `--shard-input
@@ -331,6 +502,11 @@ def _args_script(args, *, frozen: dict, runtime: dict, config_path: Path) -> str
          # manifest would claim two content identities where one file was read.
          if role not in {"coordinate_mask", "tokenizer", "fixed_token_policy"}]
 
+    exploratory = bool(getattr(args, "exploratory_profile", None))
+    if exploratory:
+        identity = structure_runtime_identity or _structure_runtime_identity(args)
+        input_files.append(f"structure_backend={identity[0]}")
+
     shard_inputs = dict(runtime)
     shard_inputs.update({
         # Names the oracle stack owns, distinct from the role vocabulary on purpose.
@@ -346,6 +522,22 @@ def _args_script(args, *, frozen: dict, runtime: dict, config_path: Path) -> str
         "complete_reference_manifest": str(args.reference_manifest),
         "protein_stratum_manifest": str(args.stratum_manifest),
     })
+    if exploratory:
+        identity = structure_runtime_identity or _structure_runtime_identity(args)
+        protocol = _structure_runtime_protocol(args)
+        shard_inputs.update({
+            # The oracle consumes these exact names.  They are repeated in the signed runtime
+            # identity artifact above, so changing a worker knob changes both config_digest and
+            # run input_signature rather than silently falling back to v0's parser defaults.
+            "structure_backend": str(identity[0]),
+            "esmfold2_model": str(protocol["model_selector"]),
+            "esmfold2_num_loops": str(protocol["protocol"]["num_loops"]),
+            "esmfold2_num_sampling_steps": str(
+                protocol["protocol"]["num_sampling_steps"]),
+            "esmfold2_num_diffusion_samples": str(
+                protocol["protocol"]["num_diffusion_samples"]),
+            "esmfold2_seed": str(protocol["protocol"]["seed"]),
+        })
     # `fixed_token_policy` stays in SHARD_INPUTS even though no oracle reads that key: it is one of
     # the eighteen roles `_conditioning` must find a digest for, and on an anchored cell it is bound
     # RUNTIME, so dropping it made the shard refuse with "no content identity for role(s)
@@ -409,15 +601,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--policy-calibration-json", default=None,
         help="optional v2-head-policy-calibration-bundle/1 artifact. When supplied, materialize "
-             "a policy_qualification config under head_directed_capped instead of the template's "
-             "diagnostic policy; the calibrated values are copied verbatim and validated by the "
-             "typed config loader",
+             "a head_directed_capped config instead of the template's diagnostic policy. The "
+             "default identity is policy_qualification; an explicit exploratory profile replaces "
+             "it with that profile's capability identity. Calibrated values are copied verbatim "
+             "and validated by the typed config loader",
     )
     parser.add_argument(
         "--qualification-max-head-calls", type=int, default=None,
         help="cohort Head-call hard cap written into a policy-qualification config; required with "
              "--policy-calibration-json and ignored otherwise",
     )
+    parser.add_argument(
+        "--exploratory-profile", choices=sorted(EXPLORATORY_PROFILES), default=None,
+        help="explicitly materialize one closed, non-confirmatory capability-ladder profile. "
+             "This only changes config identity/schedule; the driver still requires its separate "
+             "exploratory D>1 launch override",
+    )
+    parser.add_argument(
+        "--run-max-head-calls", type=int, default=None,
+        help="generic whole-run Head hard cap required by an exploratory profile. It is not a "
+             "qualification-arm cap and is rejected unless --exploratory-profile is supplied",
+    )
+    parser.add_argument("--esmfold2-model", default=None,
+                        help="actual ESMFold2 model selector; required by an exploratory profile")
+    parser.add_argument("--esmfold2-num-loops", type=int, default=None)
+    parser.add_argument("--esmfold2-num-sampling-steps", type=int, default=None)
+    parser.add_argument("--esmfold2-num-diffusion-samples", type=int, default=None)
+    parser.add_argument("--esmfold2-seed", type=int, default=None)
     return parser
 
 
@@ -426,10 +636,21 @@ def main(argv=None) -> int:
     out = Path(args.out)
 
     template = yaml.safe_load(Path(args.template).read_text(encoding="utf-8"))
-    frozen, runtime = resolve_content_bindings(args)
+    structure_identity = (
+        _structure_runtime_identity(args) if args.exploratory_profile else None
+    )
+    frozen, runtime = resolve_content_bindings(
+        args, structure_runtime_identity=structure_identity)
     config = fill_config(template, args=args, frozen=frozen, runtime=runtime)
 
     out.parent.mkdir(parents=True, exist_ok=True)
+    if structure_identity is not None:
+        identity_path, identity_payload, identity_digest = structure_identity
+        identity_path.write_bytes(_structure_runtime_bytes(identity_payload))
+        if file_digest(identity_path) != identity_digest:  # pragma: no cover - disk corruption
+            raise MaterializeError(
+                f"structure runtime identity changed while writing {identity_path}"
+            )
     out.write_text(yaml.safe_dump(config, sort_keys=True, default_flow_style=False),
                    encoding="utf-8")
 
@@ -440,7 +661,9 @@ def main(argv=None) -> int:
     resolved = load_v2_config_file(out)
 
     args_path = out.with_suffix(".args.sh")
-    args_path.write_text(_args_script(args, frozen=frozen, runtime=runtime, config_path=out),
+    args_path.write_text(_args_script(
+        args, frozen=frozen, runtime=runtime, config_path=out,
+        structure_runtime_identity=structure_identity),
                          encoding="utf-8")
 
     print(json.dumps({

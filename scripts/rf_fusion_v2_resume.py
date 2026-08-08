@@ -118,6 +118,8 @@ class RunSignature:
     protein_id: str
     input_signature: str
     code_revision: str
+    production_depth_authorized: bool = False
+    exploratory_depth_override: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -127,6 +129,14 @@ class RunSignature:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise V2ResumeError(f"{name} must be a non-empty str, got {value!r}")
+        for name in ("production_depth_authorized", "exploratory_depth_override"):
+            if not isinstance(getattr(self, name), bool):
+                raise V2ResumeError(f"{name} must be an explicit bool")
+        if self.production_depth_authorized and self.exploratory_depth_override:
+            raise V2ResumeError(
+                "production_depth_authorized and exploratory_depth_override are mutually "
+                "exclusive execution identities"
+            )
 
     def canonical_payload(self) -> dict:
         return {
@@ -137,6 +147,8 @@ class RunSignature:
             "protein_id": self.protein_id,
             "input_signature": self.input_signature,
             "code_revision": self.code_revision,
+            "production_depth_authorized": self.production_depth_authorized,
+            "exploratory_depth_override": self.exploratory_depth_override,
         }
 
     @property
@@ -151,7 +163,10 @@ class RunSignature:
         about the science, and a stale code revision needs a rebuild.  Reporting only "mismatch"
         would leave all three looking the same.
         """
-        for name in ("campaign_id", "split_role", "arm_role", "protein_id"):
+        for name in (
+            "campaign_id", "split_role", "arm_role", "protein_id",
+            "production_depth_authorized", "exploratory_depth_override",
+        ):
             if other.get(name) != getattr(self, name):
                 return "foreign_run"
         if other.get("config_digest") != self.config_digest:

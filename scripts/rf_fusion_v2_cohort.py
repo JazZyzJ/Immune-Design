@@ -133,7 +133,11 @@ def _journal_path(
     return Path(declared) / run_signature / f"{protein_id}.attempts.jsonl"
 
 
-def _validate_run_signature(*, signature: Any, config: Any, protein_id: str):
+def _validate_run_signature(
+    *, signature: Any, config: Any, protein_id: str,
+    production_depth_authorized: bool = False,
+    exploratory_depth_override: bool = False,
+):
     """Return a formal signature only when it describes this exact shard."""
     from scripts.rf_fusion_v2_resume import RunSignature
 
@@ -149,6 +153,8 @@ def _validate_run_signature(*, signature: Any, config: Any, protein_id: str):
         "arm_role": config.arm.arm_role,
         "protein_id": str(protein_id),
         "code_revision": config.identity.code_revision,
+        "production_depth_authorized": bool(production_depth_authorized),
+        "exploratory_depth_override": bool(exploratory_depth_override),
     }
     drift = [
         name for name, value in expected.items()
@@ -401,7 +407,8 @@ def assert_runtime_substrate_matches(config: Any, runtime: Any) -> None:
 def run_v2_shard(
     *, protein_id: str, config: Any, signature: Any, out_dir: Any,
     inputs: ShardInputs | None = None,
-    oracles_factory=None,
+    oracles_factory=None, production_depth_authorized: bool = False,
+    exploratory_depth_override: bool = False,
 ) -> tuple[str, Mapping[str, Any]]:
     """Run one protein's V2 ladder and return ``(status, payload)`` for the driver's fragment.
 
@@ -438,6 +445,8 @@ def run_v2_shard(
 
     signature = _validate_run_signature(
         signature=signature, config=config, protein_id=protein_id,
+        production_depth_authorized=production_depth_authorized,
+        exploratory_depth_override=exploratory_depth_override,
     )
 
     plan = build_depth_plan(config)
@@ -479,9 +488,10 @@ def run_v2_shard(
         plan=plan,
         campaign_id=config.identity.campaign_id,
         split_role=config.identity.split_role,
+        phase=config.identity.phase,
         master_seed=int(config.identity.master_seed),
-        allow_production_depth_gt_1=bool(getattr(config.schedule, "depth_cap", 1) > 1
-                                         and oracles.get("allow_production_depth_gt_1", False)),
+        allow_production_depth_gt_1=bool(production_depth_authorized),
+        exploratory_depth_override=bool(exploratory_depth_override),
         feedback_enabled=bool(config.arm.feedback_enabled),
         # Same rule as the arm identity: the run's FROZEN declaration is what the kernel matches
         # the answering policy against, so it comes from the config and never from the factory.
@@ -559,6 +569,8 @@ def run_v2_shard(
         "depth_reached": int(outcome.depth_reached),
         "total_logical_dfe": int(outcome.total_logical_dfe),
         "substrate_digest": outcome.substrate_digest,
+        "production_depth_authorized": bool(outcome.production_depth_authorized),
+        "exploratory_depth_override": bool(outcome.exploratory_depth_override),
     }
     # "ok" means the ladder advanced at least one depth, left a definitive design behind, and
     # stayed inside every declared hard cap.  A typed stop with nothing definitive is a real result

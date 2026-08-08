@@ -63,6 +63,8 @@ def test_a_fragment_from_the_same_run_is_reusable(tmp_path):
     ("campaign_id", "other-campaign", "foreign_run"),
     ("split_role", "test", "foreign_run"),
     ("arm_role", "a2", "foreign_run"),
+    ("exploratory_depth_override", True, "foreign_run"),
+    ("production_depth_authorized", True, "foreign_run"),
 ])
 def test_a_changed_scientific_condition_makes_paid_work_unreusable(tmp_path, field, value, status):
     """Each of these names a DIFFERENT operator action, so each gets its own status.

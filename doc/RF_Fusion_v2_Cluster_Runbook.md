@@ -6,9 +6,10 @@ after the local code gate"). The local code gate is complete.
 
 **What this runbook does NOT authorize.** It now reaches the one-cycle V2F5A Head-directed policy
 qualification in §9, after the state-transition Canary and powered S7 source-transmission result.
-It still does not authorize production `D>1`: only a positive, adequately covered §9 verdict on
-both predeclared proteins can support a later authority revision that opens a small recursive
-capability run. No wiring Canary is evidence of transmission or reward directionality.
+Production or confirmatory `D>1` remains closed. Section 10 is a separately identified, unblinded
+and non-confirmatory Uricase capability sandbox authorized by PLAN §8.6.1; it cannot alter §9,
+authorize a holdout, or support a population-level efficacy claim. No wiring Canary is evidence of
+transmission or reward directionality.
 
 ---
 
@@ -1643,3 +1644,161 @@ authority/config may now be designed — separately, and not by widening this on
   found its reward channel inert; this measures a law that chooses its support FROM Head evidence at
   sites 99.5% disjoint from that law's. The two results compose: the channel was inert because
   nothing was steering it.
+
+---
+
+## 10. Unblinded recursive Uricase capability sandbox — D4/K12
+
+This is the deliberately aggressive follow-up to the executed §9 one-cycle PASS. It asks whether
+the implemented V2 loop can reach a useful final immune/structure frontier on a real enzyme cohort.
+It is descriptive and unblinded: the §9 PASS does not itself establish recursive compounding,
+independent immune validity or generalization, and this sandbox is not production authorization.
+
+### 10.1 Frozen scientific configuration
+
+| Item | Frozen value |
+|---|---|
+| cohort | `uricase_characterized24`, 24 constrained proteins, DRB1*07:01 only |
+| profile | `uricase_d4_k12_r40` |
+| recursion | one lineage; progressive `D=4`; `K=12` at every depth |
+| coordinates | `(40,50,60)`, `(40,60,70)`, `(40,70,80)`, `(40,80,90)` |
+| substrate | 100-step controller-free `constant_one`; background remask count exactly zero |
+| feedback | exact Head-directed capped support; donor must improve over the current lineage incumbent |
+| safety | hard anchors; whole-landscape hotspot gate; definitive structure gate |
+| breadth | 12 initial endpoints + 12 descendants per depth = 60 exact endpoints/protein |
+| exact projected work | 1,990 logical DFE and 60 definitive refolds/protein |
+| run caps | 2,200 logical DFE and 64 definitive refolds/protein; Head cap derived from the cohort's largest editable domain |
+
+The direct V2 archive is the primary output. Do not append v0 repair to the primary run: that would
+turn the question back into complete-state refinement. An optional v0 suffix may be run later from
+the frozen facade, but it must be labelled separately.
+
+### 10.2 Cluster-agent handoff
+
+The cluster agent should resolve live paths from the completed §9 environment; this runbook does not
+duplicate them. Before materialization, bind these existing inputs:
+
+- characterized-24 test set, PDB root and per-protein hard-anchor manifest;
+- exact DPLM checkpoint and `c1_constant_clean_no_remask.yaml`;
+- the §9 S7 evidence bundles, Head config/checkpoint and policy specification;
+- `HEAD_ALLELE=DRB1_0701`, raw-logit score scale, window grid `12–25`;
+- per-protein `B(40)`, hotspot calibration, reference sequence, backbone and stratum;
+- the same ESMFold2 backend identity and definitive structure-gate config used to create the
+  calibration artifacts.
+
+Derive the characterized-24 counterfactual ceiling from its anchor-adjusted editable domains:
+
+```bash
+POLICY_C=$(jq '[.[]] | max' editable_domains.json)
+RUN_MAX_HEAD_CALLS=$((4 * POLICY_C + 128))
+```
+
+The §9 calibration freezes a two-protein ceiling of 278 and must not be reused unchanged. Re-run
+the §9 Step-3 producer over the **same S7 sequence population and same Head**, changing only:
+
+```text
+--max-counterfactual-head-calls-per-cycle ${POLICY_C}
+--out-json <work>/calibration/head_policy_calibration_c24.json
+```
+
+Do not overwrite the §9 artifact and do not hand-edit JSON. The new artifact must retain the same
+Head identity, policy-spec digest, evidence population and noise floors, while recording
+`max_counterfactual_head_calls_per_cycle == POLICY_C`.
+
+Materialize each protein with the ordinary content-bound arguments from §9 plus only:
+
+```text
+--campaign-id v2_uricase_c24_d4k12_r40_exploratory_v1
+--exploratory-profile uricase_d4_k12_r40
+--run-max-head-calls ${RUN_MAX_HEAD_CALLS}
+--r-step 40
+--policy-calibration-json <work>/calibration/head_policy_calibration_c24.json
+--esmfold2-model <exact §9 model selector>
+--esmfold2-num-loops <exact §9 value>
+--esmfold2-num-sampling-steps <exact §9 value>
+--esmfold2-num-diffusion-samples <exact §9 value>
+--esmfold2-seed <exact §9 value>
+```
+
+The materializer signs these values together with the local `--structure-backend` snapshot digest;
+do not accept a worker that reports a different resolved model/protocol. Do not hand-edit the
+resolved YAML. For every cell, the model-free dry-run must assert:
+
+```text
+phase == capability_ladder
+split_role == exploratory_uricase
+depth_cap == 4
+exploratory_depth_override == true
+per_protein_logical_dfe == 1990
+total_definitive_refolds == 60
+budget_projection.feasible == true
+substrate.remask_fraction_scale == 0
+projection.head_directed.max_counterfactual_head_calls_per_cycle == POLICY_C
+budget_projection.total_head_calls <= RUN_MAX_HEAD_CALLS
+```
+
+Then submit all 24 cells before reading outcomes:
+
+```bash
+EXPLORATORY_DEPTH_OVERRIDE=1 CELL=<protein>_d4k12_r40 \
+  WORK=<resolved-config work root> RUNDIR=<run root> \
+  sbatch --time=06:00:00 --mem=64G scripts/submit_rf_fusion_v2_canary.slurm
+```
+
+There is no adaptive rescue. Preserve failed bundles and ledgers. Report all 24 requested proteins;
+`18/24` usable archives is the operational floor for a cohort-level descriptive read.
+
+### 10.3 Freeze the archive, then evaluate only final designs
+
+After all jobs terminate, export:
+
+```bash
+python scripts/materialize_v2_archive_facade.py \
+  --bundle <repeat once per successful protein bundle> \
+  --mode elite --output <work>/facade/elite/generated.parquet
+
+python scripts/materialize_v2_archive_facade.py \
+  --bundle <repeat once per successful protein bundle> \
+  --mode top-k --k 12 --output <work>/facade/top12/generated.parquet
+```
+
+Both commands are schematic: `--bundle` is repeatable, so the cluster agent emits one flag per
+successful bundle. The exporter joins by `endpoint_id`, requires definitive structural feasibility,
+retains lineage provenance and collapses sequence-equivalent siblings only in the top-k facade.
+The latter is **top-up-to-12**: keep proteins with fewer than 12 feasible distinct endpoints, report
+their realized count, and summarize distributions protein-first rather than pooling unequal rows.
+
+Run the common terminal evaluator on both facades with the exact current Head and structure stack.
+Use the interface-specific allele spellings:
+
+```text
+V2 calibration/config: DRB1_0701
+Phase-C / NetMHCIIpan evaluation: HLA-DRB1*07:01
+```
+
+The evaluation command is the existing `scripts/evaluate_phase_c.py --mode all` registered in
+`doc/SCRIPTS.md`, with the characterized-24 test set, PDB root, constraint manifest, frozen Head,
+production NetMHCIIpan and the V2 refold cache. Do not select designs using NMP; NMP is read only
+after the Head-selected archive is frozen.
+
+### 10.4 Return one compact immune/structure verdict
+
+| Readout | V2 elite | V2 top-up-to-12 distribution | historical B1Aopen reference |
+|---|---:|---:|---:|
+| requested / usable proteins and designs | | | |
+| Head `global_risk`, median and IQR | | | |
+| NMP `n_strong_binders`, median and zero count | | | |
+| NMP strong fraction, median | | | |
+| scTM, median / p05 / minimum | | | |
+| hard-anchor identity violations | | | |
+| active-site RMSD, median / p95 | | | |
+
+Use the existing
+`uricase_characterized23_a1res03_b1open_n16__20260630T041450Z/HLA-DRB1_07_01` package only as an
+**external unmatched capability reference**, restricted to common proteins. If evaluator identities
+differ, re-evaluate its selected facade under the exact stack above. Do not report a paired causal
+effect or matched-compute superiority.
+
+The historical Uricase v0 smoke is context only: it showed within-run Head descent, not a matched
+v0-versus-B1Aopen result. A near-floor Head does not imply NMP saturation, so the verdict must give
+independent NMP and structure equal weight.

@@ -161,6 +161,7 @@ def _build_head_directed_capped(*, band_table, stratum_key, config, head_oracle=
         band_table=band_table, stratum_key=stratum_key, incumbent=incumbent,
         safety_reference_score=safety_reference_score, evaluator=evaluator,
         window_grid_digest=window_grid_digest, calibration=calibration,
+        incumbent_update_law=config.projection.head_directed.lineage_incumbent_update_law,
         counterfactual_scorer=CounterfactualHeadScorer(head_oracle=head_oracle),
         policy_spec_digest=_content_digest(config, "projection_policy_spec"),
         policy_version=config.projection.support_policy_version,
@@ -810,7 +811,7 @@ def _production_oracles_for(config: Any, inputs: Any):
 
 
 def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: OracleSeams | None = None):
-    """Assemble the ``{gpu_clock, allow_production_depth_gt_1, cycle_kwargs}`` contract.
+    """Assemble the ``{gpu_clock, cycle_kwargs}`` contract.
 
     Everything expensive is built through the shared model factory; everything scientific is bound
     to ``config``.  Returns the mapping ``scripts.rf_fusion_v2_cohort.run_v2_shard`` consumes.
@@ -908,9 +909,6 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
 
     return {
         "gpu_clock": resolved["gpu_clock"],
-        # Capability is not authorization: the ladder still refuses production D>1 unless the
-        # runbook has passed both gates, and this factory never grants it.
-        "allow_production_depth_gt_1": False,
         "cycle_kwargs": dict(
             sampler=model.sampler, denoiser=denoiser, config=model.rf_config,
             sequence_length=length, h_values=model.null_h_values(length),

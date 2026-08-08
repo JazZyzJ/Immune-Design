@@ -89,6 +89,7 @@ def test_the_manifest_carries_one_config_digest_and_the_declared_caps(tmp_path):
     assert manifest["caps"]["max_logical_dfe"] == config.caps.max_logical_dfe
     assert manifest["split_role"] == config.identity.split_role
     assert manifest["code_revision"] == "deadbeef"
+    assert manifest["schedule_id"] == config.schedule.schedule_id
     assert manifest["seed_namespaces"] == ["matched_descendant", "v2_lookahead"]
 
     write_v2_bundle(tmp_path, manifest=manifest, tables={n: [] for n in V2_TABLE_SCHEMAS})

@@ -414,10 +414,13 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 
 ## RF-Refine Fusion V2 — trajectory-coupled pre-terminal feedback (PLAN_RF_REFINE_FUSION_V2.md)
 
-> **MECHANISM COHORT CLOSED (2026-08-07, `e359ea0`) — source transmission demonstrated, reward
-> directionality not demonstrated under the Head-blind support law. V2F5A local implementation and
-> cluster handoff are ready; calibration, offline replay and the real one-cycle matched response
-> remain pending. Production `D>1` stays shut.**
+> **V2F5A ONE-CYCLE POLICY QUALIFICATION CLOSED (2026-08-07, `f05565d`) —
+> `immune_directed_transition_supported`.** Same-Head repeatability froze `epsilon_R=0.017013`;
+> the Head-directed support law passed on both predeclared proteins (`5ZHV_B` 55/56,
+> UCB -1.0481; `Q00511` 33/56, UCB -0.4286; both `< -epsilon_R`) with clean paired integrity.
+> This is a D1 same-Head directionality result, not independent immune validity or recursive
+> compounding evidence. Production `D>1` stays shut; the D4/K12 Uricase run is explicitly an
+> unblinded exploratory sandbox.
 >
 > `endpoint_change` is the mechanism test, and the whole endpoint channel at `D=1` is **one amino
 > acid** (`write_from_endpoint` is a single position by construction).
@@ -447,10 +450,9 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 > of sampling noise (the two "natural `c=50`" estimates disagree by 9 points on `Q00511`); only the
 > within-run paired `r` comparison is tight.
 >
-> **Next: run runbook §9 only.** Freeze same-sequence Head repeatability, replay the capped
-> Head-directed policy over the existing S7 `r=40` source states, and launch the 56-prefix
-> treatment/control one-cycle qualification only if both replay coverage gates pass. A `D=2`
-> cohort is not authorized by the positive transmission result alone.
+> **Next:** execute runbook §10 only as the explicitly marked Uricase capability sandbox. Re-emit
+> the §9 calibration over the same evidence with the characterized-24 counterfactual ceiling;
+> do not reinterpret the exploratory D4 outcome as a production-depth authorization.
 >
 > **STATE-TRANSITION CANARY CLOSED (2026-08-06, `4dd0922`) —
 > `WIRING_PASS_WITH_POPULATION_MISMATCH_DIAGNOSTIC`.** Both proteins produced a legal transition
@@ -473,11 +475,18 @@ disabled — a matched control VIEW, not a second run.
 | V2F5 one-cycle runner + paired mechanism executor | done; A2 made a shared-pool view 2026-08-05 |
 | V2F6 general D>=1 ladder + stationary comparator | done; production `D>1` launch-disabled |
 | V2F7 artifacts / ledger / resume / driver / preflight | done |
-| V2F5A minimal capped Head-directed policy + matched source-geometry control | local code/runbook ready 2026-08-07; frozen-Head calibration, S7 replay and cluster qualification NOT yet run |
+| V2F5A minimal capped Head-directed policy + matched source-geometry control | done 2026-08-07; §9 verdict `immune_directed_transition_supported`, D1/same-Head scope only |
+| Exploratory recursive Uricase sandbox | local code/runbook ready 2026-08-07; unblinded `D4/K12/r40`, 24 proteins, NOT yet run and not production authorization |
 
 Tests: prior broad gate 1250 V2 tests (+86 for V2F5A), V1/v0 regressions green (666). The §9
 handoff additions add a targeted `267 passed`: calibration/materializer/reader/preflight/driver plus the core
 Head-directed/paired/artifact/cohort surface; compile, `bash -n` and `git diff --check` pass.
+
+**Parallel non-confirmatory sandbox:** runbook §10 freezes a single-lineage progressive `D=4`,
+`K=12`, no-background-remask Uricase run. The explicit exploratory override is bound into run,
+fragment, checkpoint, resume and manifest identity; the direct archive remains primary and is
+exported to the common immune/structure evaluators without a v0 suffix. This does not change the
+§9 qualification gate or the production `D>1` lock.
 
 **V2F5A, what landed 2026-08-07** (answers the S7 §7.11 `not_demonstrated` verdict, whose cause was
 a Head-BLIND support law under a Head-ranked donor):
@@ -494,11 +503,11 @@ a Head-BLIND support law under a Head-ranked donor):
 | One-cycle matched contrast `run_policy_qualification_view` (`support_law` view) | `fusion_v2_runtime/paired.py` |
 | Offline coverage gate (PLAN §8.4), no descendants, no denoiser, no refold | `scripts/analysis/replay_v2_head_directed_policy.py` |
 
-**Still unmeasured (V2F5A):** runbook §9 Steps 3–5. The cluster must (1) re-score exact stored S7
-sequences and freeze both difference floors at twice the maximum same-sequence Head drift, (2)
-replay the real policy over the S7 `r=40` states and show at least 32 committed decisions per
-protein with no counterfactual-budget stall, and only then (3) run the 56-prefix matched one-cycle
-qualification. No descendant directionality result exists yet.
+**Measured V2F5A result:** runbook §9.8 records the frozen-Head repeatability, real-policy replay and
+56-prefix matched one-cycle response. Both proteins pass the intersection-union gate, but Q00511
+clears the 32-prefix floor by one and the same Head both chooses support and scores the primary.
+Therefore the result closes one-cycle policy directionality only; independent immune validity and
+recursive compounding remain unmeasured.
 
 **Open gaps:**
 
@@ -510,7 +519,7 @@ qualification. No descendant directionality result exists yet.
 | No production oracle factory, so the driver cannot launch a real run | **CLOSED** — the launch surface is `materialize_v2_canary_config.py` → `preflight_v2_canary_assembly.py` → `submit_rf_fusion_v2_canary.slurm` → `analysis/read_v2_canary.py`, runbook §3–§6 | `doc/SCRIPTS.md` 22–25 |
 | The structure gate is calibrated on a different population than it enforces on | **OPEN, decision pending.** Calibrated on full de novo trajectories (`5ZHV_B` scTM median 0.8528, 50% pass); enforces on completions RESUMED from a captured source state (median ≈0.798, 1/8 pass; descendants ≈0.712). This is why `5zhv_r30` admitted nothing | runbook §5.1 |
 | Depth-0 lineage incumbent `I_0` binding | **OPEN by PLAN §3.1, declared not defaulted.** The config must state `lineage_incumbent_depth0_rule`; the vocabulary is `cumulative_safety_reference` (implemented: `I_0 = ybar`, frozen before any endpoint is scored) and `predeclared_external_design` (declarable, refused by the oracle factory until it has its own content-bound input role) | `fusion_v2/reward.py`, `scripts/rf_fusion_v2_oracles.py` |
-| `eps_R` and the local contribution tolerance have no measured values | **CLUSTER STEP READY, still blocks generation.** `calibrate_v2_head_policy.py` re-scores exact S7 sequence bytes under the frozen Head and binds both difference floors to `2 * max_abs_repeat_drift`; materialization refuses a different Head or policy spec | runbook §9.1–§9.2 |
+| `eps_R` and the local contribution tolerance have no measured values | **CLOSED for the §9 Head instrument:** `max_abs_repeat_drift=0.008506`, both floors `epsilon_R=0.017013`. A new cohort may change only the counterfactual ceiling by re-emitting from the same evidence; it may not retune the measured floors | runbook §9.8 / §10.2 |
 | The SAME population question on the Head axis | **OPEN, unmeasured.** The hotspot threshold was calibrated on full trajectories and enforces on resumed ones; the artifact records `head_global_risk`, not `N_H^whole`, for Canary endpoints, so this run does not answer it | runbook §5.1 |
 
 ### Executed Canary (jobs `12094327–30`, rtx6000 / `immune-design-blackwell`, ~2 min + 8.6–35.9 GPU-s per cell)
