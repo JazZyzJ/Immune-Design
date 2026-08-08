@@ -1232,6 +1232,10 @@ safety, which is not the same as evidence that it does not.**
   production policy spec is frozen (PLAN §8.4); a placeholder would yield a number that looks like
   evidence. The reward-ordering QUESTION is nonetheless answered — §7.11 reaches it through
   `endpoint_change`, which needs no freeze.
+- `scripts/preflight_v2_canary_assembly.py` is not V2F5A-aware: it resolves the support policy with
+  the band and stratum alone, so a `head_directed_capped` cell always fails with `V2OracleError`.
+  Making it pass needs a Head it can legitimately wrap, not a stub — see §9.4 for the one-prefix
+  real-stack substitute and why a stub would weaken the gate rather than fix it.
 - `source_change` (PLAN §2.6 intervention 2 — endpoint AND support pinned, source ablated) is
   implemented in `paired.py` but has never been executed. `source_shuffle` does not substitute for
   it: its arm B collapses structure to 0.9% / 0.0%, so any outcome read on that arm is confounded.
@@ -1462,6 +1466,37 @@ python scripts/preflight_v2_canary_assembly.py \
          "${QUAL_WORK}/resolved_configs/q00511_v2f5a_r40.yaml=Q00511"
 ```
 
+**The assembly preflight cannot pass on a V2F5A cell, and that is a gap in the GATE, not in the
+run.** It calls `resolve_support_policy(config, band_table=..., stratum_key=...)` and nothing else,
+which is everything the Head-blind `StateDerivedProbePolicy` needs; `head_directed_capped` also
+needs `head_oracle`, `incumbent`, `safety_reference_score`, `evaluator` and `window_grid_digest`, so
+it raises `V2OracleError`. The script cannot supply the first of those by design — it exists to do
+"everything `build_v2_oracles` does except the two torch builds", so it has no Head to wrap in a
+`CounterfactualHeadScorer`. Handing it a stub Head would be worse than the gap: the check would then
+go green whenever the policy is merely *constructible*, which is exactly the launch-blocking class of
+fault the gate exists to catch.
+
+Until the gate is made V2F5A-aware, substitute a **one-prefix run on the real stack**, which
+exercises `build_v2_oracles` itself rather than an emulation of it:
+
+```bash
+for CELL in 5zhv_v2f5a_r40 q00511_v2f5a_r40; do
+  # shellcheck source=/dev/null
+  source "${QUAL_WORK}/resolved_configs/${CELL}.args.sh"
+  python scripts/run_rf_fusion_v2.py \
+    --v2-config "${V2_CONFIG}" --out-dir "${SMOKE}/${CELL}" --cohort "${V2_COHORT}" \
+    --mechanism-prefixes 1 --qualification \
+    --input-file "${INPUT_FILES[@]}" --shard-input "${SHARD_INPUTS[@]}" \
+                  "journal_dir=${SMOKE}/${CELL}/journals" "device=cuda"
+done
+```
+
+`RC=0` is not the check — the bundle is. Require, on each cell, one `arm_a` row with
+`policy_id=head_directed_capped` and `head_evidence_consulted=true`, one `arm_b` row with
+`source_geometry_control` and `false`, **equal realized `n_write_from_endpoint` and `n_reopen`
+across the two arms**, `view=support_law`, and no parity violation. Anything less and the full cohort
+would produce an unmatched contrast.
+
 ### 9.5 Step 5 — run the matched one-cycle qualification
 
 Submit both cells before reading either response:
@@ -1469,14 +1504,21 @@ Submit both cells before reading either response:
 ```bash
 QUALIFICATION=1 MECHANISM_PREFIXES=56 CELL=5zhv_v2f5a_r40 \
   WORK=${QUAL_WORK} RUNDIR=${QUAL_RUN} \
-  sbatch --time=12:00:00 --mem=64G --job-name=v2f5a_5zhv \
+  sbatch --time=03:00:00 --mem=64G --job-name=v2f5a_5zhv \
   scripts/submit_rf_fusion_v2_canary.slurm
 
 QUALIFICATION=1 MECHANISM_PREFIXES=56 CELL=q00511_v2f5a_r40 \
   WORK=${QUAL_WORK} RUNDIR=${QUAL_RUN} \
-  sbatch --time=12:00:00 --mem=64G --job-name=v2f5a_q00511 \
+  sbatch --time=03:00:00 --mem=64G --job-name=v2f5a_q00511 \
   scripts/submit_rf_fusion_v2_canary.slurm
 ```
+
+`--time` is sized on the SLOWEST shard from MEASURED S7 walltime, not on headroom-by-habit: 56
+prefixes took `28:41` (`5ZHV_B`) and `60:32` (`Q00511`) at FOUR cycles per prefix, and the
+qualification runs two, plus at most 278 leave-one-out Head calls per cycle — the entire Step-4
+replay, ~13k such calls, took `2:21` including model load. `3h` is roughly 5x the derived estimate,
+stays inside `gpu-short` (MaxWall 24h) and queues far faster than the `12h` this section first
+requested. `--mem=64G` is kept: the one-prefix smoke peaked at 43.5 GB.
 
 The launcher expects the cell `.args.sh` under `${WORK}/resolved_configs`, so these submissions set
 `WORK=${QUAL_WORK}`. Do not copy a YAML without its generated `.args.sh`.
