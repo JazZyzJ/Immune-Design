@@ -1575,3 +1575,71 @@ not be used to filter the Head primary after treatment.
 
 Even a positive result is a one-cycle policy-directionality result, not a recursive capability or
 biological immune-validity claim. Independent terminal immune validation remains downstream.
+
+### 9.8 EXECUTED (2026-08-07, `f05565d`) — `immune_directed_transition_supported`
+
+**Step 3.** `max_abs_repeat_drift = 0.008506` raw logits over 816 (`5ZHV_B`) and 828 (`Q00511`)
+unique stored sequences, so **`epsilon_R = 0.017013`**. The Head digests match S7's exactly
+(`3ab780…` / `acb178…`), on k = 12–25.
+
+**Step 4.** Both replays passed the coverage gate, and the numbers say what the intervention actually
+changed:
+
+| | committed | positive write | realized writes (median) | required reopen (median) | overlap with the Head-BLIND write site |
+|---|---:|---:|---:|---:|---:|
+| `5ZHV_B` | 219 | 220/220 | **6** = `ceil(0.05*102)` | 29 | **0.0046** |
+| `Q00511` | 118 | 118/118 | **14** = `ceil(0.05*278)` | 70 | **0.0169** |
+
+No `stall_counterfactual_budget_exceeded` on either protein. The overlap column is the point: the
+Head-directed sites are essentially disjoint from the ones the S7 law chose, so this is a genuinely
+different support, not a re-weighting of the same one.
+
+**Step 5.** `18:07` and `27:55`. Integrity is clean on both cells — every check passes, including the
+paired reads that had to be repaired first (§9.4 note and the reader commit): 1 and 23 feedback-off
+view rows excluded, 220 and 132 fork seeds shared by a matched pair with **0** within-state
+collisions.
+
+**Primary — both proteins pass the intersection-union gate.**
+
+| | prefixes scored | mean | median | sd | one-sided 95% UCB | gate |
+|---|---:|---:|---:|---:|---:|---|
+| `5ZHV_B` | 55/56 | -1.9149 | -1.2851 | 3.841 | **-1.0481** | `< -0.017013` ✓ |
+| `Q00511` | **33**/56 | -1.6917 | -2.4819 | 4.284 | **-0.4286** | `< -0.017013` ✓ |
+
+The unscored prefixes are typed refusals, not losses: one `stall_band_infeasible` on `5ZHV_B` (the
+exact band solver needed 10–41 writes to reach `u_target=61` and the 5% cap allows 6) and 23
+`stall_no_better_donor` on `Q00511`, where no donor beat the depth-0 incumbent `-4.8120` by
+`epsilon_R`. Both are the policy failing closed.
+
+**Structure, a reported secondary — and a trap worth recording.** The verdict's
+`both_structure_feasible_fraction` is `0.700` / `0.674`, which reads like a collapse against S7's
+~0.90 / ~0.86 per-ARM rates. It is not: those are the fractions where BOTH arms fold, and the
+per-arm rates are
+
+| | depth-0 pool | arm A (Head-directed) | arm B (geometry control) | both | independence predicts |
+|---|---:|---:|---:|---:|---:|
+| `5ZHV_B` | 0.853 | **0.900** | 0.791 | 0.700 | 0.712 |
+| `Q00511` | 0.871 | 0.833 | 0.818 | 0.674 | 0.682 |
+
+`both` sits on the independence prediction, so there is no interaction to explain. Paired per fork,
+the Head-directed arm folds **better** than its matched control on `5ZHV_B` (44 A-only vs 20 B-only,
+McNemar `p = 0.0037`) and indistinguishably on `Q00511` (21 vs 19, `p = 0.875`). Comparing a
+both-arms fraction against a per-arm rate is the same error class as §7.9's retracted 26 points.
+
+**Decision: `immune_directed_transition_supported`.** V2F5A closes. Per §9.7 a separate small `D=2`
+authority/config may now be designed — separately, and not by widening this one.
+
+**Four things this is not.**
+
+* Not an immune-validity claim. The Head that RANKS the write candidates is the Head that SCORES the
+  primary. Both arms write the same COUNT from the same donor, so the contrast does isolate site
+  selection — but much of a `-1.9` shift is the mechanical consequence of committing residues chosen
+  by leave-one-out contribution and then scoring them with that same evaluator. There is no held-out
+  immune measurement here; §9.7's closing sentence stands.
+* Not powered on `Q00511`. 33 scored prefixes clear the floor of 32 by one. One further
+  `stall_no_better_donor` would have made the cell `underpowered_unresolved`.
+* Not a compounding result. One cycle, `D=1`, at one coordinate (`r=40`, `c=50 -> 60`).
+* Not a refutation of §7.11, and not in tension with it. §7.11 measured the S7 Head-BLIND law and
+  found its reward channel inert; this measures a law that chooses its support FROM Head evidence at
+  sites 99.5% disjoint from that law's. The two results compose: the channel was inert because
+  nothing was steering it.
