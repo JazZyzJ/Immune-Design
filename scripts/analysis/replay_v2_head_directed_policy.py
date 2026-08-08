@@ -539,11 +539,18 @@ def _load_head(args):
     from scripts.run_rf_refine_fusion import _build_head_scorer_from_args
     from scripts.run_if_phase_c1 import build_head_scorer
 
+    # The window grid belongs on this namespace too: ``_build_head_scorer_from_args`` passes
+    # ``args.window_k_min``/``window_k_max`` straight through to ``build_head_scorer``, so omitting
+    # them is an AttributeError at Head-construction time -- i.e. after a GPU has been allocated.
+    # ``main`` fills both from ``config.head`` when the flags are absent, and
+    # ``calibrate_v2_head_policy.py`` requires them, so they are always resolved by the time we get
+    # here.  Guarded by ``test_load_head_namespace_covers_every_field_the_builder_reads``.
     scorer = _build_head_scorer_from_args(SimpleNamespace(
         head_config_dir=args.head_config, head_checkpoint=args.head_checkpoint,
         head_variant_id=args.head_variant_id, head_device=args.device,
         head_allele_idx=args.head_allele_idx, head_window_batch_size=args.head_window_batch_size,
         allele=args.allele,
+        window_k_min=args.window_k_min, window_k_max=args.window_k_max,
     ), build_head_scorer)
     return ProductionHeadOracle(
         scorer, allele=args.allele, score_scale=args.score_scale,

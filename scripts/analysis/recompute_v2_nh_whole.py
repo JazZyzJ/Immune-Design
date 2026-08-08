@@ -145,6 +145,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--refold-cache-dir", required=True)
     parser.add_argument("--esmfold2-site-packages", required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--dump-reference-json", default=None, metavar="PATH",
+                        help="also write the NATIVE REFERENCE's own window landscape per protein. "
+                             "`N_H^whole` is a max over `z_w(design) - z_w(reference)`, and the "
+                             "bundles store only the design side, so without this the per-window "
+                             "increments -- and therefore which window sets the max, and whether "
+                             "any single position can lower it -- are not recoverable offline. "
+                             "Costs one extra Head call per protein, which the run already makes")
     parser.add_argument("--verify-designs", action="store_true",
                         help="re-score every design with the live Head and refuse on drift beyond "
                              "--verify-tolerance; the observed drift is reported either way")
@@ -188,6 +195,7 @@ def main(argv=None) -> int:
     test_sets, pdb_roots = _pairs(args.test_set_parquet), _pairs(args.pdb_root)
     del HeadEvaluatorIdentity  # the identity comes from the SCORER, never hand-typed here
     summary: dict[str, Any] = {"proteins": {}}
+    reference_dump: dict[str, Any] = {}
     for protein_id in proteins:
         head_oracle, _structure = build_production_oracles(
             structure_config=args.structure_config,
@@ -211,6 +219,21 @@ def main(argv=None) -> int:
             sequence_md5=sequence_md5(reference_sequence),
             sequence_length=len(reference_sequence))])[0]
         binding_id = f"ref:nh-recompute:{protein_id}"
+        if args.dump_reference_json:
+            reference_dump[protein_id] = {
+                "sequence": reference_sequence,
+                "sequence_md5": sequence_md5(reference_sequence),
+                "global_risk": float(reference_score.global_risk),
+                "residue_hotspot": [float(v) for v in
+                                    (getattr(reference_score, "residue_hotspot", None) or ())],
+                "windows": [{"start_0b": int(w.start_0b), "end_0b": int(w.end_0b),
+                             "k": int(w.k), "z": float(w.z)} for w in reference_score.windows],
+                "evaluator": {"allele": identity.allele, "score_scale": identity.score_scale,
+                              "window_k_min": identity.window_k_min,
+                              "window_k_max": identity.window_k_max,
+                              "head_config_hash": identity.head_config_hash,
+                              "head_checkpoint_digest": identity.head_checkpoint_digest},
+            }
 
         mine = [row for row in rows if row["protein_id"] == protein_id]
         if args.verify_designs:
@@ -298,6 +321,11 @@ def main(argv=None) -> int:
     frame.to_parquet(args.out_parquet, index=False)
     Path(args.out_json).write_text(json.dumps(summary, indent=2, sort_keys=True, default=str),
                                    encoding="utf-8")
+    if args.dump_reference_json:
+        path = Path(args.dump_reference_json)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(reference_dump, indent=2, sort_keys=True, default=str),
+                        encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))
     return 0
 

@@ -1288,23 +1288,32 @@ mkdir -p "${QUAL_WORK}"/{calibration,replay,resolved_configs,analysis} "${QUAL_R
 GIT_SHA=$(git rev-parse HEAD)
 POLICY_SPEC=${PROJECT_ROOT}/inverse_folding/reference_flow/configs/v2_head_directed_capped_policy_v1.json
 
-# Replace only with the exact frozen S7 inputs.
-HEAD_CONFIG="/absolute/path/to/frozen_head_config_directory"
-HEAD_CHECKPOINT="/absolute/path/to/frozen_head_checkpoint"
-HEAD_VARIANT_ID="frozen_variant_id"
+# The exact frozen S7 instrument, read off the S7 resolved configs and the hotspot artifact rather
+# than retyped: `--head-config` is the config DIRECTORY (it maps to v0's `head_config_dir`), and
+# `HEAD_ALLELE_IDX` / `HEAD_WINDOW_BATCH_SIZE` are the values S7's own runtime defaulted to.
+HEAD_CONFIG="${PROJECT_ROOT}/epitope_head/configs"
+HEAD_CHECKPOINT="${SCRATCH_BASE}/run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold0/runs/LC1/seed_42/best.pt"
+HEAD_VARIANT_ID="LC1"
 HEAD_ALLELE_IDX=0
 HEAD_WINDOW_BATCH_SIZE=64
 ALLELE=DRB1_0701
 SCORE_SCALE=raw_logit
-WINDOW_K_MIN=13
+# 12, NOT 13. The frozen `DRB1_0701` Head emits k = 12..25; the hotspot calibration artifact, the S7
+# resolved configs and the stored endpoint window vectors all carry `window_k_min = 12`. Declaring 13
+# would not narrow the grid -- `whole_landscape_new_hotspot` refuses any score containing an
+# out-of-domain window, so it is a guaranteed 0-of-N rather than a filter (§2.2).
+WINDOW_K_MIN=12
 WINDOW_K_MAX=25
 
-# Name ONLY the completed r=40 S7 bundles. Repeat-batch paths are allowed; prefix indices must be
-# disjoint. Do not include r=30, the Canary, resumed-null, or a post-hoc N_H sidecar directory.
-S7_5ZHV_B_BUNDLES=("/absolute/path/to/S7_5ZHV_B_r40_batch1" "/absolute/path/to/S7_5ZHV_B_r40_batch2")
-S7_Q00511_BUNDLES=("/absolute/path/to/S7_Q00511_r40_batch1" "/absolute/path/to/S7_Q00511_r40_batch2")
-REF_5ZHV_B="/absolute/path/to/5ZHV_B.seq"
-REF_Q00511="/absolute/path/to/Q00511.seq"
+# The completed r=40 S7 mechanism bundles. Prefix indices are disjoint by construction: batch 1 ran
+# 0-15 and batch 2 ran 16-55. r=30 (`v2_mechanism_r30`), the Canary, the resumed null, the smoke and
+# replay cells, and the `nh_mechanism` sidecar are all deliberately absent.
+S7_5ZHV_B_BUNDLES=("${SCRATCH_BASE}/run/inverse_folding/v2_mechanism/5zhv_mech" \
+                   "${SCRATCH_BASE}/run/inverse_folding/v2_mechanism_b2/5zhv_mech")
+S7_Q00511_BUNDLES=("${SCRATCH_BASE}/run/inverse_folding/v2_mechanism/q00511_mech" \
+                   "${SCRATCH_BASE}/run/inverse_folding/v2_mechanism_b2/q00511_mech")
+REF_5ZHV_B="${WORK}/5ZHV_B.seq"
+REF_Q00511="${WORK}/Q00511.seq"
 ```
 
 ### 9.1 Step 3 — freeze the Head repeatability floor

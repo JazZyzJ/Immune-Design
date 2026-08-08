@@ -566,7 +566,11 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     the gradient in question) and `admitted`, with rejected endpoints kept in the population
     because the null is over all feedback-off endpoints. Emits a parquet plus a summary that puts
     the resumed distribution next to the full-trajectory hotspot artifact and counts how many
-    resumed endpoints exceed its threshold.
+    resumed endpoints exceed its threshold. `--dump-reference-json` additionally writes the NATIVE
+    REFERENCE's own window landscape per protein: `N_H^whole` is a max over
+    `z_w(design) - z_w(reference)` and the bundles store only the design side, so without it the
+    per-window increments — which window sets the max, and whether any single position can lower it
+    — are not recoverable offline. It costs no extra Head work; the run already scores the reference.
 
 25. `scripts/preflight_v2_canary_assembly.py` — the gate `--dry-run` cannot be.
     `run_rf_fusion_v2.py --dry-run` deliberately loads no model, so it returns BEFORE
