@@ -210,6 +210,60 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
     if getattr(args, "campaign_id", None):
         config["identity"]["campaign_id"] = str(args.campaign_id)
 
+    policy_calibration = getattr(args, "policy_calibration_json", None)
+    if policy_calibration:
+        payload = json.loads(Path(policy_calibration).read_text(encoding="utf-8"))
+        if payload.get("schema_version") != "v2-head-policy-calibration-bundle/1":
+            raise MaterializeError(
+                f"{policy_calibration} is not a v2-head-policy-calibration-bundle/1 artifact"
+            )
+        block = payload.get("head_directed")
+        if not isinstance(block, dict):
+            raise MaterializeError(f"{policy_calibration} carries no head_directed config block")
+        measured_head = payload.get("head")
+        expected_head = {
+            "allele": config["head"]["allele"],
+            "score_scale": config["head"]["score_scale"],
+            "window_k_min": int(config["head"]["window_k_min"]),
+            "window_k_max": int(config["head"]["window_k_max"]),
+            "head_config_hash": frozen["head_config"],
+            "head_checkpoint_digest": frozen["head_checkpoint"],
+        }
+        if not isinstance(measured_head, dict):
+            raise MaterializeError(
+                f"{policy_calibration} carries no frozen Head evaluator identity"
+            )
+        mismatch = {
+            key: (measured_head.get(key), value)
+            for key, value in expected_head.items() if measured_head.get(key) != value
+        }
+        if mismatch:
+            raise MaterializeError(
+                f"{policy_calibration} was measured on a different Head instrument/domain: "
+                f"{mismatch}"
+            )
+        if payload.get("policy_spec_sha256") != frozen["projection_policy_spec"]:
+            raise MaterializeError(
+                f"{policy_calibration} was bound to policy spec "
+                f"{payload.get('policy_spec_sha256')!r}, but this cell supplies "
+                f"{frozen['projection_policy_spec']!r}"
+            )
+        config["identity"]["phase"] = "policy_qualification"
+        config["identity"]["split_role"] = "policy_qualification"
+        config["projection"].update({
+            "support_policy_id": "head_directed_capped",
+            "support_policy_version": "v1",
+            "support_policy_is_diagnostic": False,
+            "head_directed": json.loads(json.dumps(block)),
+        })
+        head_cap = getattr(args, "qualification_max_head_calls", None)
+        if isinstance(head_cap, bool) or not isinstance(head_cap, int) or head_cap < 1:
+            raise MaterializeError(
+                "--qualification-max-head-calls is required with --policy-calibration-json; "
+                "the one-cycle paired cohort must carry an explicit cohort Head cap"
+            )
+        config["caps"]["max_head_calls"] = int(head_cap)
+
     points = config["schedule"]["points"]
     if len(points) != 1:
         raise MaterializeError(
@@ -352,6 +406,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--campaign-id", default=None,
                         help="override identity.campaign_id (default: the template's).  Use a "
                              "distinct campaign for a distinct question, e.g. the mechanism cohort")
+    parser.add_argument(
+        "--policy-calibration-json", default=None,
+        help="optional v2-head-policy-calibration-bundle/1 artifact. When supplied, materialize "
+             "a policy_qualification config under head_directed_capped instead of the template's "
+             "diagnostic policy; the calibrated values are copied verbatim and validated by the "
+             "typed config loader",
+    )
+    parser.add_argument(
+        "--qualification-max-head-calls", type=int, default=None,
+        help="cohort Head-call hard cap written into a policy-qualification config; required with "
+             "--policy-calibration-json and ignored otherwise",
+    )
     return parser
 
 

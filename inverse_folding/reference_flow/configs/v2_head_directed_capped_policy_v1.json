@@ -1,0 +1,33 @@
+{
+  "schema_version": "v2-projection-policy-spec/1",
+  "policy_id": "head_directed_capped",
+  "policy_version": "v1",
+  "is_diagnostic_only": false,
+  "authority": "PLAN_RF_REFINE_FUSION_V2 §2.5 and §8.4",
+  "scope": "One-cycle V2F5A policy qualification. The projection kernel, source, donor, schedule band, horizon, descendant seeds and substrate remain unchanged; only support identity differs from the matched source-geometry control.",
+  "donor_gate": {
+    "law": "R_H(donor) < R_H(lineage_incumbent) - epsilon_R",
+    "epsilon_source": "frozen Head repeatability or numerical precision calibration",
+    "fallback": "none; emit stall_no_better_donor"
+  },
+  "write_law": {
+    "candidate_domain": "editable non-anchor positions unresolved in the live source, donor/incumbent-discordant, and covered by an aligned Head window improved in the donor",
+    "contribution": "R_H(donor with position reverted to incumbent) - R_H(donor)",
+    "positive_gate": "strictly greater than the calibrated local-contribution tolerance",
+    "cap": "ceil(0.05 * N_editable)",
+    "selection": "descending contribution, residue index as final deterministic tie-break",
+    "fallback": "none; emit stall_no_positive_local_write"
+  },
+  "reopen_law": {
+    "count": "u_target - u_source + m_write",
+    "target": "content-bound midpoint_tie_low centre of the exact schedule band",
+    "priority": "new_hotspot>worsened>residual_burden>active_uncertainty>temporal_instability>index",
+    "background_remask": false
+  },
+  "matched_control": {
+    "policy_id": "source_geometry_control",
+    "policy_version": "v1",
+    "law": "same donor, realized write/reopen cardinalities, band, horizon and descendant seeds; write/reopen positions selected by the former source-geometry order"
+  },
+  "not_authorized": "No dose ladder, exploration lane, sibling consensus, adaptive breadth/depth allocation or production D>1. A positive one-cycle directionality result only authorizes the next separately frozen capability step."
+}

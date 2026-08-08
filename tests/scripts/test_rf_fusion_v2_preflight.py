@@ -122,6 +122,15 @@ def test_the_projection_scales_with_the_cohort():
     assert seven.total_head_calls == 7 * (K0 + K1 + K1)
 
 
+def test_execution_replicates_scale_every_conservative_launch_component():
+    one = project_v2_budget(_config(), n_proteins=1)
+    paired = project_v2_budget(_config(), n_proteins=1, execution_replicates=112)
+    assert paired.execution_replicates == 112
+    assert paired.per_protein_logical_dfe == 112 * one.per_protein_logical_dfe
+    assert paired.total_head_calls == 112 * one.total_head_calls
+    assert paired.total_definitive_refolds == 112 * one.total_definitive_refolds
+
+
 # --------------------------------------------------------------------------------------------
 # the gate fails closed
 # --------------------------------------------------------------------------------------------

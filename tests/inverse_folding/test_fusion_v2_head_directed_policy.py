@@ -273,12 +273,13 @@ def _band_table(*, unresolved_lo=4.0, unresolved_hi=8.0, step=R_STEP):
 
 
 def _calibration(*, fraction=0.3, epsilon=0.0, tolerance=0.0,
-                 rule=sch.BandCenterRule.MIDPOINT_TIE_LOW):
+                 rule=sch.BandCenterRule.MIDPOINT_TIE_LOW, counterfactual_budget=64):
     return pol.HeadDirectedCalibration(
         write_cap_editable_fraction=fraction, write_cap_source_ref=F.digest("cap"),
         epsilon_r=epsilon, epsilon_source_ref=F.digest("eps"),
         local_contribution_tolerance=tolerance,
         local_contribution_source_ref=F.digest("tol"), band_center_rule=rule,
+        max_counterfactual_head_calls_per_cycle=counterfactual_budget,
     )
 
 
@@ -1018,6 +1019,7 @@ def _head_directed_payload(**over):
         "reopen_priority_law": pol.REOPEN_PRIORITY_LAW,
         "control_policy_id": pol.SOURCE_GEOMETRY_CONTROL_POLICY_ID,
         "control_policy_version": "v1",
+        "max_counterfactual_head_calls_per_cycle": 64,
     }
     payload.update(over)
     return payload
@@ -1071,6 +1073,18 @@ def test_the_cap_may_not_claim_to_be_a_head_measurement():
     payload["projection"]["head_directed"]["write_cap_editable_fraction"] = _policy_scalar(
         0.05, unit="editable_fraction", kind="frozen_head_repeatability", source_id="x")
     with pytest.raises(cfg.V2ConfigError, match="frozen_declared_fraction"):
+        cfg.load_v2_config(payload)
+
+
+def test_the_production_config_freezes_the_head_directed_cap_at_five_percent():
+    calibration = cfg.load_v2_config(_config_payload()).head_directed_calibration()
+    assert calibration.write_cap_editable_fraction == 0.05
+
+    payload = _config_payload()
+    payload["projection"]["head_directed"]["write_cap_editable_fraction"] = _policy_scalar(
+        0.25, unit="editable_fraction", kind="frozen_declared_fraction",
+        source_id="tmp-fusion-v2-note-3.4")
+    with pytest.raises(cfg.V2ConfigError, match="must equal the frozen V2F5A value 0.05"):
         cfg.load_v2_config(payload)
 
 
@@ -1311,6 +1325,19 @@ def test_the_matched_qualification_contrast_runs_both_laws_at_one_dose():
     assert (result.treatment.realized_propagation_seed
             == result.control.realized_propagation_seed)
 
+    # Shared PRE-feedback evidence does not mean shared mutable post-feedback history.  Each arm
+    # must admit descendants into its own fork or the treatment changes what the control sees.
+    assert treatment.archive is not control.archive
+    treatment_descendants = {endpoint.endpoint_id for endpoint in treatment.descendant_endpoints}
+    control_descendants = {endpoint.endpoint_id for endpoint in control.descendant_endpoints}
+    treatment_archive = {row.endpoint_id for row in treatment.archive.raw_rows()}
+    control_archive = {row.endpoint_id for row in control.archive.raw_rows()}
+    assert treatment_descendants and control_descendants
+    assert treatment_descendants <= treatment_archive
+    assert control_descendants <= control_archive
+    assert treatment_descendants.isdisjoint(control_archive)
+    assert control_descendants.isdisjoint(treatment_archive)
+
 
 def test_the_qualification_contrast_cannot_be_run_through_the_mechanism_runner():
     """Its B arm re-uses one policy object; running the support-law view there would produce two
@@ -1366,6 +1393,7 @@ def _replay_config():
         reopen_count_law=pol.REOPEN_COUNT_LAW,
         reopen_priority_law=pol.REOPEN_PRIORITY_LAW,
         control_policy_id=pol.SOURCE_GEOMETRY_CONTROL_POLICY_ID, control_policy_version="v1",
+        max_counterfactual_head_calls_per_cycle=64,
     )
     return _dc.replace(
         base,
@@ -1463,3 +1491,154 @@ def test_the_replay_refuses_to_fabricate_a_contribution_without_a_head(tmp_path)
             stratum_key=F.STRATUM, reference_sequence=F.reference_sequence(L),
             head_oracle=None, protein_id="5ZHV_B",
         )
+
+
+# --------------------------------------------------------------------------------------------
+# the counterfactual Head budget is DECLARED, PROJECTED and ENFORCED
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_counterfactual_batch_is_bounded_by_the_declared_budget():
+    """REGRESSION. The leave-one-out batch is one Head call per legal write candidate, so a run
+    whose projection counted only the scored endpoints could pass `--dry-run` and then breach
+    `max_head_calls` after paying for a model.
+
+    Enforced BEFORE the batch runs, and by refusal rather than truncation: `a_i` is compared across
+    ALL legal candidates to take the exact top `m_d`, so a partial batch would rank the best of an
+    arbitrary subset while the artifact still claimed the exact rule.
+    """
+    source = _source(SOURCE_SEQ)
+    donor = _donor(source=source)
+    head = _ScriptedHead()
+    result = _decide(source=source, endpoint=donor,
+                     policy=_policy(head=head,
+                                    calibration=_calibration(counterfactual_budget=1)))
+    assert isinstance(result, pol.PolicyRejection)
+    assert pol.StallReason.COUNTERFACTUAL_BUDGET_EXCEEDED.value in result.reason
+    assert result.decision_evidence.n_legal_write_candidates == len(MASKED)
+    assert head.batches == [], "the refusal must cost no Head call at all"
+
+
+def test_the_budget_projection_charges_the_counterfactual_batch():
+    """REGRESSION. `--dry-run` must see the Head calls the policy itself will make."""
+    from scripts.rf_fusion_v2_preflight import project_v2_budget
+
+    config = cfg.load_v2_config(_config_payload())
+    projection = project_v2_budget(config, n_proteins=2)
+    per_cycle = config.projection.head_directed.max_counterfactual_head_calls_per_cycle
+    n_points = len(config.schedule.points)
+    assert projection.per_protein_counterfactual_head_calls == per_cycle * n_points
+
+    without = cfg.load_v2_config(_config_payload())
+    without = dataclasses.replace(
+        without, projection=dataclasses.replace(without.projection, head_directed=None))
+    baseline = project_v2_budget(without, n_proteins=2)
+    assert baseline.per_protein_counterfactual_head_calls == 0
+    assert (projection.total_head_calls
+            == baseline.total_head_calls + per_cycle * n_points * 2)
+
+
+def test_a_projection_that_breaches_the_head_cap_on_counterfactuals_alone_is_infeasible():
+    """The bound must be able to FAIL the launch gate, or charging it changes nothing."""
+    from scripts.rf_fusion_v2_preflight import project_v2_budget
+
+    payload = _config_payload()
+    payload["projection"]["head_directed"]["max_counterfactual_head_calls_per_cycle"] = 10 ** 6
+    projection = project_v2_budget(cfg.load_v2_config(payload), n_proteins=1)
+    assert "max_head_calls" in projection.breached_caps
+    assert not projection.feasible
+
+
+# --------------------------------------------------------------------------------------------
+# the production CLI path for the qualification contrast
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_driver_selects_the_qualification_runner():
+    """REGRESSION. `run_policy_qualification_view` had no caller outside the tests, so the PLAN
+    §8.4 comparison could not be launched from a CLI at all."""
+    import types
+
+    from scripts.run_rf_fusion_v2 import V2DriverError, build_parser, select_runner
+
+    assert "--qualification" in build_parser().format_help()
+
+    chosen = select_runner(
+        types.SimpleNamespace(mechanism_prefixes=4, mechanism_prefix_start=0, qualification=True),
+        ladder="LADDER", mechanism=lambda **kw: kw)
+    assert chosen() == {"n_prefixes": 4, "prefix_start": 0, "qualification": True}
+
+    with pytest.raises(V2DriverError, match="--qualification needs --mechanism-prefixes"):
+        select_runner(
+            types.SimpleNamespace(mechanism_prefixes=0, mechanism_prefix_start=0,
+                                  qualification=True),
+            ladder="LADDER", mechanism=lambda **kw: kw)
+
+
+def test_the_qualification_shard_refuses_a_config_with_no_head_directed_policy():
+    """One law is not a contrast.  Refused before the shard pays for a model."""
+    from scripts.rf_fusion_v2_cohort import V2CohortError, run_v2_mechanism_shard
+
+    with pytest.raises(V2CohortError, match="--qualification needs a config"):
+        run_v2_mechanism_shard(
+            protein_id="5ZHV_B", config=F.v2_config(length=L), signature=None, out_dir=".",
+            oracles_factory=lambda **kw: {}, n_prefixes=1, qualification=True)
+
+
+def test_the_support_law_contrast_is_scorable_on_the_shared_free_domain():
+    """The two support laws reopen DIFFERENT positions -- that is the treatment -- so their free
+    domains differ by construction. Requiring equality (as the mechanism views do) would mark every
+    pair unscorable and the qualification cohort would produce an empty table."""
+    from scripts.rf_fusion_v2_artifacts import (
+        POLICY_QUALIFICATION_CONTRAST_VIEWS,
+        SCORABLE_CONTRAST_VIEWS,
+        mechanism_contrast_rows,
+    )
+    from inverse_folding.reference_flow.fusion_v2_runtime.cycle import run_one_cycle
+
+    assert "support_law" in SCORABLE_CONTRAST_VIEWS
+    assert "support_law" in POLICY_QUALIFICATION_CONTRAST_VIEWS
+
+    kwargs = _cycle_kwargs()
+    treatment = run_one_cycle(**kwargs)
+    assert treatment.committed, treatment.detail
+    control_policy = pol.SourceGeometryControlPolicy(
+        band_table=kwargs["band_table"], stratum_key=F.STRATUM,
+        incumbent=kwargs["support_policy"].incumbent,
+        evaluator=kwargs["support_policy"].evaluator,
+        calibration=kwargs["support_policy"].calibration,
+        required_writes=len(treatment.projected.support.write_from_endpoint),
+        required_reopens=len(treatment.projected.support.reopen),
+        policy_spec_digest=kwargs["support_policy"].policy_spec_digest,
+    )
+    control = run_one_cycle(**dict(
+        kwargs, support_policy=control_policy,
+        declared_policy=pol.DeclaredPolicy(
+            policy_id=pol.SOURCE_GEOMETRY_CONTROL_POLICY_ID, policy_version="v1",
+            is_diagnostic=False, phase="policy_qualification")))
+    assert control.committed, control.detail
+
+    rows = mechanism_contrast_rows(
+        protein_id="5ZHV_B", source_index=0, source_seed=1, source_state_id=None,
+        source_unresolved_editable=None, view="support_law",
+        arm_a=treatment, arm_b=control)
+    assert rows and any(row["analyzable"] for row in rows), [r["reason"] for r in rows]
+    scored = next(row for row in rows if row["analyzable"])
+    # The descendant ids are what a reader joins to `complete_endpoints.head_global_risk` for the
+    # PRIMARY readout; the Hamming columns are the mechanism secondary.
+    assert scored["arm_a_descendant_id"] and scored["arm_b_descendant_id"]
+
+    # The same pair under a mechanism view is still refused: only the support-law contrast is
+    # allowed to score on the intersection.
+    refused = mechanism_contrast_rows(
+        protein_id="5ZHV_B", source_index=0, source_seed=1, source_state_id=None,
+        source_unresolved_editable=None, view="endpoint_change",
+        arm_a=treatment, arm_b=control)
+    if set(free_positions(treatment)) != set(free_positions(control)):
+        assert not any(row["analyzable"] for row in refused)
+
+
+def free_positions(cycle):
+    from scripts.rf_fusion_v2_artifacts import free_domain
+
+    return free_domain(cycle.projected)

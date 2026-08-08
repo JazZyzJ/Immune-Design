@@ -4,10 +4,11 @@ Authority: `PLAN_RF_REFINE_FUSION_V2.md`. This runbook covers everything PLAN §
 ("Launcher and Canary commands are outside this PLAN revision and will be added to the runbook
 after the local code gate"). The local code gate is complete.
 
-**What this runbook does NOT authorize.** It takes you to a two-protein state-transition Canary and
-no further. Production `D>1` stays launch-disabled (PLAN §8.4), the production
-`FeedbackSupportPolicySpec` is not frozen, and no result from a Canary may be read as evidence that
-feedback transmits — the Canary establishes that the mechanism EXECUTES, not that it works.
+**What this runbook does NOT authorize.** It now reaches the one-cycle V2F5A Head-directed policy
+qualification in §9, after the state-transition Canary and powered S7 source-transmission result.
+It still does not authorize production `D>1`: only a positive, adequately covered §9 verdict on
+both predeclared proteins can support a later authority revision that opens a small recursive
+capability run. No wiring Canary is evidence of transmission or reward directionality.
 
 ---
 
@@ -1234,5 +1235,292 @@ safety, which is not the same as evidence that it does not.**
 - `source_change` (PLAN §2.6 intervention 2 — endpoint AND support pinned, source ablated) is
   implemented in `paired.py` but has never been executed. `source_shuffle` does not substitute for
   it: its arm B collapses structure to 0.9% / 0.0%, so any outcome read on that arm is confounded.
-- Nothing in V2 has run on a cluster. Every local suite uses fake oracles and validates **wiring
-  only**.
+- The Head-directed V2F5A support law has not yet run on the cluster. Sections 5 and 7 record the
+  completed real-model Canary and source-transmission campaign; local tests for §9 validate only
+  wiring, accounting and analysis semantics until the calibration/replay/qualification artifacts
+  below are produced.
+
+---
+
+## 9. V2F5A — one-cycle Head-directed policy qualification
+
+### 9.0 Frozen question and launch boundary
+
+S7 established that a source-coupled transition carries identity, but its support positions were
+Head-blind and descendant reward directionality was not demonstrated. V2F5A changes exactly one
+thing: the treatment chooses capped write/reopen support from frozen-Head evidence; the control
+uses the source-geometry law at the treatment's realized write/reopen cardinalities. Source, donor,
+substrate, `r=40`, `c_source=50`, `c_next=60`, maturity band, descendant seeds and horizon remain
+matched.
+
+This section freezes one direct confirmatory cohort, not a dose ladder:
+
+| Quantity | Frozen value | Reason |
+|---|---:|---|
+| proteins | `5ZHV_B`, `Q00511` | ordinary plus anchored predeclared substrates |
+| source prefixes | `56` per protein | same generated-prefix depth as S7; at least `32` scorable prefixes are required |
+| coordinate | `r=40`, `c_source=50`, `c_next=60`, `D=1` | S7-qualified transmission coordinate; no coordinate search |
+| write cap | `ceil(0.05 * N_editable)` | committed V2F5A policy law, a cap rather than a quota |
+| counterfactual ceiling | `278` per cycle | maximum editable domain in the predeclared two-protein qualification cohort; a hard mathematical ceiling, not outcome tuning |
+| cohort Head cap | `40000` per one-protein job | exceeds conservative preflight `2 * 56 * 278` plus endpoint Head scoring, without changing policy behavior |
+| primary | prefix-mean `HeadRisk(treatment) - HeadRisk(control)` | lower is better; matched forks are averaged within source prefix |
+| inferential gate | one-sided 95% upper bound `< -epsilon_R` on **both** proteins | `epsilon_R` is frozen below from same-sequence Head repeatability; conjunctive intersection-union gate |
+
+Steps 3–5 below are cluster measurements. Local tests cannot substitute for them. A negative or
+underpowered result keeps `D>1` closed; it is not rescued by raising the write cap, changing `r`, or
+increasing depth after seeing the outcome.
+
+Set the common cluster inputs once. Every Head path must be the exact instrument used by S7:
+
+```bash
+set -euo pipefail
+export PROJECT_ROOT=/home/zc1519/src/Immune-Design
+export SCRATCH_BASE=/scratch/gpfs/KAIYIJIANG/zijie
+export PYTHONPATH=${PROJECT_ROOT}
+cd "${PROJECT_ROOT}"
+
+WORK=${SCRATCH_BASE}/work/immune-design/v2_canary
+RUN=${SCRATCH_BASE}/run/inverse_folding/v2_canary
+QUAL_WORK=${WORK}/v2f5a_head_directed
+QUAL_RUN=${RUN}/v2f5a_head_directed
+mkdir -p "${QUAL_WORK}"/{calibration,replay,resolved_configs,analysis} "${QUAL_RUN}"
+
+GIT_SHA=$(git rev-parse HEAD)
+POLICY_SPEC=${PROJECT_ROOT}/inverse_folding/reference_flow/configs/v2_head_directed_capped_policy_v1.json
+
+# Replace only with the exact frozen S7 inputs.
+HEAD_CONFIG="/absolute/path/to/frozen_head_config_directory"
+HEAD_CHECKPOINT="/absolute/path/to/frozen_head_checkpoint"
+HEAD_VARIANT_ID="frozen_variant_id"
+HEAD_ALLELE_IDX=0
+HEAD_WINDOW_BATCH_SIZE=64
+ALLELE=DRB1_0701
+SCORE_SCALE=raw_logit
+WINDOW_K_MIN=13
+WINDOW_K_MAX=25
+
+# Name ONLY the completed r=40 S7 bundles. Repeat-batch paths are allowed; prefix indices must be
+# disjoint. Do not include r=30, the Canary, resumed-null, or a post-hoc N_H sidecar directory.
+S7_5ZHV_B_BUNDLES=("/absolute/path/to/S7_5ZHV_B_r40_batch1" "/absolute/path/to/S7_5ZHV_B_r40_batch2")
+S7_Q00511_BUNDLES=("/absolute/path/to/S7_Q00511_r40_batch1" "/absolute/path/to/S7_Q00511_r40_batch2")
+REF_5ZHV_B="/absolute/path/to/5ZHV_B.seq"
+REF_Q00511="/absolute/path/to/Q00511.seq"
+```
+
+### 9.1 Step 3 — freeze the Head repeatability floor
+
+Re-score the exact stored S7 complete sequences under the same frozen Head. The artifact records
+the maximum same-sequence absolute drift `e` and freezes both difference-scale floors at `2e`.
+This is an instrument-noise bound: it is not selected from the treatment/control response.
+
+```bash
+CALIB_BUNDLES=()
+for bundle in "${S7_5ZHV_B_BUNDLES[@]}" "${S7_Q00511_BUNDLES[@]}"; do
+  CALIB_BUNDLES+=(--bundle "${bundle}")
+done
+
+python scripts/calibrate_v2_head_policy.py \
+  "${CALIB_BUNDLES[@]}" \
+  --policy-spec "${POLICY_SPEC}" \
+  --out-rows "${QUAL_WORK}/calibration/head_repeatability.parquet" \
+  --out-json "${QUAL_WORK}/calibration/head_policy_calibration.json" \
+  --min-observations-per-protein 64 \
+  --max-sequences-per-protein 0 \
+  --max-counterfactual-head-calls-per-cycle 278 \
+  --head-config "${HEAD_CONFIG}" \
+  --head-checkpoint "${HEAD_CHECKPOINT}" \
+  --head-variant-id "${HEAD_VARIANT_ID}" \
+  --head-allele-idx "${HEAD_ALLELE_IDX}" \
+  --head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}" \
+  --allele "${ALLELE}" --score-scale "${SCORE_SCALE}" \
+  --window-k-min "${WINDOW_K_MIN}" --window-k-max "${WINDOW_K_MAX}" \
+  --device cuda
+```
+
+Stop if the producer reports fewer than 64 unique stored observations for either protein, any Head
+config/checkpoint/domain mismatch, a non-finite score, or a stored sequence/digest mismatch. Record
+`max_abs_repeat_drift` and `difference_noise_bound`; do not manually replace either scalar.
+
+### 9.2 Materialize the two signed qualification cells
+
+Reuse the exact S7 `r=40` materialization inputs and mechanism-operability structure gates. Do not
+edit a resolved YAML. Run `scripts/materialize_v2_canary_config.py` twice with the same arguments as
+the S7 `5zhv_r40` and `q00511_r40` cells, changing only the following:
+
+```text
+--campaign-id v2f5a_head_directed_r40_v1
+--projection-policy-spec ${POLICY_SPEC}
+--policy-calibration-json ${QUAL_WORK}/calibration/head_policy_calibration.json
+--qualification-max-head-calls 40000
+--out ${QUAL_WORK}/resolved_configs/5zhv_v2f5a_r40.yaml     # 5ZHV_B call
+--out ${QUAL_WORK}/resolved_configs/q00511_v2f5a_r40.yaml  # Q00511 call
+```
+
+The full calls must retain `r_step=40`, the protein-specific `B(r)` artifact/stratum/reference,
+the resumed-null hotspot artifact, `c1_constant_clean_no_remask.yaml`, and these structure gates:
+
+```text
+5ZHV_B: inverse_folding/reference_flow/configs/rf_refine_fusion_v2_mechanism_5zhv_b.yaml
+Q00511: inverse_folding/reference_flow/configs/rf_refine_fusion_v2_mechanism_q00511.yaml
+```
+
+Only Q00511 receives
+`--constraint-manifest inverse_folding/reference_flow/configs/uricase_q00511_active_site_safety_v1.yaml`.
+The materializer verifies that the calibration Head digests and policy-spec sha256 equal the exact
+files supplied to each cell. Keep the generated `.args.sh` beside each YAML.
+
+### 9.3 Step 4 — offline executability replay before descendants
+
+Replay the real policy over the existing S7 source states. This loads the frozen Head for
+leave-one-out evidence but no denoiser or structure backend and generates no descendant.
+
+```bash
+replay_one () {
+  local protein_id=$1 config=$2 band=$3 stratum=$4 reference=$5 out=$6
+  shift 6
+  local bundle_args=()
+  for bundle in "$@"; do bundle_args+=(--bundle "${bundle}"); done
+  python scripts/analysis/replay_v2_head_directed_policy.py \
+    "${bundle_args[@]}" --config "${config}" --band-table "${band}" \
+    --stratum-key "${stratum}" --reference-sequence "${reference}" \
+    --protein-id "${protein_id}" --out "${out}" \
+    --head-config "${HEAD_CONFIG}" --head-checkpoint "${HEAD_CHECKPOINT}" \
+    --head-variant-id "${HEAD_VARIANT_ID}" --head-allele-idx "${HEAD_ALLELE_IDX}" \
+    --head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}" \
+    --allele "${ALLELE}" --score-scale "${SCORE_SCALE}" \
+    --window-k-min "${WINDOW_K_MIN}" --window-k-max "${WINDOW_K_MAX}" --device cuda
+}
+
+replay_one 5ZHV_B \
+  "${QUAL_WORK}/resolved_configs/5zhv_v2f5a_r40.yaml" \
+  "${WORK}/bands/5ZHV_B/B_r.json" 5zhv_b_unconstrained \
+  "${REF_5ZHV_B}" "${QUAL_WORK}/replay/5zhv_v2f5a_r40.json" \
+  "${S7_5ZHV_B_BUNDLES[@]}"
+
+replay_one Q00511 \
+  "${QUAL_WORK}/resolved_configs/q00511_v2f5a_r40.yaml" \
+  "${WORK}/bands/Q00511/B_r.json" q00511_anchor24 \
+  "${REF_Q00511}" "${QUAL_WORK}/replay/q00511_v2f5a_r40.json" \
+  "${S7_Q00511_BUNDLES[@]}"
+```
+
+Both replay JSONs must satisfy all of the following before any descendant job is submitted:
+
+```bash
+for report in "${QUAL_WORK}"/replay/*_v2f5a_r40.json; do
+  jq -e '
+    .coverage.head_contribution_measured == true and
+    .coverage.n_sources >= 56 and
+    .coverage.n_committed_decisions >= 32 and
+    ((.coverage.stalls.stall_counterfactual_budget_exceeded // 0) == 0)
+  ' "${report}"
+done
+```
+
+Also inspect `realized_writes`, `required_reopen`, `contribution`, and
+`realized_write_bound_by`. A failure is a policy-coverage result: stop and return to the policy;
+never substitute arbitrary support or reinterpret the 5% cap as a target count.
+
+### 9.4 Model-free and assembly preflight
+
+For each generated cell, source its `.args.sh` and run the exact launch gate. Qualification uses
+`2 * 56 = 112` conservative execution replicates in the budget projection, so a dry-run that still
+reports one cycle is invalid.
+
+```bash
+preflight_qualification () {
+  local cell=$1
+  # shellcheck source=/dev/null
+  source "${QUAL_WORK}/resolved_configs/${cell}.args.sh"
+  python scripts/run_rf_fusion_v2.py \
+    --v2-config "${V2_CONFIG}" --out-dir "${QUAL_RUN}/${cell}" --cohort "${V2_COHORT}" \
+    --mechanism-prefixes 56 --qualification \
+    --input-file "${INPUT_FILES[@]}" \
+    --shard-input "${SHARD_INPUTS[@]}" \
+                  "journal_dir=${QUAL_RUN}/${cell}/journals" "device=cuda" \
+    --dry-run | tee "${QUAL_WORK}/analysis/${cell}.dry_run.json"
+  jq -e '.budget_projection.execution_replicates == 112 and
+         .budget_projection.feasible == true and
+         .head_directed.max_counterfactual_head_calls_per_cycle == 278' \
+         "${QUAL_WORK}/analysis/${cell}.dry_run.json"
+}
+
+preflight_qualification 5zhv_v2f5a_r40
+preflight_qualification q00511_v2f5a_r40
+
+python scripts/preflight_v2_canary_assembly.py \
+  --cell "${QUAL_WORK}/resolved_configs/5zhv_v2f5a_r40.yaml=5ZHV_B" \
+         "${QUAL_WORK}/resolved_configs/q00511_v2f5a_r40.yaml=Q00511"
+```
+
+### 9.5 Step 5 — run the matched one-cycle qualification
+
+Submit both cells before reading either response:
+
+```bash
+QUALIFICATION=1 MECHANISM_PREFIXES=56 CELL=5zhv_v2f5a_r40 \
+  WORK=${QUAL_WORK} RUNDIR=${QUAL_RUN} \
+  sbatch --time=12:00:00 --mem=64G --job-name=v2f5a_5zhv \
+  scripts/submit_rf_fusion_v2_canary.slurm
+
+QUALIFICATION=1 MECHANISM_PREFIXES=56 CELL=q00511_v2f5a_r40 \
+  WORK=${QUAL_WORK} RUNDIR=${QUAL_RUN} \
+  sbatch --time=12:00:00 --mem=64G --job-name=v2f5a_q00511 \
+  scripts/submit_rf_fusion_v2_canary.slurm
+```
+
+The launcher expects the cell `.args.sh` under `${WORK}/resolved_configs`, so these submissions set
+`WORK=${QUAL_WORK}`. Do not copy a YAML without its generated `.args.sh`.
+
+The two jobs are independent one-protein shards. `EXIT=0` means the requested shard completed and
+produced usable evidence, not that the scientific gate passed. Any cap breach, partial cohort,
+missing endpoint join, anchor violation, Head-identity mismatch, or all-stalled cohort is a run
+failure and must be resolved before analysis.
+
+### 9.6 Artifact integrity and the confirmatory read
+
+First run the existing state/anchor/replay/lineage/assimilation/ledger reader. This is an
+operational validity check, not the reward verdict:
+
+```bash
+python scripts/analysis/read_v2_canary.py \
+  --bundle "${QUAL_RUN}/5zhv_v2f5a_r40=${REF_5ZHV_B}" \
+           "${QUAL_RUN}/q00511_v2f5a_r40=${REF_Q00511}" \
+  --json-out "${QUAL_WORK}/analysis/v2f5a_integrity.json"
+```
+
+Then read the paired Head primary. A non-zero exit is a scientific negative/unresolved verdict,
+so preserve the JSON even when the shell return code is `1`:
+
+```bash
+set +e
+python scripts/analysis/read_v2_mechanism.py --qualification \
+  --bundle "${QUAL_RUN}/5zhv_v2f5a_r40" "${QUAL_RUN}/q00511_v2f5a_r40" \
+  --config "${QUAL_WORK}/resolved_configs/5zhv_v2f5a_r40.yaml" \
+           "${QUAL_WORK}/resolved_configs/q00511_v2f5a_r40.yaml" \
+  --min-prefixes 32 \
+  --out "${QUAL_WORK}/analysis/v2f5a_directionality_verdict.json"
+ANALYSIS_RC=$?
+set -e
+echo "V2F5A_ANALYSIS_EXIT=${ANALYSIS_RC}"
+```
+
+Before accepting the verdict, inspect `feedback_events.parquet` and require treatment rows to have
+`head_evidence_consulted=true`, positive selected contribution evidence, and the declared
+Head-directed policy identity; matched control rows must have `head_evidence_consulted=false`.
+`mechanism_contrasts.parquet` must show `view=support_law`, no parity violation, matched fork seeds,
+and equal realized write/reopen cardinalities. Structure/Hamming are reported secondaries and must
+not be used to filter the Head primary after treatment.
+
+### 9.7 Decision
+
+| Result | Decision |
+|---|---|
+| both proteins pass, integrity clean | `immune_directed_transition_supported`; V2F5A closes, and a **separate** small `D=2` authority/config may be designed |
+| enough prefixes but either protein fails | `source_coupled_policy_unqualified`; keep the source-transmission result, reject this immune policy, keep `D>1` closed |
+| fewer than 32 scored prefixes on either protein | `underpowered_unresolved`; do not call a directionality verdict and do not tune the margin/cap from outcomes |
+| ordinary passes, anchored fails (or reverse) | substrate-specific response only; no general recursive authorization |
+| operational integrity failure | invalid run; repair/replay under the same frozen question before any scientific reading |
+
+Even a positive result is a one-cycle policy-directionality result, not a recursive capability or
+biological immune-validity claim. Independent terminal immune validation remains downstream.

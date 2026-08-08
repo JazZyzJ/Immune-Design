@@ -473,6 +473,30 @@ def test_the_a2_arm_returns_the_shared_pool_itself_not_a_copy_of_it():
         assert result.arm_a.cycle.source is a2.arm_b.cycle.source
 
 
+def test_each_executed_arm_has_an_independent_post_feedback_archive():
+    """The source/lookahead pool is shared, but an arm's descendants are not shared history."""
+    results = _exec()
+    checked = 0
+    for result in results:
+        if result.axes.mechanism_view == "feedback_off":
+            continue
+        arm_a = result.arm_a.cycle
+        arm_b = result.arm_b.cycle
+        if not arm_a.descendant_endpoints or not arm_b.descendant_endpoints:
+            continue
+        checked += 1
+        assert arm_a.archive is not arm_b.archive
+        a_descendants = {endpoint.endpoint_id for endpoint in arm_a.descendant_endpoints}
+        b_descendants = {endpoint.endpoint_id for endpoint in arm_b.descendant_endpoints}
+        a_archive = {row.endpoint_id for row in arm_a.archive.raw_rows()}
+        b_archive = {row.endpoint_id for row in arm_b.archive.raw_rows()}
+        assert a_descendants <= a_archive
+        assert b_descendants <= b_archive
+        assert a_descendants.isdisjoint(b_archive)
+        assert b_descendants.isdisjoint(a_archive)
+    assert checked, "the fixture exercised no two-arm post-feedback archive pair"
+
+
 def test_a_source_perturbation_holds_the_endpoint_pool_fixed():
     """The source probes ask whether q_phi is blind to P, so y must not move with it.
 

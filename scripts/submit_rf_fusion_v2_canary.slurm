@@ -15,7 +15,8 @@
 #SBATCH --output=/scratch/gpfs/KAIYIJIANG/zijie/logs/fusion_v2/v2canary_%j.out
 #SBATCH --error=/scratch/gpfs/KAIYIJIANG/zijie/logs/fusion_v2/v2canary_%j.err
 
-# One V2 state-transition Canary CELL (doc/RF_Fusion_v2_Cluster_Runbook.md §5).
+# One V2 state-transition / mechanism / V2F5A qualification CELL
+# (doc/RF_Fusion_v2_Cluster_Runbook.md §§5, 7, 9).
 #
 # Every path this job needs comes from the cell's own ``<CELL>.args.sh``, which
 # ``scripts/materialize_v2_canary_config.py`` writes NEXT TO the resolved config it signed.  That
@@ -39,7 +40,7 @@ set -euo pipefail
 export PS1
 
 # ── Cell + layout (override via env; no cluster path is hardcoded in a module) ──
-CELL="${CELL:?set CELL=<5zhv_r30|5zhv_r40|q00511_r30|q00511_r40>}"
+CELL="${CELL:?set CELL to the stem of a generated resolved config + .args.sh}"
 # EXPORTED, not merely set: the DPLM checkpoint carries a stored hydra config whose paths are
 # ``oc.env:PROJECT_ROOT`` interpolations, so omegaconf resolves them out of the ENVIRONMENT while
 # loading the checkpoint.  As a plain shell variable it is invisible there and the load dies with
@@ -61,6 +62,25 @@ MECHANISM_PREFIXES="${MECHANISM_PREFIXES:-0}"
 # First prefix index of THIS batch.  Batch 2 continues the sequence (e.g. 16) rather
 # than repeating batch 1, whose seeds are derived from the index.
 MECHANISM_PREFIX_START="${MECHANISM_PREFIX_START:-0}"
+# 1 = V2F5A Head-directed support-policy qualification.  This is deliberately separate from the
+# older mechanism view: it runs treatment/control support laws and must never be selected merely
+# because a config happens to contain a Head-directed block.
+QUALIFICATION="${QUALIFICATION:-0}"
+QUALIFICATION_ARGS=()
+case "${QUALIFICATION}" in
+  0) ;;
+  1)
+    if [[ "${MECHANISM_PREFIXES}" -lt 1 ]]; then
+      echo "QUALIFICATION=1 requires MECHANISM_PREFIXES>=1" >&2
+      exit 4
+    fi
+    QUALIFICATION_ARGS+=(--qualification)
+    ;;
+  *)
+    echo "QUALIFICATION must be exactly 0 or 1, got ${QUALIFICATION}" >&2
+    exit 4
+    ;;
+esac
 
 OUT_DIR="${RUNDIR}/${CELL}"
 ARGS_FILE="${WORK}/resolved_configs/${CELL}.args.sh"
@@ -88,7 +108,7 @@ echo "[v2canary] cell=${CELL} cohort=${V2_COHORT} config=${V2_CONFIG}"
 echo "[v2canary] git=$(git rev-parse HEAD) env=${CONDA_ENV} node=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START}"
+echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START} qualification=${QUALIFICATION}"
 
 set +e
 python scripts/run_rf_fusion_v2.py \
@@ -97,6 +117,7 @@ python scripts/run_rf_fusion_v2.py \
   --cohort      "${V2_COHORT}" \
   --mechanism-prefixes "${MECHANISM_PREFIXES}" \
   --mechanism-prefix-start "${MECHANISM_PREFIX_START}" \
+  "${QUALIFICATION_ARGS[@]}" \
   --input-file  "${INPUT_FILES[@]}" \
   --shard-input "${SHARD_INPUTS[@]}" \
                 "journal_dir=${OUT_DIR}/journals" \

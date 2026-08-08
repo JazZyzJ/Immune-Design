@@ -109,6 +109,11 @@ class BudgetProjection:
 
     n_proteins: int
     n_steps: int
+    #: Conservative number of full one-cycle executions charged per protein.  Ordinary ladders
+    #: use one.  A policy-qualification prefix has two descendant-generating arms, so the driver
+    #: supplies ``2 * n_prefixes``; shared prefix work is intentionally over-counted rather than
+    #: omitted from the launch gate.
+    execution_replicates: int
     #: The depth-0 prefix, paid ONCE per protein by the ladder itself.
     root_capture_logical_dfe: int
     #: Only depth 0 forks a source pool; deeper rungs inherit the previous rung's descendants.
@@ -119,6 +124,10 @@ class BudgetProjection:
     per_protein_descendant_screen_dfe: int
     per_protein_logical_dfe: int
     total_logical_dfe: int
+    #: Head calls the SUPPORT POLICY makes while deciding, per protein.  Zero for every policy that
+    #: does not consult the Head; the run's declared per-cycle ceiling times the declared depths for
+    #: V2F5A's, which the policy enforces so the number is a bound and not a guess.
+    per_protein_counterfactual_head_calls: int
     total_head_calls: int
     total_definitive_refolds: int
     breached_caps: tuple[str, ...]
@@ -129,7 +138,9 @@ class BudgetProjection:
         return not self.breached_caps
 
 
-def project_v2_budget(config: Any, *, n_proteins: int) -> BudgetProjection:
+def project_v2_budget(
+    config: Any, *, n_proteins: int, execution_replicates: int = 1,
+) -> BudgetProjection:
     r"""Project the run's logical cost from the declared schedule.
 
     Per PLAN §3.4, one source checkpoint ``c`` with ``K`` lookaheads under an ``S``-step sampler
@@ -142,6 +153,11 @@ def project_v2_budget(config: Any, *, n_proteins: int) -> BudgetProjection:
     """
     if isinstance(n_proteins, bool) or not isinstance(n_proteins, int) or n_proteins < 0:
         raise V2PreflightError(f"n_proteins must be a non-negative int, got {n_proteins!r}")
+    if (isinstance(execution_replicates, bool)
+            or not isinstance(execution_replicates, int) or execution_replicates < 1):
+        raise V2PreflightError(
+            f"execution_replicates must be a positive int, got {execution_replicates!r}"
+        )
     n_steps = int(config.substrate.n_steps)
     points = sorted(config.schedule.points, key=lambda point: int(point.depth))
     last = len(points) - 1
@@ -159,6 +175,8 @@ def project_v2_budget(config: Any, *, n_proteins: int) -> BudgetProjection:
     descendant_screen = 0
     #: One Head request and one structure attempt per GENERATED endpoint.
     scored_endpoints = int(points[0].n_lookaheads)
+    #: Head calls the SUPPORT POLICY makes while deciding -- zero for every policy but V2F5A's.
+    counterfactual_head_calls = 0
     for index, point in enumerate(points):
         segment += int(point.c_next_step) - int(point.r_step)
         # The ladder forks the NEXT depth's declared breadth, clamped at the last rung -- the same
@@ -167,9 +185,25 @@ def project_v2_budget(config: Any, *, n_proteins: int) -> BudgetProjection:
         descendant_screen += breadth * (n_steps - int(point.c_next_step))
         scored_endpoints += breadth
 
+    root_capture *= execution_replicates
+    screen *= execution_replicates
+    segment *= execution_replicates
+    descendant_screen *= execution_replicates
+    scored_endpoints *= execution_replicates
     per_protein = root_capture + screen + segment + descendant_screen
     total = per_protein * n_proteins
-    head_calls = scored_endpoints
+    # V2F5A: the Head-directed policy scores one leave-one-out counterfactual per legal write
+    # candidate WHILE deciding, so a projection counting only the scored endpoints understates the
+    # Head budget and ``--dry-run`` would pass a run that then breaches ``max_head_calls`` after
+    # paying for a model.  The per-cycle ceiling is declared by the run and ENFORCED by the policy
+    # (a source with more legal candidates stalls), so charging it here is a real bound rather than
+    # an estimate.  One cycle per declared depth point.
+    block = config.projection.head_directed
+    counterfactual_head_calls = (
+        0 if block is None
+        else int(block.max_counterfactual_head_calls_per_cycle) * len(points)
+             * execution_replicates)
+    head_calls = scored_endpoints + counterfactual_head_calls
     refolds = scored_endpoints
     breached = []
     if total > int(config.caps.max_logical_dfe):
@@ -181,15 +215,18 @@ def project_v2_budget(config: Any, *, n_proteins: int) -> BudgetProjection:
 
     return BudgetProjection(
         n_proteins=int(n_proteins), n_steps=n_steps,
+        execution_replicates=int(execution_replicates),
         root_capture_logical_dfe=root_capture,
         per_protein_screen_dfe=screen, per_protein_segment_dfe=segment,
         per_protein_descendant_screen_dfe=descendant_screen,
         per_protein_logical_dfe=per_protein, total_logical_dfe=total,
+        per_protein_counterfactual_head_calls=counterfactual_head_calls,
         total_head_calls=head_calls * n_proteins,
         total_definitive_refolds=refolds * n_proteins,
         breached_caps=tuple(breached),
         detail=(
-            "projected from the DECLARED schedule only; GPU-seconds and walltime are not "
+            f"projected from the DECLARED schedule over {execution_replicates} conservative "
+            "execution replicate(s) per protein; GPU-seconds and walltime are not "
             "projected because no measured per-refold cost is bound to this config"
         ),
     )
@@ -212,12 +249,9 @@ def assert_launch_feasible(projection: BudgetProjection) -> None:
 def _head_directed_payload(config: Any) -> dict | None:
     """The V2F5A block as ``--print-config`` reports it, or ``None`` for any other policy.
 
-    ``counterfactual_head_calls_per_cycle`` is deliberately a WORD, not a number: the leave-one-out
-    batch scores one counterfactual per LEGAL write candidate, and how many of those a realized
-    source carries is not knowable before the source exists.  A fabricated estimate here would
-    enter the budget projection and read as a bound the run does not have; the offline replay
-    (``scripts/analysis/replay_v2_head_directed_policy.py``) measures the real distribution on an
-    existing cohort, which is where that number belongs.
+    The counterfactual count is a numeric HARD CEILING: the policy stalls before scoring when a
+    source exposes more legal candidates. Offline replay measures the realized distribution, while
+    preflight charges the ceiling so a launch can never pass on a fabricated smaller estimate.
     """
     block = config.projection.head_directed
     if block is None:
@@ -242,13 +276,16 @@ def _head_directed_payload(config: Any) -> dict | None:
         "write_candidate_window_rule": block.write_candidate_window_rule,
         "reopen_count_law": block.reopen_count_law,
         "reopen_priority_law": block.reopen_priority_law,
-        "counterfactual_head_calls_per_cycle": "one per legal write candidate; not projected",
+        # ENFORCED, not advisory: the policy stalls a source whose legal-candidate count exceeds
+        # this, so the projection charging it is a real bound.
+        "max_counterfactual_head_calls_per_cycle":
+            int(block.max_counterfactual_head_calls_per_cycle),
     }
 
 
 def print_config_payload(
     config: Any, *, n_proteins: int, declared_inputs: Sequence[Any] = (),
-    code_revision: str = "unknown",
+    code_revision: str = "unknown", execution_replicates: int = 1,
 ) -> dict:
     """Everything ``--print-config`` and ``--dry-run`` report, with no model loaded.
 
@@ -256,7 +293,8 @@ def print_config_payload(
     answer the question an operator actually has -- "what will this run do, and can it" -- rather
     than echoing the file back.
     """
-    projection = project_v2_budget(config, n_proteins=n_proteins)
+    projection = project_v2_budget(
+        config, n_proteins=n_proteins, execution_replicates=execution_replicates)
     return {
         "config_digest": config.config_digest(),
         "schema_version": config.schema_version,
@@ -285,11 +323,14 @@ def print_config_payload(
         "head_directed": _head_directed_payload(config),
         "budget_projection": {
             "n_proteins": projection.n_proteins,
+            "execution_replicates": projection.execution_replicates,
             "root_capture_logical_dfe": projection.root_capture_logical_dfe,
             "per_protein_screen_dfe": projection.per_protein_screen_dfe,
             "per_protein_segment_dfe": projection.per_protein_segment_dfe,
             "per_protein_descendant_screen_dfe": projection.per_protein_descendant_screen_dfe,
             "per_protein_logical_dfe": projection.per_protein_logical_dfe,
+            "per_protein_counterfactual_head_calls":
+                projection.per_protein_counterfactual_head_calls,
             "total_logical_dfe": projection.total_logical_dfe,
             "total_head_calls": projection.total_head_calls,
             "total_definitive_refolds": projection.total_definitive_refolds,

@@ -57,6 +57,8 @@ from scipy import stats
 DEFAULT_DELTA = 0.036
 DEFAULT_FLOOR = 32
 DEFAULT_CAP = 128
+QUALIFICATION_VIEW = "support_law"
+QUALIFICATION_MIN_PREFIXES = 32
 
 PRIMARY_VIEW = "endpoint_change"
 CONTROL_VIEW = "source_shuffle"
@@ -115,6 +117,200 @@ def provenance(frame: pd.DataFrame) -> dict:
         # Not an error: a revision that only changes which prefix INDICES a batch runs cannot
         # change what any prefix measures.  It must be stated and justified, never assumed away.
         "single_code_revision": len(revisions) == 1,
+    }
+
+
+def _qualification_contract(config_paths, frame: pd.DataFrame) -> dict:
+    """Load the frozen V2F5A margin and bind every bundle to one supplied config.
+
+    The margin is an instrument-repeatability floor, not a value chosen after seeing the paired
+    result.  Accepting an arbitrary CLI float here would turn the scientific gate into a knob.
+    """
+    from scripts.rf_fusion_v2_preflight import load_v2_config_file
+
+    if not config_paths:
+        raise SystemExit("--qualification requires one or more --config paths")
+    rows = []
+    for raw in config_paths:
+        config = load_v2_config_file(raw)
+        block = config.projection.head_directed
+        if block is None:
+            raise SystemExit(f"{raw} has no projection.head_directed qualification contract")
+        rows.append({
+            "path": str(Path(raw)),
+            "config_digest": config.config_digest(),
+            "epsilon": float(block.donor_improvement_epsilon.value),
+            "epsilon_source_ref": block.donor_improvement_epsilon.source_ref,
+            "policy_id": config.projection.support_policy_id,
+            "control_policy_id": block.control_policy_id,
+        })
+    epsilons = {row["epsilon"] for row in rows}
+    refs = {row["epsilon_source_ref"] for row in rows}
+    if len(epsilons) != 1 or len(refs) != 1:
+        raise SystemExit(
+            "qualification configs do not share one frozen Head-noise margin/source_ref"
+        )
+    supplied = {row["config_digest"] for row in rows}
+    observed = {str(value) for value in frame["config_digest"].dropna().unique()}
+    if not observed:
+        raise SystemExit("qualification bundle manifests carry no config_digest")
+    if not observed.issubset(supplied):
+        raise SystemExit(
+            f"bundle config digest(s) {sorted(observed - supplied)} are not among the supplied "
+            f"qualification configs {sorted(supplied)}"
+        )
+    return {
+        "epsilon_R": next(iter(epsilons)),
+        "epsilon_source_ref": next(iter(refs)),
+        "configs": rows,
+    }
+
+
+def _qualification_endpoints(bundles) -> dict[tuple[str, str], dict]:
+    """Index typed endpoint evidence by the bundle-local descendant identity."""
+    indexed: dict[tuple[str, str], dict] = {}
+    required = {"endpoint_id", "protein_id", "head_global_risk", "structure_feasible"}
+    for raw in bundles:
+        path = Path(raw)
+        root = path if path.is_dir() else path.parent
+        table = root / "complete_endpoints.parquet"
+        if not table.exists():
+            raise SystemExit(f"no complete_endpoints.parquet under {root}")
+        endpoints = pd.read_parquet(table)
+        missing = sorted(required - set(endpoints.columns))
+        if missing:
+            raise SystemExit(f"{table} is missing qualification evidence columns {missing}")
+        bundle_key = str(path)
+        for row in endpoints.to_dict("records"):
+            key = (bundle_key, str(row["endpoint_id"]))
+            record = {
+                "protein_id": str(row["protein_id"]),
+                "head_global_risk": float(row["head_global_risk"]),
+                "structure_feasible": row["structure_feasible"],
+            }
+            previous = indexed.get(key)
+            if previous is not None and previous != record:
+                raise SystemExit(f"endpoint identity {key} names inconsistent evidence rows")
+            indexed[key] = record
+    return indexed
+
+
+def read_policy_qualification(
+    frame: pd.DataFrame, *, bundles, contract: dict, min_prefixes: int,
+) -> dict:
+    r"""Read Head directionality on matched descendants, with source prefix as the unit.
+
+    For each matched fork, ``delta = risk(treatment) - risk(control)``; lower is better.  Forks are
+    averaged within a source prefix before inference.  A protein passes only when the one-sided 95%
+    upper confidence bound is below ``-epsilon_R``.  Requiring every predeclared protein to pass is
+    an intersection-union gate, so no multiplicity adjustment is introduced.
+    """
+    if isinstance(min_prefixes, bool) or min_prefixes < 2:
+        raise SystemExit("--min-prefixes must be an integer >= 2")
+    endpoints = _qualification_endpoints(bundles)
+    rows = frame[frame["view"].astype(str) == QUALIFICATION_VIEW].copy()
+    if rows.empty:
+        raise SystemExit(f"no {QUALIFICATION_VIEW!r} rows in the named bundles")
+    eligible = rows[_flag(rows, "analyzable") & _flag(rows, "contrastable")]
+
+    scored_rows = []
+    missing_ids = []
+    for row in eligible.to_dict("records"):
+        key_a = (str(row["bundle"]), str(row.get("arm_a_descendant_id")))
+        key_b = (str(row["bundle"]), str(row.get("arm_b_descendant_id")))
+        endpoint_a, endpoint_b = endpoints.get(key_a), endpoints.get(key_b)
+        if endpoint_a is None or endpoint_b is None:
+            missing_ids.append((key_a if endpoint_a is None else key_b))
+            continue
+        protein_id = str(row["protein_id"])
+        if endpoint_a["protein_id"] != protein_id or endpoint_b["protein_id"] != protein_id:
+            raise SystemExit(
+                f"descendant identity crosses protein boundary for {protein_id}: {key_a}/{key_b}"
+            )
+        risk_a = float(endpoint_a["head_global_risk"])
+        risk_b = float(endpoint_b["head_global_risk"])
+        if not math.isfinite(risk_a) or not math.isfinite(risk_b):
+            raise SystemExit(f"non-finite descendant Head risk in {key_a}/{key_b}")
+        feasible_a = endpoint_a["structure_feasible"]
+        feasible_b = endpoint_b["structure_feasible"]
+        scored_rows.append({
+            "protein_id": protein_id,
+            "source_index": int(row["source_index"]),
+            "fork_index": int(row["fork_index"]),
+            "head_delta_treatment_minus_control": risk_a - risk_b,
+            "both_structure_feasible": (
+                None if pd.isna(feasible_a) or pd.isna(feasible_b)
+                else bool(feasible_a) and bool(feasible_b)),
+        })
+    if missing_ids:
+        raise SystemExit(
+            f"{len(missing_ids)} contrast descendant identity/identities have no endpoint row; "
+            f"first={missing_ids[0]}"
+        )
+
+    scored = pd.DataFrame(scored_rows)
+    epsilon = float(contract["epsilon_R"])
+    proteins = {}
+    failures = []
+    for protein_id, protein_rows in rows.groupby("protein_id"):
+        seen = int(protein_rows.groupby("source_index").ngroups)
+        if scored.empty:
+            prefix = pd.Series(dtype=float)
+            paired_structure = None
+        else:
+            local = scored[scored["protein_id"] == str(protein_id)]
+            prefix = local.groupby("source_index")[
+                "head_delta_treatment_minus_control"].mean()
+            structure_values = local["both_structure_feasible"].dropna()
+            paired_structure = (None if structure_values.empty
+                                else float(structure_values.astype(bool).mean()))
+        n = int(prefix.size)
+        block = {
+            "n_prefixes_seen": seen,
+            "n_prefixes_scored": n,
+            "min_prefixes": int(min_prefixes),
+            "epsilon_R": epsilon,
+            "both_structure_feasible_fraction_secondary": paired_structure,
+        }
+        if n < 2:
+            block.update({"mean": None, "median": None, "sd": None,
+                          "one_sided_95_ucb": None, "passed": False})
+        else:
+            mean = float(prefix.mean())
+            sd = float(prefix.std(ddof=1))
+            se = sd / math.sqrt(n)
+            ucb = mean + float(stats.t.ppf(0.95, n - 1)) * se
+            block.update({
+                "mean": mean, "median": float(prefix.median()), "sd": sd,
+                "one_sided_95_ucb": ucb,
+                "passed": bool(n >= min_prefixes and ucb < -epsilon),
+            })
+        if n < min_prefixes:
+            failures.append(
+                f"{protein_id}: only {n}/{seen} scored prefixes; need {min_prefixes}")
+        elif not block["passed"]:
+            failures.append(
+                f"{protein_id}: Head-delta UCB {block['one_sided_95_ucb']:.6g} is not below "
+                f"the frozen directionality margin {-epsilon:.6g}")
+        proteins[str(protein_id)] = block
+
+    passed = bool(proteins) and not failures
+    underpowered = any(block["n_prefixes_scored"] < min_prefixes
+                       for block in proteins.values())
+    reading = ("directionality_demonstrated" if passed else
+               "underpowered_unresolved" if underpowered else
+               "directionality_not_demonstrated")
+    return {
+        "analysis": "v2f5a_head_directed_policy_qualification",
+        "primary": "prefix_mean_head_risk_treatment_minus_control",
+        "lower_is_better": True,
+        "gate": "one_sided_95_ucb_below_negative_frozen_head_repeatability_bound",
+        "multiplicity": "intersection_union_across_predeclared_proteins",
+        "contract": contract,
+        "proteins": proteins,
+        "passed": passed,
+        "reading": reading,
+        "failures": failures,
     }
 
 
@@ -320,10 +516,44 @@ def main(argv=None) -> int:
     parser.add_argument("--confirmatory", action="store_true",
                         help="read the pre-registered gate; without it this is a variance pilot "
                              "and emits no verdict")
+    parser.add_argument("--qualification", action="store_true",
+                        help="read the V2F5A Head-directed support-law qualification instead of "
+                             "the older Hamming transmission gate")
+    parser.add_argument("--config", nargs="+", default=(), metavar="YAML",
+                        help="resolved qualification config(s); required with --qualification so "
+                             "the Head repeatability margin is read from frozen provenance")
+    parser.add_argument("--min-prefixes", type=int, default=QUALIFICATION_MIN_PREFIXES,
+                        help="minimum scored prefixes per predeclared protein for qualification "
+                             f"(default {QUALIFICATION_MIN_PREFIXES})")
     parser.add_argument("--out", default=None, help="write the report as JSON here")
     args = parser.parse_args(argv)
 
     frame = load_contrasts(args.bundle)
+    if args.qualification:
+        if args.confirmatory:
+            raise SystemExit("--qualification is already confirmatory; do not add --confirmatory")
+        contract = _qualification_contract(args.config, frame)
+        report = read_policy_qualification(
+            frame, bundles=args.bundle, contract=contract,
+            min_prefixes=int(args.min_prefixes))
+        report["provenance"] = provenance(frame)
+        print(f"verdict: {report['reading']}")
+        print(f"epsilon_R={report['contract']['epsilon_R']}")
+        for protein_id, block in sorted(report["proteins"].items()):
+            print(
+                f"  {protein_id}: prefixes {block['n_prefixes_scored']}/"
+                f"{block['n_prefixes_seen']}, mean_delta={block['mean']}, "
+                f"one_sided_95_ucb={block['one_sided_95_ucb']}, passed={block['passed']}"
+            )
+        for failure in report["failures"]:
+            print(f"  - {failure}")
+        if args.out:
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.out).write_text(
+                json.dumps(report, indent=2, sort_keys=True, default=str))
+            print(f"\nwrote {args.out}")
+        return 0 if report["passed"] else 1
+
     report = read_mechanism(frame, delta=args.delta, floor=args.floor, cap=args.cap)
     report["provenance"] = provenance(frame)
     sizing = required_pairs(report)

@@ -697,7 +697,6 @@ def run_mechanism_views(
             # its own descendants and those must not appear in the other arm's history.
             source_override=shared.source,
             source_endpoints=shared.endpoints,
-            archive=shared.archive.fork_view(),
             # Stated rather than defaulted.  Every arm BUT ``feedback_off`` is a treatment arm by
             # construction here -- the causal probes perturb what feedback is given, not whether it
             # happens -- and ``feedback_off`` is served by the shared stage above, which was run
@@ -705,7 +704,8 @@ def run_mechanism_views(
             feedback_enabled=True,
         )
 
-        arm_a_cycle = run_one_cycle(**base_kwargs)
+        arm_a_cycle = run_one_cycle(
+            **dict(base_kwargs, archive=shared.archive.fork_view()))
 
         # The runner ENFORCES parity: arm A's action vector becomes arm B's contract, so a policy
         # that cannot match it yields a typed null naming the parity failure instead of a contrast
@@ -716,7 +716,10 @@ def run_mechanism_views(
         # From here ``base_kwargs`` is arm B's, so it takes arm B's transition id.  Arm A has
         # already run above and keeps the id it ran under.
         base_kwargs = dict(base_kwargs, origin_transition_id=_arm_transition_id(
-            intervention_kind=contrast.intervention_kind, arm_slot=contrast.arm_b.arm_slot))
+            intervention_kind=contrast.intervention_kind, arm_slot=contrast.arm_b.arm_slot),
+            # Arm A has already mutated its own fork.  Arm B must start from the same shared
+            # pre-feedback archive, not from Arm A's post-feedback history.
+            archive=shared.archive.fork_view())
         if required is not None:
             base_kwargs = dict(base_kwargs, required_support_budget=required)
 
@@ -962,10 +965,10 @@ def run_policy_qualification_view(
     base_kwargs = dict(
         shared_kwargs, feedback_enabled=True,
         source_override=shared.source, source_endpoints=shared.endpoints,
-        archive=shared.archive.fork_view(),
         origin_transition_id=_arm_transition_id(contrast.arm_a.arm_slot),
     )
-    treatment_cycle = run_one_cycle(**base_kwargs)
+    treatment_cycle = run_one_cycle(
+        **dict(base_kwargs, archive=shared.archive.fork_view()))
 
     projected = treatment_cycle.projected
     if projected is None:
@@ -998,6 +1001,9 @@ def run_policy_qualification_view(
     control_cycle = run_one_cycle(**dict(
         base_kwargs,
         origin_transition_id=_arm_transition_id(contrast.arm_b.arm_slot),
+        # The treatment has already admitted its descendants.  The matched control starts from an
+        # independent view of the shared pre-feedback archive so treatment history cannot leak.
+        archive=shared.archive.fork_view(),
         support_policy=control_policy,
         declared_policy=control_declared_policy,
     ))

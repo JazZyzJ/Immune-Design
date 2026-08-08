@@ -645,6 +645,15 @@ class V2HeadDirectedConfig:
     #: The matched Head-blind control this treatment is compared against (PLAN §2.5, §8.4).
     control_policy_id: str
     control_policy_version: str
+    #: Upper bound on the leave-one-out counterfactual batch, in Head calls per cycle.
+    #:
+    #: The policy scores ONE counterfactual per legal write candidate, and the candidate set is a
+    #: subset of the source's unresolved editable positions -- a realized quantity no config can
+    #: know.  Left unbounded, ``--dry-run`` would project only the endpoint scoring and pass, and
+    #: the run would then breach ``max_head_calls`` after paying for a model.  So the run DECLARES
+    #: the bound, the projection charges it, and the policy fails closed on a source that exceeds
+    #: it -- a projected number that nothing enforces is not a bound.
+    max_counterfactual_head_calls_per_cycle: int
 
 
 @dataclass(frozen=True)
@@ -784,6 +793,8 @@ class V2Config:
             local_contribution_tolerance=float(block.local_contribution_tolerance.value),
             local_contribution_source_ref=block.local_contribution_tolerance.source_ref,
             band_center_rule=BandCenterRule(block.band_center_rule),
+            max_counterfactual_head_calls_per_cycle=int(
+                block.max_counterfactual_head_calls_per_cycle),
         )
 
     def declared_control_policy(self) -> DeclaredPolicy | None:
@@ -1147,7 +1158,8 @@ def _head_directed(proj_node: Mapping[str, Any], *, policy_id: str) -> V2HeadDir
         "write_cap_editable_fraction", "donor_improvement_epsilon",
         "local_contribution_tolerance", "band_center_rule", "lineage_incumbent_depth0_rule",
         "lineage_incumbent_update_law", "write_candidate_window_rule", "reopen_count_law",
-        "reopen_priority_law", "control_policy_id", "control_policy_version"), path)
+        "reopen_priority_law", "control_policy_id", "control_policy_version",
+        "max_counterfactual_head_calls_per_cycle"), path)
 
     config = V2HeadDirectedConfig(
         write_cap_editable_fraction=_policy_calibrated(node, "write_cap_editable_fraction", path),
@@ -1169,11 +1181,14 @@ def _head_directed(proj_node: Mapping[str, Any], *, policy_id: str) -> V2HeadDir
         control_policy_id=_text(node, "control_policy_id", path,
                                 allowed=frozenset({SOURCE_GEOMETRY_CONTROL_POLICY_ID})),
         control_policy_version=_text(node, "control_policy_version", path),
+        max_counterfactual_head_calls_per_cycle=_int(
+            node, "max_counterfactual_head_calls_per_cycle", path, minimum=1),
     )
     fraction = float(config.write_cap_editable_fraction.value)
-    if not 0.0 < fraction <= 1.0:
+    if fraction != 0.05:
         raise V2ConfigError(
-            f"{path}.write_cap_editable_fraction.value must lie in (0, 1], got {fraction}"
+            f"{path}.write_cap_editable_fraction.value must equal the frozen V2F5A value 0.05, "
+            f"got {fraction}; changing the cap is a different scientific policy"
         )
     return config
 

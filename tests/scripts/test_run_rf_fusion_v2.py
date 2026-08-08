@@ -30,7 +30,9 @@ from scripts.run_rf_fusion_v2 import (  # noqa: E402
     EXIT_OK,
     EXIT_PARTIAL,
     EXIT_UNLAUNCHABLE,
+    V2DriverError,
     build_parser,
+    execution_replicates,
     main,
 )
 from scripts.rf_fusion_v2_preflight import input_signature  # noqa: E402
@@ -159,6 +161,22 @@ def test_dry_run_refuses_a_schedule_that_cannot_fit_its_caps(tmp_path):
     """A cap discovered mid-run has already burned the budget it was supposed to bound."""
     config_path = _write_config(tmp_path, **{"caps.max_logical_dfe": 1})
     assert _run(tmp_path, config_path=config_path, extra=["--dry-run"]) == EXIT_UNLAUNCHABLE
+
+
+def test_qualification_budget_counts_both_arms_of_every_prefix():
+    args = build_parser().parse_args([
+        "--v2-config", "v2.yaml", "--out-dir", "out",
+        "--mechanism-prefixes", "56", "--qualification",
+    ])
+    assert execution_replicates(args) == 112
+
+
+def test_qualification_without_a_prefix_is_refused_before_preflight():
+    args = build_parser().parse_args([
+        "--v2-config", "v2.yaml", "--out-dir", "out", "--qualification",
+    ])
+    with pytest.raises(V2DriverError, match="requires --mechanism-prefixes"):
+        execution_replicates(args)
 
 
 def test_a_malformed_config_is_refused_before_anything_runs(tmp_path):

@@ -457,6 +457,16 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     digest cannot sign a two-protein cohort's two references. Tested:
     `tests/scripts/test_rf_fusion_v2_oracles.py`.
 
+30. `scripts/calibrate_v2_head_policy.py` — the V2F5A frozen-Head repeatability calibration.
+    Reads exact complete sequences plus their stored `head_global_risk` from one or more existing
+    S7 bundles, re-scores the same bytes once with the frozen production Head, and writes paired
+    parquet rows plus a typed `v2-head-policy-calibration-bundle/1` JSON. The donor-improvement and
+    local-contribution floors are both frozen at twice the maximum absolute same-sequence repeat
+    drift, because both gates compare a difference of two Head scores. The JSON also binds the
+    exact evaluator identity, committed policy-spec sha256, 5% write cap, and counterfactual-Head
+    ceiling. Loads no denoiser or structure backend. Tested:
+    `tests/scripts/test_calibrate_v2_head_policy.py`.
+
 29. `scripts/analysis/replay_v2_head_directed_policy.py` — the V2F5A OFFLINE COVERAGE GATE
     (`--bundle DIR ...`, `--config`, `--band-table`, `--stratum-key`, `--reference-sequence`,
     optional `--protein-id`/`--out`, and a `--head-*` group). PLAN §8.4 puts this before any
@@ -468,9 +478,11 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     executes the policy's own `select` code path over a `SourceView` rebuilt from the recorded
     per-position vectors, so a coverage number here describes the policy that would run rather than
     a second implementation of its law. It generates NO descendants and loads neither the denoiser
-    nor the structure backend; the frozen Head is loaded only for the leave-one-out counterfactual,
-    and when one is loaded the INSTRUMENT defines the evaluator identity (a Head whose frozen
-    digests disagree with the run's config is refused as a different instrument). A low-coverage
+    nor the structure backend; `--head-checkpoint` and `--head-config` are required because legal
+    geometry without a measured leave-one-out contribution cannot qualify a positive local dose.
+    The frozen Head is loaded only for that counterfactual, and the INSTRUMENT defines the evaluator
+    identity (a Head whose frozen digests disagree with the run's config is refused as a different
+    instrument). A low-coverage
     result returns to policy design and may not be rescued by treating the cap as a quota. Tested:
     `tests/inverse_folding/test_fusion_v2_head_directed_policy.py`.
 
@@ -486,8 +498,13 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     positive control. With `--confirmatory` it reads the pre-registered margin gate (two-sided 95%
     CI lower bound > δ, conjunctive across proteins and views, so an intersection-union test with
     no multiplicity correction) and distinguishes `transmission_demonstrated` /
-    `transmission_not_demonstrated` / `assay_failure`. Tested:
-    `tests/scripts/test_rf_fusion_v2_mechanism.py`.
+    `transmission_not_demonstrated` / `assay_failure`. With `--qualification --config ...`, it
+    instead joins `support_law` descendant IDs to `complete_endpoints.head_global_risk`, averages
+    matched forks within source prefix, and applies the frozen one-sided directionality gate: each
+    predeclared protein needs at least 32 scored prefixes and a treatment-minus-control upper 95%
+    bound below the negative repeatability margin carried by the config. Structure remains a
+    secondary and never filters that primary. Tested: `tests/scripts/test_rf_fusion_v2_mechanism.py`
+    and `tests/scripts/test_read_v2_policy_qualification.py`.
 
 27. `inverse_folding/reference_flow/configs/rf_refine_fusion_v2_mechanism_{5zhv_b,q00511}.yaml` —
     the MECHANISM-STAGE structure gates, byte-identical to the frozen v0
@@ -511,7 +528,10 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     (`--campaign-id` overrides `identity.campaign_id`, so the runbook §7 mechanism cohort can
     reuse this producer with the mechanism-stage `--hotspot-json` and
     `--v0-structure-gate-config` without signing its artifacts as more Canary)
-    plus that cell's measured artifacts (runbook §3). Required flags name the cell
+    plus that cell's measured artifacts (runbook §3). `--policy-calibration-json` switches the
+    cell to the V2F5A `head_directed_capped` qualification law; it refuses unless the calibration's
+    Head instrument/domain and committed policy-spec digest match the exact files supplied to this
+    cell, and `--qualification-max-head-calls` freezes the cohort Head cap. Required flags name the cell
     (`--protein-id`, `--r-step`, `--stratum-key`), the artifacts (`--band-json`, `--hotspot-json`,
     `--reference-manifest`, `--stratum-manifest`, `--reference-sequence`) and every content-role
     path; `--constraint-manifest` is the one optional, and OMITTING it is what declares an
@@ -592,14 +612,21 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     the env the `B(r)` scan and the hotspot calibration also ran under — a different stack would
     score the Canary against a threshold measured on another one. Echoes the driver's exit code as
     `EXIT=<rc>`. `MECHANISM_PREFIXES=N` switches the same job to the runbook §7 mechanism cohort;
-    a prefix is about three cells, so pass a matching `sbatch --time` (the header is sized for a
-    Canary cell).
+    `QUALIFICATION=1` additionally selects the V2F5A treatment/control support-law surface and is
+    refused unless `N>=1`. A prefix is about three cells, so pass a matching `sbatch --time` (the
+    header is sized for a Canary cell).
 
 18. `scripts/run_rf_fusion_v2.py` — the V2 production driver. `--v2-config`, `--out-dir`,
     `--cohort`, `--input-file ROLE=PATH` (repeatable), `--shard-input NAME=PATH` (repeatable;
     the runtime paths handed to the execution stage — a bare path or a repeated name is refused,
     because guessing which parameter a path meant is how a checkpoint is passed as a PDB root),
-    `--code-revision`, `--fragment-dir`, `--print-config`, `--dry-run`, `--aggregate-only`, `--mechanism-prefixes N` (0 = the depth ladder; N > 0 runs the runbook §7 mechanism cohort — N independent source prefixes per protein through the matched arms, via `run_v2_mechanism_shard`, which shares this driver's config, signature, oracles, fragments, resume, ledger and bundle rather than duplicating them). Provenance cannot be empty (PLAN §5.2,
+    `--code-revision`, `--fragment-dir`, `--print-config`, `--dry-run`, `--aggregate-only`,
+    `--mechanism-prefixes N` (0 = the depth ladder; N > 0 runs independent source prefixes), and
+    `--qualification` (requires `N>0` and selects the V2F5A Head-directed/control support-law
+    surface). Qualification preflight conservatively charges `2*N` one-cycle execution graphs so
+    a 56-prefix paired run can never pass caps under a one-cycle projection. Both mechanism modes
+    share this driver's config, signature, oracles, fragments, resume, ledger and bundle rather
+    than duplicating them. Provenance cannot be empty (PLAN §5.2,
     "missing content identity fails closed"): a run that declares no inputs is REFUSED rather than
     signed with a sentinel — on the execution path and under `--dry-run` alike, while
     `--print-config` stays lenient because it signs nothing and reuses nothing. Each declared input

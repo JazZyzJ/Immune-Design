@@ -164,6 +164,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="first prefix index of this BATCH (default 0).  A second batch "
                              "continues the sequence rather than repeating it: prefix seeds are "
                              "derived from the index, so restarting at 0 reproduces batch 1")
+    parser.add_argument("--qualification", action="store_true",
+                        help="run the V2F5A POLICY-QUALIFICATION contrast over the same prefixes "
+                             "(PLAN §8.4): the declared Head-directed policy against its matched "
+                             "source-geometry control, at the treatment's own realized write and "
+                             "reopen cardinalities.  Requires --mechanism-prefixes and a config "
+                             "declaring projection.head_directed")
     return parser
 
 
@@ -181,13 +187,42 @@ def select_runner(args, *, ladder, mechanism):
     start = int(getattr(args, "mechanism_prefix_start", 0) or 0)
     if start < 0:
         raise V2DriverError(f"--mechanism-prefix-start must be >= 0, got {start}")
+    qualification = bool(getattr(args, "qualification", False))
     if not n_prefixes:
         if start:
             raise V2DriverError(
                 "--mechanism-prefix-start is meaningless without --mechanism-prefixes; a ladder "
                 "run has no prefix sequence to continue")
+        if qualification:
+            raise V2DriverError(
+                "--qualification needs --mechanism-prefixes: the policy contrast is measured over "
+                "independent source prefixes, and a ladder run has none")
         return ladder
-    return functools.partial(mechanism, n_prefixes=n_prefixes, prefix_start=start)
+    return functools.partial(mechanism, n_prefixes=n_prefixes, prefix_start=start,
+                             qualification=qualification)
+
+
+def execution_replicates(args) -> int:
+    """Conservative launch-gate multiplicity for the selected execution mode.
+
+    An ordinary ladder is one execution graph per protein.  The V2F5A qualification runs two
+    descendant-generating arms for every independent source prefix.  Its support policies share
+    some prefix work, but charging ``2 * N`` complete one-cycle graphs is deliberately conservative
+    and, crucially, cannot let ``--dry-run`` certify a 56-prefix paired run as if it were one cycle.
+    """
+    n_prefixes = int(getattr(args, "mechanism_prefixes", 0) or 0)
+    start = int(getattr(args, "mechanism_prefix_start", 0) or 0)
+    qualification = bool(getattr(args, "qualification", False))
+    if n_prefixes < 0:
+        raise V2DriverError(f"--mechanism-prefixes must be >= 0, got {n_prefixes}")
+    if start < 0:
+        raise V2DriverError(f"--mechanism-prefix-start must be >= 0, got {start}")
+    if qualification and n_prefixes < 1:
+        raise V2DriverError(
+            "--qualification requires --mechanism-prefixes >= 1; otherwise no paired source "
+            "prefix exists to qualify"
+        )
+    return 2 * n_prefixes if qualification else 1
 
 
 def decide_exit_code(report, *, requested: int) -> int:
@@ -422,6 +457,7 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
     try:
         declared = parse_declared_inputs(args.input_file, config=config)
         code_revision = resolve_code_revision(args.code_revision, config=config)
+        budget_replicates = execution_replicates(args)
     except (V2Error, OSError) as exc:
         print(f"declared input refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
@@ -439,7 +475,7 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         try:
             payload = print_config_payload(
                 config, n_proteins=len(cohort), declared_inputs=declared,
-                code_revision=code_revision)
+                code_revision=code_revision, execution_replicates=budget_replicates)
         except (V2Error, OSError) as exc:
             print(f"preflight refused: {exc}", file=sys.stderr)
             return EXIT_UNLAUNCHABLE
@@ -454,14 +490,17 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                       file=sys.stderr)
                 return EXIT_UNLAUNCHABLE
             try:
-                assert_launch_feasible(project_v2_budget(config, n_proteins=len(cohort)))
+                assert_launch_feasible(project_v2_budget(
+                    config, n_proteins=len(cohort),
+                    execution_replicates=budget_replicates))
             except V2PreflightError as exc:
                 print(f"launch gate refused: {exc}", file=sys.stderr)
                 return EXIT_UNLAUNCHABLE
         return EXIT_OK
 
     try:
-        assert_launch_feasible(project_v2_budget(config, n_proteins=len(cohort)))
+        assert_launch_feasible(project_v2_budget(
+            config, n_proteins=len(cohort), execution_replicates=budget_replicates))
     except V2PreflightError as exc:
         print(f"launch gate refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE

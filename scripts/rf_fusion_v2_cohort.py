@@ -15,6 +15,7 @@ while both claiming the frozen substrate.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -629,6 +630,7 @@ def run_v2_mechanism_shard(
     n_prefixes: int = 16,
     prefix_start: int = 0,
     views: Any = None,
+    qualification: bool = False,
 ) -> tuple[str, Mapping[str, Any]]:
     """Runbook §7: ``n_prefixes`` INDEPENDENT source prefixes, each through the matched arms.
 
@@ -647,6 +649,7 @@ def run_v2_mechanism_shard(
     """
     from scripts.rf_fusion_v2_artifacts import (
         MECHANISM_CONTRAST_VIEWS,
+        POLICY_QUALIFICATION_CONTRAST_VIEWS,
         a2_view_rows,
         archive_rows,
         complete_endpoint_rows,
@@ -664,7 +667,11 @@ def run_v2_mechanism_shard(
         FeedbackPairSeedContext,
         derive_seed,
     )
-    from inverse_folding.reference_flow.fusion_v2_runtime.paired import run_mechanism_views
+    from inverse_folding.reference_flow.fusion_v2_runtime.paired import (
+        run_mechanism_views,
+        run_policy_qualification_view,
+    )
+    from scripts.rf_fusion_v2_oracles import build_source_geometry_control
 
     inputs = inputs or ShardInputs()
     if oracles_factory is None:
@@ -680,12 +687,24 @@ def run_v2_mechanism_shard(
     prefix_start = int(prefix_start)
     if prefix_start < 0:
         raise V2CohortError(f"prefix_start must be >= 0, got {prefix_start}")
-    requested_views = tuple(views) if views is not None else MECHANISM_CONTRAST_VIEWS
-    unknown = [v for v in requested_views if v not in MECHANISM_CONTRAST_VIEWS]
+    qualification = bool(qualification)
+    default_views = (POLICY_QUALIFICATION_CONTRAST_VIEWS if qualification
+                     else MECHANISM_CONTRAST_VIEWS)
+    requested_views = tuple(views) if views is not None else default_views
+    unknown = [v for v in requested_views if v not in default_views]
     if unknown:
         raise V2CohortError(
-            f"{unknown} name no scorable mechanism contrast; expected a subset of "
-            f"{list(MECHANISM_CONTRAST_VIEWS)}"
+            f"{unknown} name no scorable contrast for this run; expected a subset of "
+            f"{list(default_views)}"
+        )
+    if qualification and config.projection.head_directed is None:
+        # The contrast IS the two support laws, so a config that declares no Head-directed policy
+        # has only one law to run and the comparison does not exist.  Refused here rather than at
+        # the first prefix, so the operator learns it before the shard pays for a model.
+        raise V2CohortError(
+            "--qualification needs a config declaring projection.head_directed: the contrast is "
+            "the Head-directed policy against its matched source-geometry control, and this "
+            f"config's support_policy_id is {config.projection.support_policy_id!r}"
         )
 
     signature = _validate_run_signature(signature=signature, config=config, protein_id=protein_id)
@@ -767,19 +786,31 @@ def run_v2_mechanism_shard(
             content_digest=canonical_digest({
                 "mechanism_prefix": prefix_index, "source_seed": source_seed,
                 "r": int(point.r_step), "c": int(point.c_next_step)}))
+        shared = dict(cycle_kwargs,
+                      config=prefix_config,
+                      context=context, fork_index=0,
+                      c_source_step=int(point.c_source_step), r_step=int(point.r_step),
+                      c_next_step=int(point.c_next_step),
+                      source_fork_seeds=source_fork_seeds,
+                      origin_transition_id=origin_transition_id,
+                      coordinate_law=coordinate_law,
+                      declared_policy=config.declared_policy(),
+                      feedback_enabled=True, cost_meter=cost_meter)
         try:
-            results = run_mechanism_views(
-                **dict(cycle_kwargs,
-                       config=prefix_config,
-                       context=context, fork_index=0,
-                       c_source_step=int(point.c_source_step), r_step=int(point.r_step),
-                       c_next_step=int(point.c_next_step),
-                       source_fork_seeds=source_fork_seeds,
-                       origin_transition_id=origin_transition_id,
-                       coordinate_law=coordinate_law,
-                       interventions=requested_views,
-                       declared_policy=config.declared_policy(),
-                       feedback_enabled=True, cost_meter=cost_meter))
+            if qualification:
+                # PLAN §8.4.  The control is built FROM the treatment policy object, so both arms
+                # provably share one band table, one stratum, one incumbent and one calibration --
+                # and it is pinned to the treatment's REALIZED cardinalities, which only exist
+                # after arm A has run.  Hence a factory rather than a second policy instance.
+                treatment_policy = shared["support_policy"]
+                results = (run_policy_qualification_view(
+                    **shared,
+                    control_policy_factory=functools.partial(
+                        build_source_geometry_control, treatment_policy=treatment_policy),
+                    control_declared_policy=config.declared_control_policy(),
+                ),)
+            else:
+                results = run_mechanism_views(**dict(shared, interventions=requested_views))
         except V2Error as exc:
             # A prefix that could not be executed is a RESULT of this cohort, recorded once per
             # requested view.  Raising here would lose every prefix already paid for.
@@ -791,7 +822,11 @@ def run_v2_mechanism_shard(
 
         for result in results:
             view = result.axes.mechanism_view
-            arm_a_cycle, arm_b_cycle = result.arm_a.cycle, result.arm_b.cycle
+            # ``PolicyQualificationResult`` names its arms treatment/control -- they ARE arm A and
+            # arm B of one pair, and the rest of this loop is identical for both runners.
+            arm_a = getattr(result, "arm_a", None) or result.treatment
+            arm_b = getattr(result, "arm_b", None) or result.control
+            arm_a_cycle, arm_b_cycle = arm_a.cycle, arm_b.cycle
             source = getattr(arm_a_cycle, "source", None)
             per_view = dict(
                 common,
@@ -806,7 +841,7 @@ def run_v2_mechanism_shard(
             contrast_rows.extend(rows)
             n_scorable += sum(1 for row in rows if row["analyzable"])
 
-            for arm in (result.arm_a, result.arm_b):
+            for arm in (arm_a, arm_b):
                 outcome = _ArmOutcome(arm.cycle)
                 # Converted to ROWS here, not retained as objects.  A 16-prefix run forks two
                 # archives per view per prefix and each holds its endpoints; keeping them all until
@@ -874,7 +909,8 @@ def run_v2_mechanism_shard(
         "n_prefixes_requested": n_prefixes,
         "prefix_start": prefix_start,
         "n_scorable_contrasts": n_scorable,
-        "stopping_reason": "mechanism_cohort_complete",
+        "stopping_reason": ("policy_qualification_complete" if qualification
+                            else "mechanism_cohort_complete"),
         "depth_reached": 1 if n_scorable else 0,
         "total_logical_dfe": sum(int(row.get("logical_dfe") or 0) for row in ledger_events),
         "substrate_digest": None,

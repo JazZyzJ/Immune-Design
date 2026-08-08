@@ -753,6 +753,10 @@ class StallReason(str, enum.Enum):
     REOPEN_INFEASIBLE = "stall_reopen_infeasible"
     #: The control could not match the treatment's realized cardinalities.
     CONTROL_CARDINALITY_UNMATCHABLE = "stall_control_cardinality_unmatchable"
+    #: More legal candidates than the run declared it would pay Head calls for.  Failing closed
+    #: keeps the projected budget a real bound; the offline replay measures how often it fires
+    #: before anything launches.
+    COUNTERFACTUAL_BUDGET_EXCEEDED = "stall_counterfactual_budget_exceeded"
 
 
 @dataclass(frozen=True)
@@ -861,6 +865,10 @@ class HeadDirectedCalibration:
     local_contribution_source_ref: str
     #: The declared rounding/tie law for the integer band centre.
     band_center_rule: BandCenterRule
+    #: The run's declared ceiling on the leave-one-out batch, in Head calls per cycle.  ENFORCED
+    #: here, not merely projected: the preflight charges this number against ``max_head_calls``, and
+    #: a policy that silently exceeded it would make the dry-run's verdict meaningless.
+    max_counterfactual_head_calls_per_cycle: int
 
     def __post_init__(self) -> None:
         fraction = _finite_number(self.write_cap_editable_fraction, "write_cap_editable_fraction")
@@ -887,6 +895,13 @@ class HeadDirectedCalibration:
             require_digest(getattr(self, name), name)
         if not isinstance(self.band_center_rule, BandCenterRule):
             raise V2PolicyError("band_center_rule must be a BandCenterRule")
+        budget = self.max_counterfactual_head_calls_per_cycle
+        if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+            raise V2PolicyError(
+                "max_counterfactual_head_calls_per_cycle must be a positive int; the leave-one-out "
+                "batch is real Head work and an unbounded one makes --dry-run's cap verdict "
+                "meaningless"
+            )
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -897,6 +912,8 @@ class HeadDirectedCalibration:
             "local_contribution_tolerance": float(self.local_contribution_tolerance),
             "local_contribution_source_ref": self.local_contribution_source_ref,
             "band_center_rule": self.band_center_rule.value,
+            "max_counterfactual_head_calls_per_cycle":
+                int(self.max_counterfactual_head_calls_per_cycle),
         }
 
 
@@ -1322,6 +1339,24 @@ class HeadDirectedCappedPolicy:
             )
 
         # ---- 4. the frozen-Head leave-one-out counterfactual ---------------------------------
+        budget = int(self.calibration.max_counterfactual_head_calls_per_cycle)
+        if len(candidates) > budget:
+            # Checked BEFORE the batch, so the refusal costs nothing.  Truncating instead would
+            # change the science: ``a_i`` is compared across ALL legal candidates to take the exact
+            # top ``m_d``, so a partial batch would select the best of an arbitrary subset while the
+            # artifact still claimed the exact rule.
+            return stall(
+                StallReason.COUNTERFACTUAL_BUDGET_EXCEEDED,
+                f"{len(candidates)} legal write candidate(s) would need {len(candidates)} Head "
+                f"call(s), above the run's declared {budget} per cycle; the exact top-m_d rule "
+                "needs every candidate scored, so the transition fails closed rather than ranking "
+                "an arbitrary subset",
+                donor_gate=gate,
+                incumbent_window_evidence_digest=incumbent_windows.evidence_digest,
+                safety_window_evidence_digest=safety_windows.evidence_digest,
+                n_legal_write_candidates=len(candidates),
+                write_candidates=tuple(WriteCandidateEvidence(**row) for row in rows.values()),
+            )
         try:
             contributions = self._score_contributions(
                 protein_id=endpoint.protein_id, donor_sequence=donor_sequence,

@@ -51,6 +51,8 @@ from scripts.rf_fusion_v1_artifacts import (  # noqa: E402,F401
 __all__ = [
     "V2ArtifactError",
     "V2_TABLE_SCHEMAS",
+    "SCORABLE_CONTRAST_VIEWS",
+    "POLICY_QUALIFICATION_CONTRAST_VIEWS",
     "V2_COLUMN_TYPES",
     "run_manifest",
     "partial_state_rows",
@@ -680,6 +682,18 @@ def a2_view_rows(
 #: ordinary rows; they are simply not contrasts this statistic can carry.
 MECHANISM_CONTRAST_VIEWS: tuple[str, ...] = ("endpoint_change", "source_shuffle")
 
+#: V2F5A's contrast (PLAN §8.4).  Scorable here, but on a NARROWER domain: the two support laws
+#: reopen different positions by construction, so their free domains differ and only the
+#: INTERSECTION is comparable position by position.  Its primary readout is not in this table at
+#: all -- it is the paired descendant HEAD risk, recovered by joining ``arm_{a,b}_descendant_id``
+#: to ``complete_endpoints.head_global_risk``, which needs no shared domain.  The Hamming columns
+#: are its mechanism secondary.
+POLICY_QUALIFICATION_CONTRAST_VIEWS: tuple[str, ...] = ("support_law",)
+
+#: Every view ``mechanism_contrast_rows`` will score.
+SCORABLE_CONTRAST_VIEWS: tuple[str, ...] = (
+    MECHANISM_CONTRAST_VIEWS + POLICY_QUALIFICATION_CONTRAST_VIEWS)
+
 
 def free_domain(projected: Any) -> tuple[int, ...]:
     """The positions feedback can still steer: editable, and still unresolved at re-entry.
@@ -727,10 +741,10 @@ def mechanism_contrast_rows(
     row saying why rather than no rows at all: the sampling unit is the source prefix, and a
     silently absent prefix is indistinguishable from one that was never attempted.
     """
-    if view not in MECHANISM_CONTRAST_VIEWS:
+    if view not in SCORABLE_CONTRAST_VIEWS:
         raise V2ArtifactError(
-            f"{view!r} is not a scorable mechanism contrast; expected one of "
-            f"{list(MECHANISM_CONTRAST_VIEWS)}"
+            f"{view!r} is not a scorable contrast; expected one of "
+            f"{list(SCORABLE_CONTRAST_VIEWS)}"
         )
 
     common = {
@@ -773,8 +787,15 @@ def mechanism_contrast_rows(
 
     free = free_domain(projected_a)
     if free != free_domain(projected_b):
-        return unscorable("the arms do not share a free domain, so no position is comparable "
-                          "between them")
+        if view not in POLICY_QUALIFICATION_CONTRAST_VIEWS:
+            return unscorable("the arms do not share a free domain, so no position is comparable "
+                              "between them")
+        # The support-law arms reopen DIFFERENT positions -- that IS the treatment -- so their free
+        # domains differ by construction and demanding equality would kill every pair.  Scored on
+        # the intersection, which is the largest set on which a position-by-position comparison
+        # means the same thing on both arms.  ``n_free`` therefore reports the comparable width,
+        # not either arm's own.
+        free = tuple(sorted(set(free) & set(free_domain(projected_b))))
     if not free:
         return unscorable("the free domain is empty; this coordinate leaves nothing for "
                           "propagation to decide")

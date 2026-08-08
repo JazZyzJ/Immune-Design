@@ -4147,3 +4147,46 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - The matched control needs its own class rather than reusing `StateDerivedProbePolicy`, for two reasons that are not stylistic: the probe is REGISTERED diagnostic-only, so the config gate refuses it outside `state_transition_canary`; and it writes exactly one token and reads its own reopen count from `B(r_d)`, so at `m_d > 1` it cannot match the treatment's realized dose. It reuses everything else -- the same band table, stratum, incumbent and calibration objects, taken from the treatment policy.
   - The support-law contrast matches WRITE and REOPEN counts, not the full four-way action vector. The two laws reopen different positions by construction, and the temporal law then splits the source-resolved remainder differently between `inject_from_source_feedback` and `carry_from_source` while their sum is fixed. Demanding full parity would kill every arm for a reason downstream of the identity being tested.
   - The offline replay executes the policy's own `select` over a `SourceView` rebuilt from the recorded per-position vectors, so its coverage numbers describe the policy that would run. A replay that re-implemented the law would be the same class of error V2F5A exists to remove from the support law.
+
+### L0150
+- timestamp: 2026-08-07T15:20:00-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: Owner review of L0149 found two defects that would only surface on the cluster: the V2F5A comparison had no CLI, and its Head cost was invisible to the launch gate.
+- change_summary: (1) `--qualification` runs the Head-directed-vs-source-geometry contrast through the existing mechanism shard, and `support_law` becomes a scorable contrast view; (2) the leave-one-out batch gets a DECLARED per-cycle ceiling that the budget projection charges and the policy enforces.
+- rationale: **(1)** `run_policy_qualification_view` had no caller outside the tests. `run_rf_fusion_v2.py` routed only the ladder or the §7 mechanism cohort, and `mechanism_contrast_rows` refused any view but `endpoint_change`/`source_shuffle`, so PLAN §8.4's comparison could not be launched or written to disk. The shard now takes `qualification=True` and builds the control FROM the treatment policy object (one band table, one stratum, one incumbent, one calibration) at the treatment's realized cardinalities, with `config.declared_control_policy()` as arm B's declaration -- the kernel refuses a policy the run never declared, so the control identity has to come from config rather than be invented at the call site. `support_law` is scored on the INTERSECTION of the two arms' free domains: the arms reopen different positions BY CONSTRUCTION -- that is the treatment -- so requiring the equal domain the mechanism views require would mark every pair unscorable and the cohort would write an empty table. **(2)** The policy scores one counterfactual per legal write candidate, and that number is a property of the realized source, not of the config; the projection counted only the scored endpoints, so `--dry-run` could pass a run that then breached `max_head_calls` after both checkpoints were resident. `config.projection.head_directed.max_counterfactual_head_calls_per_cycle` is now required, the projection charges `bound * n_depth_points` per protein, and the policy emits a typed `stall_counterfactual_budget_exceeded` on a source with more legal candidates -- checked BEFORE the batch, so the refusal costs no Head call. Refusal rather than truncation: `a_i` is compared across all legal candidates to take the exact top `m_d`, so a partial batch would rank the best of an arbitrary subset while the artifact still claimed the exact rule.
+- artifacts:
+  - `scripts/run_rf_fusion_v2.py`, `scripts/rf_fusion_v2_cohort.py`, `scripts/rf_fusion_v2_artifacts.py`, `scripts/rf_fusion_v2_preflight.py`
+  - `inverse_folding/reference_flow/fusion_v2/{config,policy}.py`
+  - `tests/inverse_folding/test_fusion_v2_head_directed_policy.py`, `tests/scripts/test_rf_fusion_v2_mechanism.py`
+- evidence: `pytest tests/inverse_folding/test_fusion_v2_*.py tests/scripts/test_rf_fusion_v2_*.py tests/scripts/test_run_rf_fusion_v2.py -q` -> 1304 passed (was 1250). V1/v0 regressions -> 666 passed. New tests: the driver flag selects the qualification runner and refuses `--qualification` without prefixes; the shard refuses a config with no `head_directed` block; a real treatment/control pair scores as `analyzable` under `support_law` while the same pair stays unscorable under `endpoint_change`; the projection charges the counterfactual bound, drops it to zero without the block, and can breach `max_head_calls` on it alone; the over-budget source stalls with `head.batches == []`.
+- impact:
+  - scope: `select_runner` now returns `qualification` in its partial (two AST/kwarg tests updated); `max_counterfactual_head_calls_per_cycle` is a new REQUIRED key inside `projection.head_directed`, which only V2F5A configs carry, so no frozen S7 config changes. `BudgetProjection` gains `per_protein_counterfactual_head_calls`.
+  - risk: low
+  - confidence: 0.85
+- status: done.
+- next_action: unchanged from L0149 -- measure `eps_R` and the local tolerance, run the offline replay for the §8.4 coverage gate, then launch `--mechanism-prefixes N --qualification`.
+- refs:
+  - The declared bound is ENFORCED, not advisory. A projected number nothing checks would make the dry-run verdict a decoration; the offline replay measures the realized legal-candidate distribution first, so the bound can be set from data rather than guessed.
+  - The mechanism-shard kwarg guard (`test_the_mechanism_shard_supplies_every_kwarg_the_ladder_does`) now reads BOTH runners' call sites plus the shared `dict(...)` literal. The shard builds its cycle kwargs once and spreads them into either runner, so a check that read one call site could let a required name move into the literal and silently stop being verified -- the same shape as the defect that guard exists for.
+
+### L0151
+- timestamp: 2026-08-07T18:52:45-04:00
+- type: FEATURE
+- module: RF/FUSION_V2
+- trigger: V2F5A local code existed, but the cluster handoff still lacked a producer for the typed Head calibration, a qualification-aware launch projection/launcher, and a reader for the paired descendant Head primary.
+- change_summary: Added the complete local-to-cluster V2F5A qualification surface. `calibrate_v2_head_policy.py` re-scores exact stored S7 sequences under the frozen Head and freezes both difference floors at twice the maximum same-sequence drift; the config materializer binds that artifact to the exact Head and committed policy spec. Qualification preflight now charges both arms of every source prefix, the shared SLURM launcher exposes an explicit `QUALIFICATION=1` gate, and `read_v2_mechanism.py --qualification` joins paired descendant IDs to Head risk and reads the predeclared prefix-level directionality gate. Runbook §9 freezes the two-protein one-cycle procedure; production `D>1` remains disabled.
+- rationale: Local wiring tests cannot manufacture the three missing scientific facts: frozen-Head repeatability, policy executability on real S7 states, or descendant reward directionality. They can and must make those cluster measurements content-bound, correctly budgeted, and impossible to confuse with the older Hamming transmission result.
+- artifacts:
+  - `scripts/calibrate_v2_head_policy.py`
+  - `scripts/materialize_v2_canary_config.py`, `scripts/rf_fusion_v2_preflight.py`, `scripts/run_rf_fusion_v2.py`, `scripts/submit_rf_fusion_v2_canary.slurm`
+  - `scripts/analysis/read_v2_mechanism.py`
+  - `inverse_folding/reference_flow/configs/v2_head_directed_capped_policy_v1.json`
+  - `doc/RF_Fusion_v2_Cluster_Runbook.md` §9, `doc/SCRIPTS.md`, `PROGRESS.md`
+- evidence: Targeted new handoff gate `67 passed`; core Head-directed/paired/artifact/cohort gate `200 passed`; `py_compile`, launcher `bash -n`, and `git diff --check` pass.
+- impact:
+  - scope: additive for existing Canary/S7 configs. `--qualification` is explicit and requires `MECHANISM_PREFIXES>=1`; ordinary ladder and older mechanism invocations retain their route.
+  - risk: medium -- this opens the first real-model Head-directed support-policy experiment, but no result or recursive authorization is claimed locally.
+  - confidence: 0.88
+- status: done locally; cluster Steps 3-5 pending.
+- next_action: Follow runbook §9 in order: Head repeatability calibration -> S7 offline coverage replay -> two simultaneous 56-prefix one-cycle qualification jobs -> confirmatory Head reader. Stop before generation if either replay has fewer than 32 committed decisions or any counterfactual-budget stall.

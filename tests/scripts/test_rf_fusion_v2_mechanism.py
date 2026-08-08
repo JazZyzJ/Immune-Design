@@ -310,7 +310,7 @@ def test_the_flag_selects_the_mechanism_shard_and_binds_the_prefix_count():
 
     chosen = select_runner(types.SimpleNamespace(mechanism_prefixes=16, mechanism_prefix_start=0),
                            ladder="LADDER", mechanism=mechanism)
-    assert chosen() == {"n_prefixes": 16, "prefix_start": 0}
+    assert chosen() == {"n_prefixes": 16, "prefix_start": 0, "qualification": False}
 
 
 def test_a_negative_prefix_count_is_refused():
@@ -554,7 +554,12 @@ def test_the_mechanism_shard_supplies_every_kwarg_the_ladder_does():
     exactly the names the ladder pops back out of `cycle_kwargs`.
     """
     required = _call_keywords(LADDER, "run_one_cycle")
-    shard = _call_keywords(COHORT, "run_mechanism_views")
+    # BOTH runners plus the shared ``dict(...)`` literal the shard now builds once and spreads into
+    # each of them.  Reading only one call site would let a name move into the literal -- or into
+    # the qualification branch alone -- and silently stop being checked.
+    shard = (_call_keywords(COHORT, "run_mechanism_views")
+             | _call_keywords(COHORT, "run_policy_qualification_view")
+             | _dict_literal_keys(COHORT))
     executor = _dict_literal_keys(PAIRED)
     from_factory = _popped_from_cycle_kwargs(LADDER)
 
@@ -596,7 +601,7 @@ def test_batch_two_continues_the_prefix_sequence_instead_of_repeating_it():
     chosen = select_runner(
         types.SimpleNamespace(mechanism_prefixes=31, mechanism_prefix_start=16),
         ladder="LADDER", mechanism=mechanism)
-    assert chosen() == {"n_prefixes": 31, "prefix_start": 16}
+    assert chosen() == {"n_prefixes": 31, "prefix_start": 16, "qualification": False}
 
 
 def test_a_prefix_start_without_a_mechanism_run_is_refused():
