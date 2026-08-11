@@ -25,20 +25,14 @@ from ..fusion_v2.errors import V2Error
 from ..fusion_v2.identity import SafetyReferenceBinding
 from ..fusion_v2.safety import (
     AdmissibilityVerdict,
-    IncrementalInapplicable,
     LineageSafetyLedger,
-    SearchAdmissionEvidence,
     SafetyAdmissionPolicy,
     SelfReferentialReference,
-    WholeHotspotVerdict,
     apply_threshold,
-    admissibility_evidence_digest,
-    make_search_admission_evidence,
     make_admissibility_verdict,
     measure_cumulative,
     incremental_inapplicable,
     measure_incremental,
-    validate_search_admission_evidence,
 )
 
 __all__ = ["V2AdmissionError", "SafetyGate", "EndpointAdmission", "admit_endpoint"]
@@ -100,91 +94,6 @@ class EndpointAdmission:
     admitted: bool
     verdict: AdmissibilityVerdict | None
     reason: str
-    search_admitted: bool = False
-    search_reason: str = "not_search_admitted"
-    admission_evidence_digest: str | None = None
-    structure_ancestry_passed: bool = False
-    search_evidence: SearchAdmissionEvidence | None = None
-
-    def __post_init__(self) -> None:
-        """Keep the decision, typed verdict, and positive capability as one atomic fact."""
-        if not isinstance(self.admitted, bool) or not isinstance(self.search_admitted, bool):
-            raise V2AdmissionError("admitted and search_admitted must be explicit bools")
-        if not isinstance(self.structure_ancestry_passed, bool):
-            raise V2AdmissionError("structure_ancestry_passed must be an explicit bool")
-        if not isinstance(self.endpoint_id, str) or not self.endpoint_id.strip():
-            raise V2AdmissionError("endpoint_id must be a non-empty string")
-        if self.verdict is None:
-            if (
-                self.admitted or self.search_admitted
-                or self.admission_evidence_digest is not None
-                or self.search_evidence is not None
-            ):
-                raise V2AdmissionError(
-                    "an admission without a verdict cannot admit, authorize search, or carry a "
-                    "verdict digest"
-                )
-            return
-        if not isinstance(self.verdict, AdmissibilityVerdict):
-            raise V2AdmissionError("verdict must be an AdmissibilityVerdict or None")
-        if self.endpoint_id != self.verdict.endpoint_id:
-            raise V2AdmissionError("EndpointAdmission endpoint does not match its verdict")
-        if self.admitted is not self.verdict.admitted:
-            raise V2AdmissionError("EndpointAdmission.admitted disagrees with its verdict")
-
-        incremental = self.verdict.incremental
-        incremental_passed = (
-            incremental is None
-            or isinstance(incremental, IncrementalInapplicable)
-            or (isinstance(incremental, WholeHotspotVerdict) and incremental.passed)
-        )
-        immune_constraints_passed = bool(
-            self.verdict.constraints_preserved
-            and self.verdict.cumulative.passed
-            and incremental_passed
-        )
-        expected_search = bool(
-            self.structure_ancestry_passed and immune_constraints_passed
-        )
-        if self.search_admitted is not expected_search:
-            raise V2AdmissionError(
-                "EndpointAdmission.search_admitted disagrees with structure, immune, or anchor "
-                "evidence"
-            )
-        expected_digest = admissibility_evidence_digest(
-            self.verdict, structure_ancestry=self.structure_ancestry_passed,
-        )
-        if self.admission_evidence_digest != expected_digest:
-            raise V2AdmissionError(
-                "EndpointAdmission evidence digest does not match its live verdict"
-            )
-        if not expected_search:
-            if self.search_evidence is not None:
-                raise V2AdmissionError(
-                    "a failed search admission cannot carry positive search evidence"
-                )
-            return
-        if self.search_evidence is None:
-            raise V2AdmissionError(
-                "search_admitted=true requires typed SearchAdmissionEvidence"
-            )
-        try:
-            validate_search_admission_evidence(self.search_evidence)
-        except V2Error as exc:
-            raise V2AdmissionError("search evidence is invalid") from exc
-        if self.search_evidence.verdict is not self.verdict:
-            raise V2AdmissionError(
-                "search evidence must carry the exact EndpointAdmission verdict object"
-            )
-        if (
-            self.search_evidence.endpoint_id != self.endpoint_id
-            or self.search_evidence.admission_evidence_digest != expected_digest
-            or self.search_evidence.structure_ancestry_passed
-               is not self.structure_ancestry_passed
-        ):
-            raise V2AdmissionError(
-                "search evidence is not bound to this exact EndpointAdmission"
-            )
 
     @property
     def structure_only(self) -> bool:
@@ -197,8 +106,6 @@ def admit_endpoint(
     *,
     endpoint: Any,
     structure_definitive: bool,
-    structure_ancestry: bool | None = None,
-    structure_evidence_digest: str | None = None,
     endpoint_tokens: Sequence[int],
     hard_anchors: Sequence[tuple[int, int]],
 ) -> EndpointAdmission:
@@ -210,15 +117,6 @@ def admit_endpoint(
     """
     if not isinstance(gate, SafetyGate):
         raise V2AdmissionError("gate must be a SafetyGate")
-    if not isinstance(structure_definitive, bool):
-        raise V2AdmissionError("structure_definitive must be an explicit bool")
-    if structure_ancestry is not None and not isinstance(structure_ancestry, bool):
-        raise V2AdmissionError("structure_ancestry must be an explicit bool or None")
-    ancestry_passed = (
-        structure_definitive if structure_ancestry is None else structure_ancestry
-    )
-    if structure_definitive and not ancestry_passed:
-        raise V2AdmissionError("definitive structure pass must imply ancestry structure pass")
     tokens = tuple(int(token) for token in endpoint_tokens)
     constraints_preserved = all(
         tokens[int(position)] == int(token) for position, token in hard_anchors
@@ -237,9 +135,6 @@ def admit_endpoint(
             endpoint_id=endpoint.endpoint_id, admitted=False, verdict=None,
             reason=f"design is the cumulative reference itself, so the gate cannot measure it: "
                    f"{exc}",
-            search_admitted=False,
-            search_reason="cumulative reference is self-referential",
-            structure_ancestry_passed=ancestry_passed,
         )
     cumulative = apply_threshold(cumulative_evidence, gate.policy.cumulative_threshold)
 
@@ -264,28 +159,6 @@ def admit_endpoint(
         structure_evidence_level="definitive" if structure_definitive else "unvalidated",
         constraints_preserved=bool(constraints_preserved),
     )
-    incremental_passed = (
-        incremental is None
-        or isinstance(incremental, IncrementalInapplicable)
-        or incremental.passed
-    )
-    immune_constraints_passed = bool(
-        constraints_preserved and cumulative.passed and incremental_passed
-    )
-    search_admitted = bool(ancestry_passed and immune_constraints_passed)
-    evidence_digest = admissibility_evidence_digest(
-        verdict, structure_ancestry=ancestry_passed,
-    )
-    search_evidence = (
-        make_search_admission_evidence(
-            endpoint_id=endpoint.endpoint_id,
-            verdict=verdict,
-            structure_ancestry_passed=ancestry_passed,
-            structure_evidence_digest=structure_evidence_digest,
-        )
-        if search_admitted else None
-    )
-
     if verdict.admitted:
         reason = "admitted"
     else:
@@ -298,28 +171,12 @@ def admit_endpoint(
             failed.append(
                 f"whole-landscape new hotspot {cumulative.evidence.max_increase:.4f} exceeds the "
                 f"cumulative threshold {cumulative.threshold.value:.4f}")
-        if isinstance(incremental, WholeHotspotVerdict) and not incremental.passed:
+        if incremental is not None and not incremental.passed:
             failed.append(
                 f"incremental new hotspot {incremental.evidence.max_increase:.4f} exceeds "
                 f"{incremental.threshold.value:.4f}")
         reason = "; ".join(failed)
-    if search_admitted:
-        search_reason = "search_admitted"
-    else:
-        search_failed = []
-        if not ancestry_passed:
-            search_failed.append("structure not ancestry-feasible")
-        if not constraints_preserved:
-            search_failed.append("hard anchors not preserved")
-        if not cumulative.passed:
-            search_failed.append("cumulative immune gate failed")
-        if not incremental_passed:
-            search_failed.append("incremental immune gate failed")
-        search_reason = "; ".join(search_failed)
     return EndpointAdmission(
         endpoint_id=endpoint.endpoint_id, admitted=verdict.admitted, verdict=verdict,
-        reason=reason, search_admitted=search_admitted, search_reason=search_reason,
-        admission_evidence_digest=evidence_digest,
-        structure_ancestry_passed=ancestry_passed,
-        search_evidence=search_evidence,
+        reason=reason,
     )

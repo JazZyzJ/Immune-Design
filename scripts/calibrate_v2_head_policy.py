@@ -42,7 +42,6 @@ from inverse_folding.reference_flow.fusion_v2.policy import (  # noqa: E402
     SOURCE_GEOMETRY_CONTROL_POLICY_ID,
     WRITE_WINDOW_RULE,
 )
-from inverse_folding.reference_flow.fusion_v2.reward import DEPTH0_BOOTSTRAP_RULE  # noqa: E402
 from inverse_folding.reference_flow.fusion_v2_runtime.lookahead import OracleRequest  # noqa: E402
 
 CALIBRATION_BUNDLE_SCHEMA = "v2-head-policy-calibration-bundle/1"
@@ -217,41 +216,6 @@ def _scalar(
     ).canonical_payload()
 
 
-def _lineage_incumbent_depth0_rule(spec: dict[str, Any], *, path: Path) -> str:
-    """Resolve the closed v1/v2 policy method without inventing a cross-version default."""
-    if spec.get("policy_id") != HEAD_DIRECTED_CAPPED_POLICY_ID:
-        raise HeadPolicyCalibrationError(
-            f"{path} is not a frozen {HEAD_DIRECTED_CAPPED_POLICY_ID!r} policy spec"
-        )
-    version = spec.get("policy_version")
-    if version == "v1":
-        # Historical output contract: keep this literal and every surrounding calibration field
-        # unchanged so an existing v1 invocation serializes byte-for-byte identically.
-        return "cumulative_safety_reference"
-    if version != "v2":
-        raise HeadPolicyCalibrationError(
-            f"{path} declares unsupported {HEAD_DIRECTED_CAPPED_POLICY_ID!r} policy_version "
-            f"{version!r}; only v1 and v2 are calibrated"
-        )
-
-    bootstrap = spec.get("depth0_reward_bootstrap")
-    artifact_contract = spec.get("artifact_contract")
-    if (not isinstance(bootstrap, dict)
-            or "reward_incumbent" not in bootstrap
-            or bootstrap["reward_incumbent"] is not None):
-        raise HeadPolicyCalibrationError(
-            f"{path} labels itself policy v2 but does not explicitly declare "
-            "depth0_reward_bootstrap.reward_incumbent=null"
-        )
-    if (not isinstance(artifact_contract, dict)
-            or artifact_contract.get("d0_gate_kind") != "depth0_bootstrap"):
-        raise HeadPolicyCalibrationError(
-            f"{path} labels itself policy v2 but does not bind "
-            "artifact_contract.d0_gate_kind='depth0_bootstrap'"
-        )
-    return DEPTH0_BOOTSTRAP_RULE
-
-
 def build_calibration_bundle(
     rows: list[dict[str, Any]], *, evaluator: Any, policy_spec: Path,
     max_counterfactual_head_calls_per_cycle: int,
@@ -266,7 +230,11 @@ def build_calibration_bundle(
         )
     spec_path = Path(policy_spec)
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
-    depth0_rule = _lineage_incumbent_depth0_rule(spec, path=spec_path)
+    if (spec.get("policy_id") != HEAD_DIRECTED_CAPPED_POLICY_ID
+            or spec.get("policy_version") != "v1"):
+        raise HeadPolicyCalibrationError(
+            f"{spec_path} is not the frozen {HEAD_DIRECTED_CAPPED_POLICY_ID!r} v1 spec"
+        )
     calibration_data_digest = canonical_digest({
         "method": "stored_vs_live_global_risk_max_abs",
         "rows": rows,
@@ -306,7 +274,7 @@ def build_calibration_bundle(
             source_id="v2f5a-local-contribution-repeatability-difference-bound-v1",
             artifact=measurement),
         "band_center_rule": "midpoint_tie_low",
-        "lineage_incumbent_depth0_rule": depth0_rule,
+        "lineage_incumbent_depth0_rule": "cumulative_safety_reference",
         "lineage_incumbent_update_law": "strict_improvement_by_epsilon",
         "write_candidate_window_rule": WRITE_WINDOW_RULE,
         "reopen_count_law": REOPEN_COUNT_LAW,

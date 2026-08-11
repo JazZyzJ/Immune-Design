@@ -481,8 +481,6 @@ def build_oracles(args, config):
                 args.esmfold2_site_packages, "--esmfold2-site-packages"
             ),
             "model_name": args.esmfold2_model,
-            "esmc_model": args.esmfold2_esmc_model,
-            "ccd_path": args.esmfold2_ccd_path,
             "num_loops": args.esmfold2_num_loops,
             "num_sampling_steps": args.esmfold2_num_sampling_steps,
             "num_diffusion_samples": args.esmfold2_num_diffusion_samples,
@@ -562,7 +560,6 @@ def build_oracles(args, config):
     def struct_fn(protein_id, sequence):
         pred = refold(sequence, protein_id, "fusion", backend=backend,
                       cache_dir=args.refold_cache_dir, model=model)
-        cache_hit = bool(pred.get("cache_hit", False))
         ref = _reference_path(protein_id)
         tm = run_tmalign(pred_pdb=str(pred["pdb_path"]), ref_pdb=str(ref), cache_dir=None)
         asr = None
@@ -608,8 +605,6 @@ def build_oracles(args, config):
             active_site_min_pLDDT=(
                 None if v2 is None else v2.predicted_active_site_min_plddt
             ),
-            cache_hit=cache_hit,
-            model_executed=not cache_hit,
         )
 
     from inverse_folding.reference_flow.fusion.oracles import FusionOracles
@@ -730,8 +725,6 @@ def build_arg_parser():
         help="Biohub esm/transformers site-packages overlay for backend=esmfold2_live",
     )
     p.add_argument("--esmfold2-model", default="biohub/ESMFold2")
-    p.add_argument("--esmfold2-esmc-model", default=None)
-    p.add_argument("--esmfold2-ccd-path", default=None)
     p.add_argument("--esmfold2-num-loops", type=int, default=3)
     p.add_argument("--esmfold2-num-sampling-steps", type=int, default=50)
     p.add_argument("--esmfold2-num-diffusion-samples", type=int, default=1)

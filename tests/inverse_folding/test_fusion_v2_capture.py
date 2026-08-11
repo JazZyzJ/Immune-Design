@@ -271,15 +271,6 @@ def test_a_different_sampler_seed_produces_a_different_root():
         _capture(config=_cfg(seed=12)).content_digest
 
 
-def test_an_explicit_root_seed_overrides_the_capture_stream_without_mutating_config():
-    """R4 roots share one frozen runtime config; only the per-root sampler stream may differ."""
-    config = _cfg(seed=11)
-    first = _capture(config=config, root_seed=101)
-    second = _capture(config=config, root_seed=102)
-    assert first.content_digest != second.content_digest
-    assert config.sampler.seed == 11
-
-
 # --------------------------------------------------------------------------------------------
 # fail-closed contracts
 # --------------------------------------------------------------------------------------------

@@ -41,10 +41,6 @@ from ..fusion_v2.state import (
     TransitionOutcome,
     validate_propagated_capture,
 )
-from ..fusion_v2.structure_gate import (
-    DualScTMGatePolicy,
-    authorize_ancestry,
-)
 from .a2_view import A2View, snapshot_a2_view
 from .admission import EndpointAdmission, admit_endpoint
 from .archive import ExactArchive, select_family_representatives
@@ -143,10 +139,6 @@ class CycleOutcome:
     #: no candidate ranking to record.  Present on a STALL as well as on a decision: PLAN §2.5
     #: requires a typed stall to preserve its rejected-candidate counts rather than vanish.
     policy_evidence: Any = None
-    #: Present only when policy v2 D0 selected rank zero from this cycle's real search-admissible
-    #: pool.  It is carried on a later policy stall as well: selection happened even if projection
-    #: ultimately could not commit.
-    depth0_selection_proof: Any = None
     detail: str = ""
 
     @property
@@ -158,7 +150,6 @@ def _score_and_promote(
     *, completions, head_oracle, structure_oracle, evaluator, window_grid_digest,
     archive: ExactArchive, depth: int, safety_gate, hard_anchors,
     cost_meter, event_prefix: str, screen_event_id: str,
-    dual_structure_policy: DualScTMGatePolicy | None = None,
 ) -> tuple[tuple[CompleteEndpoint, ...], tuple[EndpointAdmission, ...]]:
     """Score a completion pool, record every row, then promote on the ADMISSION conjunction.
 
@@ -219,43 +210,15 @@ def _score_and_promote(
         ) as receipt:
             outcome = structure_oracle(request)
             receipt.observe(physical_forwards=0)
-        dual_verdict = (
-            None if dual_structure_policy is None
-            else dual_structure_policy.evaluate(outcome)
-        )
-        structure_definitive = (
-            bool(getattr(outcome, "feasible", False))
-            and bool(getattr(outcome, "evaluated", False))
-            if dual_verdict is None else dual_verdict.strict_structure_passed
-        )
-        structure_ancestry = (
-            structure_definitive
-            if dual_verdict is None else dual_verdict.ancestry_structure_passed
-        )
+        structure_definitive = bool(getattr(outcome, "feasible", False)) and \
+            bool(getattr(outcome, "evaluated", False))
         admission = admit_endpoint(
             safety_gate, endpoint=endpoint, structure_definitive=structure_definitive,
-            structure_ancestry=structure_ancestry,
-            structure_evidence_digest=(
-                None if dual_verdict is None else dual_verdict.verdict_digest
-            ),
             endpoint_tokens=[e.token for e in endpoint.endpoint_provenance_evidence_by_pos],
             hard_anchors=hard_anchors,
         )
         admissions.append(admission)
         passed = admission.admitted
-        search_passed = admission.search_admitted
-        authorization = (
-            authorize_ancestry(
-                endpoint=endpoint, structure_verdict=dual_verdict,
-                search_admission_evidence=admission.search_evidence,
-            )
-            if dual_verdict is not None and search_passed else None
-        )
-        promoted_level = (
-            FeasibilityLevel.DEFINITIVE if passed else
-            FeasibilityLevel.PROVISIONAL if search_passed else
-            FeasibilityLevel.UNVALIDATED
-        )
         # A failed verdict is recorded on the ARCHIVE ROW, never on the endpoint record.  The
         # state layer allows an evaluated structure outcome only on a DEFINITIVE endpoint, and
         # DEFINITIVE requires a PASSING verdict -- so "evaluated and failed" is bookkeeping about
@@ -265,12 +228,11 @@ def _score_and_promote(
         # route: its structure outcome is real and recorded, and it is still not ancestry.
         archive.promote(
             endpoint.endpoint_id,
-            feasibility_level=promoted_level,
+            feasibility_level=(FeasibilityLevel.DEFINITIVE if passed
+                               else FeasibilityLevel.UNVALIDATED),
             structure_outcome=outcome, depth=depth,
-            dual_structure_verdict=dual_verdict,
-            ancestry_authorization=authorization,
         )
-        if not search_passed:
+        if not passed:
             promoted.append(endpoint)
             continue
         promoted.append(
@@ -281,10 +243,8 @@ def _score_and_promote(
                     "fork_index", "fork_seed", "replay",
                     "endpoint_provenance_evidence_by_pos", "head_binding", "head_score",
                     "head_global_risk", "cost_event_ids")},
-                "feasibility_level": promoted_level,
+                "feasibility_level": FeasibilityLevel.DEFINITIVE,
                 "structure_outcome": outcome,
-                "dual_structure_verdict": dual_verdict,
-                "ancestry_authorization": authorization,
             })
         )
     return tuple(promoted), tuple(admissions)
@@ -350,9 +310,6 @@ def run_one_cycle(
     #: source, so an override cannot smuggle in an illegal projection; what it removes is the
     #: policy's freedom to answer differently, which is exactly what the intervention holds fixed.
     support_override: Any = None,
-    #: Optional explicit exploratory method: raw structure outcome means the common non-scTM
-    #: predicates, then this policy derives ancestry and strict/final verdicts from one fold.
-    dual_structure_policy: DualScTMGatePolicy | None = None,
 ) -> CycleOutcome:
     """Run one complete feedback cycle and return everything it produced.
 
@@ -376,10 +333,6 @@ def run_one_cycle(
     source_seeds = [int(s) for s in source_fork_seeds]
     descendant_seeds = [int(s) for s in descendant_fork_seeds]
     overlap = set(source_seeds) & set(descendant_seeds)
-    if dual_structure_policy is not None and not isinstance(
-        dual_structure_policy, DualScTMGatePolicy,
-    ):
-        raise V2CycleError("dual_structure_policy must be a DualScTMGatePolicy or None")
     if overlap:
         raise V2CycleError(
             f"source and descendant fork seeds must be disjoint, shared: {sorted(overlap)}; "
@@ -478,7 +431,6 @@ def run_one_cycle(
             hard_anchors=source.hard_anchors,
             cost_meter=cost_meter, event_prefix=f"{origin_transition_id}:source",
             screen_event_id=f"{origin_transition_id}:screen",
-            dual_structure_policy=dual_structure_policy,
         )
         # Summed over the completions that were REALLY produced, not over the seeds that were
         # requested: a fork that never ran is not a fork that was paid for.
@@ -520,7 +472,7 @@ def run_one_cycle(
     if not admissible:
         return _null(
             TransitionOutcome.NULL_NO_ADMISSIBLE_ENDPOINT,
-            "no endpoint reached strict feasibility or explicit exploratory ancestry admission",
+            "no endpoint reached definitive feasibility, so none may become feedback ancestry",
         )
     rank = int(endpoint_rank)
     if rank >= len(admissible):
@@ -529,16 +481,6 @@ def run_one_cycle(
             f"endpoint_rank={rank} but only {len(admissible)} admissible endpoint(s) exist",
         )
     selected = admissible[rank]
-
-    depth0_selection_proof = None
-    if (int(lineage.depth) == 0 and rank == 0
-            and bool(getattr(support_policy, "requires_depth0_selection_proof", False))):
-        from ..fusion_v2.reward import make_depth0_selection_proof
-
-        depth0_selection_proof = make_depth0_selection_proof(
-            ordered_candidates=admissible, selected=selected,
-            source_state_id=source.state_id, depth=int(lineage.depth),
-        )
 
     if support_override is not None:
         decision = support_override
@@ -554,10 +496,7 @@ def run_one_cycle(
         decision = support_policy(
             source, selected, coordinates,
             runtime=PolicyRuntime(cost_meter=cost_meter,
-                                  event_prefix=f"{origin_transition_id}:policy",
-                                  selection_proof=depth0_selection_proof,
-                                  source_state_id=source.state_id,
-                                  source_depth=int(lineage.depth)),
+                                  event_prefix=f"{origin_transition_id}:policy"),
         )
     else:
         decision = support_policy(source, selected, coordinates)
@@ -583,7 +522,6 @@ def run_one_cycle(
                 endpoints=endpoints, a2_view=a2_view, archive=archive, cost=_cost(),
                 selected_endpoint=selected, detail=str(exc), admissions=admissions,
                 policy_identity=policy_identity, policy_evidence=policy_evidence,
-                depth0_selection_proof=depth0_selection_proof,
             )
     endpoint_tokens = tuple(
         evidence.token for evidence in selected.endpoint_provenance_evidence_by_pos
@@ -602,7 +540,6 @@ def run_one_cycle(
             archive=archive, cost=_cost(), selected_endpoint=selected, detail=projection.detail,
             admissions=admissions, policy_identity=projection.policy,
             policy_evidence=policy_evidence,
-            depth0_selection_proof=depth0_selection_proof,
         )
 
     projected = projection.projected
@@ -634,7 +571,6 @@ def run_one_cycle(
             selected_endpoint=selected, projected=projected, segment=segment,
             admissions=admissions, policy_identity=policy_identity,
             policy_evidence=policy_evidence,
-            depth0_selection_proof=depth0_selection_proof,
             detail=(
                 f"the propagation segment resolved every editable position by step "
                 f"{c_next_step}; the capture is a terminal endpoint, not a live partial state, so "
@@ -671,7 +607,6 @@ def run_one_cycle(
         hard_anchors=propagated.hard_anchors,
         cost_meter=cost_meter, event_prefix=f"{origin_transition_id}:descendant",
         screen_event_id=f"{origin_transition_id}:descendant_screen",
-        dual_structure_policy=dual_structure_policy,
     )
 
     return CycleOutcome(
@@ -684,5 +619,5 @@ def run_one_cycle(
         projected=projected, segment=segment, propagated=propagated,
         descendant_endpoints=descendants, admissions=admissions,
         descendant_admissions=descendant_admissions, policy_identity=policy_identity,
-        policy_evidence=policy_evidence, depth0_selection_proof=depth0_selection_proof,
+        policy_evidence=policy_evidence,
     )

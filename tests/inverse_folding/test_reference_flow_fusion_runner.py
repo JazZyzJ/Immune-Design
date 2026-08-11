@@ -407,24 +407,6 @@ def test_nan_scTM_fails_closed():
     assert ok is False
 
 
-def test_common_structure_gate_ignores_only_sctm_and_keeps_other_predicates():
-    cfg = _cfg(active_site_max=2.0)
-    low_sctm = SimpleNamespace(
-        scTM=0.1, active_site_RMSD=1.0, scRMSD=None, passed=True,
-    )
-    assert orc.structure_common_feasible(
-        low_sctm, cfg, has_active_site=True,
-    ) == (True, "ok")
-
-    bad_anchor = SimpleNamespace(
-        scTM=0.99, active_site_RMSD=3.0, scRMSD=None, passed=True,
-    )
-    ok, reason = orc.structure_common_feasible(
-        bad_anchor, cfg, has_active_site=True,
-    )
-    assert ok is False and "active_site_RMSD" in reason
-
-
 def test_anchored_without_ceiling_fails_closed():
     # anchored protein but no active_site_RMSD_max configured -> must NOT silently pass
     cfg = _cfg(active_site_max=None)

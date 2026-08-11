@@ -47,17 +47,15 @@ flag that can sign a run with a revision the config does not declare -- and no `
 nothing else:
 
 ===== =========================================================================================
-  0   every requested protein produced a reusable completed result (strict-positive or a closed
-      high-risk zero-strict result)
+  0   every requested protein produced an accepted fragment AND at least one succeeded
   2   nothing usable: no accepted fragment, or every protein failed, or a cap was breached
   3   partial: some proteins are missing or their fragments were rejected
   4   the run is not launchable as configured (preflight refusal, stale inputs)
 ===== =========================================================================================
 
-``2`` for "all proteins operationally failed but fragments exist" remains deliberate.  A narrowly
-typed ``complete_negative`` is different: its explicit dual R4 search returned normally and
-persisted complete finite-scTM evidence proving an empty strict pool.  It exits zero as a completed
-measurement without entering ``n_ok`` or strict-success accounting.
+``2`` for "all proteins failed but fragments exist" is deliberate.  PLAN §7.2 lists "all proteins
+fail but the driver exits zero" as an adversarial case: a zero exit there would let a cohort of
+total failures be consumed downstream as a completed run.
 """
 
 from __future__ import annotations
@@ -66,11 +64,10 @@ import argparse
 import functools
 import hashlib
 import json
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -93,7 +90,6 @@ from scripts.rf_fusion_v2_preflight import (  # noqa: E402
 from scripts.rf_fusion_v2_resume import (  # noqa: E402
     RunSignature,
     aggregate_fragments,
-    read_fragment,
     write_fragment,
 )
 
@@ -106,10 +102,8 @@ __all__ = [
     "EXIT_OK", "EXIT_FAILED", "EXIT_PARTIAL", "EXIT_UNLAUNCHABLE",
     "V2DriverError", "DeclaredInput",
     "build_parser", "main", "decide_exit_code",
-    "SemanticLaunchIdentity", "build_semantic_alias_bindings",
-    "build_highrisk_semantic_launch_identity", "verify_highrisk_git_state",
     "parse_declared_inputs", "parse_shard_inputs", "realized_cap_verdict",
-    "resolve_code_revision", "resolve_root_index",
+    "resolve_code_revision",
     "content_provenance",
 ]
 
@@ -125,60 +119,6 @@ class DeclaredInput:
     role: str
     path: Path
     sha256: str
-
-
-@dataclass(frozen=True)
-class SemanticLaunchIdentity:
-    """Canonical no-model identity of what an explicit high-risk worker will execute."""
-
-    payload: Mapping[str, Any]
-
-    def canonical_payload(self) -> dict[str, Any]:
-        try:
-            normalized = json.loads(json.dumps(
-                dict(self.payload), sort_keys=True, separators=(",", ":"),
-            ))
-        except (TypeError, ValueError) as exc:
-            raise V2DriverError(
-                f"semantic launch identity is not canonical JSON: {exc}"
-            ) from exc
-        if not isinstance(normalized, dict):  # pragma: no cover - dataclass type makes this rare
-            raise V2DriverError("semantic launch identity payload must be an object")
-        return normalized
-
-    @property
-    def digest(self) -> str:
-        raw = json.dumps(
-            self.canonical_payload(), sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-        return hashlib.sha256(raw).hexdigest()
-
-
-# One scientific role can reach the worker under several historical/runtime names.  Every alias
-# below is emitted by the high-risk materializer and consumed by the real oracle/model stack.  A
-# role is not considered bound merely because one unused copy of its path was hashed.
-_HIGH_RISK_ROLE_ALIASES: Mapping[str, tuple[str, ...]] = {
-    "cohort_table": ("cohort_table", "test_set_parquet"),
-    "reference_sequences": ("reference_sequences", "complete_reference_manifest"),
-    "backbone": ("backbone", "coordinate_mask"),
-    "rf_sampler_config": ("rf_sampler_config",),
-    "dplm_checkpoint": ("dplm_checkpoint", "base_if_checkpoint", "tokenizer"),
-    "head_checkpoint": ("head_checkpoint",),
-    "structure_backend": ("structure_backend", "esmfold2_runtime_identity"),
-    "structure_config": ("structure_config",),
-    "v0_structure_gate_config": ("v0_structure_gate_config",),
-}
-
-# Dirty state is scoped to executable/scientific implementation surfaces.  User-owned live state
-# (PROGRESS, RAR index, codex_tmp, docs) is intentionally outside this pathspec and cannot block a
-# launch merely because the shared worktree contains it.
-_HIGH_RISK_GIT_PATHS = (
-    "inverse_folding",
-    "epitope_head",
-    "scripts",
-    "tests/inverse_folding",
-    "tests/scripts",
-)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -208,11 +148,6 @@ def build_parser() -> argparse.ArgumentParser:
                              "the oracle stack, so the driver routes them rather than fixing them")
     parser.add_argument("--fragment-dir", default=None,
                         help="per-shard fragment directory (default: <out-dir>/fragments)")
-    parser.add_argument(
-        "--root-index", type=int, default=None, metavar="R",
-        help="explicit independent ladder root in {0,1,2,3}. Omit only for byte-compatible "
-             "legacy single-root execution; R4 campaigns pass every ordinal including zero",
-    )
     parser.add_argument("--print-config", action="store_true",
                         help="resolve the config, derive its digest and project its budget; "
                              "loads no model")
@@ -296,43 +231,6 @@ def execution_replicates(args) -> int:
     return 2 * n_prefixes if qualification else 1
 
 
-def resolve_root_index(args) -> int | None:
-    """Validate the optional R4 identity without relabelling a legacy invocation."""
-    root_index = getattr(args, "root_index", None)
-    if root_index is None:
-        return None
-    if isinstance(root_index, bool) or not isinstance(root_index, int) or not 0 <= root_index <= 3:
-        raise V2DriverError(f"--root-index must be one of 0, 1, 2, 3; got {root_index!r}")
-    if int(getattr(args, "mechanism_prefixes", 0) or 0) or bool(
-        getattr(args, "qualification", False)
-    ):
-        raise V2DriverError(
-            "--root-index belongs to the ordinary depth ladder; mechanism prefixes already "
-            "carry their own independent source_index identity"
-        )
-    return int(root_index)
-
-
-def _depth0_root_seed(config, protein_id: str, root_index: int) -> int:
-    """The no-model mirror of the ladder's explicit root-seed derivation."""
-    from inverse_folding.reference_flow.fusion_v2.seeds import (
-        V2_SEED_ENCODING_VERSION,
-        V2SeedContext,
-    )
-
-    points = [point for point in config.schedule.points if int(point.depth) == 0]
-    if len(points) != 1:
-        raise V2DriverError(f"expected one depth-0 schedule point, found {len(points)}")
-    return V2SeedContext(
-        seed_schema=V2_SEED_ENCODING_VERSION,
-        campaign_id=config.identity.campaign_id,
-        split_role=config.identity.split_role,
-        master_seed=int(config.identity.master_seed),
-        protein_id=str(protein_id),
-    ).depth0_root_seed(
-        checkpoint_step=int(points[0].c_source_step), root_index=int(root_index))
-
-
 def depth_authorization(args, *, config) -> tuple[bool, bool]:
     """Resolve the two non-interchangeable ways a D>1 ladder may be opened.
 
@@ -374,14 +272,13 @@ def decide_exit_code(report, *, requested: int) -> int:
     """
     if requested == 0:
         return EXIT_FAILED
-    if report.missing_proteins or report.rejected or report.n_failed:
-        # Some evidence exists but the cohort is not yet closed.  An accepted ``failed`` fragment
-        # is still retryable evidence, not completion; mixing one with a positive/closed-negative
-        # cell must not turn the whole cohort green.
-        return EXIT_PARTIAL if report.any_completed else EXIT_FAILED
-    if not report.any_completed:
-        # Every requested protein was processed and every one operationally failed.  A closed
-        # high-risk scientific null is counted separately by ``any_completed`` above.
+    if report.missing_proteins or report.rejected:
+        # Some evidence exists but the cohort is not the one that was requested.
+        return EXIT_PARTIAL if report.any_success else EXIT_FAILED
+    if not report.any_success:
+        # Every requested protein was processed and every one failed.  PLAN §7.2 names the zero
+        # exit here as an adversarial case: it would let a cohort of total failures be consumed
+        # downstream as a completed run.
         return EXIT_FAILED
     return EXIT_OK
 
@@ -514,334 +411,6 @@ def parse_shard_inputs(raw: Sequence[str]):
     return ShardInputs(**paths)
 
 
-def _sha256_file(path: Any) -> str:
-    source = Path(path).expanduser()
-    if not source.is_file():
-        raise V2DriverError(f"semantic launch input is not a readable file: {source}")
-    digest = hashlib.sha256()
-    with source.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 22), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _content_digest(config: Any, role: str) -> str:
-    matches = [row for row in config.content if row.role == role]
-    if len(matches) != 1 or not matches[0].expected_sha256:
-        raise V2DriverError(
-            f"high-risk launch requires one frozen digest for content role {role!r}"
-        )
-    return str(matches[0].expected_sha256)
-
-
-def _head_config_sha256(config_dir: Any) -> str:
-    """Torch-free mirror of the frozen Head scorer's three-file content identity."""
-    root = Path(config_dir)
-    digest = hashlib.sha256()
-    for name in ("model.yaml", "model_ablation.yaml", "inference.yaml"):
-        path = root / name
-        if path.exists():
-            digest.update(path.read_bytes())
-        digest.update(b"\x00")
-    return digest.hexdigest()
-
-
-def build_semantic_alias_bindings(
-    declared: Sequence[DeclaredInput], shard_inputs: Any,
-) -> tuple[dict[str, Any], ...]:
-    """Prove that every signed high-risk role is the file every worker alias will read.
-
-    Equality is by bytes, not by spelling: a symlink or relocated read-only mirror is the same
-    scientific input, while two files at one familiar path at different times are not.  This is
-    deliberately evaluated before resume, because an old fragment would otherwise skip the oracle
-    stack -- the only previous place these aliases were inspected.
-    """
-    declared_by_role = {item.role: item for item in declared}
-    if len(declared_by_role) != len(tuple(declared)):
-        raise V2DriverError("declared semantic input roles are not unique")
-    groups = dict(_HIGH_RISK_ROLE_ALIASES)
-    if "constraint_manifest" in declared_by_role:
-        groups["constraint_manifest"] = ("constraint_manifest", "fixed_token_policy")
-
-    digest_cache: dict[Path, str] = {
-        item.path.expanduser().resolve(): item.sha256 for item in declared
-    }
-    rows: list[dict[str, Any]] = []
-    for role, aliases in sorted(groups.items()):
-        signed = declared_by_role.get(role)
-        if signed is None:
-            raise V2DriverError(
-                f"high-risk launch is missing signed --input-file role {role!r}; aliases "
-                f"{list(aliases)} would execute without the role entering the run identity"
-            )
-        alias_digests: dict[str, str] = {}
-        for alias in aliases:
-            raw = getattr(shard_inputs, "paths", {}).get(alias)
-            if not raw:
-                raise V2DriverError(
-                    f"high-risk signed role {role!r} has no execution alias {alias!r}"
-                )
-            path = Path(str(raw)).expanduser().resolve()
-            observed = digest_cache.get(path)
-            if observed is None:
-                observed = _sha256_file(path)
-                digest_cache[path] = observed
-            if observed != signed.sha256:
-                raise V2DriverError(
-                    f"execution alias {alias!r} for signed role {role!r} resolves to {path} with "
-                    f"sha256 {observed}, but --input-file signed {signed.sha256}"
-                )
-            alias_digests[alias] = observed
-        rows.append({
-            "role": role,
-            "sha256": signed.sha256,
-            "aliases": {name: alias_digests[name] for name in sorted(alias_digests)},
-        })
-    return tuple(rows)
-
-
-def verify_highrisk_git_state(
-    code_revision: str, *, repo_root: Any = PROJECT_ROOT,
-) -> str:
-    """Bind a formal high-risk launch to the checked-out clean implementation commit.
-
-    A short config revision is accepted only when git resolves it to the current commit.  Merely
-    echoing ``git rev-parse HEAD`` in a SLURM log is not a gate, and a matching HEAD is insufficient
-    when executable files differ from that commit in the worktree.
-    """
-    root = Path(repo_root).resolve()
-
-    def git(*args: str) -> str:
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(root), *args], check=True, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-        except (OSError, subprocess.CalledProcessError) as exc:
-            detail = getattr(exc, "stderr", None) or str(exc)
-            raise V2DriverError(f"cannot establish high-risk git identity: {detail}") from exc
-        return result.stdout.strip()
-
-    head = git("rev-parse", "HEAD")
-    declared = git("rev-parse", f"{code_revision}^{{commit}}")
-    if declared != head:
-        raise V2DriverError(
-            f"high-risk config code_revision resolves to {declared}, but actual git HEAD is "
-            f"{head}; refusing to attribute the launch to code it will not execute"
-        )
-    dirty = git(
-        "status", "--porcelain=v1", "--untracked-files=all", "--",
-        *_HIGH_RISK_GIT_PATHS,
-    )
-    if dirty:
-        names = [line[3:] if len(line) > 3 else line for line in dirty.splitlines()]
-        raise V2DriverError(
-            "high-risk executable/config/test worktree is dirty relative to the configured "
-            f"commit: {names}; commit or remove only these relevant changes before launch"
-        )
-    return head
-
-
-def _canonical_shard_routes(
-    shard_inputs: Any, *, semantic_directories: Mapping[str, Mapping[str, Any]],
-    file_digest_cache: Mapping[Path, str] | None = None,
-) -> dict[str, Any]:
-    """Identity every routed value while keeping mutable output directories content-free."""
-    routes: dict[str, Any] = {}
-    digests = dict(file_digest_cache or {})
-    for name, raw_value in sorted(getattr(shard_inputs, "paths", {}).items()):
-        value = str(raw_value)
-        if name in semantic_directories:
-            routes[name] = dict(semantic_directories[name])
-            continue
-        if name in {"journal_dir", "refold_cache_dir"}:
-            # Stable before/after directory creation; content is mutable by design.
-            routes[name] = {
-                "kind": "operational_directory_location",
-                "path": str(Path(value).expanduser().resolve()),
-            }
-            continue
-        path = Path(value).expanduser()
-        if path.is_file():
-            resolved = path.resolve()
-            digest = digests.get(resolved)
-            if digest is None:
-                digest = _sha256_file(resolved)
-                digests[resolved] = digest
-            routes[name] = {"kind": "file", "sha256": digest}
-        elif path.is_dir():
-            # journal/refold contents change DURING a valid run.  Their selected locations still
-            # enter identity, but hashing their mutable contents would invalidate every resume.
-            routes[name] = {"kind": "directory_location", "path": str(path.resolve())}
-        else:
-            routes[name] = {"kind": "literal", "value": value}
-    return routes
-
-
-def build_highrisk_semantic_launch_identity(
-    *, config: Any, cohort: Sequence[str], declared: Sequence[DeclaredInput],
-    shard_inputs: Any, git_head: str,
-) -> SemanticLaunchIdentity:
-    """Resolve the exact high-risk worker semantics without loading any learned model.
-
-    Besides direct aliases, this follows the indirections that matter scientifically: the
-    reference manifest to the selected sequence bytes, the cohort row plus ``pdb_root`` to the
-    structure file, the band/stratum manifests, the Head config directory, and the signed
-    ESMFold2 runtime declaration to its local snapshots, package overlay and protocol.
-    """
-    proteins = tuple(str(protein_id) for protein_id in cohort)
-    if len(proteins) != 1:
-        raise V2DriverError(
-            "an explicit high-risk R4 launch is one independently materialized protein cell; "
-            f"expected exactly one protein, got {list(proteins)}"
-        )
-    declared_by_role = {item.role: item for item in declared}
-    for role in ("complete_reference_sequence", "projection_policy_spec"):
-        if role not in declared_by_role:
-            raise V2DriverError(
-                f"high-risk launch is missing signed --input-file role {role!r}"
-            )
-    aliases = build_semantic_alias_bindings(declared, shard_inputs)
-
-    # Head identity: reproduce the scorer's frozen three-file digest without importing its
-    # torch-touching execution module into the no-model dry-run path.
-    head_config_path = Path(shard_inputs.require("head_config")).expanduser().resolve()
-    head_config_digest = _head_config_sha256(head_config_path)
-    expected_head_config = _content_digest(config, "head_config")
-    if head_config_digest != expected_head_config:
-        raise V2DriverError(
-            f"executed Head config directory hashes to {head_config_digest}, but config.content "
-            f"declares {expected_head_config}"
-        )
-    head_runtime = {
-        "head_config_sha256": head_config_digest,
-        "head_variant_id": str(shard_inputs.require("head_variant_id")),
-        "head_allele_idx": int(shard_inputs.require("head_allele_idx")),
-        "head_window_batch_size": int(shard_inputs.require("head_window_batch_size")),
-    }
-    expected_head = {
-        "head_variant_id": str(config.head.head_variant_id),
-        "head_allele_idx": int(config.head.head_allele_idx),
-        "head_window_batch_size": int(config.head.head_window_batch_size),
-    }
-    observed_head = {name: head_runtime[name] for name in expected_head}
-    if observed_head != expected_head:
-        raise V2DriverError(
-            f"Head shard inputs disagree with config.head: observed {observed_head}, "
-            f"declared {expected_head}"
-        )
-
-    # Band and stratum are read before the model in the oracle stack; do the same here so an old
-    # fragment cannot skip validation of newly routed calibration inputs.
-    from inverse_folding.reference_flow.fusion_v2.schedule import load_band_table
-    from scripts.rf_fusion_v2_oracles import (
-        assert_stratum_matches_config,
-        load_verified_esmfold2_runtime,
-        resolve_reference,
-        resolve_stratum,
-    )
-
-    band_path = Path(shard_inputs.require("schedule_band_calibration")).resolve()
-    band_digest = _content_digest(config, "schedule_band_calibration")
-    load_band_table(band_path, expected_content_digest=band_digest)
-    stratum_path = Path(shard_inputs.require("protein_stratum_manifest")).resolve()
-    realized_stratum = resolve_stratum(stratum_path, proteins[0])
-    assert_stratum_matches_config(config.schedule.stratum_key, realized_stratum)
-
-    reference_manifest = Path(shard_inputs.require("complete_reference_manifest")).resolve()
-    _reference, reference_digest = resolve_reference(reference_manifest, proteins[0])
-    signed_reference_digest = declared_by_role["complete_reference_sequence"].sha256
-    if reference_digest != signed_reference_digest:
-        raise V2DriverError(
-            f"complete_reference_manifest selects sha256 {reference_digest} for {proteins[0]}, "
-            f"but complete_reference_sequence signed {signed_reference_digest}"
-        )
-
-    # The model resolves a backbone through the cohort row + pdb_root, not through the signed
-    # `backbone` alias.  Follow that exact torch-free resolver and compare the selected bytes.
-    import pandas as pd
-    from inverse_folding.reference_flow.structure_paths import resolve_structure_path
-
-    test_set_path = Path(shard_inputs.require("test_set_parquet")).resolve()
-    frame = pd.read_parquet(test_set_path)
-    if "protein_id" not in frame.columns or frame["protein_id"].duplicated().any():
-        raise V2DriverError("high-risk cohort table needs unique protein_id rows")
-    indexed = frame.set_index("protein_id")
-    if proteins[0] not in indexed.index:
-        raise V2DriverError(
-            f"high-risk cohort table has no execution row for {proteins[0]!r}"
-        )
-    backbone_row = dict(indexed.loc[proteins[0]])
-    backbone_row["protein_id"] = proteins[0]
-    resolved_backbone = resolve_structure_path(
-        backbone_row, shard_inputs.require("pdb_root"),
-    ).resolve()
-    resolved_backbone_digest = _sha256_file(resolved_backbone)
-    signed_backbone_digest = declared_by_role["backbone"].sha256
-    if resolved_backbone_digest != signed_backbone_digest:
-        raise V2DriverError(
-            f"cohort row + pdb_root resolve {resolved_backbone} with sha256 "
-            f"{resolved_backbone_digest}, but signed backbone role has {signed_backbone_digest}"
-        )
-
-    # Structure declaration verification is content-based and remains no-model: it verifies the
-    # local snapshot(s), CCD, overlay source trees and protocol, but instantiates no worker.
-    structure_protocol = {
-        "num_loops": int(shard_inputs.require("esmfold2_num_loops")),
-        "num_sampling_steps": int(shard_inputs.require("esmfold2_num_sampling_steps")),
-        "num_diffusion_samples": int(shard_inputs.require("esmfold2_num_diffusion_samples")),
-        "seed": int(shard_inputs.require("esmfold2_seed")),
-    }
-    structure_runtime = load_verified_esmfold2_runtime(
-        shard_inputs.require("esmfold2_runtime_identity"),
-        expected_sha256=_content_digest(config, "structure_backend"),
-        model_selector=shard_inputs.require("esmfold2_model"),
-        site_packages=shard_inputs.require("esmfold2_site_packages"),
-        protocol=structure_protocol,
-        esmc_model_selector=shard_inputs.require("esmfold2_esmc_model"),
-        ccd_path=shard_inputs.require("esmfold2_ccd_path"),
-    )
-
-    backbones = {proteins[0]: {
-        "path": str(resolved_backbone), "sha256": resolved_backbone_digest,
-    }}
-    structure_semantics = {
-        "kind": "verified_esmfold2_runtime",
-        "declaration": structure_runtime,
-    }
-    semantic_directories = {
-        "head_config": {"kind": "head_config", "sha256": head_config_digest},
-        "pdb_root": {"kind": "resolved_backbones", "proteins": backbones},
-        "esmfold2_site_packages": structure_semantics,
-        "esmfold2_model": structure_semantics,
-        "esmfold2_esmc_model": structure_semantics,
-    }
-    routes = _canonical_shard_routes(
-        shard_inputs, semantic_directories=semantic_directories,
-        file_digest_cache={
-            item.path.expanduser().resolve(): item.sha256 for item in declared
-        },
-    )
-    return SemanticLaunchIdentity({
-        "schema_version": "rf-fusion-v2-highrisk-semantic-launch/1",
-        "git_head": str(git_head),
-        "config_digest": config.config_digest(),
-        "cohort": list(proteins),
-        "role_aliases": list(aliases),
-        "head_runtime": head_runtime,
-        "schedule_band": {
-            "content_digest": band_digest,
-            "file_sha256": _sha256_file(band_path),
-            "stratum_manifest_sha256": _sha256_file(stratum_path),
-            "realized_stratum": realized_stratum,
-        },
-        "references": {proteins[0]: reference_digest},
-        "backbones": backbones,
-        "structure_runtime": structure_runtime,
-        "shard_routes": routes,
-    })
-
-
 def realized_cap_verdict(ledger_events, *, caps):
     """Check the REALIZED cohort ledger against the run's declared hard caps (PLAN §5.1, §5.3).
 
@@ -875,8 +444,6 @@ def _signatures(
     config, cohort, *, arm_role, code_revision, inputs,
     production_depth_authorized: bool = False,
     exploratory_depth_override: bool = False,
-    root_index: int | None = None,
-    launch_identity_digest: str | None = None,
 ):
     if not inputs:
         # PLAN §5.2: "Missing content identity fails closed."  A sentinel signature would be shared
@@ -898,10 +465,6 @@ def _signatures(
             code_revision=code_revision,
             production_depth_authorized=bool(production_depth_authorized),
             exploratory_depth_override=bool(exploratory_depth_override),
-            root_index=root_index,
-            root_seed=(None if root_index is None else _depth0_root_seed(
-                config, protein_id, root_index)),
-            launch_identity_digest=launch_identity_digest,
         )
         for protein_id in cohort
     }
@@ -916,18 +479,13 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
     """
     args = build_parser().parse_args(argv)
     out_dir = Path(args.out_dir)
-    fragment_root = Path(args.fragment_dir) if args.fragment_dir else out_dir / "fragments"
+    fragment_dir = Path(args.fragment_dir) if args.fragment_dir else out_dir / "fragments"
 
     try:
         config = load_v2_config_file(args.v2_config)
     except (V2Error, OSError) as exc:
         print(f"config refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
-    # Reuse the cohort producer's one definition of the exceptional status scope.  A generic dual
-    # gate is not enough: only the frozen high-risk D2/D8 R4 family may publish a closed negative.
-    from scripts.rf_fusion_v2_cohort import is_highrisk_dual_r4_config
-
-    highrisk_dual_r4 = is_highrisk_dual_r4_config(config)
 
     cohort = list(args.cohort)
     if len(set(cohort)) != len(cohort):
@@ -944,19 +502,11 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         declared = parse_declared_inputs(args.input_file, config=config)
         code_revision = resolve_code_revision(args.code_revision, config=config)
         budget_replicates = execution_replicates(args)
-        root_index = resolve_root_index(args)
         production_depth_authorized, exploratory_depth_override = depth_authorization(
             args, config=config)
     except (V2Error, OSError) as exc:
         print(f"declared input refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
-    complete_negative_authorized = bool(
-        root_index is not None and exploratory_depth_override and highrisk_dual_r4
-    )
-    fragment_dir = (
-        fragment_root if root_index is None
-        else fragment_root / f"root_{root_index:04d}"
-    )
     # Parsed BEFORE the --print-config/--dry-run branch returns.  A gate that certified a launch
     # without looking at the runtime paths it would launch WITH is not a launch gate: a malformed
     # --shard-input was discovered only on the GPU, after the allocation the gate exists to
@@ -967,20 +517,6 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         print(f"shard input refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
 
-    launch_identity: SemanticLaunchIdentity | None = None
-    # Pure --print-config signs no launch and remains lenient.  Every real or dry-run explicit
-    # high-risk R4 invocation resolves the worker semantics BEFORE resume or model construction.
-    if complete_negative_authorized and not (args.print_config and not args.dry_run):
-        try:
-            git_head = verify_highrisk_git_state(code_revision)
-            launch_identity = build_highrisk_semantic_launch_identity(
-                config=config, cohort=cohort, declared=declared,
-                shard_inputs=shard_inputs, git_head=git_head,
-            )
-        except (V2Error, OSError, ValueError, TypeError, ImportError) as exc:
-            print(f"semantic launch refused: {exc}", file=sys.stderr)
-            return EXIT_UNLAUNCHABLE
-
     if args.print_config or args.dry_run:
         try:
             payload = print_config_payload(
@@ -988,17 +524,6 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                 code_revision=code_revision, execution_replicates=budget_replicates)
             payload["production_depth_authorized"] = production_depth_authorized
             payload["exploratory_depth_override"] = exploratory_depth_override
-            if root_index is not None:
-                payload["root_index"] = root_index
-                payload["root_seeds_by_protein"] = {
-                    protein_id: _depth0_root_seed(config, protein_id, root_index)
-                    for protein_id in cohort
-                }
-            if launch_identity is not None:
-                payload["semantic_launch_identity"] = {
-                    "digest": launch_identity.digest,
-                    "payload": launch_identity.canonical_payload(),
-                }
         except (V2Error, OSError) as exc:
             print(f"preflight refused: {exc}", file=sys.stderr)
             return EXIT_UNLAUNCHABLE
@@ -1032,11 +557,7 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         expected = _signatures(config, cohort, arm_role=config.arm.arm_role,
                                code_revision=code_revision, inputs=declared,
                                production_depth_authorized=production_depth_authorized,
-                               exploratory_depth_override=exploratory_depth_override,
-                               root_index=root_index,
-                               launch_identity_digest=(
-                                   None if launch_identity is None else launch_identity.digest
-                               ))
+                               exploratory_depth_override=exploratory_depth_override)
     except (V2Error, OSError) as exc:
         print(f"run signature refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
@@ -1060,10 +581,7 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
 
         for protein_id in cohort:
             signature = expected[protein_id]
-            fragment_name = (
-                f"{protein_id}.json" if root_index is None
-                else f"{protein_id}.root{root_index:04d}.json")
-            fragment_path = fragment_dir / fragment_name
+            fragment_path = fragment_dir / f"{protein_id}.json"
             if fragment_path.exists():
                 # Content-bound resume: previously paid work is reused only when every scientific
                 # condition still matches.  A stale fragment is REPLACED, not trusted.
@@ -1071,13 +589,10 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
 
                 verdict = validate_fragment(fragment_path, expected=signature,
                                             table_names=tuple(V2_TABLE_SCHEMAS))
-                # Reuse only a CLOSED result: strict-positive ``ok`` or the narrowly authorized
-                # high-risk zero-strict result.  Generic ``failed`` remains retryable -- one
-                # preempted node must never freeze a protein forever.
-                if verdict.records_complete and not (
-                    verdict.result_status == "complete_negative"
-                    and not complete_negative_authorized
-                ):
+                # Only work that actually SUCCEEDED may be skipped.  Skipping on admissibility
+                # alone would freeze a protein as failed for every future invocation -- one
+                # preempted node and the cohort could never be completed by re-running it.
+                if verdict.records_success:
                     continue
             try:
                 runner_kwargs = dict(
@@ -1092,14 +607,7 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                         production_depth_authorized=production_depth_authorized,
                         exploratory_depth_override=exploratory_depth_override,
                     )
-                if root_index is not None:
-                    runner_kwargs["root_index"] = root_index
                 status, payload = runner(**runner_kwargs)
-                if status == "complete_negative" and not complete_negative_authorized:
-                    raise V2DriverError(
-                        "complete_negative is authorized only for an explicit exploratory "
-                        "high-risk dual-search R4 ladder"
-                    )
             except V2Error as exc:
                 status, payload = "failed", {"error": f"{type(exc).__name__}: {exc}"}
             write_fragment(fragment_path, signature=signature, status=status, payload=payload)
@@ -1108,13 +616,6 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         fragment_dir, requested_cohort=cohort, expected_by_protein=expected,
         table_names=tuple(V2_TABLE_SCHEMAS),
     )
-    if report.n_complete_negative and not complete_negative_authorized:
-        print(
-            "aggregate refused: complete_negative evidence is authorized only for an explicit "
-            "exploratory high-risk D2/D8 dual-search R4 cell",
-            file=sys.stderr,
-        )
-        return EXIT_FAILED
 
     # Realized cohort budget, computed from the ledger the run actually wrote.  A breach is a fact
     # about spend and stops the run; "unverifiable" is a fact about INSTRUMENTATION (some attempt
@@ -1129,26 +630,6 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
 
     tables = {name: list(report.tables.get(name, [])) for name in V2_TABLE_SCHEMAS}
     provenance = content_provenance(config, declared)
-    highrisk_result_manifest: dict[str, Any] = {}
-    if complete_negative_authorized:
-        result_status_by_protein: dict[str, str] = {}
-        for fragment_verdict in report.accepted:
-            fragment = read_fragment(fragment_verdict.path)
-            protein_id = fragment["signature"]["protein_id"]
-            result_status_by_protein[str(protein_id)] = str(fragment_verdict.result_status)
-        highrisk_result_manifest = {
-            "n_complete_negative": report.n_complete_negative,
-            "fragment_result_status_by_protein": {
-                protein_id: result_status_by_protein[protein_id]
-                for protein_id in sorted(result_status_by_protein)
-            },
-        }
-        if launch_identity is not None:
-            highrisk_result_manifest["semantic_launch_identity"] = {
-                "digest": launch_identity.digest,
-                "payload": launch_identity.canonical_payload(),
-            }
-
     write_v2_bundle(
         out_dir,
         manifest={
@@ -1159,12 +640,6 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                                  "matched_descendant"),
                 production_depth_authorized=production_depth_authorized,
                 exploratory_depth_override=exploratory_depth_override,
-                root_index=root_index,
-                root_seeds_by_protein=(
-                    None if root_index is None else {
-                        protein_id: signature.root_seed
-                        for protein_id, signature in expected.items()
-                    }),
             ),
             # Per PLAN §5.2 ROLE, with the declared identity and the observed one side by side.
             # A digest that was never observed is null: "" would read as a value.
@@ -1180,10 +655,6 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
             ],
             "missing_proteins": list(report.missing_proteins),
             "n_ok": report.n_ok,
-            # Additive only for the explicit dual R4 contract.  Legacy manifests retain their
-            # original byte surface; high-risk consumers can distinguish a paid zero-strict cell
-            # from a retryable operational failure without counting it as ``n_ok``.
-            **highrisk_result_manifest,
             # Recorded even when clean: an exit code says a run is unusable, it cannot say WHICH
             # budget it blew, and that decides whether the operator re-scopes the cohort or the
             # science.  ``null`` means no ledger was kept, which is NOT a compliance certificate.

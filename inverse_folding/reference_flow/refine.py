@@ -161,8 +161,6 @@ class StructureMetrics:
     active_site_min_pLDDT: float | None = None
     cat_max_scRMSD: float | None = None
     predicted_active_site_min_pLDDT: float | None = None
-    cache_hit: bool | None = None
-    model_executed: bool | None = None
     passed: bool = True                    # set by structure_gate
     reason: str = ""
 

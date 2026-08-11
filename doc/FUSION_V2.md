@@ -421,15 +421,6 @@ feasibility verdict. Any endpoint promoted into feedback ancestry or used for th
 frontier must pass the frozen definitive structure contract. A future provisional-parent policy
 would be a distinct scientific method and is not authorized by this architecture.
 
-The high-risk ceiling campaign adds exactly one such distinct exploratory method under the explicit
-profile identity `exploratory_dual_sctm_ancestry070_strict085_v1`. One definitive fold is evaluated
-once; all non-scTM structure predicates remain common and fail closed. An endpoint with
-`scTM >= 0.70` may continue search only when it also passes the immutable-constraint and immune
-ratchet conjunction, and it carries an endpoint-bound ancestry authorization. It remains typed
-`provisional` until `scTM >= 0.85`; provisional endpoints may never become archive elite, final
-output, or capability-frontier evidence. The legacy single-gate method remains strict-only and is
-unchanged. This exception measures an aggressive search ceiling, not a production safety claim.
-
 Here, `exact Head` means that the frozen Head is evaluated on and bound to the exact complete
 sequence. It does not mean that the Head is a ground-truth immune assay.
 
@@ -646,15 +637,6 @@ never-destroyed archive: descendants are evaluated exactly, only admissible impr
 the elite/frontier, and a repeated or non-novel transition records a null/stalled event rather
 than purchasing ancestry mass.
 
-The high-risk ceiling campaign uses policy version `v2`, whose reward lineage deliberately has no
-WT-valued $I_0$. At depth zero, the real search-admissible generated pool is ordered by
-`(head_global_risk, endpoint_id)` and rank zero is selected with a cycle-minted proof over the full
-ordered pool. Only a committed transition binds that exact endpoint as $I_1$; from depth one
-onward, the original strict improvement-by-calibrated-$\epsilon_R$ law applies. The content-bound
-native sequence remains the immutable cumulative-safety and depth-zero attribution reference, but
-it is never relabelled as a generated-design reward incumbent. This separation is necessary when
-the scientific comparator is an unguided generated baseline rather than WT.
-
 Reopened-support identity and sampler time control different mechanisms, but their **cardinality is
 jointly constrained**. The total number of masked editable positions determines the exact realized
 maturity of $\widetilde P_{d+1}$, whereas $r_d$ determines the denoiser hazard and the number of
@@ -809,14 +791,6 @@ $B_m(\mathbf{c}_0)$ at one selected point.
 
 The supported claim is the **attainable capability over the explored ladder** and its observed
 plateau. It is not a claim about the global optimum under unlimited computation.
-
-For the high-risk ceiling campaign, the optimization comparator is the pre-existing stochastic
-Gumbel DPLM-native run (`gumbel_argmax`, temperature 1.0, seeds 42--49, eight unique designs per
-protein), evaluated again on the exact live Head/structure stack. WT is not regenerated and is not
-the optimization baseline; it remains only the immutable safety/attribution reference. The V2
-search is intentionally allowed to spend more compute than those eight designs. Consequently the
-supported comparison is best attainable strict-feasible frontier over the explored search, not
-matched-compute efficiency or a causal per-budget superiority claim.
 
 ### 6.2 Natural scaling axes
 

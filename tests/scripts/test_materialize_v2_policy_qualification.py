@@ -5,18 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import types
-from pathlib import Path
 
 import pytest
 
 from inverse_folding.reference_flow.fusion_v2.identity import HeadEvaluatorIdentity
 from inverse_folding.reference_flow.fusion_v2.config import load_v2_config
-from inverse_folding.reference_flow.fusion_v2.structure_gate import (
-    DUAL_SCTM_POLICY_KIND,
-    HIGH_RISK_ANCESTRY_SCTM_MIN,
-    HIGH_RISK_DUAL_SCTM_PROFILE_ID,
-    HIGH_RISK_STRICT_SCTM_MIN,
-)
 from scripts.calibrate_v2_head_policy import build_calibration_bundle
 from scripts.materialize_v2_canary_config import (
     MaterializeError,
@@ -24,14 +17,13 @@ from scripts.materialize_v2_canary_config import (
     _structure_runtime_identity,
     fill_config,
 )
-from scripts.rf_fusion_v2_preflight import project_v2_budget
 from tests.inverse_folding.test_fusion_v2_config import _mapping
 
 
 D = "a" * 64
 
 
-def _case(tmp_path, *, policy_version="v1", counterfactual_calls=278):
+def _case(tmp_path):
     template = _mapping(**{
         "schedule.depth_cap": 1,
         "schedule.points": [{
@@ -42,15 +34,7 @@ def _case(tmp_path, *, policy_version="v1", counterfactual_calls=278):
     hotspot = tmp_path / "hotspot.json"
     hotspot.write_text(json.dumps({"delta_new": template["safety"]["delta_new_cumulative"]}))
     spec = tmp_path / "policy.json"
-    spec_payload = {
-        "policy_id": "head_directed_capped", "policy_version": policy_version,
-    }
-    if policy_version == "v2":
-        spec_payload.update({
-            "depth0_reward_bootstrap": {"reward_incumbent": None},
-            "artifact_contract": {"d0_gate_kind": "depth0_bootstrap"},
-        })
-    spec.write_text(json.dumps(spec_payload))
+    spec.write_text(json.dumps({"policy_id": "head_directed_capped", "policy_version": "v1"}))
     spec_sha = hashlib.sha256(spec.read_bytes()).hexdigest()
     evaluator = HeadEvaluatorIdentity(
         allele=template["head"]["allele"], score_scale=template["head"]["score_scale"],
@@ -61,7 +45,7 @@ def _case(tmp_path, *, policy_version="v1", counterfactual_calls=278):
     calibration = build_calibration_bundle(
         [{"protein_id": "P1", "sequence_md5": "b" * 32, "abs_repeat_drift": 0.01}],
         evaluator=evaluator, policy_spec=spec,
-        max_counterfactual_head_calls_per_cycle=counterfactual_calls,
+        max_counterfactual_head_calls_per_cycle=278,
     )
     calibration_path = tmp_path / "calibration.json"
     calibration_path.write_text(json.dumps(calibration))
@@ -73,104 +57,10 @@ def _case(tmp_path, *, policy_version="v1", counterfactual_calls=278):
         esmfold2_model=None, esmfold2_num_loops=None,
         esmfold2_num_sampling_steps=None, esmfold2_num_diffusion_samples=None,
         esmfold2_seed=None,
-        projection_policy_spec=spec, structure_backend=None,
     )
     frozen = {row["role"]: D for row in template["content"]}
     frozen.update({"head_config": D, "head_checkpoint": D,
                    "projection_policy_spec": spec_sha})
-    return template, args, frozen
-
-
-def _highrisk_case(tmp_path, *, profile, run_max_head_calls):
-    template, args, frozen = _case(
-        tmp_path, policy_version="v2", counterfactual_calls=454)
-    from inverse_folding.reference_flow.fusion_v2.config import (
-        HotspotCalibrationArtifact,
-        calibration_source_ref,
-    )
-    from scripts.calibrate_rf_fusion_v2_hotspot import source_id_for
-
-    args.protein_id = "P1"
-    args.stratum_key = "highrisk_nod_v1_P1_unconstrained"
-    args.head_variant_id = "LC1"
-    args.head_allele_idx = 0
-    args.head_window_batch_size = 64
-    calibration_path = Path(args.policy_calibration_json)
-    calibration = json.loads(calibration_path.read_text())
-    calibration["head"].update({
-        "head_variant_id": args.head_variant_id,
-        "head_allele_idx": args.head_allele_idx,
-        "head_window_batch_size": args.head_window_batch_size,
-    })
-    calibration_path.write_text(json.dumps(calibration))
-    hotspot_path = Path(args.hotspot_json)
-    hotspot = json.loads(hotspot_path.read_text())
-    block = hotspot["delta_new"]
-    source_id = source_id_for(args.protein_id, population="full_trajectory")
-    artifact = HotspotCalibrationArtifact(**block["artifact"])
-    block["source_id"] = source_id
-    block["source_ref"] = calibration_source_ref(
-        value=block["value"], unit=block["unit"], source_kind=block["source_kind"],
-        source_id=source_id, artifact=artifact,
-    )
-    hotspot.update({
-        "protein_id": args.protein_id,
-        "code_revision": args.code_revision,
-        "population": "full_trajectory",
-        "sampling_unit": "trajectory",
-        "threshold_statistic": "per_protein_feedback_disabled_head_valid_q90_higher",
-        "seed_namespace": "v2_hotspot_calibration_1",
-        "master_seed": template["identity"]["master_seed"],
-        "min_head_valid": 64,
-        "n_attempted": 64,
-        "n_head_valid": 64,
-        "n_retained": 64,
-        "q90_higher": block["value"],
-        "failure_counts": {},
-        "structure_diagnostic_mode": "skip_independent_capability_ceiling",
-        "structure_operability": {
-            "status": "not_measured", "n_definitive_feasible": None, "rate": None,
-        },
-        "head": calibration["head"],
-    })
-    hotspot_path.write_text(json.dumps(hotspot))
-    snapshot = tmp_path / "esmfold2-snapshot"
-    snapshot.mkdir()
-    model = snapshot / "model.safetensors"
-    model.write_bytes(b"frozen ESMFold2 model")
-    (snapshot / "config.json").write_text('{"model_type":"esmfold2"}\n')
-    (snapshot / "ccd.pkl").write_bytes(b"frozen CCD")
-    esmc = tmp_path / "esmc-snapshot"
-    esmc.mkdir()
-    for name in (
-        "config.json", "model.safetensors.index.json", "special_tokens_map.json",
-        "tokenizer.json", "tokenizer_config.json",
-        *(f"model-{index:05d}-of-00006.safetensors" for index in range(1, 7)),
-    ):
-        (esmc / name).write_bytes(f"frozen {name}".encode())
-    args.exploratory_profile = profile
-    args.run_max_head_calls = run_max_head_calls
-    args.esmfold2_model = str(snapshot.resolve())
-    args.esmfold2_esmc_model = str(esmc.resolve())
-    args.esmfold2_ccd_path = str((snapshot / "ccd.pkl").resolve())
-    args.esmfold2_num_loops = 3
-    args.esmfold2_num_sampling_steps = 50
-    args.esmfold2_num_diffusion_samples = 1
-    args.esmfold2_seed = 0
-    args.structure_backend = model
-    structure_config = tmp_path / "structure.yaml"
-    structure_config.write_text("structure: frozen\n")
-    args.structure_config = str(structure_config)
-    args.v0_structure_gate_config = str(structure_config)
-    site = tmp_path / "site-packages"
-    esmfold2_impl = site / "esm" / "models" / "esmfold2"
-    transformers_impl = site / "transformers" / "models" / "esmfold2"
-    esmfold2_impl.mkdir(parents=True)
-    transformers_impl.mkdir(parents=True)
-    (esmfold2_impl / "model.py").write_text("ESMFOLD2_IMPL = 1\n")
-    (transformers_impl / "modeling_esmfold2.py").write_text("TRANSFORMERS_IMPL = 1\n")
-    args.esmfold2_site_packages = str(site)
-    args.out = tmp_path / "resolved.yaml"
     return template, args, frozen
 
 
@@ -359,180 +249,3 @@ def test_structure_runtime_identity_binds_snapshot_selector_protocol_and_shard_i
     assert "esmfold2_num_sampling_steps=50" in text
     assert "esmfold2_num_diffusion_samples=1" in text
     assert "esmfold2_seed=7" in text
-
-
-@pytest.mark.parametrize(
-    ("profile", "head_cap", "depth_cap", "schedule_id", "points", "logical_cap",
-     "refold_cap", "projected_dfe", "projected_head", "projected_refolds"),
-    [
-        (
-            "highrisk_d2_k32_r40", 1024, 2, "highrisk-d2-k32-r40-v1",
-            [
-                {"depth": 0, "r_step": 40, "c_source_step": 50, "c_next_step": 70,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 1, "r_step": 40, "c_source_step": 70, "c_next_step": 90,
-                 "n_lookaheads": 32, "band_key": "step40"},
-            ],
-            3072, 128, 3010, 1004, 96,
-        ),
-        (
-            "highrisk_d8_k32_r40", 4096, 8, "highrisk-d8-k32-r40-v1",
-            [
-                {"depth": depth, "r_step": 40,
-                 "c_source_step": 50 + 5 * depth,
-                 "c_next_step": 55 + 5 * depth,
-                 "n_lookaheads": 32, "band_key": "step40"}
-                for depth in range(8)
-            ],
-            9216, 320, 8950, 3920, 288,
-        ),
-    ],
-)
-def test_highrisk_profiles_freeze_v2_schedule_caps_and_dual_structure(
-    tmp_path, profile, head_cap, depth_cap, schedule_id, points, logical_cap, refold_cap,
-    projected_dfe, projected_head, projected_refolds,
-):
-    template, args, frozen = _highrisk_case(
-        tmp_path, profile=profile, run_max_head_calls=head_cap)
-
-    config = fill_config(template, args=args, frozen=frozen, runtime={})
-
-    assert config["identity"]["phase"] == "capability_ladder"
-    assert config["identity"]["split_role"] == "exploratory_highrisk_ceiling_v1"
-    assert config["projection"]["support_policy_version"] == "v2"
-    assert config["projection"]["head_directed"][
-        "lineage_incumbent_depth0_rule"] == "best_admissible_depth0"
-    assert config["schedule"] == {
-        "schedule_id": schedule_id,
-        "coordinate_law": "progressive_checkpoint",
-        "depth_cap": depth_cap,
-        "active_population_width": 1,
-        "min_lookahead_tail_steps": 10,
-        "stratum_key": args.stratum_key,
-        "points": points,
-    }
-    assert config["head"]["head_variant_id"] == "LC1"
-    assert config["head"]["head_allele_idx"] == 0
-    assert config["head"]["head_window_batch_size"] == 64
-    assert config["caps"] == {
-        "max_logical_dfe": logical_cap,
-        "max_head_calls": head_cap,
-        "max_definitive_refolds": refold_cap,
-        "max_gpu_seconds": 14400,
-        "max_walltime_s": 14400,
-        "max_retries": 2,
-        "retry_scope": "per_request",
-    }
-    assert config["safety"]["search_structure"] == {
-        "policy_kind": DUAL_SCTM_POLICY_KIND,
-        "profile_id": HIGH_RISK_DUAL_SCTM_PROFILE_ID,
-        "ancestry_sctm_min": HIGH_RISK_ANCESTRY_SCTM_MIN,
-        "strict_sctm_min": HIGH_RISK_STRICT_SCTM_MIN,
-    }
-    loaded = load_v2_config(config)
-    assert loaded.schedule.depth_cap == depth_cap
-    assert loaded.dual_structure_policy().profile_id == HIGH_RISK_DUAL_SCTM_PROFILE_ID
-    projection = project_v2_budget(loaded, n_proteins=1)
-    assert projection.feasible
-    assert projection.total_logical_dfe == projected_dfe
-    assert projection.total_head_calls == projected_head
-    assert projection.total_definitive_refolds == projected_refolds
-
-
-def test_highrisk_profile_refuses_a_changed_head_cap_or_counterfactual_ceiling(tmp_path):
-    template, args, frozen = _highrisk_case(
-        tmp_path, profile="highrisk_d2_k32_r40", run_max_head_calls=1023)
-    with pytest.raises(MaterializeError, match="1024|Head cap"):
-        fill_config(template, args=args, frozen=frozen, runtime={})
-
-    args.run_max_head_calls = 1024
-    payload = json.loads(Path(args.policy_calibration_json).read_text())
-    payload["head_directed"]["max_counterfactual_head_calls_per_cycle"] = 453
-    Path(args.policy_calibration_json).write_text(json.dumps(payload))
-    with pytest.raises(MaterializeError, match="454|counterfactual"):
-        fill_config(template, args=args, frozen=frozen, runtime={})
-
-
-def test_highrisk_profile_requires_one_byte_identical_structure_gate_config(tmp_path):
-    template, args, frozen = _highrisk_case(
-        tmp_path, profile="highrisk_d2_k32_r40", run_max_head_calls=1024)
-    drifted = tmp_path / "drifted-structure.yaml"
-    drifted.write_text("structure: drifted\n")
-    args.v0_structure_gate_config = str(drifted)
-
-    with pytest.raises(MaterializeError, match="structure.*config|byte-identical"):
-        fill_config(template, args=args, frozen=frozen, runtime={})
-
-
-@pytest.mark.parametrize(
-    ("path", "value", "match"),
-    [
-        (("protein_id",), "P2", "protein"),
-        (("population",), "resumed", "population"),
-        (("threshold_statistic",),
-         "per_protein_resumed_feedback_off_head_valid_q90_higher", "statistic"),
-        (("n_attempted",), 63, "n_attempted|64"),
-        (("n_head_valid",), 63, "n_head_valid|64"),
-        (("min_head_valid",), 63, "min_head_valid|64"),
-        (("seed_namespace",), "other", "seed_namespace"),
-        (("master_seed",), 7, "master_seed"),
-        (("code_revision",), "cafebabe", "code_revision"),
-        (("structure_diagnostic_mode",), "evaluate", "structure_diagnostic_mode"),
-        (("structure_operability", "status"), "measured", "structure_operability"),
-        (("delta_new", "source_id"), "foreign:P1", "source_id"),
-    ],
-)
-def test_highrisk_profile_refuses_a_foreign_or_nonfrozen_hotspot_artifact(
-    tmp_path, path, value, match,
-):
-    template, args, frozen = _highrisk_case(
-        tmp_path, profile="highrisk_d2_k32_r40", run_max_head_calls=1024)
-    artifact_path = Path(args.hotspot_json)
-    payload = json.loads(artifact_path.read_text())
-    node = payload
-    for key in path[:-1]:
-        node = node[key]
-    node[path[-1]] = value
-    artifact_path.write_text(json.dumps(payload))
-
-    with pytest.raises(MaterializeError, match=match):
-        fill_config(template, args=args, frozen=frozen, runtime={})
-
-
-def test_highrisk_profile_requires_absolute_snapshot_and_matching_model_sha(tmp_path):
-    template, args, frozen = _highrisk_case(
-        tmp_path, profile="highrisk_d2_k32_r40", run_max_head_calls=1024)
-    args.esmfold2_model = "biohub/ESMFold2"
-    with pytest.raises(MaterializeError, match="absolute.*snapshot"):
-        fill_config(template, args=args, frozen=frozen, runtime={})
-
-    snapshot = tmp_path / "other-snapshot"
-    snapshot.mkdir()
-    (snapshot / "model.safetensors").write_bytes(b"different ESMFold2 model")
-    args.esmfold2_model = str(snapshot.resolve())
-    with pytest.raises(MaterializeError, match="model.safetensors.*SHA|SHA.*model.safetensors"):
-        fill_config(template, args=args, frozen=frozen, runtime={})
-
-
-def test_highrisk_structure_identity_records_the_verified_absolute_snapshot(tmp_path):
-    _, args, _ = _highrisk_case(
-        tmp_path, profile="highrisk_d2_k32_r40", run_max_head_calls=1024)
-
-    _, payload, _ = _structure_runtime_identity(args)
-
-    snapshot = Path(args.esmfold2_model)
-    assert payload["model_selector"] == str(snapshot.resolve())
-    assert payload["local_model_snapshot_sha256"] == hashlib.sha256(
-        (snapshot / "model.safetensors").read_bytes()).hexdigest()
-    assert payload["site_packages_overlay"]["root"] == str(
-        Path(args.esmfold2_site_packages).resolve())
-    assert payload["site_packages_overlay"]["n_files"] == 2
-    assert len(payload["site_packages_overlay"]["sha256"]) == 64
-    assert payload["esmc_model_selector"] == str(
-        Path(args.esmfold2_esmc_model).resolve())
-    assert payload["ccd_path"] == str(Path(args.esmfold2_ccd_path).resolve())
-    assert payload["model_snapshot"]["root"] == str(snapshot.resolve())
-    assert payload["esmc_snapshot"]["root"] == str(
-        Path(args.esmfold2_esmc_model).resolve())
-    assert payload["ccd_sha256"] == hashlib.sha256(
-        Path(args.esmfold2_ccd_path).read_bytes()).hexdigest()

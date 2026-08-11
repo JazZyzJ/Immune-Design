@@ -13,8 +13,6 @@ from inverse_folding.evaluation.esmfold2_live import (
     RESULT_PREFIX,
     ESMFold2LiveClient,
     build_worker_command,
-    esmfold2_overlay_identity,
-    hf_snapshot_identity,
 )
 
 
@@ -25,41 +23,6 @@ def _fake_site_packages(root: Path) -> Path:
     return site
 
 
-def test_overlay_identity_is_content_bound_and_ignores_bytecode(tmp_path):
-    site = _fake_site_packages(tmp_path)
-    implementation = site / "esm" / "models" / "esmfold2" / "model.py"
-    implementation.write_text("VERSION = 1\n")
-
-    first = esmfold2_overlay_identity(site)
-    assert first["root"] == str(site.resolve())
-    assert first["n_files"] == 1
-    assert len(first["sha256"]) == 64
-
-    bytecode = implementation.parent / "__pycache__" / "model.cpython-312.pyc"
-    bytecode.parent.mkdir()
-    bytecode.write_bytes(b"ephemeral")
-    assert esmfold2_overlay_identity(site) == first
-
-    implementation.write_text("VERSION = 2\n")
-    assert esmfold2_overlay_identity(site)["sha256"] != first["sha256"]
-
-
-def test_hf_snapshot_identity_binds_required_load_files(tmp_path):
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    (snapshot / "config.json").write_text('{"model_type":"x"}\n')
-    (snapshot / "model.safetensors").write_bytes(b"weights")
-    first = hf_snapshot_identity(snapshot, ("config.json", "model.safetensors"))
-    assert first["root"] == str(snapshot.resolve())
-    assert [row["path"] for row in first["files"]] == [
-        "config.json", "model.safetensors",
-    ]
-    (snapshot / "config.json").write_text('{"model_type":"y"}\n')
-    assert hf_snapshot_identity(
-        snapshot, ("config.json", "model.safetensors"),
-    )["sha256"] != first["sha256"]
-
-
 def test_worker_command_uses_current_environment_python_and_isolated_overlay(tmp_path):
     site = _fake_site_packages(tmp_path)
     command = build_worker_command(
@@ -67,8 +30,6 @@ def test_worker_command_uses_current_environment_python_and_isolated_overlay(tmp
         python_executable="/envs/immune-design/bin/python",
         device="cuda",
         model_name="biohub/ESMFold2",
-        esmc_model="/models/esmc",
-        ccd_path="/models/esmfold2/ccd.pkl",
         num_loops=3,
         num_sampling_steps=50,
         num_diffusion_samples=1,
@@ -83,8 +44,6 @@ def test_worker_command_uses_current_environment_python_and_isolated_overlay(tmp
     ]
     assert command[4] == "worker"
     assert command[command.index("--site-packages") + 1] == str(site)
-    assert command[command.index("--esmc-model") + 1] == "/models/esmc"
-    assert command[command.index("--ccd-path") + 1] == "/models/esmfold2/ccd.pkl"
     assert "conda" not in command
 
 

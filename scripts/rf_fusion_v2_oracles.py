@@ -33,11 +33,7 @@ Cluster paths are never hardcoded: they arrive as ``ShardInputs`` from the drive
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import sys
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -60,7 +56,6 @@ __all__ = [
     "reserved_gpu_seconds_clock",
     "resolve_reference",
     "resolve_stratum",
-    "assert_stratum_matches_config",
     "resolve_support_policy",
     "bind_lineage_incumbent",
     "build_source_geometry_control",
@@ -70,233 +65,6 @@ __all__ = [
 
 class V2OracleError(V2Error):
     """The production oracle stack could not be assembled from what the run declared."""
-
-
-V2_REFOLD_CACHE_IDENTITY_NAME = ".rf_fusion_v2_cache_identity.json"
-V2_REFOLD_CACHE_SCHEMA_VERSION = "rf-fusion-v2-refold-cache/1"
-
-
-def _sha256_file(path: Any) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 22), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
-    return (json.dumps(dict(payload), sort_keys=True, separators=(",", ":")) + "\n").encode(
-        "utf-8"
-    )
-
-
-def _canonical_digest(payload: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
-
-
-def load_verified_esmfold2_runtime(
-    identity_path: Any, *, expected_sha256: str, model_selector: Any,
-    site_packages: Any, protocol: Mapping[str, Any],
-    esmc_model_selector: Any = None, ccd_path: Any = None,
-) -> dict[str, Any]:
-    """Reverify materialized ESMFold2 bytes and knobs immediately before model construction."""
-    path = Path(identity_path).expanduser().resolve()
-    if not path.is_file():
-        raise V2OracleError(f"ESMFold2 runtime identity is not a file: {path}")
-    observed_identity_sha = _sha256_file(path)
-    if observed_identity_sha != expected_sha256:
-        raise V2OracleError(
-            "ESMFold2 runtime identity digest disagrees with config.content.structure_backend: "
-            f"observed {observed_identity_sha}, declared {expected_sha256}"
-        )
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise V2OracleError(f"ESMFold2 runtime identity is unreadable: {path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise V2OracleError("ESMFold2 runtime identity must be a JSON object")
-    if payload.get("schema_version") != "v2-esmfold2-runtime-1":
-        raise V2OracleError("ESMFold2 runtime identity has the wrong schema_version")
-    if payload.get("backend") != "esmfold2_live":
-        raise V2OracleError(
-            f"ESMFold2 runtime backend must be 'esmfold2_live', got {payload.get('backend')!r}"
-        )
-
-    declared_selector = payload.get("model_selector")
-    if not isinstance(declared_selector, str) or not Path(declared_selector).is_absolute():
-        raise V2OracleError(
-            "ESMFold2 model_selector must be an absolute local snapshot directory"
-        )
-    snapshot = Path(declared_selector).expanduser().resolve()
-    observed_selector = Path(model_selector).expanduser().resolve()
-    if observed_selector != snapshot:
-        raise V2OracleError(
-            "ESMFold2 model shard input disagrees with the signed runtime identity: "
-            f"{observed_selector} != {snapshot}"
-        )
-    weights = snapshot / "model.safetensors"
-    if not weights.is_file():
-        raise V2OracleError(f"verified ESMFold2 snapshot has no model.safetensors: {snapshot}")
-    declared_weights_sha = payload.get("local_model_snapshot_sha256")
-    observed_weights_sha = _sha256_file(weights)
-    if observed_weights_sha != declared_weights_sha:
-        raise V2OracleError(
-            "ESMFold2 model.safetensors changed after materialization: "
-            f"observed {observed_weights_sha}, declared snapshot {declared_weights_sha}"
-        )
-
-    normalized_protocol: dict[str, int] = {}
-    for name, minimum in (
-        ("num_loops", 1), ("num_sampling_steps", 1),
-        ("num_diffusion_samples", 1), ("seed", 0),
-    ):
-        value = protocol.get(name)
-        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-            raise V2OracleError(f"ESMFold2 protocol {name} must be an integer >= {minimum}")
-        normalized_protocol[name] = int(value)
-    if payload.get("protocol") != normalized_protocol:
-        raise V2OracleError(
-            "ESMFold2 protocol shard inputs disagree with the signed runtime identity: "
-            f"observed {normalized_protocol!r}, declared {payload.get('protocol')!r}"
-        )
-
-    from inverse_folding.evaluation.esmfold2_live import (
-        ESMC_SNAPSHOT_REQUIRED_FILES,
-        ESMFOLD2_SNAPSHOT_REQUIRED_FILES,
-        esmfold2_overlay_identity,
-        hf_snapshot_identity,
-    )
-
-    observed_overlay = esmfold2_overlay_identity(site_packages)
-    if payload.get("site_packages_overlay") != observed_overlay:
-        raise V2OracleError(
-            "ESMFold2 site-packages overlay changed after materialization: "
-            f"observed {observed_overlay!r}, declared {payload.get('site_packages_overlay')!r}"
-        )
-    observed_model_snapshot = hf_snapshot_identity(
-        snapshot, ESMFOLD2_SNAPSHOT_REQUIRED_FILES)
-    if payload.get("model_snapshot") != observed_model_snapshot:
-        raise V2OracleError(
-            "ESMFold2 local snapshot metadata/config changed after materialization"
-        )
-    declared_esmc = payload.get("esmc_model_selector")
-    if not isinstance(declared_esmc, str) or not Path(declared_esmc).is_absolute():
-        raise V2OracleError("ESMFold2 runtime has no absolute local ESMC snapshot selector")
-    esmc = Path(declared_esmc).expanduser().resolve()
-    observed_esmc = Path(esmc_model_selector).expanduser().resolve()
-    if observed_esmc != esmc:
-        raise V2OracleError(
-            "ESMC model shard input disagrees with the signed runtime identity: "
-            f"{observed_esmc} != {esmc}"
-        )
-    observed_esmc_snapshot = hf_snapshot_identity(esmc, ESMC_SNAPSHOT_REQUIRED_FILES)
-    if payload.get("esmc_snapshot") != observed_esmc_snapshot:
-        raise V2OracleError("ESMC local snapshot changed after materialization")
-    declared_ccd = payload.get("ccd_path")
-    if not isinstance(declared_ccd, str) or not Path(declared_ccd).is_absolute():
-        raise V2OracleError("ESMFold2 runtime has no absolute local CCD path")
-    ccd = Path(declared_ccd).expanduser().resolve()
-    observed_ccd = Path(ccd_path).expanduser().resolve()
-    if observed_ccd != ccd or not ccd.is_file():
-        raise V2OracleError(
-            f"ESMFold2 CCD shard input disagrees with the signed local file: {observed_ccd}"
-        )
-    if _sha256_file(ccd) != payload.get("ccd_sha256"):
-        raise V2OracleError("ESMFold2 CCD bytes changed after materialization")
-    normalized = json.loads(json.dumps(payload))
-    normalized["model_selector"] = str(snapshot)
-    normalized["resolved_model_safetensors"] = {
-        "path": str(weights.resolve()), "sha256": observed_weights_sha,
-    }
-    normalized["protocol"] = normalized_protocol
-    normalized["esmc_model_selector"] = str(esmc)
-    normalized["ccd_path"] = str(ccd)
-    return normalized
-
-
-def verify_esmfold2_worker_runtime(
-    declaration: Mapping[str, Any], worker_runtime: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Prove the persistent worker realized the selector and overlay that were reverified."""
-    if not isinstance(worker_runtime, Mapping) or not worker_runtime:
-        raise V2OracleError("esmfold2_live worker exposed no runtime metadata")
-    expected_model = str(Path(str(declaration["model_selector"])).resolve())
-    if str(worker_runtime.get("model_name")) != expected_model:
-        raise V2OracleError(
-            "esmfold2_live worker model_name differs from the verified snapshot: "
-            f"{worker_runtime.get('model_name')!r} != {expected_model!r}"
-        )
-    for field, declaration_field in (
-        ("esmc_model", "esmc_model_selector"), ("ccd_path", "ccd_path"),
-    ):
-        expected = str(Path(str(declaration[declaration_field])).resolve())
-        if str(worker_runtime.get(field)) != expected:
-            raise V2OracleError(
-                f"esmfold2_live worker {field} differs from the verified local dependency: "
-                f"{worker_runtime.get(field)!r} != {expected!r}"
-            )
-    overlay = declaration.get("site_packages_overlay")
-    if not isinstance(overlay, Mapping) or not isinstance(overlay.get("root"), str):
-        raise V2OracleError("verified ESMFold2 declaration carries no overlay root")
-    overlay_root = Path(str(overlay["root"])).resolve()
-    for field in ("esm_module", "transformers_module"):
-        module_path = worker_runtime.get(field)
-        if not isinstance(module_path, str) or not Path(module_path).resolve().is_relative_to(
-            overlay_root
-        ):
-            raise V2OracleError(
-                f"esmfold2_live worker {field} is outside the verified overlay: {module_path!r}"
-            )
-    return dict(worker_runtime)
-
-
-def claim_v2_refold_cache(cache_dir: Any, identity: Mapping[str, Any]) -> dict[str, Any]:
-    """Exclusively claim a normalized refold cache for one complete structure instrument."""
-    cache = Path(cache_dir).expanduser().resolve()
-    cache.mkdir(parents=True, exist_ok=True)
-    sidecar = cache / V2_REFOLD_CACHE_IDENTITY_NAME
-    normalized = json.loads(_canonical_bytes(identity))
-    payload = {
-        "schema_version": V2_REFOLD_CACHE_SCHEMA_VERSION,
-        "identity": normalized,
-        "identity_digest": _canonical_digest(normalized),
-    }
-    raw = _canonical_bytes(payload)
-
-    def verify_existing() -> dict[str, Any]:
-        try:
-            existing = json.loads(sidecar.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001 - corrupt provenance is a hard refusal
-            raise V2OracleError(f"refold cache identity sidecar is unreadable: {sidecar}: {exc}") \
-                from exc
-        if existing != payload:
-            raise V2OracleError(
-                "refold cache identity differs from this V2 structure instrument; use a fresh "
-                f"cache instead of mixing evaluators ({sidecar})"
-            )
-        return payload
-
-    if sidecar.exists():
-        return verify_existing()
-    foreign = sorted([*cache.glob("*.pdb"), *cache.glob("*.plddt")])
-    if foreign:
-        raise V2OracleError(
-            "refold cache contains unclaimed structure files from a potentially foreign "
-            f"runtime: {[path.name for path in foreign[:5]]}"
-        )
-    try:
-        descriptor = os.open(sidecar, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
-        return verify_existing()
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except Exception:
-        sidecar.unlink(missing_ok=True)
-        raise
-    return payload
 
 
 # --------------------------------------------------------------------------------------------
@@ -328,11 +96,13 @@ def _build_state_derived_probe(*, band_table, stratum_key, config, **_context):
 
 def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, evaluator,
                            lineage_id):
-    """The reward ``I_0`` under the run's declared depth-zero rule.
+    """``I_0`` under the run's DECLARED depth-0 rule (PLAN §3.1, V2F5A).
 
-    Legacy v1 binds the cumulative safety reference as a predeclared reward incumbent.  Policy v2's
-    ``best_admissible_depth0`` rule deliberately returns ``None``: WT remains available through a
-    separate attribution binding, while the committed rank-zero D0 endpoint becomes ``I_1``.
+    PLAN §3.1 leaves the depth-zero binding an OPEN decision, so this factory refuses to choose one:
+    the rule comes from ``config.projection.head_directed.lineage_incumbent_depth0_rule``, and the
+    only rule it can execute today is ``cumulative_safety_reference`` -- the frozen complete
+    reference the run already content-binds for the safety ratchet, which is frozen before any
+    depth-0 endpoint is scored by construction.
 
     ``predeclared_external_design`` is a legal declaration in the vocabulary and is deliberately NOT
     executed here: it would need its own content-bound input role for the design's bytes and its own
@@ -340,7 +110,6 @@ def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, 
     decides which donors may open feedback.
     """
     from inverse_folding.reference_flow.fusion_v2.reward import (
-        DEPTH0_BOOTSTRAP_RULE,
         bind_incumbent_from_safety_reference,
     )
 
@@ -351,8 +120,6 @@ def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, 
             "rule; the Head-directed policy cannot be built without one"
         )
     rule = block.lineage_incumbent_depth0_rule
-    if rule == DEPTH0_BOOTSTRAP_RULE:
-        return None
     if rule != "cumulative_safety_reference":
         raise V2OracleError(
             f"depth-0 incumbent rule {rule!r} is declared in the vocabulary but has no authorized "
@@ -369,39 +136,27 @@ def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, 
 
 def _build_head_directed_capped(*, band_table, stratum_key, config, head_oracle=None,
                                 incumbent=None, safety_reference_score=None, evaluator=None,
-                                window_grid_digest=None, depth0_attribution_reference=None,
-                                **_context):
+                                window_grid_digest=None, **_context):
     """V2F5A's production policy.  Every scientific input arrives bound; none is derived here."""
     from inverse_folding.reference_flow.fusion_v2.policy import HeadDirectedCappedPolicy
     from inverse_folding.reference_flow.fusion_v2_runtime.contribution import (
         CounterfactualHeadScorer,
     )
 
-    from inverse_folding.reference_flow.fusion_v2.reward import DEPTH0_BOOTSTRAP_RULE
-
-    block = config.projection.head_directed
-    if block is None:                                     # pragma: no cover - loader guarantees it
-        raise V2OracleError("config.projection.head_directed is required for this policy")
-    depth0_rule = block.lineage_incumbent_depth0_rule
-    bootstrap = depth0_rule == DEPTH0_BOOTSTRAP_RULE
     missing = [name for name, value in (
-        ("head_oracle", head_oracle),
+        ("head_oracle", head_oracle), ("incumbent", incumbent),
         ("safety_reference_score", safety_reference_score), ("evaluator", evaluator),
         ("window_grid_digest", window_grid_digest),
     ) if value is None]
-    if bootstrap and depth0_attribution_reference is None:
-        missing.append("depth0_attribution_reference")
-    if not bootstrap and incumbent is None:
-        missing.append("incumbent")
     if missing:
         raise V2OracleError(
             f"the Head-directed policy needs {missing} from the oracle stack; without the frozen "
-            "Head and the rule-appropriate reward/attribution bindings it cannot reconstruct the "
-            "declared support law"
+            "Head and the bound lineage incumbent it has no applied-dose evidence and no donor "
+            "gate, which is the Head-blind law V2F5A exists to replace"
         )
     calibration = config.head_directed_calibration()
-    if calibration is None:                               # pragma: no cover - loader guarantees it
-        raise V2OracleError("config.projection.head_directed calibration is required")
+    if calibration is None:                                # pragma: no cover - loader guarantees it
+        raise V2OracleError("config.projection.head_directed is required for this policy")
     return HeadDirectedCappedPolicy(
         band_table=band_table, stratum_key=stratum_key, incumbent=incumbent,
         safety_reference_score=safety_reference_score, evaluator=evaluator,
@@ -410,8 +165,6 @@ def _build_head_directed_capped(*, band_table, stratum_key, config, head_oracle=
         counterfactual_scorer=CounterfactualHeadScorer(head_oracle=head_oracle),
         policy_spec_digest=_content_digest(config, "projection_policy_spec"),
         policy_version=config.projection.support_policy_version,
-        depth0_attribution_reference=depth0_attribution_reference,
-        depth0_incumbent_rule=depth0_rule,
     )
 
 
@@ -622,16 +375,6 @@ def resolve_stratum(manifest_path: Any, protein_id: str) -> str:
     return stratum
 
 
-def assert_stratum_matches_config(declared: str | None, realized: str) -> None:
-    """Refuse a runtime stratum manifest that changes a config-bound high-risk B(r) cell."""
-    if declared is not None and str(declared) != str(realized):
-        raise V2OracleError(
-            "protein stratum manifest disagrees with config.schedule.stratum_key: "
-            f"config {declared!r}, manifest {realized!r}; changing lookup_band must change the "
-            "config digest and resume signature"
-        )
-
-
 def fixed_token_policy_label(inputs: Any) -> str:
     """The conditioning's ``fixed_token_policy``, in the vocabulary V1 already established.
 
@@ -790,10 +533,7 @@ class ProductionHeadOracle:
     """
 
     def __init__(self, scorer: Any, *, allele: str, score_scale: str,
-                 window_k_min: int, window_k_max: int,
-                 head_variant_id: str | None = None,
-                 head_allele_idx: int | None = None,
-                 head_window_batch_size: int | None = None) -> None:
+                 window_k_min: int, window_k_max: int) -> None:
         declared = (str(allele), str(score_scale), int(window_k_min), int(window_k_max))
         observed = (str(getattr(scorer, "allele", "")),
                     str(getattr(scorer, "score_scale", "")),
@@ -813,43 +553,6 @@ class ProductionHeadOracle:
         self._scorer = scorer
         self.allele, self.score_scale = declared[0], declared[1]
         self.window_k_min, self.window_k_max = declared[2], declared[3]
-        extended = (head_variant_id, head_allele_idx, head_window_batch_size)
-        if any(value is not None for value in extended) and not all(
-            value is not None for value in extended
-        ):
-            raise V2OracleError(
-                "head_variant_id, head_allele_idx and head_window_batch_size must be supplied "
-                "together; a partial Head runtime identity is not verifiable"
-            )
-        self.head_variant_id = None
-        self.head_allele_idx = None
-        self.head_window_batch_size = None
-        if head_variant_id is not None:
-            predictor = getattr(scorer, "predictor", None)
-            metadata = getattr(predictor, "checkpoint_metadata", None)
-            observed_variant = (
-                metadata.get("variant_id") if isinstance(metadata, dict) else None
-            )
-            observed_extended = (
-                observed_variant,
-                getattr(scorer, "allele_idx", None),
-                getattr(scorer, "window_batch_size", None),
-            )
-            declared_extended = (
-                str(head_variant_id), int(head_allele_idx), int(head_window_batch_size),
-            )
-            if observed_extended != declared_extended:
-                names = ("head_variant_id", "head_allele_idx", "head_window_batch_size")
-                diff = ", ".join(
-                    f"{name}: declared {want!r} != realized {have!r}"
-                    for name, want, have in zip(names, declared_extended, observed_extended)
-                    if want != have
-                )
-                raise V2OracleError(
-                    f"the declared Head runtime identity does not match the scorer ({diff})"
-                )
-            (self.head_variant_id, self.head_allele_idx,
-             self.head_window_batch_size) = declared_extended
 
     def evaluator_identity(self):
         """The Head evaluator identity, read off the scorer rather than retyped by a caller."""
@@ -860,9 +563,6 @@ class ProductionHeadOracle:
             window_k_min=self.window_k_min, window_k_max=self.window_k_max,
             head_config_hash=str(self._scorer.head_config_hash),
             head_checkpoint_digest=str(self._scorer.head_checkpoint_digest),
-            head_variant_id=self.head_variant_id,
-            head_allele_idx=self.head_allele_idx,
-            head_window_batch_size=self.head_window_batch_size,
         )
 
     def score(self, requests) -> list:
@@ -931,8 +631,7 @@ _V0_ORACLE_FIELDS = (
     "head_window_batch_size", "allele", "window_k_min", "window_k_max",
     "test_set_parquet", "pdb_root", "refold_cache_dir", "constraint_manifest",
     "esmfold2_site_packages", "esmfold2_model", "esmfold2_num_loops",
-    "esmfold2_esmc_model", "esmfold2_ccd_path", "esmfold2_num_sampling_steps",
-    "esmfold2_num_diffusion_samples", "esmfold2_seed",
+    "esmfold2_num_sampling_steps", "esmfold2_num_diffusion_samples", "esmfold2_seed",
 )
 
 
@@ -983,17 +682,15 @@ def build_production_oracles(
     head_variant_id: str, head_allele_idx: int = 0, head_window_batch_size: int = 64,
     constraint_manifest: Any = None, device: str = "cuda",
     esmfold2: dict | None = None, build_oracles: Any = None,
-    dual_structure_policy: Any = None,
-    bind_extended_head_identity: bool = False,
-    verified_structure_runtime: Mapping[str, Any] | None = None,
 ) -> tuple[ProductionHeadOracle, Callable[[Any], Any]]:
     """Build the REAL ``(head_oracle, structure_oracle)`` pair from declared cluster paths.
 
-    Both come out of v0's ``build_oracles``.  The ordinary structure path composes ``struct_fn``
-    with v0's strict feasibility contract.  An explicitly supplied dual-scTM policy instead uses
-    the same contract with only the scTM predicate removed; the typed V2 policy then derives the
-    nested 0.70 ancestry and 0.85 strict decisions from that one raw outcome.  Anchor and scRMSD
-    predicates remain common and binding in both tiers.
+    Both come out of v0's ``build_oracles``: the Head is its ``head_fn`` behind
+    :class:`ProductionHeadOracle`, and the structure gate is its ``struct_fn`` composed with
+    ``fusion.oracles.structure_feasible`` -- the frozen v0 definitive contract, including the
+    active-site branch an anchored protein needs.  ``structure_config`` therefore names the v0
+    Fusion config that defines backend, ``scTM_min``, the active-site metric and its thresholds; it
+    is neither a PDB root nor a refold checkpoint.
 
     Returns ``structure_oracle(request) -> StructureOutcome``.  A fold or geometry failure is an
     ``evaluated=True, feasible=False`` verdict, never a deferral: the calibration's 48/64 floor and
@@ -1001,28 +698,13 @@ def build_production_oracles(
     endpoint nothing folded count toward either.
     """
     from inverse_folding.reference_flow.fusion.config import load_fusion_config
-    from inverse_folding.reference_flow.fusion.oracles import (
-        structure_common_feasible,
-        structure_feasible,
-    )
+    from inverse_folding.reference_flow.fusion.oracles import structure_feasible
     from inverse_folding.reference_flow.fusion.v1_admission import StructureOutcome
-    from inverse_folding.reference_flow.fusion_v2.structure_gate import DualScTMGatePolicy
 
     if build_oracles is None:
         from scripts.run_rf_refine_fusion import build_oracles  # noqa: PLC0415
 
     fusion_config = load_fusion_config(str(structure_config))
-    if dual_structure_policy is not None:
-        if not isinstance(dual_structure_policy, DualScTMGatePolicy):
-            raise V2OracleError(
-                "dual_structure_policy must be a typed DualScTMGatePolicy"
-            )
-        configured_strict = float(fusion_config.structure.scTM_min)
-        if configured_strict != float(dual_structure_policy.strict_sctm_min):
-            raise V2OracleError(
-                "dual policy strict scTM threshold does not match the v0 structure config: "
-                f"{dual_structure_policy.strict_sctm_min} != {configured_strict}"
-            )
     args = _v0_oracle_args(
         head_checkpoint=str(head_checkpoint), head_config_dir=str(head_config_dir),
         head_variant_id=str(head_variant_id), head_device=str(device),
@@ -1035,26 +717,10 @@ def build_production_oracles(
         **(esmfold2 or {}),
     )
     oracles, manifest = build_oracles(args, fusion_config)
-    if verified_structure_runtime is not None:
-        worker_runtime = verify_esmfold2_worker_runtime(
-            verified_structure_runtime["declaration"],
-            getattr(args, "_refold_runtime", None),
-        )
-        cache_identity = {
-            **dict(verified_structure_runtime["cache_identity_base"]),
-            "worker_runtime": worker_runtime,
-        }
-        cache_identity["identity_digest"] = _canonical_digest(cache_identity)
-        claim_v2_refold_cache(refold_cache_dir, cache_identity)
 
     head_oracle = ProductionHeadOracle(
         _scorer_behind(oracles.head_fn), allele=allele, score_scale=score_scale,
-        window_k_min=window_k_min, window_k_max=window_k_max,
-        head_variant_id=(str(head_variant_id) if bind_extended_head_identity else None),
-        head_allele_idx=(int(head_allele_idx) if bind_extended_head_identity else None),
-        head_window_batch_size=(
-            int(head_window_batch_size) if bind_extended_head_identity else None),
-    )
+        window_k_min=window_k_min, window_k_max=window_k_max)
 
     def structure_oracle(request: Any):
         import time
@@ -1066,38 +732,24 @@ def build_production_oracles(
         has_active_site = bool(manifest is not None and manifest.has_protein(protein_id))
         try:
             metrics = oracles.struct_fn(protein_id, request.sequence)
-            gate = (
-                structure_common_feasible
-                if dual_structure_policy is not None else structure_feasible
-            )
-            feasible, reason = gate(metrics, fusion_config, has_active_site=has_active_site)
+            feasible, reason = structure_feasible(
+                metrics, fusion_config, has_active_site=has_active_site)
         except Exception as exc:  # noqa: BLE001 - unverifiable structure fails closed, not deferred
             return StructureOutcome(
                 feasible=False, cache_status="miss", model_executed=True,
                 failure_reason=f"{type(exc).__name__}: {exc}",
                 walltime_s=time.perf_counter() - started, evaluated=True)
-        metric_payload = {name: float(value) for name, value in (
-            ("scTM", getattr(metrics, "scTM", None)),
-            ("pLDDT", getattr(metrics, "pLDDT", None)),
-            ("scRMSD", getattr(metrics, "scRMSD", None)),
-            ("active_site_RMSD", getattr(metrics, "active_site_RMSD", None)),
-            ("max_anchor_sidechain_RMSD",
-             getattr(metrics, "max_anchor_sidechain_RMSD", None)),
-        ) if value is not None}
-        active_site_complete = getattr(metrics, "active_site_complete", None)
-        if active_site_complete is not None:
-            metric_payload["active_site_complete"] = bool(active_site_complete)
-        cache_hit = bool(getattr(metrics, "cache_hit", False))
-        declared_executed = getattr(metrics, "model_executed", None)
-        if declared_executed is not None and bool(declared_executed) == cache_hit:
-            raise V2OracleError(
-                "structure metrics carry contradictory cache_hit/model_executed provenance"
-            )
         return StructureOutcome(
-            feasible=bool(feasible), cache_status=("hit" if cache_hit else "miss"),
-            model_executed=(not cache_hit),
+            feasible=bool(feasible), cache_status="miss", model_executed=True,
             failure_reason=(None if feasible else str(reason)),
-            metrics=metric_payload,
+            metrics={name: float(value) for name, value in (
+                ("scTM", getattr(metrics, "scTM", None)),
+                ("pLDDT", getattr(metrics, "pLDDT", None)),
+                ("scRMSD", getattr(metrics, "scRMSD", None)),
+                ("active_site_RMSD", getattr(metrics, "active_site_RMSD", None)),
+                ("max_anchor_sidechain_RMSD",
+                 getattr(metrics, "max_anchor_sidechain_RMSD", None)),
+            ) if value is not None},
             walltime_s=time.perf_counter() - started, evaluated=True)
 
     return head_oracle, structure_oracle
@@ -1127,88 +779,11 @@ def _scorer_behind(head_fn: Any):
 #: between machines and runs, so they arrive as ``--shard-input NAME=VALUE`` like every other path.
 _ESMFOLD2_INPUTS = (
     "esmfold2_site_packages", "esmfold2_model", "esmfold2_num_loops",
-    "esmfold2_esmc_model", "esmfold2_ccd_path", "esmfold2_num_sampling_steps",
-    "esmfold2_num_diffusion_samples", "esmfold2_seed",
+    "esmfold2_num_sampling_steps", "esmfold2_num_diffusion_samples", "esmfold2_seed",
 )
 
 
-def _prepare_highrisk_structure_runtime(config: Any, inputs: Any) -> dict[str, Any]:
-    """Verify the signed live-structure declaration before either expensive model is loaded."""
-    structure_config_path = inputs.require("structure_config")
-    gate_config_path = inputs.require("v0_structure_gate_config")
-    if _sha256_file(structure_config_path) != _sha256_file(gate_config_path):
-        raise V2OracleError(
-            "high-risk structure_config and v0_structure_gate_config are not byte-identical"
-        )
-    identity_path = Path(inputs.require("esmfold2_runtime_identity")).expanduser().resolve()
-    backend_alias = Path(inputs.require("structure_backend")).expanduser().resolve()
-    if identity_path != backend_alias:
-        raise V2OracleError(
-            "structure_backend and esmfold2_runtime_identity must name the same signed JSON "
-            f"artifact, got {backend_alias} and {identity_path}"
-        )
-    try:
-        protocol = {
-            "num_loops": int(inputs.require("esmfold2_num_loops")),
-            "num_sampling_steps": int(inputs.require("esmfold2_num_sampling_steps")),
-            "num_diffusion_samples": int(inputs.require("esmfold2_num_diffusion_samples")),
-            "seed": int(inputs.require("esmfold2_seed")),
-        }
-    except (TypeError, ValueError) as exc:
-        raise V2OracleError(f"ESMFold2 protocol shard input is not an integer: {exc}") from exc
-    declaration = load_verified_esmfold2_runtime(
-        identity_path,
-        expected_sha256=_content_digest(config, "structure_backend"),
-        model_selector=inputs.require("esmfold2_model"),
-        site_packages=inputs.require("esmfold2_site_packages"),
-        esmc_model_selector=inputs.require("esmfold2_esmc_model"),
-        ccd_path=inputs.require("esmfold2_ccd_path"),
-        protocol=protocol,
-    )
-    cache_dir = Path(inputs.require("refold_cache_dir")).expanduser().resolve()
-    sidecar = cache_dir / V2_REFOLD_CACHE_IDENTITY_NAME
-    if not sidecar.exists() and cache_dir.exists():
-        foreign = [*cache_dir.glob("*.pdb"), *cache_dir.glob("*.plddt")]
-        if foreign:
-            raise V2OracleError(
-                "refold cache contains unclaimed structure files; use a fresh high-risk cache"
-            )
-
-    source_files = {
-        "esmfold2_live": Path(__file__).resolve().parents[1]
-        / "inverse_folding" / "evaluation" / "esmfold2_live.py",
-        "refold_normalize": Path(__file__).resolve().parents[1]
-        / "inverse_folding" / "evaluation" / "refold_normalize.py",
-    }
-    cache_identity_base = {
-        "schema_version": "rf-fusion-v2-live-structure-instrument/1",
-        "runtime_declaration": declaration,
-        "runtime_declaration_sha256": _sha256_file(identity_path),
-        "code_revision": str(config.identity.code_revision),
-        "structure_gate_config_sha256": _sha256_file(
-            inputs.require("v0_structure_gate_config")
-        ),
-        "structure_config_sha256": _sha256_file(inputs.require("structure_config")),
-        "cohort_table_sha256": _sha256_file(inputs.require("test_set_parquet")),
-        "constraint_manifest": (
-            {"kind": "file", "sha256": _sha256_file(inputs.paths["constraint_manifest"])}
-            if inputs.paths.get("constraint_manifest") else {"kind": "absent"}
-        ),
-        "pdb_root": str(Path(inputs.require("pdb_root")).expanduser().resolve()),
-        "runtime_source_sha256": {
-            name: _sha256_file(path) for name, path in sorted(source_files.items())
-        },
-    }
-    return {
-        "declaration": declaration,
-        "identity_path": str(identity_path),
-        "cache_identity_base": cache_identity_base,
-    }
-
-
-def _production_oracles_for(
-    config: Any, inputs: Any, *, verified_structure_runtime: Mapping[str, Any] | None = None,
-):
+def _production_oracles_for(config: Any, inputs: Any):
     """Build the real Head + definitive structure oracles for one run from its declared inputs.
 
     The Head DOMAIN is taken from ``config.head`` and never from a shard input: it is scientific
@@ -1217,22 +792,6 @@ def _production_oracles_for(
     """
     esmfold2 = {name: inputs.paths.get(name) for name in _ESMFOLD2_INPUTS
                 if inputs.paths.get(name) is not None}
-    if config.head.head_variant_id is not None:
-        declared_head_runtime = {
-            "head_variant_id": str(config.head.head_variant_id),
-            "head_allele_idx": int(config.head.head_allele_idx),
-            "head_window_batch_size": int(config.head.head_window_batch_size),
-        }
-        observed_head_runtime = {
-            "head_variant_id": str(inputs.require("head_variant_id")),
-            "head_allele_idx": int(inputs.require("head_allele_idx")),
-            "head_window_batch_size": int(inputs.require("head_window_batch_size")),
-        }
-        if observed_head_runtime != declared_head_runtime:
-            raise V2OracleError(
-                "Head runtime shard inputs disagree with config.head: "
-                f"declared {declared_head_runtime!r}, observed {observed_head_runtime!r}"
-            )
     return build_production_oracles(
         structure_config=inputs.require("v0_structure_gate_config"),
         head_config_dir=inputs.require("head_config"),
@@ -1248,34 +807,16 @@ def _production_oracles_for(
         constraint_manifest=inputs.paths.get("constraint_manifest"),
         device=inputs.paths.get("device", "cuda"),
         esmfold2=(esmfold2 or None),
-        dual_structure_policy=config.dual_structure_policy(),
-        bind_extended_head_identity=(config.head.head_variant_id is not None),
-        verified_structure_runtime=verified_structure_runtime,
     )
 
 
-def _root_lineage_identity(protein_id: str, root_index: int) -> tuple[str, str, str]:
-    """Canonical root, family and safety-lineage IDs for one explicit replicate."""
-    if not isinstance(protein_id, str) or not protein_id.strip():
-        raise V2OracleError("protein_id must be a non-empty str")
-    if isinstance(root_index, bool) or not isinstance(root_index, int) or root_index < 0:
-        raise V2OracleError(f"root_index must be a non-negative int, got {root_index!r}")
-    family_id = f"fam{root_index}"
-    return (
-        f"{protein_id}:v2:d0:r{root_index}", family_id, f"{protein_id}:{family_id}")
-
-
-def build_v2_oracles(
-    *, protein_id: str, config: Any, inputs: Any, root_index: int = 0,
-    seams: OracleSeams | None = None,
-):
+def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: OracleSeams | None = None):
     """Assemble the ``{gpu_clock, cycle_kwargs}`` contract.
 
     Everything expensive is built through the shared model factory; everything scientific is bound
     to ``config``.  Returns the mapping ``scripts.rf_fusion_v2_cohort.run_v2_shard`` consumes.
     """
     resolved = (seams or OracleSeams()).resolved()
-    root_id, family_id, safety_lineage_id = _root_lineage_identity(protein_id, root_index)
 
     from inverse_folding.reference_flow.fusion_v2 import identity as ident
     from inverse_folding.reference_flow.fusion_v2.safety import (
@@ -1291,14 +832,6 @@ def build_v2_oracles(
     band_table = resolved["load_band_table"](
         inputs.require("schedule_band_calibration"), expected_content_digest=band_digest)
     stratum_key = resolve_stratum(inputs.require("protein_stratum_manifest"), protein_id)
-    assert_stratum_matches_config(config.schedule.stratum_key, stratum_key)
-
-    verified_structure_runtime = None
-    if ((resolved["head_scorer"] is None or resolved["structure_evaluator"] is None)
-            and config.dual_structure_policy() is not None):
-        # Do this before loading DPLM or ESMFold2.  The runtime JSON is a promise made at
-        # materialization; model weights, overlay bytes and protocol are reverified at launch.
-        verified_structure_runtime = _prepare_highrisk_structure_runtime(config, inputs)
 
     # ---- the model stack, SHARED with the V1 entry path ---------------------------------------
     model = resolved["build_model_factory"](
@@ -1333,9 +866,7 @@ def build_v2_oracles(
     # a cycle whose ``head_oracle`` was ``None``; the failure surfaced as an ``AttributeError`` on
     # the first score -- after the DPLM checkpoint was already resident on the GPU.
     if resolved["head_scorer"] is None or resolved["structure_evaluator"] is None:
-        produced_head, produced_structure = _production_oracles_for(
-            config, inputs, verified_structure_runtime=verified_structure_runtime,
-        )
+        produced_head, produced_structure = _production_oracles_for(config, inputs)
         resolved["head_scorer"] = resolved["head_scorer"] or produced_head
         resolved["structure_evaluator"] = resolved["structure_evaluator"] or produced_structure
     head_identity = ident.HeadEvaluatorIdentity(
@@ -1343,17 +874,7 @@ def build_v2_oracles(
         window_k_min=config.head.window_k_min, window_k_max=config.head.window_k_max,
         head_config_hash=_content_digest(config, "head_config"),
         head_checkpoint_digest=_content_digest(config, "head_checkpoint"),
-        head_variant_id=config.head.head_variant_id,
-        head_allele_idx=config.head.head_allele_idx,
-        head_window_batch_size=config.head.head_window_batch_size,
     )
-    realized_head_identity = resolved["head_scorer"].evaluator_identity()
-    if realized_head_identity != head_identity:
-        raise V2OracleError(
-            "the realized Head evaluator does not equal config.head plus its frozen content "
-            f"identity: realized {realized_head_identity.canonical_payload()!r}, "
-            f"declared {head_identity.canonical_payload()!r}"
-        )
     policy = bind_admission_policy(config, head_identity)
     # Scored through the SAME batch interface every endpoint goes through: a reference scored by a
     # different path could differ from the designs it is compared against for a reason that is not
@@ -1366,7 +887,7 @@ def build_v2_oracles(
         sequence_length=len(reference_sequence),
     )])[0]
     cumulative = bind_cumulative_reference(
-        lineage_id=safety_lineage_id, protein_id=protein_id,
+        lineage_id=f"{protein_id}:fam0", protein_id=protein_id,
         reference_label=config.safety.cumulative_reference_label,
         reference_sequence=reference_sequence,
         reference_content_digest=reference_digest,
@@ -1374,66 +895,49 @@ def build_v2_oracles(
     )
     safety_gate = SafetyGate(policy=policy, ledger=open_lineage_ledger(cumulative))
 
-    # Reward and attribution are separate roles at D0.  Legacy v1 binds WT/reference as I0.  Policy
-    # v2 has no reward incumbent until rank-zero D0 commits, but still binds these exact bytes for
-    # aligned-window attribution and leave-one-out reverts.
+    # ``I_0``, bound under the run's declared depth-0 rule and BEFORE any endpoint is scored -- the
+    # reference it comes from is already frozen, which is what PLAN §3.1 requires of the reward
+    # baseline.  ``None`` for every policy that does not consume one; ``resolve_support_policy``
+    # refuses only if the DECLARED policy needs it.
     incumbent = None
-    depth0_attribution_reference = None
     if config.projection.head_directed is not None:
         incumbent = bind_lineage_incumbent(
             config=config, cumulative_reference=cumulative,
             reference_sequence=reference_sequence, evaluator=head_identity,
-            lineage_id=safety_lineage_id,
-        )
-        from inverse_folding.reference_flow.fusion_v2.reward import (
-            DEPTH0_BOOTSTRAP_RULE,
-            bind_incumbent_from_safety_reference,
+            lineage_id=f"{protein_id}:fam0",
         )
 
-        if (config.projection.head_directed.lineage_incumbent_depth0_rule
-                == DEPTH0_BOOTSTRAP_RULE):
-            depth0_attribution_reference = bind_incumbent_from_safety_reference(
-                reference=cumulative, reference_sequence=reference_sequence,
-                lineage_id=safety_lineage_id, evaluator=head_identity,
-                rule="cumulative_safety_reference",
-            )
-
-    cycle_kwargs = dict(
-        sampler=model.sampler, denoiser=denoiser, config=model.rf_config,
-        sequence_length=length, h_values=model.null_h_values(length),
-        # ``id_to_aa``, NOT ``alphabet``: the cycle's ``alphabet`` parameter is a
-        # ``Mapping[int, str]`` residue map, and that is what ``PreparedModel`` calls it.  The
-        # same rename cost the calibrator a cluster allocation; the AST contract test in
-        # ``tests/scripts/test_rf_fusion_v2_oracles.py`` now checks every ``model.<attr>`` this
-        # factory reads against the real class, so a third occurrence fails locally.
-        residue_token_ids=model.aa_token_ids, alphabet=model.id_to_aa,
-        fixed_tokens=model.fixed_tokens(protein_id),
-        lineage=ident.LineageRef(
-            protein_id=protein_id, root_id=root_id, family_id=family_id,
-            depth=0, parent_state_id=None, parent_transition_id=None,
-            origin_endpoint_id=None),
-        mask_token_id=model.mask_token_id, aa_token_ids=model.aa_token_ids,
-        conditioning=_conditioning(config, model=model, protein_id=protein_id,
-                                   inputs=inputs, band_table=band_table),
-        safety_reference=cumulative.binding,
-        head_oracle=resolved["head_scorer"], structure_oracle=resolved["structure_evaluator"],
-        support_policy=resolve_support_policy(
-            config, band_table=band_table, stratum_key=stratum_key,
-            head_oracle=resolved["head_scorer"], incumbent=incumbent,
-            depth0_attribution_reference=depth0_attribution_reference,
-            safety_reference_score=reference_head_score, evaluator=head_identity,
-            window_grid_digest=cumulative.binding.head_binding.window_grid_digest),
-        band_table=band_table, stratum_key=stratum_key,
-        declared_band_id=band_table.provenance.calibration_id,
-        declared_band_digest=band_table.provenance.calibration_content_digest,
-        safety_gate=safety_gate,
-    )
-    dual_structure_policy = config.dual_structure_policy()
-    if dual_structure_policy is not None:
-        cycle_kwargs["dual_structure_policy"] = dual_structure_policy
     return {
         "gpu_clock": resolved["gpu_clock"],
-        "cycle_kwargs": cycle_kwargs,
+        "cycle_kwargs": dict(
+            sampler=model.sampler, denoiser=denoiser, config=model.rf_config,
+            sequence_length=length, h_values=model.null_h_values(length),
+            # ``id_to_aa``, NOT ``alphabet``: the cycle's ``alphabet`` parameter is a
+            # ``Mapping[int, str]`` residue map, and that is what ``PreparedModel`` calls it.  The
+            # same rename cost the calibrator a cluster allocation; the AST contract test in
+            # ``tests/scripts/test_rf_fusion_v2_oracles.py`` now checks every ``model.<attr>`` this
+            # factory reads against the real class, so a third occurrence fails locally.
+            residue_token_ids=model.aa_token_ids, alphabet=model.id_to_aa,
+            fixed_tokens=model.fixed_tokens(protein_id),
+            lineage=ident.LineageRef(
+                protein_id=protein_id, root_id=f"{protein_id}:v2:d0:r0", family_id="fam0",
+                depth=0, parent_state_id=None, parent_transition_id=None,
+                origin_endpoint_id=None),
+            mask_token_id=model.mask_token_id, aa_token_ids=model.aa_token_ids,
+            conditioning=_conditioning(config, model=model, protein_id=protein_id,
+                                       inputs=inputs, band_table=band_table),
+            safety_reference=cumulative.binding,
+            head_oracle=resolved["head_scorer"], structure_oracle=resolved["structure_evaluator"],
+            support_policy=resolve_support_policy(
+                config, band_table=band_table, stratum_key=stratum_key,
+                head_oracle=resolved["head_scorer"], incumbent=incumbent,
+                safety_reference_score=reference_head_score, evaluator=head_identity,
+                window_grid_digest=cumulative.binding.head_binding.window_grid_digest),
+            band_table=band_table, stratum_key=stratum_key,
+            declared_band_id=band_table.provenance.calibration_id,
+            declared_band_digest=band_table.provenance.calibration_content_digest,
+            safety_gate=safety_gate,
+        ),
     }
 
 

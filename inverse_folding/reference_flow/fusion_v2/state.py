@@ -53,7 +53,6 @@ from inverse_folding.reference_flow.fusion.v1_alloc import validate_complete_aa2
 from inverse_folding.reference_flow.fusion.v1_admission import StructureOutcome
 
 from .schedule import CoordinateLaw, HistoryKey, MaturityRecord, observe_maturity
-from .structure_gate import AncestryAuthorization, DualStructureVerdict
 
 __all__ = [
     "V2StateError", "ActiveOriginKind", "FeedbackOriginRef", "ActiveScoreStatus",
@@ -1634,8 +1633,6 @@ class CompleteEndpoint:
     feasibility_level: FeasibilityLevel
     structure_outcome: StructureOutcome | None
     cost_event_ids: tuple[str, ...]
-    dual_structure_verdict: DualStructureVerdict | None = None
-    ancestry_authorization: AncestryAuthorization | None = None
     endpoint_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -1703,16 +1700,6 @@ class CompleteEndpoint:
 
         outcome = self.structure_outcome
         structure_payload = _structure_outcome_payload(outcome)
-        dual = self.dual_structure_verdict
-        authorization = self.ancestry_authorization
-        if dual is not None and not isinstance(dual, DualStructureVerdict):
-            raise V2StateError("dual_structure_verdict must be a DualStructureVerdict or None")
-        if authorization is not None and not isinstance(
-            authorization, AncestryAuthorization,
-        ):
-            raise V2StateError(
-                "ancestry_authorization must be an AncestryAuthorization or None"
-            )
         if self.feasibility_level is FeasibilityLevel.DEFINITIVE:
             if outcome is None or not getattr(outcome, "evaluated", False):
                 raise V2StateError(
@@ -1723,45 +1710,13 @@ class CompleteEndpoint:
                 raise V2StateError(
                     "a definitive endpoint requires a passing structure verdict"
                 )
-            if dual is not None:
-                if not dual.strict_structure_passed:
-                    raise V2StateError(
-                        "a dual-gate definitive endpoint requires the strict structure verdict"
-                    )
-                if authorization is None:
-                    raise V2StateError(
-                        "a dual-gate definitive endpoint requires ancestry authorization"
-                    )
-        elif self.feasibility_level is FeasibilityLevel.PROVISIONAL:
-            if dual is None and authorization is None:
-                # Preserve the legacy cheap-prior level.  It remains ineligible for ancestry.
-                if outcome is not None and getattr(outcome, "evaluated", False):
-                    raise V2StateError(
-                        "an evaluated provisional result requires the explicit dual-gate profile"
-                    )
-            else:
-                if outcome is None or not getattr(outcome, "evaluated", False):
-                    raise V2StateError(
-                        "a provisional ancestry endpoint requires evaluated structure evidence"
-                    )
-                if dual is None or authorization is None:
-                    raise V2StateError(
-                        "a provisional ancestry endpoint requires both dual verdict and authorization"
-                    )
-                if not dual.ancestry_structure_passed or dual.strict_structure_passed:
-                    raise V2StateError(
-                        "provisional ancestry is reserved for ancestry-pass/strict-fail evidence"
-                    )
-                if head_payload is None:
-                    raise V2StateError(
-                        "a provisional ancestry endpoint requires complete Head evidence"
-                    )
         elif outcome is not None and getattr(outcome, "evaluated", False):
             raise V2StateError(
                 f"feasibility_level is {self.feasibility_level.value!r} but the structure outcome "
                 "was evaluated; an evaluated result must be recorded at its true level"
             )
 
+        del head_payload, structure_payload
         expected_endpoint_id = make_endpoint_id(
             self.source_state_id, fork_index=self.fork_index,
             sequence_md5_hex=self.sequence_md5,
@@ -1773,21 +1728,6 @@ class CompleteEndpoint:
                 f"endpoint_id {self.endpoint_id!r} does not equal the source/fork/sequence-derived "
                 f"identity {expected_endpoint_id!r}"
             )
-        if authorization is not None:
-            if dual is None or outcome is None:
-                raise V2StateError(
-                    "ancestry authorization requires the exact dual verdict and raw outcome"
-                )
-            if not authorization.binds_endpoint(self):
-                raise V2StateError(
-                    "ancestry authorization is not bound to this exact endpoint"
-                )
-            if not authorization.binds_structure(outcome, dual):
-                raise V2StateError(
-                    "ancestry authorization is not bound to this exact structure evidence"
-                )
-
-        del head_payload, structure_payload
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -1809,14 +1749,6 @@ class CompleteEndpoint:
             "head_global_risk": self.head_global_risk,
             "feasibility_level": self.feasibility_level.value,
             "structure_outcome": _structure_outcome_payload(self.structure_outcome),
-            "dual_structure_verdict": (
-                None if self.dual_structure_verdict is None
-                else self.dual_structure_verdict.canonical_payload()
-            ),
-            "ancestry_authorization": (
-                None if self.ancestry_authorization is None
-                else self.ancestry_authorization.canonical_payload()
-            ),
             "cost_event_ids": list(self.cost_event_ids),
         }
 
@@ -1826,23 +1758,8 @@ class CompleteEndpoint:
 
 
 def endpoint_may_become_ancestry(endpoint: CompleteEndpoint) -> bool:
-    """Strict endpoints or explicitly authorized exploratory provisional endpoints may parent."""
-    if endpoint.feasibility_level is FeasibilityLevel.DEFINITIVE:
-        return True
-    if endpoint.feasibility_level is not FeasibilityLevel.PROVISIONAL:
-        return False
-    authorization = endpoint.ancestry_authorization
-    verdict = endpoint.dual_structure_verdict
-    outcome = endpoint.structure_outcome
-    return bool(
-        isinstance(authorization, AncestryAuthorization)
-        and isinstance(verdict, DualStructureVerdict)
-        and isinstance(outcome, StructureOutcome)
-        and verdict.ancestry_structure_passed
-        and not verdict.strict_structure_passed
-        and authorization.binds_endpoint(endpoint)
-        and authorization.binds_structure(outcome, verdict)
-    )
+    """Only a definitively feasible endpoint may be selected for feedback (PLAN §2.7, §4.2)."""
+    return endpoint.feasibility_level is FeasibilityLevel.DEFINITIVE
 
 
 @dataclass(frozen=True)

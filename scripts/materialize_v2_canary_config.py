@@ -48,19 +48,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from inverse_folding.reference_flow.fusion_v2.structure_gate import (  # noqa: E402
-    DUAL_SCTM_POLICY_KIND,
-    HIGH_RISK_ANCESTRY_SCTM_MIN,
-    HIGH_RISK_DUAL_SCTM_PROFILE_ID,
-    HIGH_RISK_STRICT_SCTM_MIN,
-)
-from inverse_folding.reference_flow.fusion_v2.policy import (  # noqa: E402
-    HEAD_DIRECTED_CAPPED_POLICY_ID,
-)
-from inverse_folding.reference_flow.fusion_v2.reward import (  # noqa: E402
-    DEPTH0_BOOTSTRAP_RULE,
-)
-
 __all__ = [
     "build_parser", "main",
     "file_digest", "head_config_hash", "no_constraint_manifest_digest",
@@ -68,10 +55,10 @@ __all__ = [
 ]
 
 
-# These are named, closed exploratory profiles rather than a bag of schedule flags.  Each is an
-# unblinded capability run, not another way to edit the V2F5A qualification cell.  Phase/split,
-# schedule, caps and any method-specific safety policy are therefore materialized together, while
-# the separate runtime launch override remains required by the driver.
+# This is deliberately one named, closed exploratory profile rather than a bag of schedule flags.
+# It is an unblinded capability run, not another way to edit the V2F5A qualification cell.  The
+# phase/split identity is therefore part of the materialized config, while the separate runtime
+# launch override remains required by the driver.
 EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
     "uricase_d4_k12_r40": {
         "phase": "capability_ladder",
@@ -102,92 +89,6 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
             "max_definitive_refolds": 64,
         },
     },
-    "highrisk_d2_k32_r40": {
-        "phase": "capability_ladder",
-        "split_role": "exploratory_highrisk_ceiling_v1",
-        "required_policy_version": "v2",
-        "required_counterfactual_head_calls_per_cycle": 454,
-        "required_run_max_head_calls": 1024,
-        "require_absolute_esmfold2_snapshot": True,
-        "schedule": {
-            "schedule_id": "highrisk-d2-k32-r40-v1",
-            "coordinate_law": "progressive_checkpoint",
-            "depth_cap": 2,
-            "active_population_width": 1,
-            "min_lookahead_tail_steps": 10,
-            "points": [
-                {"depth": 0, "r_step": 40, "c_source_step": 50, "c_next_step": 70,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 1, "r_step": 40, "c_source_step": 70, "c_next_step": 90,
-                 "n_lookaheads": 32, "band_key": "step40"},
-            ],
-        },
-        # Exact upper bounds before slack: 3,010 logical DFE, 96 definitive refolds and 1,004
-        # Head calls (96 endpoint scores + 2 * 454 counterfactual ceilings), per protein/root.
-        "caps": {
-            "max_logical_dfe": 3072,
-            "max_head_calls": 1024,
-            "max_definitive_refolds": 128,
-            "max_gpu_seconds": 14400,
-            "max_walltime_s": 14400,
-            "max_retries": 2,
-        },
-        "search_structure": {
-            "policy_kind": DUAL_SCTM_POLICY_KIND,
-            "profile_id": HIGH_RISK_DUAL_SCTM_PROFILE_ID,
-            "ancestry_sctm_min": HIGH_RISK_ANCESTRY_SCTM_MIN,
-            "strict_sctm_min": HIGH_RISK_STRICT_SCTM_MIN,
-        },
-    },
-    "highrisk_d8_k32_r40": {
-        "phase": "capability_ladder",
-        "split_role": "exploratory_highrisk_ceiling_v1",
-        "required_policy_version": "v2",
-        "required_counterfactual_head_calls_per_cycle": 454,
-        "required_run_max_head_calls": 4096,
-        "require_absolute_esmfold2_snapshot": True,
-        "schedule": {
-            "schedule_id": "highrisk-d8-k32-r40-v1",
-            "coordinate_law": "progressive_checkpoint",
-            "depth_cap": 8,
-            "active_population_width": 1,
-            "min_lookahead_tail_steps": 10,
-            "points": [
-                {"depth": 0, "r_step": 40, "c_source_step": 50, "c_next_step": 55,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 1, "r_step": 40, "c_source_step": 55, "c_next_step": 60,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 2, "r_step": 40, "c_source_step": 60, "c_next_step": 65,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 3, "r_step": 40, "c_source_step": 65, "c_next_step": 70,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 4, "r_step": 40, "c_source_step": 70, "c_next_step": 75,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 5, "r_step": 40, "c_source_step": 75, "c_next_step": 80,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 6, "r_step": 40, "c_source_step": 80, "c_next_step": 85,
-                 "n_lookaheads": 32, "band_key": "step40"},
-                {"depth": 7, "r_step": 40, "c_source_step": 85, "c_next_step": 90,
-                 "n_lookaheads": 32, "band_key": "step40"},
-            ],
-        },
-        # Exact upper bounds before slack: 8,950 logical DFE, 288 definitive refolds and 3,920
-        # Head calls (288 endpoint scores + 8 * 454 counterfactual ceilings), per protein/root.
-        "caps": {
-            "max_logical_dfe": 9216,
-            "max_head_calls": 4096,
-            "max_definitive_refolds": 320,
-            "max_gpu_seconds": 14400,
-            "max_walltime_s": 14400,
-            "max_retries": 2,
-        },
-        "search_structure": {
-            "policy_kind": DUAL_SCTM_POLICY_KIND,
-            "profile_id": HIGH_RISK_DUAL_SCTM_PROFILE_ID,
-            "ancestry_sctm_min": HIGH_RISK_ANCESTRY_SCTM_MIN,
-            "strict_sctm_min": HIGH_RISK_STRICT_SCTM_MIN,
-        },
-    },
 }
 
 
@@ -204,9 +105,7 @@ def file_digest(path: Any) -> str:
     return digest.hexdigest()
 
 
-def _structure_runtime_protocol(
-    args, *, profile: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def _structure_runtime_protocol(args) -> dict[str, Any]:
     """Validate the explicit ESMFold2 selector/protocol required by an exploratory run."""
     model = getattr(args, "esmfold2_model", None)
     if not isinstance(model, str) or not model.strip():
@@ -214,71 +113,6 @@ def _structure_runtime_protocol(
             "--esmfold2-model is required by an exploratory profile; relying on v0's parser "
             "default would leave the executed structure model outside the run identity"
         )
-    model_selector = model.strip()
-    esmc_selector: str | None = None
-    ccd_path: str | None = None
-    if profile is not None and profile.get("require_absolute_esmfold2_snapshot"):
-        selector = Path(model_selector)
-        if not selector.is_absolute():
-            raise MaterializeError(
-                "this high-risk profile requires --esmfold2-model to be an absolute local "
-                f"snapshot directory, got {model_selector!r}"
-            )
-        try:
-            selector = selector.resolve(strict=True)
-        except FileNotFoundError as exc:
-            raise MaterializeError(
-                f"absolute ESMFold2 snapshot does not exist: {selector}"
-            ) from exc
-        if not selector.is_dir():
-            raise MaterializeError(
-                f"absolute ESMFold2 snapshot selector must be a directory, got {selector}"
-            )
-        selector_weights = selector / "model.safetensors"
-        if not selector_weights.is_file():
-            raise MaterializeError(
-                f"absolute ESMFold2 snapshot {selector} has no model.safetensors"
-            )
-        backend_raw = getattr(args, "structure_backend", None)
-        backend = Path(backend_raw) if backend_raw is not None else None
-        if backend is None or not backend.is_file():
-            raise MaterializeError(
-                "--structure-backend must be the model.safetensors file whose SHA is bound to "
-                "the absolute ESMFold2 snapshot"
-            )
-        selector_sha = file_digest(selector_weights)
-        backend_sha = file_digest(backend)
-        if selector_sha != backend_sha:
-            raise MaterializeError(
-                f"absolute snapshot model.safetensors SHA {selector_sha} does not match "
-                f"--structure-backend SHA {backend_sha}"
-            )
-        model_selector = str(selector)
-        esmc_raw = getattr(args, "esmfold2_esmc_model", None)
-        if not isinstance(esmc_raw, str) or not esmc_raw.strip():
-            raise MaterializeError(
-                "this high-risk profile requires --esmfold2-esmc-model to be an absolute local "
-                "ESMC snapshot; ESMFold2 may not resolve its language model through a registry id"
-            )
-        esmc = Path(esmc_raw).expanduser()
-        if not esmc.is_absolute() or not esmc.resolve().is_dir():
-            raise MaterializeError(
-                f"--esmfold2-esmc-model must be an existing absolute directory, got {esmc_raw!r}"
-            )
-        esmc_selector = str(esmc.resolve())
-        ccd_raw = getattr(args, "esmfold2_ccd_path", None)
-        if not isinstance(ccd_raw, str) or not ccd_raw.strip():
-            raise MaterializeError(
-                "this high-risk profile requires --esmfold2-ccd-path; CCD lookup may not fall "
-                "back to a mutable Hugging Face cache"
-            )
-        ccd = Path(ccd_raw).expanduser()
-        if not ccd.is_absolute() or not ccd.resolve().is_file():
-            raise MaterializeError(
-                f"--esmfold2-ccd-path must be an existing absolute file, got {ccd_raw!r}"
-            )
-        ccd_path = str(ccd.resolve())
-
     values: dict[str, int] = {}
     for field, flag, minimum in (
         ("num_loops", "--esmfold2-num-loops", 1),
@@ -293,11 +127,7 @@ def _structure_runtime_protocol(
                 f"{value!r}"
             )
         values[field] = int(value)
-    resolved = {"model_selector": model_selector, "protocol": values}
-    if esmc_selector is not None:
-        resolved["esmc_model_selector"] = esmc_selector
-        resolved["ccd_path"] = ccd_path
-    return resolved
+    return {"model_selector": model.strip(), "protocol": values}
 
 
 def _structure_runtime_bytes(payload: dict[str, Any]) -> bytes:
@@ -308,12 +138,12 @@ def _structure_runtime_bytes(payload: dict[str, Any]) -> bytes:
 def _structure_runtime_identity(args) -> tuple[Path, dict[str, Any], str]:
     """Bind the realized ESMFold2 selector/protocol to the supplied local model snapshot.
 
-    Legacy exploratory profiles may use a registry selector.  High-risk profiles instead require
-    an absolute local snapshot directory and prove that its ``model.safetensors`` bytes match the
-    separately supplied backend file before signing the selector and protocol together.
+    The selector may be a registry id (for example ``biohub/ESMFold2``), so this producer cannot
+    prove that the registry name resolves to the supplied local file.  It can, however, make both
+    immutable inputs part of ONE signed content artifact.  The worker's realized metadata remains
+    the runtime proof of how that selector resolved on the cluster.
     """
-    profile = EXPLORATORY_PROFILES.get(getattr(args, "exploratory_profile", None))
-    declared = _structure_runtime_protocol(args, profile=profile)
+    declared = _structure_runtime_protocol(args)
     snapshot = Path(args.structure_backend)
     if not snapshot.is_file():
         raise MaterializeError(
@@ -325,21 +155,6 @@ def _structure_runtime_identity(args) -> tuple[Path, dict[str, Any], str]:
         **declared,
         "local_model_snapshot_sha256": file_digest(snapshot),
     }
-    if profile is not None and profile.get("require_absolute_esmfold2_snapshot"):
-        from inverse_folding.evaluation.esmfold2_live import (
-            ESMC_SNAPSHOT_REQUIRED_FILES,
-            ESMFOLD2_SNAPSHOT_REQUIRED_FILES,
-            esmfold2_overlay_identity,
-            hf_snapshot_identity,
-        )
-
-        payload["site_packages_overlay"] = esmfold2_overlay_identity(
-            args.esmfold2_site_packages)
-        payload["model_snapshot"] = hf_snapshot_identity(
-            declared["model_selector"], ESMFOLD2_SNAPSHOT_REQUIRED_FILES)
-        payload["esmc_snapshot"] = hf_snapshot_identity(
-            declared["esmc_model_selector"], ESMC_SNAPSHOT_REQUIRED_FILES)
-        payload["ccd_sha256"] = file_digest(declared["ccd_path"])
     raw = _structure_runtime_bytes(payload)
     path = Path(args.out).with_suffix(".structure_runtime.json")
     return path, payload, hashlib.sha256(raw).hexdigest()
@@ -399,11 +214,7 @@ def _band_content_digest(band_json: Any, *, r_step: int, stratum_key: str) -> st
     return str(digest)
 
 
-def _delta_new_block(
-    hotspot_json: Any, *, head: dict, highrisk_protein_id: str | None = None,
-    code_revision: str | None = None, master_seed: int | None = None,
-    head_config_digest: str | None = None, head_checkpoint_digest: str | None = None,
-) -> dict:
+def _delta_new_block(hotspot_json: Any, *, head: dict) -> dict:
     """The `delta_new` block, copied VERBATIM, after checking it was measured on THIS Head domain."""
     payload = json.loads(Path(hotspot_json).read_text(encoding="utf-8"))
     block = payload.get("delta_new")
@@ -423,101 +234,7 @@ def _delta_new_block(
             f"({diff}).  N_H^whole is a maximum over the grid these fields define, so a threshold "
             "measured under one domain does not bound designs scored under another"
         )
-    if highrisk_protein_id is not None:
-        from scripts.calibrate_rf_fusion_v2_hotspot import (
-            SEED_NAMESPACE,
-            THRESHOLD_STATISTIC_BY_POPULATION,
-            source_id_for,
-        )
-
-        expected = {
-            "protein_id": str(highrisk_protein_id),
-            "code_revision": str(code_revision),
-            "population": "full_trajectory",
-            "sampling_unit": "trajectory",
-            "threshold_statistic": THRESHOLD_STATISTIC_BY_POPULATION["full_trajectory"],
-            "seed_namespace": SEED_NAMESPACE,
-            "master_seed": int(master_seed),
-            "min_head_valid": 64,
-            "n_attempted": 64,
-            "n_head_valid": 64,
-            "n_retained": 64,
-            "failure_counts": {},
-            "structure_diagnostic_mode": "skip_independent_capability_ceiling",
-        }
-        mismatches = {
-            name: {"observed": payload.get(name), "expected": value}
-            for name, value in expected.items() if payload.get(name) != value
-        }
-        if mismatches:
-            raise MaterializeError(
-                f"high-risk hotspot artifact {hotspot_json} violates the frozen per-protein "
-                f"full-trajectory n=64 law: {mismatches}"
-            )
-        from inverse_folding.reference_flow.fusion_v2.identity import HeadEvaluatorIdentity
-
-        expected_head = HeadEvaluatorIdentity(
-            allele=str(head["allele"]), score_scale=str(head["score_scale"]),
-            window_k_min=int(head["window_k_min"]),
-            window_k_max=int(head["window_k_max"]),
-            head_config_hash=str(head_config_digest),
-            head_checkpoint_digest=str(head_checkpoint_digest),
-            head_variant_id=str(head["head_variant_id"]),
-            head_allele_idx=int(head["head_allele_idx"]),
-            head_window_batch_size=int(head["head_window_batch_size"]),
-        ).canonical_payload()
-        if payload.get("head") != expected_head:
-            raise MaterializeError(
-                "high-risk hotspot artifact was measured by a different complete Head evaluator "
-                f"identity: observed {payload.get('head')!r}, expected {expected_head!r}"
-            )
-        expected_source_id = source_id_for(
-            str(highrisk_protein_id), population="full_trajectory")
-        if block.get("source_id") != expected_source_id:
-            raise MaterializeError(
-                f"high-risk hotspot source_id must be {expected_source_id!r}, got "
-                f"{block.get('source_id')!r}"
-            )
-        if payload.get("q90_higher") != block.get("value"):
-            raise MaterializeError(
-                "high-risk hotspot top-level q90_higher does not equal the copied delta_new.value"
-            )
-        operability = payload.get("structure_operability")
-        if (not isinstance(operability, dict)
-                or operability.get("status") != "not_measured"
-                or operability.get("n_definitive_feasible") is not None
-                or operability.get("rate") is not None):
-            raise MaterializeError(
-                "high-risk hotspot structure_operability must explicitly be not_measured with "
-                "null count/rate under skip_independent_capability_ceiling"
-            )
     return json.loads(json.dumps(block))  # a plain, YAML-safe copy
-
-
-def _projection_policy_method(policy_spec: Any) -> tuple[str, str]:
-    """Return the policy version and its closed D0 rule from the exact supplied spec bytes."""
-    path = Path(policy_spec)
-    if not path.is_file():
-        raise MaterializeError(f"projection policy spec does not exist or is not a file: {path}")
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise MaterializeError(f"cannot read projection policy spec {path}: {exc}") from exc
-    if payload.get("policy_id") != HEAD_DIRECTED_CAPPED_POLICY_ID:
-        raise MaterializeError(
-            f"{path} does not declare policy_id={HEAD_DIRECTED_CAPPED_POLICY_ID!r}"
-        )
-    version = payload.get("policy_version")
-    depth0_rules = {
-        "v1": "cumulative_safety_reference",
-        "v2": DEPTH0_BOOTSTRAP_RULE,
-    }
-    if version not in depth0_rules:
-        raise MaterializeError(
-            f"{path} declares unsupported head_directed_capped policy_version {version!r}; "
-            "only v1 and v2 can be materialized"
-        )
-    return str(version), depth0_rules[str(version)]
 
 
 def resolve_content_bindings(
@@ -607,11 +324,11 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
             "exploratory run cap"
         )
     if profile is not None:
-        _structure_runtime_protocol(args, profile=profile)
+        _structure_runtime_protocol(args)
         if int(args.r_step) != 40:
             raise MaterializeError(
                 f"exploratory profile {profile_name!r} requires --r-step 40, got {args.r_step}; "
-                "every rung is bound to the measured B(40) cell"
+                "all four depths are bound to the measured B(40) cell"
             )
         substrate = config.get("substrate") or {}
         required_substrate = {
@@ -632,45 +349,6 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
                 f"exploratory profile {profile_name!r} requires the frozen 100-step null/no-remask "
                 f"substrate, but the template disagrees: {mismatch}"
             )
-        if profile.get("search_structure") is not None:
-            structure_config = getattr(args, "structure_config", None)
-            gate_config = getattr(args, "v0_structure_gate_config", None)
-            if not structure_config or not gate_config:
-                raise MaterializeError(
-                    "a high-risk profile requires both --structure-config and "
-                    "--v0-structure-gate-config"
-                )
-            if file_digest(structure_config) != file_digest(gate_config):
-                raise MaterializeError(
-                    "high-risk structure-config and v0-structure-gate-config must be "
-                    "byte-identical; search and definitive gates may not drift"
-                )
-            if not isinstance(getattr(args, "stratum_key", None), str) or not args.stratum_key:
-                raise MaterializeError(
-                    "a high-risk profile requires the exact per-protein --stratum-key in the "
-                    "config; a mutable runtime manifest may not choose B(r) outside config_digest"
-                )
-            variant = getattr(args, "head_variant_id", None)
-            allele_idx = getattr(args, "head_allele_idx", None)
-            batch_size = getattr(args, "head_window_batch_size", None)
-            if not isinstance(variant, str) or not variant.strip():
-                raise MaterializeError(
-                    "a high-risk profile requires a non-empty --head-variant-id"
-                )
-            if isinstance(allele_idx, bool) or not isinstance(allele_idx, int) or allele_idx < 0:
-                raise MaterializeError(
-                    "a high-risk profile requires --head-allele-idx >= 0"
-                )
-            if (isinstance(batch_size, bool) or not isinstance(batch_size, int)
-                    or batch_size < 1):
-                raise MaterializeError(
-                    "a high-risk profile requires --head-window-batch-size >= 1"
-                )
-            config["head"].update({
-                "head_variant_id": variant.strip(),
-                "head_allele_idx": int(allele_idx),
-                "head_window_batch_size": int(batch_size),
-            })
 
     policy_calibration = getattr(args, "policy_calibration_json", None)
     if profile is not None and not policy_calibration:
@@ -702,12 +380,6 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
             "head_config_hash": frozen["head_config"],
             "head_checkpoint_digest": frozen["head_checkpoint"],
         }
-        if profile is not None and profile.get("search_structure") is not None:
-            expected_head.update({
-                "head_variant_id": config["head"]["head_variant_id"],
-                "head_allele_idx": config["head"]["head_allele_idx"],
-                "head_window_batch_size": config["head"]["head_window_batch_size"],
-            })
         if not isinstance(measured_head, dict):
             raise MaterializeError(
                 f"{policy_calibration} carries no frozen Head evaluator identity"
@@ -727,33 +399,6 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
                 f"{payload.get('policy_spec_sha256')!r}, but this cell supplies "
                 f"{frozen['projection_policy_spec']!r}"
             )
-        policy_version, expected_depth0_rule = _projection_policy_method(
-            args.projection_policy_spec)
-        observed_depth0_rule = block.get("lineage_incumbent_depth0_rule")
-        if observed_depth0_rule != expected_depth0_rule:
-            raise MaterializeError(
-                f"{policy_calibration} carries lineage_incumbent_depth0_rule="
-                f"{observed_depth0_rule!r}, but policy spec {policy_version} requires "
-                f"{expected_depth0_rule!r}"
-            )
-        if profile is not None:
-            required_version = profile.get("required_policy_version")
-            if required_version is not None and policy_version != required_version:
-                raise MaterializeError(
-                    f"exploratory profile {profile_name!r} requires policy spec "
-                    f"{required_version!r}, got {policy_version!r}"
-                )
-            required_counterfactual = profile.get(
-                "required_counterfactual_head_calls_per_cycle")
-            observed_counterfactual = block.get(
-                "max_counterfactual_head_calls_per_cycle")
-            if (required_counterfactual is not None
-                    and observed_counterfactual != required_counterfactual):
-                raise MaterializeError(
-                    f"exploratory profile {profile_name!r} freezes the counterfactual Head "
-                    f"ceiling at {required_counterfactual} calls/cycle, got "
-                    f"{observed_counterfactual!r}"
-                )
         config["identity"]["phase"] = (
             str(profile["phase"]) if profile is not None else "policy_qualification"
         )
@@ -762,7 +407,7 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
         )
         config["projection"].update({
             "support_policy_id": "head_directed_capped",
-            "support_policy_version": policy_version,
+            "support_policy_version": "v1",
             "support_policy_is_diagnostic": False,
             "head_directed": json.loads(json.dumps(block)),
         })
@@ -781,24 +426,11 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
                 + (" for an explicit exploratory run Head cap" if profile is not None else
                    "; the one-cycle paired cohort must carry an explicit cohort Head cap")
             )
-        required_head_cap = (
-            profile.get("required_run_max_head_calls") if profile is not None else None
-        )
-        if required_head_cap is not None and head_cap != required_head_cap:
-            raise MaterializeError(
-                f"exploratory profile {profile_name!r} freezes its whole-run Head cap at "
-                f"{required_head_cap}, got {head_cap}"
-            )
         config["caps"]["max_head_calls"] = int(head_cap)
 
     if profile is not None:
         config["schedule"] = json.loads(json.dumps(profile["schedule"]))
-        if profile.get("search_structure") is not None:
-            config["schedule"]["stratum_key"] = str(args.stratum_key)
         config["caps"].update(json.loads(json.dumps(profile["caps"])))
-        if profile.get("search_structure") is not None:
-            config["safety"]["search_structure"] = json.loads(json.dumps(
-                profile["search_structure"]))
     else:
         points = config["schedule"]["points"]
         if len(points) != 1:
@@ -809,16 +441,8 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
         points[0]["r_step"] = int(args.r_step)
         points[0]["band_key"] = f"step{int(args.r_step)}"
 
-    highrisk_hotspot = bool(profile is not None and profile.get("search_structure") is not None)
     config["safety"]["delta_new_cumulative"] = _delta_new_block(
-        args.hotspot_json,
-        head=config["head"],
-        highrisk_protein_id=(str(args.protein_id) if highrisk_hotspot else None),
-        code_revision=(str(args.code_revision) if highrisk_hotspot else None),
-        master_seed=(int(config["identity"]["master_seed"]) if highrisk_hotspot else None),
-        head_config_digest=(frozen["head_config"] if highrisk_hotspot else None),
-        head_checkpoint_digest=(frozen["head_checkpoint"] if highrisk_hotspot else None),
-    )
+        args.hotspot_json, head=config["head"])
 
     for row in config["content"]:
         role = row["role"]
@@ -893,8 +517,6 @@ def _args_script(
         "head_config": str(args.head_config_dir),
         "head_checkpoint": str(args.head_checkpoint),
         "head_variant_id": str(args.head_variant_id),
-        "head_allele_idx": str(getattr(args, "head_allele_idx", 0)),
-        "head_window_batch_size": str(getattr(args, "head_window_batch_size", 64)),
         "esmfold2_site_packages": str(args.esmfold2_site_packages),
         "schedule_band_calibration": str(args.band_json),
         "complete_reference_manifest": str(args.reference_manifest),
@@ -902,14 +524,12 @@ def _args_script(
     })
     if exploratory:
         identity = structure_runtime_identity or _structure_runtime_identity(args)
-        profile = EXPLORATORY_PROFILES.get(getattr(args, "exploratory_profile", None))
-        protocol = _structure_runtime_protocol(args, profile=profile)
+        protocol = _structure_runtime_protocol(args)
         shard_inputs.update({
             # The oracle consumes these exact names.  They are repeated in the signed runtime
             # identity artifact above, so changing a worker knob changes both config_digest and
             # run input_signature rather than silently falling back to v0's parser defaults.
             "structure_backend": str(identity[0]),
-            "esmfold2_runtime_identity": str(identity[0]),
             "esmfold2_model": str(protocol["model_selector"]),
             "esmfold2_num_loops": str(protocol["protocol"]["num_loops"]),
             "esmfold2_num_sampling_steps": str(
@@ -918,9 +538,6 @@ def _args_script(
                 protocol["protocol"]["num_diffusion_samples"]),
             "esmfold2_seed": str(protocol["protocol"]["seed"]),
         })
-        if protocol.get("esmc_model_selector") is not None:
-            shard_inputs["esmfold2_esmc_model"] = str(protocol["esmc_model_selector"])
-            shard_inputs["esmfold2_ccd_path"] = str(protocol["ccd_path"])
     # `fixed_token_policy` stays in SHARD_INPUTS even though no oracle reads that key: it is one of
     # the eighteen roles `_conditioning` must find a digest for, and on an anchored cell it is bound
     # RUNTIME, so dropping it made the shard refuse with "no content identity for role(s)
@@ -964,8 +581,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--head-config-dir", required=True)
     parser.add_argument("--head-checkpoint", required=True)
     parser.add_argument("--head-variant-id", required=True)
-    parser.add_argument("--head-allele-idx", type=int, default=0)
-    parser.add_argument("--head-window-batch-size", type=int, default=64)
     parser.add_argument("--structure-backend", required=True,
                         help="the structure model's weight file (its bytes ARE the backend)")
     parser.add_argument("--structure-config", required=True)
@@ -999,25 +614,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--exploratory-profile", choices=sorted(EXPLORATORY_PROFILES), default=None,
         help="explicitly materialize one closed, non-confirmatory capability-ladder profile. "
-             "The profile freezes its identity, schedule, caps and optional search-safety block; "
-             "the driver still requires its separate exploratory D>1 launch override",
+             "This only changes config identity/schedule; the driver still requires its separate "
+             "exploratory D>1 launch override",
     )
     parser.add_argument(
         "--run-max-head-calls", type=int, default=None,
         help="generic whole-run Head hard cap required by an exploratory profile. It is not a "
-             "qualification-arm cap and is rejected unless --exploratory-profile is supplied; "
-             "the high-risk D2/D8 profiles require their frozen values 1024/4096",
+             "qualification-arm cap and is rejected unless --exploratory-profile is supplied",
     )
     parser.add_argument("--esmfold2-model", default=None,
-                        help="actual ESMFold2 model selector; required by an exploratory profile. "
-                             "High-risk profiles require an absolute local snapshot directory "
-                             "whose model.safetensors matches --structure-backend")
-    parser.add_argument("--esmfold2-esmc-model", default=None,
-                        help="absolute local ESMC snapshot used internally by ESMFold2; required "
-                             "by high-risk profiles")
-    parser.add_argument("--esmfold2-ccd-path", default=None,
-                        help="absolute local ccd.pkl consumed by ESMFold2InputBuilder; required "
-                             "by high-risk profiles")
+                        help="actual ESMFold2 model selector; required by an exploratory profile")
     parser.add_argument("--esmfold2-num-loops", type=int, default=None)
     parser.add_argument("--esmfold2-num-sampling-steps", type=int, default=None)
     parser.add_argument("--esmfold2-num-diffusion-samples", type=int, default=None)

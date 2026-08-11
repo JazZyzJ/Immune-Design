@@ -313,21 +313,6 @@ def test_head_evaluator_digest_changes_when_only_the_window_grid_changes():
     assert _evaluator().digest() == _evaluator().digest()
 
 
-def test_extended_head_runtime_identity_is_all_or_none_and_digest_bound():
-    legacy = _evaluator()
-    extended = _evaluator(
-        head_variant_id="LC1", head_allele_idx=0, head_window_batch_size=64,
-    )
-    assert "head_variant_id" not in legacy.canonical_payload()
-    assert extended.canonical_payload()["head_variant_id"] == "LC1"
-    assert extended.digest() != legacy.digest()
-    assert extended.digest() != _evaluator(
-        head_variant_id="LC1", head_allele_idx=1, head_window_batch_size=64,
-    ).digest()
-    with pytest.raises(ident.V2IdentityError, match="declared together"):
-        _evaluator(head_variant_id="LC1")
-
-
 def test_head_score_binding_separates_score_identity_from_evaluator_identity():
     """Map Conflict 6: collapsing the two makes the adversarial case untestable.
 

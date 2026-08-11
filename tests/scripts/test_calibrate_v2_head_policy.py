@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import types
-from pathlib import Path
 
 import pytest
 
@@ -24,17 +22,11 @@ def _identity():
     )
 
 
-def _policy_spec(tmp_path, *, version="v1"):
+def _policy_spec(tmp_path):
     path = tmp_path / "policy.json"
-    payload = {
-        "policy_id": "head_directed_capped", "policy_version": version,
-    }
-    if version == "v2":
-        payload.update({
-            "depth0_reward_bootstrap": {"reward_incumbent": None},
-            "artifact_contract": {"d0_gate_kind": "depth0_bootstrap"},
-        })
-    path.write_text(json.dumps(payload))
+    path.write_text(json.dumps({
+        "policy_id": "head_directed_capped", "policy_version": "v1",
+    }))
     return path
 
 
@@ -55,54 +47,6 @@ def test_difference_floor_is_twice_the_largest_same_sequence_repeat_drift(tmp_pa
     assert block["write_cap_editable_fraction"]["value"] == pytest.approx(0.05)
     assert block["max_counterfactual_head_calls_per_cycle"] == 278
     assert len(payload["policy_spec_sha256"]) == 64
-
-
-def test_v2_policy_spec_emits_logical_depth0_bootstrap_and_allows_c454(tmp_path):
-    rows = [
-        {"protein_id": "P1", "sequence_md5": "a" * 32, "abs_repeat_drift": 0.01},
-    ]
-    payload = build_calibration_bundle(
-        rows, evaluator=_identity(), policy_spec=_policy_spec(tmp_path, version="v2"),
-        max_counterfactual_head_calls_per_cycle=454,
-    )
-
-    block = payload["head_directed"]
-    assert block["lineage_incumbent_depth0_rule"] == "best_admissible_depth0"
-    assert block["max_counterfactual_head_calls_per_cycle"] == 454
-
-
-def test_v2_label_without_the_logical_bootstrap_contract_is_refused(tmp_path):
-    path = tmp_path / "policy.json"
-    path.write_text(json.dumps({
-        "policy_id": "head_directed_capped", "policy_version": "v2",
-    }))
-
-    with pytest.raises(RuntimeError, match="depth0_reward_bootstrap|depth0_bootstrap"):
-        build_calibration_bundle(
-            [{"protein_id": "P1", "sequence_md5": "a" * 32,
-              "abs_repeat_drift": 0.01}],
-            evaluator=_identity(), policy_spec=path,
-            max_counterfactual_head_calls_per_cycle=454,
-        )
-
-
-def test_v1_calibration_json_remains_byte_compatible(monkeypatch):
-    """Adding policy v2 must not perturb an already-frozen v1 calibration bundle."""
-    monkeypatch.chdir(Path(__file__).resolve().parents[2])
-    spec = Path(
-        "inverse_folding/reference_flow/configs/v2_head_directed_capped_policy_v1.json")
-    payload = build_calibration_bundle(
-        [
-            {"protein_id": "P1", "sequence_md5": "a" * 32, "abs_repeat_drift": 0.01},
-            {"protein_id": "P2", "sequence_md5": "b" * 32, "abs_repeat_drift": 0.03},
-        ],
-        evaluator=_identity(), policy_spec=spec,
-        max_counterfactual_head_calls_per_cycle=278,
-    )
-    serialized = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
-    assert hashlib.sha256(serialized).hexdigest() == (
-        "ceb08a148de3dc68684f23c44873e5b7a7da3b8bcfa6ac35711bb255f68c0ddd"
-    )
 
 
 def test_repeatability_requires_the_stored_and_live_head_identity_to_match():

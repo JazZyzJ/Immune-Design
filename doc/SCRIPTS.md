@@ -370,22 +370,20 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `Q0.10(lower)`, with raw absolute RMSD still reported in full and hard-anchor residue
     IDENTITY untouched as an absolute hard gate. Those are mechanism-operability gates only and
     say so in the artifact; capability and holdout still need their own frozen structure gate.
-    It implements the frozen law of `doc/RF_Fusion_v2_Cluster_Runbook.md` §2.1.
-    **The population is every HEAD-VALID endpoint, not the structure-feasible subset**: the
+    calibration producer, implementing the frozen law of `doc/RF_Fusion_v2_Cluster_Runbook.md`
+    §2.1. **The population is every HEAD-VALID endpoint, not the structure-feasible subset**: the
     two gates answer independent safety questions, and conditioning the Head null on the structure
-    verdict shrinks the estimation sample exactly when structure is hardest. Under the default
-    `--structure-diagnostic-mode evaluate`, the structure gate still runs on every endpoint and its
-    verdict/metrics are recorded beside the threshold as `structure_operability`, never filtering
-    it. The explicit high-risk ceiling mode
-    `skip_independent_capability_ceiling` makes no calibration refolds and records every structure
-    field as `not_measured`; this changes neither the generated/Head-valid population nor the
-    threshold statistic, and the actual campaign still folds every realized search endpoint.
-    Generates `--n-completions` complete feedback-disabled trajectories under the frozen
+    verdict shrinks the estimation sample exactly when structure is hardest. The structure gate
+    still runs on every endpoint and its verdict/metrics are recorded in full, reported beside the
+    threshold as `structure_operability` and never filtering it. Anchor mismatch remains a hard
+    failure. Generates `--n-completions` complete feedback-disabled trajectories under the frozen
     substrate from the disjoint seed namespace `v2_hotspot_calibration_1` (REUSES
     `rf_fusion_model_factory`), scores each candidate and that protein's OWN native reference with
     the production Head, computes `N_H^whole` through the admission gate's own comparator
-    (`safety.whole_landscape_new_hotspot`). Below `--min-head-valid` it writes **no artifact** and
-    does not relax the floor. `delta_new_cumulative` is the empirical `Q0.90` by the
+    (`safety.whole_landscape_new_hotspot`), runs the v0 definitive structure gate, and keeps only
+    endpoints with a REAL definitive-feasible verdict — `evaluated` and `feasible` both, so a
+    cache-only label cannot help meet the floor. Below `--min-head-valid` it writes **no
+    artifact** and does not relax the floor. `delta_new_cumulative` is the empirical `Q0.90` by the
     **higher order statistic** — the value at one-indexed rank `ceil(0.90*n)`, at full precision —
     NOT `numpy.quantile`, which interpolates and returns a number no endpoint produced.
     `--threshold-statistic` is a closed enum with a single admissible value
@@ -394,9 +392,8 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     retained-only table makes the definitive-feasible rate — what the floor is checked against —
     unrecoverable) plus one typed artifact per protein reporting `n_attempted`,
     `n_head_valid`, `structure_operability`, `q50/q90/q95/max`, the order-statistic rank and all failure counts.
-    `source_id` is `v2-canary-hotspot-head-valid-q90-higher-v1:<protein_id>`; proteins are never
-    pooled. **Scope** is carried by the explicit population/statistic and consuming config; a
-    capability-ceiling threshold is not a production immune-validity claim.
+    `source_id` is `v2-canary-hotspot-head-valid-q90-higher-v1:<protein_id>`; the two proteins are never
+    pooled. **Scope**: authorizes Canary WIRING only — not a production immune-safety threshold.
     **Verification boundary**: `main` needs torch + checkpoints + a refold backend + PDBs; the
     frozen LAW is unit-tested against injected seams, real-oracle behaviour is a cluster check.
     **Production path (fixed after the first cluster attempt).** `--head-config-dir`,
@@ -460,40 +457,15 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     digest cannot sign a two-protein cohort's two references. Tested:
     `tests/scripts/test_rf_fusion_v2_oracles.py`.
 
-30. `scripts/calibrate_v2_head_policy.py` — the V2 Head-directed frozen-Head repeatability
-    calibration.
+30. `scripts/calibrate_v2_head_policy.py` — the V2F5A frozen-Head repeatability calibration.
     Reads exact complete sequences plus their stored `head_global_risk` from one or more existing
     S7 bundles, re-scores the same bytes once with the frozen production Head, and writes paired
     parquet rows plus a typed `v2-head-policy-calibration-bundle/1` JSON. The donor-improvement and
     local-contribution floors are both frozen at twice the maximum absolute same-sequence repeat
     drift, because both gates compare a difference of two Head scores. The JSON also binds the
     exact evaluator identity, committed policy-spec sha256, 5% write cap, and counterfactual-Head
-    ceiling. Policy specs `v1` and `v2` are closed methods: `v1` retains its byte-compatible
-    `cumulative_safety_reference` D0 rule, while `v2` requires the explicit null-incumbent logical
-    bootstrap contract and emits `best_admissible_depth0` (including the high-risk `C=454`
-    calibration). Loads no denoiser or structure backend. Tested:
+    ceiling. Loads no denoiser or structure backend. Tested:
     `tests/scripts/test_calibrate_v2_head_policy.py`.
-
-31. `scripts/evaluate_rf_fusion_v2_exact_live_baseline.py` — exact evaluator for the stochastic
-    Gumbel DPLM-native comparator used by the V2 high-risk campaign. It refuses any source that is
-    not a complete `c0_native_sampler` / `gumbel_argmax` producer run with exactly eight unique
-    designs, temperature `1.0`, `max_iter=100`, and seeds `42..49` per selected protein. Five
-    required caller-frozen SHA-256 values bind the exact source parquet, run config, manifest,
-    DPLM checkpoint and campaign cohort before any table is read, so a shape-valid reconstructed
-    facade cannot borrow the producer's labels. The thin adapter REUSES
-    `rf_fusion_v2_oracles.build_production_oracles`: all eight designs of one protein enter one
-    `ProductionHeadOracle` call (`head_window_batch_size=64`), and every design enters the same
-    persistent `esmfold2_live` structure oracle as V2. The runtime `model_selector` MUST be an
-    absolute local HF snapshot directory, never a registry id: the evaluator resolves its
-    `model.safetensors`, verifies those bytes against `local_model_snapshot_sha256`, passes that
-    exact directory to the worker, and refuses a realized worker `model_name` that differs. A
-    dedicated cache identity sidecar binds this verified local snapshot, fold protocol, realized
-    worker runtime, package overlay, device, and structure-gate digest; unclaimed/foreign cache
-    files and runtime drift fail closed. Outputs the exact selected `generated.parquet`, full Head
-    and structure evidence tables, and a manifest binding source parquet/cohort/config/manifest,
-    DPLM and Head checkpoints, structure identity, code/script digest, output digests, and complete
-    coverage counts. `--dry-run` performs the source/path/identity and exact-count preflight without
-    loading a model. Tested: `tests/scripts/test_evaluate_rf_fusion_v2_exact_live_baseline.py`.
 
 29. `scripts/analysis/replay_v2_head_directed_policy.py` — the V2F5A OFFLINE COVERAGE GATE
     (`--bundle DIR ...`, `--config`, `--band-table`, `--stratum-key`, `--reference-sequence`,
@@ -559,16 +531,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     plus that cell's measured artifacts (runbook §3). `--policy-calibration-json` switches the
     cell to the V2F5A `head_directed_capped` qualification law; it refuses unless the calibration's
     Head instrument/domain and committed policy-spec digest match the exact files supplied to this
-    cell, derives `support_policy_version` from that exact spec, and
-    `--qualification-max-head-calls` freezes the cohort Head cap. The closed exploratory choices
-    `highrisk_d2_k32_r40` and `highrisk_d8_k32_r40` materialize the high-risk ceiling campaign's
-    exact progressive schedules (`50→70→90` or eight 5-step rungs from `50→90`, both at `r=40`,
-    `K=32`), whole-run caps (`DFE/refold/Head = 3072/128/1024` or
-    `9216/320/4096`), policy-v2 D0 bootstrap with `C=454`, and the authorized dual-scTM search block
-    (`ancestry>=0.70`, strict finalist `>=0.85`). Those profiles require
-    `--esmfold2-model` to be an absolute local snapshot directory and refuse unless its
-    `model.safetensors` SHA-256 equals the supplied `--structure-backend` bytes. Required flags
-    name the cell
+    cell, and `--qualification-max-head-calls` freezes the cohort Head cap. Required flags name the cell
     (`--protein-id`, `--r-step`, `--stratum-key`), the artifacts (`--band-json`, `--hotspot-json`,
     `--reference-manifest`, `--stratum-manifest`, `--reference-sequence`) and every content-role
     path; `--constraint-manifest` is the one optional, and OMITTING it is what declares an
@@ -655,26 +618,19 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `EXIT=<rc>`. `MECHANISM_PREFIXES=N` switches the same job to the runbook §7 mechanism cohort;
     `QUALIFICATION=1` additionally selects the V2F5A treatment/control support-law surface and is
     refused unless `N>=1`. A prefix is about three cells, so pass a matching `sbatch --time` (the
-    header is sized for a Canary cell). `ROOT_INDEX={0,1,2,3}` opts an ordinary ladder into the R4
-    identity contract and is forwarded as `--root-index`; empty preserves the legacy single-root
-    invocation. Explicit-root bundles live under `<RUNDIR>/<CELL>/root_NNNN/`, so concurrent roots
-    cannot overwrite final tables or manifests. Root identity is refused in
-    mechanism/qualification mode, whose `source_index` already owns the replicate axis.
+    header is sized for a Canary cell).
 
 18. `scripts/run_rf_fusion_v2.py` — the V2 production driver. `--v2-config`, `--out-dir`,
     `--cohort`, `--input-file ROLE=PATH` (repeatable), `--shard-input NAME=PATH` (repeatable;
     the runtime paths handed to the execution stage — a bare path or a repeated name is refused,
     because guessing which parameter a path meant is how a checkpoint is passed as a PDB root),
-    `--code-revision`, `--fragment-dir`, `--root-index {0,1,2,3}`, `--print-config`, `--dry-run`, `--aggregate-only`,
+    `--code-revision`, `--fragment-dir`, `--print-config`, `--dry-run`, `--aggregate-only`,
     `--mechanism-prefixes N` (0 = the depth ladder; N > 0 runs independent source prefixes), and
     `--qualification` (requires `N>0` and selects the V2F5A Head-directed/control support-law
     surface). Qualification preflight conservatively charges `2*N` one-cycle execution graphs so
     a 56-prefix paired run can never pass caps under a one-cycle projection. Both mechanism modes
     share this driver's config, signature, oracles, fragments, resume, ledger and bundle rather
-    than duplicating them. Explicit roots derive the depth-0 sampler seed from
-    `V2SeedContext.depth0_root_seed(c0, root_index)`, bind the ordinal and realized seed into the
-    run signature/manifest, and isolate fragments under `root_NNNN/`; omitting the flag retains the
-    legacy signature bytes and filenames. Provenance cannot be empty (PLAN §5.2,
+    than duplicating them. Provenance cannot be empty (PLAN §5.2,
     "missing content identity fails closed"): a run that declares no inputs is REFUSED rather than
     signed with a sentinel — on the execution path and under `--dry-run` alike, while
     `--print-config` stays lenient because it signs nothing and reuses nothing. Each declared input
@@ -696,23 +652,21 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     accepted and rejected fragments and the missing proteins, so a partial run cannot be read as one
     where nothing else was requested. Tested: `tests/scripts/test_run_rf_fusion_v2.py`.
 
-24. `scripts/materialize_v2_archive_facade.py` — strict V2 archive → Phase-C/v0 facade exporter,
-    with a legacy single-root contract and an explicit `--contract high-risk-r4` D2/D8 ceiling
-    contract. High-risk mode requires caller-supplied expected campaign/phase/split/schedule/depth,
-    master seed and dual-profile identities; exact root cells `0..3` (unique root seed per protein);
-    a digest-valid `config_canonical_json`; one complete config identity across a protein's roots;
-    and one cross-protein method profile after removing only protein-bound `config.content`. It
-    one-to-one joins `archive.parquet`, `complete_endpoints.parquet` and
-    `structure_evaluations.parquet`, cross-checking redundant endpoint and dual-gate evidence across
-    all three. Only definitive endpoints with finite `scTM >= 0.85`, the signed strict dual verdict,
-    and bound admission/ancestry digests can leave the bundle. Root-local elites do not decide the
-    result: all four roots are pooled per protein, sequences are deduplicated, and global elite or
-    top-K is selected by `(head_global_risk, endpoint_id)`. The Head evaluator must be common across
-    the cohort, while the window-grid digest need only be common within each protein. Output keeps
-    root/config/profile/verdict provenance and writes `<output>.selection.json`; proteins with zero
-    strict endpoints are explicitly listed there and excluded, never substituted with the relaxed
-    ancestry tier. Legacy mode retains the original disjoint-protein exploratory-uricase behavior.
-    Tested: `tests/scripts/test_materialize_v2_archive_facade.py`.
+24. `scripts/materialize_v2_archive_facade.py` — strict V2 archive → Phase-C/v0 facade exporter.
+    Reads one or more disjoint-protein V2 bundle directories, requires an exact one-to-one
+    `endpoint_id` join between `archive.parquet` and `complete_endpoints.parquet`, and cross-checks
+    their content digest, protein, sequence-equivalence and feasibility identities. Only complete
+    uppercase AA20 endpoints with `feasibility_level=definitive`, an evaluated structure, and a
+    passing structure verdict may leave the bundle. `--mode elite` requires exactly one current
+    archive elite per protein; `--mode top-k --k K` sorts on the frozen
+    `(head_global_risk, endpoint_id)` law and collapses sequence-equivalent logical siblings before
+    taking at most K, so an optional v0 suffix cannot award duplicate ancestry mass. Add
+    `--require-k` to fail when any protein has fewer than K distinct eligible endpoints. The output
+    is a `generated.parquet` with the standard `protein_id/design_idx/sequence` columns plus the
+    persisted `entry_source_id=endpoint_id`, depth, Head risk and identity digests; no lineage is
+    inferred from sequence bytes. Missing/duplicate join keys, mixed Head identities, zero output,
+    or a protein appearing in multiple bundles are hard errors. Tested:
+    `tests/scripts/test_materialize_v2_archive_facade.py`.
 
 9. `scripts/rho_maturity_scan.py` — FROZEN outcome-independent maturity scan (runbook §6): sweeps rho on length-stratified proteins recording ONLY crossing/`|U|`/step/rho_actual/unresolved-mass + Head-free fork diversity (never Head/structure), writes a machine-readable parquet. Decides nothing — proteins/seeds/rho sweep are frozen constants; it is the reproducible basis for `rho_grid=[.30,.50,.70]` (dropped `.85` as near-terminal best-of-K, fork ~0.08). Cluster paths are CLI; the frozen sbatch command is in the module docstring. **`--mode step` (V2, PLAN_RF_REFINE_FUSION_V2 §3.5)** captures at EXPLICIT sampler steps via `ContinuationRequest(at_step=r)` instead of rho crossings and emits the step-indexed empirical maturity band `B(r)` that a projected state must be gated against. It writes one RAW row per attempt including failures (`captured`, `failure_kind`, `rho_actual`, `n_editable`, `n_unresolved_editable`) plus, per `(step, stratum)` cell, quantile vectors on BOTH axes — normalized `rho_edit` and absolute unresolved editable mass, the latter taken at mirrored levels because mass falls as maturity rises. Step-mode flags are all required with no default, because the stratification law, the quantile grid and the capture floor are deferred scientific calibrations: `--steps`, `--stratum-key`, `--quantile-levels`, `--min-captures-per-cell`, `--calibration-id`, `--calibration-json` (plus optional `--attempts-per-cell`). A cell below the capture floor exits non-zero and writes NO calibration artifact. Step mode REFUSES a `remask.fraction_scale != 0.0` substrate: the V1 crossings were compressed into the last ~16 steps by repeated global remasking and PLAN §2.1 forbids reusing them to select V2 coordinates. The artifact is a `fusion_v2.schedule.ScheduleBandTable` bound to sampler/tokenizer/backbone/cohort/constraint-stratum/seed-schema content. Two defects fixed in this pass: attempt seeds now come from `derive_seed` rather than Python's process-randomized `hash()`, and a lost fork is recorded as evidence rather than swallowed by a bare `except Exception`. Tested: `tests/scripts/test_rho_maturity_scan_step_mode.py`.
 

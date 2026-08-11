@@ -555,11 +555,7 @@ def _load_head(args):
     ), build_head_scorer)
     return ProductionHeadOracle(
         scorer, allele=args.allele, score_scale=args.score_scale,
-        window_k_min=args.window_k_min, window_k_max=args.window_k_max,
-        head_variant_id=args.head_variant_id,
-        head_allele_idx=args.head_allele_idx,
-        head_window_batch_size=args.head_window_batch_size,
-    )
+        window_k_min=args.window_k_min, window_k_max=args.window_k_max)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
