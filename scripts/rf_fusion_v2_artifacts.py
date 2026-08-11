@@ -26,6 +26,7 @@ through that writer's ``types`` argument rather than a second parquet implementa
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -81,6 +82,26 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+# One vocabulary across every table that carries a structure decision.  Keeping these names
+# identical is what lets the final facade cross-check the endpoint, archive membership and raw
+# evaluation instead of trusting whichever table is most convenient.
+_DUAL_STRUCTURE_COLUMNS = (
+    "dual_structure_profile_id",
+    "dual_structure_policy_digest",
+    "dual_structure_raw_outcome_digest",
+    "dual_structure_ancestry_sctm_min",
+    "dual_structure_strict_sctm_min",
+    "dual_structure_sctm",
+    "dual_structure_common_feasible",
+    "dual_structure_ancestry_passed",
+    "dual_structure_strict_passed",
+    "dual_structure_verdict_digest",
+    "dual_structure_verdict_json",
+    "ancestry_authorization_digest",
+    "admission_evidence_digest",
+)
+
+
 #: The frozen V2 table registry.  One entry per PLAN §5.3 evidence object except the run manifest
 #: (JSON, not tabular) and the compute ledger (JSONL, written by the ledger module).
 V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
@@ -104,6 +125,7 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
          "head_evaluator_digest", "head_window_grid_digest", "head_global_risk",
          "head_score_json", "feasibility_level", "structure_evaluated", "structure_feasible",
          "structure_metrics_json", "endpoint_provenance_json",
+         *_DUAL_STRUCTURE_COLUMNS,
          "replay_mode", "replay_fork_seed", "replay_state_hash", "cost_event_ids_json"],
         ["endpoint_id"],
     ),
@@ -111,7 +133,7 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
         ["endpoint_id", "endpoint_content_digest", "protein_id", "root_id", "family_id",
          "sequence_equivalence_key", "feasibility_level", "is_elite", "elite_rank",
          "is_diversity_frontier", "first_depth_seen", "last_depth_seen",
-         "may_become_ancestry", "admission_reason"],
+         "may_become_ancestry", "admission_reason", *_DUAL_STRUCTURE_COLUMNS],
         ["endpoint_id"],
     ),
     "feedback_events": _schema(
@@ -134,6 +156,8 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
          # and populated on a typed STALL as well as on a decision, because a stall that kept no
          # rejected-candidate counts cannot be told from a policy nobody asked.
          "policy_stall_reason", "head_evidence_consulted",
+         "reward_gate_kind", "attribution_reference_id",
+         "attribution_reference_sequence_md5", "depth0_selection_proof_json",
          "incumbent_id", "incumbent_sequence_md5", "incumbent_global_risk",
          "safety_reference_sequence_md5", "donor_gate_passed", "donor_gate_reason",
          "donor_gate_margin", "donor_gate_epsilon",
@@ -171,7 +195,8 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
         ["endpoint_id", "protein_id", "depth", "sequence_md5", "evaluated", "feasible",
          "failure_reason", "cache_status", "model_executed", "walltime_s", "metrics_json",
          "feasibility_level", "admission_reason",
-         "structure_backend_digest", "v0_structure_gate_config_digest"],
+         "structure_backend_digest", "v0_structure_gate_config_digest",
+         *_DUAL_STRUCTURE_COLUMNS],
         ["endpoint_id"],
     ),
     # Runbook §7: the mechanism cohort's readout, one row per MATCHED DESCENDANT PAIR.
@@ -226,12 +251,17 @@ V2_COLUMN_TYPES: dict[str, str] = {
                                   "whole_landscape_positive_mass", "walltime_s",
                                   "hamming_free", "hamming_editable",
                                   "incumbent_global_risk", "donor_gate_margin",
-                                  "donor_gate_epsilon")},
+                                  "donor_gate_epsilon",
+                                  "dual_structure_ancestry_sctm_min",
+                                  "dual_structure_strict_sctm_min",
+                                  "dual_structure_sctm")},
     **{name: "bool" for name in (
         "structure_evaluated", "structure_feasible", "structure_definitive", "is_elite",
         "is_diversity_frontier", "may_become_ancestry", "policy_is_diagnostic", "immune_passed",
         "evaluated", "feasible", "model_executed", "analyzable", "contrastable",
         "head_evidence_consulted", "donor_gate_passed",
+        "dual_structure_common_feasible", "dual_structure_ancestry_passed",
+        "dual_structure_strict_passed",
     )},
 }
 
@@ -245,16 +275,29 @@ def run_manifest(
     *, config: Any, code_revision: str, content_identities: Mapping[str, str],
     seed_namespaces: Sequence[str], production_depth_authorized: bool = False,
     exploratory_depth_override: bool = False,
+    root_index: int | None = None,
+    root_seeds_by_protein: Mapping[str, int] | None = None,
 ) -> dict:
     """The run's whole identity, derivable with no model and no file access (PLAN §5.1, §5.3).
 
-    ``config_digest`` is taken from the config object itself rather than recomputed here, so
-    ``--print-config``, ``--dry-run`` and the realized run can never disagree about which config
-    they described.
+    The canonical config payload is persisted alongside its digest so a cross-protein consumer can
+    compare the scientific method profile rather than trusting an opaque digest.  The producer
+    recomputes that digest immediately; a config object whose ``config_digest()`` does not sign its
+    live ``canonical_payload()`` is refused before any artifact is written.
     """
-    return {
+    config_payload = config.canonical_payload()
+    if not isinstance(config_payload, Mapping):
+        raise V2ArtifactError("config.canonical_payload() must return a mapping")
+    config_digest = config.config_digest()
+    recomputed_config_digest = canonical_digest(config_payload)
+    if config_digest != recomputed_config_digest:
+        raise V2ArtifactError(
+            "config_digest does not digest config.canonical_payload()"
+        )
+    manifest = {
         "schema_version": config.schema_version,
-        "config_digest": config.config_digest(),
+        "config_digest": config_digest,
+        "config_canonical_json": _json(config_payload),
         "campaign_id": config.identity.campaign_id,
         "split_role": config.identity.split_role,
         "phase": config.identity.phase,
@@ -282,6 +325,30 @@ def run_manifest(
         "content_identities": {str(k): str(v) for k, v in sorted(dict(content_identities).items())},
         "seed_namespaces": sorted(str(name) for name in seed_namespaces),
     }
+    # Keep the legacy manifest byte-compatible.  A new root identity appears only when the caller
+    # explicitly opted into the R4 contract; an omitted flag is not silently relabelled root zero.
+    if root_index is not None:
+        if isinstance(root_index, bool) or not isinstance(root_index, int) or root_index < 0:
+            raise V2ArtifactError(f"root_index must be a non-negative int, got {root_index!r}")
+        seeds = dict(root_seeds_by_protein or {})
+        if not seeds:
+            raise V2ArtifactError("an explicit root_index requires root_seeds_by_protein")
+        invalid = {
+            protein_id: seed for protein_id, seed in seeds.items()
+            if (not isinstance(protein_id, str) or not protein_id.strip()
+                or isinstance(seed, bool) or not isinstance(seed, int) or seed < 0)
+        }
+        if invalid:
+            raise V2ArtifactError(
+                f"root_seeds_by_protein must map non-empty protein IDs to non-negative ints: "
+                f"{invalid!r}")
+        manifest["root_index"] = int(root_index)
+        manifest["root_seeds_by_protein"] = {
+            str(protein_id): int(seed) for protein_id, seed in sorted(seeds.items())}
+    elif root_seeds_by_protein:
+        raise V2ArtifactError(
+            "root_seeds_by_protein is meaningless without an explicit root_index")
+    return manifest
 
 
 # --------------------------------------------------------------------------------------------
@@ -365,7 +432,133 @@ def partial_state_rows(states: Iterable[Any]) -> list[dict]:
     return rows
 
 
-def complete_endpoint_rows(endpoints: Iterable[Any], *, depth: int) -> list[dict]:
+def _admission_value(
+    admission_by_endpoint: Mapping[str, Any] | None, endpoint_id: str,
+) -> Any:
+    return None if admission_by_endpoint is None else admission_by_endpoint.get(endpoint_id)
+
+
+def _admission_reason(admission: Any) -> str | None:
+    if admission is None:
+        return None
+    if isinstance(admission, str):
+        return admission
+    reason = getattr(admission, "reason", None)
+    return None if reason is None else str(reason)
+
+
+def _finite_metric(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return result if math.isfinite(result) else None
+
+
+def _dual_structure_evidence_columns(
+    *, outcome: Any, verdict: Any, authorization: Any, admission: Any,
+) -> dict[str, Any]:
+    """Serialize one dual-gate proof identically in every artifact table.
+
+    The archive owns rejected structure evidence while a promoted endpoint owns successful
+    evidence.  This helper deliberately accepts either source but emits one vocabulary, allowing a
+    downstream strict-final reader to compare all three tables without guessing which boolean used
+    the legacy final-gate meaning and which used the dual profile's common-gate meaning.
+    """
+    admission_digest = getattr(admission, "admission_evidence_digest", None)
+    authorization_admission_digest = getattr(
+        authorization, "admission_evidence_digest", None,
+    )
+    if admission_digest is not None and authorization_admission_digest is not None and (
+        admission_digest != authorization_admission_digest
+    ):
+        raise V2ArtifactError(
+            "ancestry authorization and endpoint admission carry different evidence digests"
+        )
+    if admission_digest is None:
+        admission_digest = authorization_admission_digest
+
+    empty = {
+        "dual_structure_profile_id": None,
+        "dual_structure_policy_digest": None,
+        "dual_structure_raw_outcome_digest": None,
+        "dual_structure_ancestry_sctm_min": None,
+        "dual_structure_strict_sctm_min": None,
+        "dual_structure_sctm": None,
+        "dual_structure_common_feasible": None,
+        "dual_structure_ancestry_passed": None,
+        "dual_structure_strict_passed": None,
+        "dual_structure_verdict_digest": None,
+        "dual_structure_verdict_json": None,
+        "ancestry_authorization_digest": None,
+        "admission_evidence_digest": admission_digest,
+    }
+    if verdict is None:
+        if authorization is not None:
+            raise V2ArtifactError(
+                "ancestry authorization exists without the dual structure verdict it binds"
+            )
+        return empty
+    if outcome is None:
+        raise V2ArtifactError("dual structure verdict exists without its raw structure outcome")
+
+    try:
+        payload = verdict.canonical_payload()
+        profile_id = str(verdict.profile_id)
+        ancestry_min = float(verdict.ancestry_sctm_min)
+        strict_min = float(verdict.strict_sctm_min)
+        verdict_sctm = (
+            None if verdict.sctm is None else float(verdict.sctm)
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise V2ArtifactError(f"malformed dual structure verdict: {exc}") from exc
+    raw_sctm = _finite_metric(dict(getattr(outcome, "metrics", None) or {}).get("scTM"))
+    if raw_sctm != verdict_sctm:
+        raise V2ArtifactError(
+            f"dual structure verdict scTM {verdict_sctm!r} does not match raw outcome "
+            f"scTM {raw_sctm!r}"
+        )
+
+    policy_digest = canonical_digest({
+        "policy_kind": "exploratory_dual_sctm",
+        "profile_id": profile_id,
+        "ancestry_sctm_min": ancestry_min,
+        "strict_sctm_min": strict_min,
+    })
+    authorization_digest = None
+    if authorization is not None:
+        authorization_digest = getattr(authorization, "authorization_digest", None)
+        if authorization_digest is None:
+            raise V2ArtifactError("malformed ancestry authorization: missing digest")
+        if getattr(authorization, "structure_verdict_digest", None) != verdict.verdict_digest:
+            raise V2ArtifactError(
+                "ancestry authorization is not bound to the serialized dual structure verdict"
+            )
+        if getattr(authorization, "raw_outcome_digest", None) != verdict.raw_outcome_digest:
+            raise V2ArtifactError(
+                "ancestry authorization is not bound to the serialized raw structure outcome"
+            )
+
+    return {
+        **empty,
+        "dual_structure_profile_id": profile_id,
+        "dual_structure_policy_digest": policy_digest,
+        "dual_structure_raw_outcome_digest": verdict.raw_outcome_digest,
+        "dual_structure_ancestry_sctm_min": ancestry_min,
+        "dual_structure_strict_sctm_min": strict_min,
+        "dual_structure_sctm": verdict_sctm,
+        "dual_structure_common_feasible": bool(verdict.common_structure_feasible),
+        "dual_structure_ancestry_passed": bool(verdict.ancestry_structure_passed),
+        "dual_structure_strict_passed": bool(verdict.strict_structure_passed),
+        "dual_structure_verdict_digest": verdict.verdict_digest,
+        "dual_structure_verdict_json": _json(payload),
+        "ancestry_authorization_digest": authorization_digest,
+    }
+
+
+def complete_endpoint_rows(
+    endpoints: Iterable[Any], *, depth: int, archive: Any = None,
+    admission_by_endpoint: Mapping[str, Any] | None = None,
+) -> list[dict]:
     """One row per LOGICAL endpoint.
 
     Two forks that converged on the same sequence produce two rows with one shared
@@ -374,6 +567,18 @@ def complete_endpoint_rows(endpoints: Iterable[Any], *, depth: int) -> list[dict
     rows: list[dict] = []
     for endpoint in endpoints:
         structure = endpoint.structure_outcome
+        evidence_outcome = (
+            structure if archive is None else archive.structure_outcome(endpoint.endpoint_id)
+        )
+        dual_verdict = (
+            getattr(endpoint, "dual_structure_verdict", None)
+            if archive is None else archive.dual_structure_verdict(endpoint.endpoint_id)
+        )
+        authorization = (
+            getattr(endpoint, "ancestry_authorization", None)
+            if archive is None else archive.ancestry_authorization(endpoint.endpoint_id)
+        )
+        admission = _admission_value(admission_by_endpoint, endpoint.endpoint_id)
         rows.append({
             "endpoint_id": endpoint.endpoint_id,
             "endpoint_content_digest": endpoint.content_digest,
@@ -397,6 +602,10 @@ def complete_endpoint_rows(endpoints: Iterable[Any], *, depth: int) -> list[dict
             "structure_evaluated": bool(getattr(structure, "evaluated", False)),
             "structure_feasible": bool(getattr(structure, "feasible", False)),
             "structure_metrics_json": _json(dict(getattr(structure, "metrics", None) or {})),
+            **_dual_structure_evidence_columns(
+                outcome=evidence_outcome, verdict=dual_verdict,
+                authorization=authorization, admission=admission,
+            ),
             "endpoint_provenance_json": _json([
                 evidence.canonical_payload()
                 for evidence in endpoint.endpoint_provenance_evidence_by_pos
@@ -409,18 +618,17 @@ def complete_endpoint_rows(endpoints: Iterable[Any], *, depth: int) -> list[dict
     return rows
 
 
-def archive_rows(archive: Any, *, admission_by_endpoint: Mapping[str, str] | None = None
+def archive_rows(archive: Any, *, admission_by_endpoint: Mapping[str, Any] | None = None
                  ) -> list[dict]:
     """One row per archived endpoint, with membership and the reason it may or may not be ancestry.
 
     ``admission_reason`` is threaded from the safety gate rather than re-derived: an archive that
     recomputed eligibility could disagree with the decision the run actually made.
     """
-    reasons = dict(admission_by_endpoint or {})
-    by_id = {endpoint.endpoint_id: endpoint for endpoint in archive.endpoints()}
+    admissions = dict(admission_by_endpoint or {})
     rows: list[dict] = []
     for entry in archive.raw_rows():
-        endpoint = by_id[entry.endpoint_id]
+        admission = admissions.get(entry.endpoint_id)
         rows.append({
             "endpoint_id": entry.endpoint_id,
             "endpoint_content_digest": entry.endpoint_content_digest,
@@ -435,14 +643,19 @@ def archive_rows(archive: Any, *, admission_by_endpoint: Mapping[str, str] | Non
             "first_depth_seen": int(entry.first_depth_seen),
             "last_depth_seen": int(entry.last_depth_seen),
             "may_become_ancestry": bool(archive.may_become_ancestry(entry.endpoint_id)),
-            "admission_reason": reasons.get(entry.endpoint_id),
-            **({} if endpoint is None else {}),
+            "admission_reason": _admission_reason(admission),
+            **_dual_structure_evidence_columns(
+                outcome=archive.structure_outcome(entry.endpoint_id),
+                verdict=archive.dual_structure_verdict(entry.endpoint_id),
+                authorization=archive.ancestry_authorization(entry.endpoint_id),
+                admission=admission,
+            ),
         })
     return rows
 
 
 def structure_evaluation_rows(
-    archive: Any, *, admission_by_endpoint: Mapping[str, str] | None = None,
+    archive: Any, *, admission_by_endpoint: Mapping[str, Any] | None = None,
     conditioning: Any = None,
 ) -> list[dict]:
     """One row per endpoint the structure gate looked at -- including every one it rejected.
@@ -457,12 +670,15 @@ def structure_evaluation_rows(
     manifest, but this table is the one that gets carried off alone to answer "why did nothing pass"
     -- and a table of structure verdicts that cannot say which model produced them is an anecdote.
     """
-    reasons = dict(admission_by_endpoint or {})
+    admissions = dict(admission_by_endpoint or {})
     backend = getattr(conditioning, "structure_backend", None)
     gate_config = getattr(conditioning, "v0_structure_gate_config", None)
     rows: list[dict] = []
     for entry in archive.raw_rows():
         outcome = archive.structure_outcome(entry.endpoint_id)
+        dual_verdict = archive.dual_structure_verdict(entry.endpoint_id)
+        authorization = archive.ancestry_authorization(entry.endpoint_id)
+        admission = admissions.get(entry.endpoint_id)
         metrics = dict(getattr(outcome, "metrics", None) or {}) if outcome is not None else {}
         rows.append({
             "endpoint_id": entry.endpoint_id,
@@ -480,9 +696,13 @@ def structure_evaluation_rows(
             "walltime_s": float(getattr(outcome, "walltime_s", 0.0) or 0.0),
             "metrics_json": _json({k: float(v) for k, v in metrics.items()}),
             "feasibility_level": entry.feasibility_level.value,
-            "admission_reason": reasons.get(entry.endpoint_id),
+            "admission_reason": _admission_reason(admission),
             "structure_backend_digest": backend,
             "v0_structure_gate_config_digest": gate_config,
+            **_dual_structure_evidence_columns(
+                outcome=outcome, verdict=dual_verdict,
+                authorization=authorization, admission=admission,
+            ),
         })
     return rows
 
@@ -562,7 +782,9 @@ def feedback_event_rows(events: Iterable[Mapping[str, Any]]) -> list[dict]:
 #: Every V2F5A evidence column, so a bundle whose policy emits none still has the same SHAPE.  A
 #: schema that grew or shrank with the policy would make two arms of one campaign unjoinable.
 _POLICY_EVIDENCE_COLUMNS = (
-    "policy_stall_reason", "head_evidence_consulted", "incumbent_id", "incumbent_sequence_md5",
+    "policy_stall_reason", "head_evidence_consulted", "reward_gate_kind",
+    "attribution_reference_id", "attribution_reference_sequence_md5",
+    "depth0_selection_proof_json", "incumbent_id", "incumbent_sequence_md5",
     "incumbent_global_risk", "safety_reference_sequence_md5", "donor_gate_passed",
     "donor_gate_reason", "donor_gate_margin", "donor_gate_epsilon",
     "incumbent_window_evidence_digest", "safety_window_evidence_digest", "u_target",
@@ -588,6 +810,13 @@ def _policy_evidence_columns(evidence: Any) -> dict:
     return {
         "policy_stall_reason": payload.get("stall_reason"),
         "head_evidence_consulted": bool(payload.get("head_evidence_consulted")),
+        "reward_gate_kind": payload.get("reward_gate_kind"),
+        "attribution_reference_id": payload.get("attribution_reference_id"),
+        "attribution_reference_sequence_md5": payload.get(
+            "attribution_reference_sequence_md5"),
+        "depth0_selection_proof_json": (
+            None if payload.get("depth0_selection_proof") is None
+            else _json(payload["depth0_selection_proof"])),
         "incumbent_id": payload.get("incumbent_id"),
         "incumbent_sequence_md5": payload.get("incumbent_sequence_md5"),
         "incumbent_global_risk": gate.get("incumbent_global_risk"),

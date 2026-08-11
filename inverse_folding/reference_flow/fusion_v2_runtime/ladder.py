@@ -39,9 +39,13 @@ from ..fusion_v2.seeds import (
     FeedbackPairSeedContext,
     V2SeedContext,
 )
-from ..fusion_v2.state import CompleteEndpoint, TransitionOutcome
+from ..fusion_v2.state import CompleteEndpoint, FeasibilityLevel, TransitionOutcome
 from .archive import ExactArchive
-from ..fusion_v2.safety import advance_lineage, bind_immediate_parent
+from ..fusion_v2.safety import (
+    advance_exploratory_lineage,
+    advance_lineage,
+    bind_immediate_parent,
+)
 from .admission import SafetyGate
 from .capture import capture_depth_zero
 
@@ -172,6 +176,11 @@ class LadderOutcome:
     final_safety_ledger: Any = None
     segment_executor_id: str = SEGMENT_EXECUTOR_ID
     detail: str = ""
+    #: Explicit R4 execution identity.  ``root_seed is None`` marks the byte-compatible legacy
+    #: path, whose root still comes from ``config.sampler.seed``.
+    root_index: int = 0
+    root_seed: int | None = None
+    root_identity_bound: bool = False
 
 
 def _substrate_digest(config: Any) -> str:
@@ -193,6 +202,7 @@ def run_depth_ladder(
     campaign_id: str,
     split_role: str,
     master_seed: int,
+    root_index: int | None = None,
     phase: str | None = None,
     allow_production_depth_gt_1: bool = False,
     exploratory_depth_override: bool = False,
@@ -251,12 +261,33 @@ def run_depth_ladder(
 
     lineage = cycle_kwargs.pop("lineage")
     protein_id = lineage.protein_id
+    root_identity_bound = root_index is not None
+    if root_index is None:
+        normalized_root_index = 0
+    else:
+        if isinstance(root_index, bool) or not isinstance(root_index, int) or root_index < 0:
+            raise V2LadderError(f"root_index must be a non-negative int, got {root_index!r}")
+        normalized_root_index = int(root_index)
+        expected_root_id = f"{protein_id}:v2:d0:r{normalized_root_index}"
+        expected_family_id = f"fam{normalized_root_index}"
+        if (lineage.root_id, lineage.family_id) != (expected_root_id, expected_family_id):
+            raise V2LadderError(
+                f"root_index={normalized_root_index} requires lineage "
+                f"{expected_root_id!r}/{expected_family_id!r}, got "
+                f"{lineage.root_id!r}/{lineage.family_id!r}"
+            )
     #: Run-level identity for the ordinary namespaces.  Every seed below is derived from it, so a
     #: seed is a function of WHICH RUN this is -- campaign, split, master seed and protein -- and
     #: not of the order in which the loop happened to ask for one.
     run_seeds = V2SeedContext(
         seed_schema=V2_SEED_ENCODING_VERSION, campaign_id=campaign_id, split_role=split_role,
         master_seed=int(master_seed), protein_id=protein_id,
+    )
+    root_capture_step = int(plan.cycles[0][1])
+    root_seed = (
+        run_seeds.depth0_root_seed(
+            checkpoint_step=root_capture_step, root_index=normalized_root_index)
+        if root_identity_bound else None
     )
 
     def _pair_seeds(depth: int, r_step: int, c_next: int, breadth: int) -> FeedbackPairSeedContext:
@@ -270,7 +301,8 @@ def run_depth_ladder(
         return FeedbackPairSeedContext(
             seed_schema=V2_SEED_ENCODING_VERSION, campaign_id=campaign_id, split_role=split_role,
             master_seed=int(master_seed), protein_id=protein_id, depth=int(depth),
-            r_step=int(r_step), c_next_step=int(c_next), pair_ordinal=0,
+            r_step=int(r_step), c_next_step=int(c_next),
+            pair_ordinal=normalized_root_index,
             n_forks=1, n_descendant_lookaheads=int(breadth),
         )
 
@@ -306,15 +338,20 @@ def run_depth_ladder(
     # cannot name a state that does not exist yet.  Every rung then receives an explicit source,
     # which also makes depth 0 and depth d>0 the same code path.
     #: The prefix the capture below actually runs.  No rung is charged for it (see CycleCost).
-    root_capture_dfe = int(plan.cycles[0][1])
+    root_capture_dfe = root_capture_step
     cost_meter = cycle_kwargs["cost_meter"]
+    root_request = {
+        "length": int(cycle_kwargs["sequence_length"]), "at_step": root_capture_dfe}
+    root_cost_event_id = "evt:root"
+    if root_identity_bound:
+        root_request.update(root_index=normalized_root_index, root_seed=root_seed)
+        root_cost_event_id = f"evt:root:r{normalized_root_index}"
     # Journaled here for the same reason the cycle journals its own capture: this prefix is real
     # forward passes, and a process that dies inside it must leave a record that it was started.
     with cost_meter.attempt(
         event_id=f"{protein_id}:{lineage.family_id}:ladder_root", phase="root_capture",
         request_kind="prefix_capture",
-        request_digest=canonical_digest(
-            {"length": int(cycle_kwargs["sequence_length"]), "at_step": root_capture_dfe}),
+        request_digest=canonical_digest(root_request),
         logical_dfe=root_capture_dfe,
     ) as receipt:
         source_override = capture_depth_zero(
@@ -325,7 +362,8 @@ def run_depth_ladder(
             fixed_tokens=cycle_kwargs["fixed_tokens"], lineage=lineage,
             mask_token_id=int(cycle_kwargs["mask_token_id"]),
             aa_token_ids=cycle_kwargs["aa_token_ids"], conditioning=cycle_kwargs["conditioning"],
-            safety_reference=cycle_kwargs["safety_reference"], cost_event_ids=("evt:root",),
+            safety_reference=cycle_kwargs["safety_reference"],
+            cost_event_ids=(root_cost_event_id,), root_seed=root_seed,
             struct=cycle_kwargs.get("struct"),
         )
         receipt.observe(physical_forwards=root_capture_dfe)
@@ -409,16 +447,27 @@ def run_depth_ladder(
                 "the safety ratchet cannot record what the lineage descended through",
             )
             break
-        safety_gate = SafetyGate(
-            policy=safety_gate.policy,
-            ledger=advance_lineage(
-                safety_gate.ledger, depth=depth + 1,
-                selected=bind_immediate_parent(
-                    endpoint_id=selected.endpoint_id, head_score=selected.head_score,
-                    depth=depth + 1, policy=safety_gate.policy),
-                admissibility=admission.verdict,
-            ),
+        parent = bind_immediate_parent(
+            endpoint_id=selected.endpoint_id, head_score=selected.head_score,
+            depth=depth + 1, policy=safety_gate.policy,
         )
+        if selected.feasibility_level is FeasibilityLevel.DEFINITIVE:
+            advanced_ledger = advance_lineage(
+                safety_gate.ledger, depth=depth + 1, selected=parent,
+                admissibility=admission.verdict,
+            )
+        elif selected.feasibility_level is FeasibilityLevel.PROVISIONAL:
+            advanced_ledger = advance_exploratory_lineage(
+                safety_gate.ledger, depth=depth + 1, selected=parent,
+                admissibility=admission.verdict,
+                authorization=selected.ancestry_authorization,
+            )
+        else:
+            raise V2LadderError(
+                f"committed endpoint {selected.endpoint_id} has feasibility level "
+                f"{selected.feasibility_level.value!r}, which cannot become ancestry"
+            )
+        safety_gate = SafetyGate(policy=safety_gate.policy, ledger=advanced_ledger)
         cycle_kwargs["safety_gate"] = safety_gate
         for record in (cycle.admissions or ()) + (cycle.descendant_admissions or ()):
             admission_by_endpoint[record.endpoint_id] = record
@@ -432,13 +481,18 @@ def run_depth_ladder(
         advance_reward = getattr(support_policy, "advance_lineage_incumbent", None)
         if advance_reward is not None:
             verdict = getattr(cycle.policy_evidence, "donor_gate", None)
-            if verdict is None:
+            proof = getattr(cycle, "depth0_selection_proof", None)
+            if verdict is None and proof is None:
                 raise V2LadderError(
-                    "a committed incumbent-aware policy emitted no donor-gate verdict; the next "
-                    "depth cannot know which reference its reward comparison advanced from"
+                    "a committed incumbent-aware policy emitted neither a donor-gate verdict nor "
+                    "a depth-zero rank proof; the next depth cannot know which reward reference "
+                    "it advanced from"
                 )
-            cycle_kwargs["support_policy"] = advance_reward(
+            advance_kwargs = dict(
                 donor=selected, verdict=verdict, accepted_at_depth=depth + 1)
+            if proof is not None:
+                advance_kwargs["depth0_selection_proof"] = proof
+            cycle_kwargs["support_policy"] = advance_reward(**advance_kwargs)
 
         source_override = cycle.propagated
         # Depth d's descendant pool IS depth d+1's source pool: re-screening the same state would
@@ -487,4 +541,6 @@ def run_depth_ladder(
         exploratory_depth_override=exploratory,
         final_safety_ledger=safety_gate.ledger, detail=detail,
         root_capture_logical_dfe=root_capture_dfe,
+        root_index=normalized_root_index, root_seed=root_seed,
+        root_identity_bound=root_identity_bound,
     )

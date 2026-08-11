@@ -38,6 +38,7 @@ provenance
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
@@ -236,6 +237,7 @@ def capture_depth_zero(
     conditioning: V2ConditioningIdentity,
     safety_reference: SafetyReferenceBinding,
     cost_event_ids: Sequence[str],
+    root_seed: int | None = None,
     struct: Any = None,
 ) -> LivePartialState:
     """Capture a fresh root at ``c_0`` and adapt it into a depth-0 :class:`LivePartialState`.
@@ -246,11 +248,24 @@ def capture_depth_zero(
     ``fixed_tokens`` is the CONSTRAINT CLASS.  It is passed through to the sampler and becomes the
     state's hard anchors; the adapter never infers an anchor from the trajectory.
     """
+    capture_config = config
+    if root_seed is not None:
+        if isinstance(root_seed, bool) or not isinstance(root_seed, int) or root_seed < 0:
+            raise V2CaptureError(f"root_seed must be a non-negative int, got {root_seed!r}")
+        try:
+            capture_config = dataclasses.replace(
+                config, sampler=dataclasses.replace(config.sampler, seed=int(root_seed)))
+        except (AttributeError, TypeError) as exc:
+            raise V2CaptureError(
+                "an explicit root_seed requires a frozen dataclass config with sampler.seed; "
+                "the root stream cannot be changed by mutating a shared runtime config"
+            ) from exc
+
     output = sampler.sample(
         sequence_length=int(sequence_length),
         h_values=h_values,
         denoiser=denoiser,
-        config=config,
+        config=capture_config,
         struct=struct,
         controller=None,
         fixed_tokens=fixed_tokens,

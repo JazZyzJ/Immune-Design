@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -27,12 +29,16 @@ if str(PROJECT_ROOT) not in sys.path:
 from inverse_folding.reference_flow.fusion_v2.errors import V2Error  # noqa: E402
 
 __all__ = ["V2CohortError", "ShardInputs", "assert_runtime_substrate_matches",
-           "build_depth_plan", "run_v2_shard"]
+           "build_depth_plan", "is_highrisk_dual_r4_config", "run_v2_shard"]
 
 #: Cycle arguments the RUN owns, never the oracle factory.  ``feedback_enabled`` is the arm
 #: identity and ``cost_meter`` is the compute journal: a factory able to set either could make a
 #: run's engine and its own artifact disagree about which experiment was performed.
 RUN_OWNED_CYCLE_KWARGS = ("feedback_enabled", "cost_meter")
+
+# The exploratory search gate may admit ancestry at 0.70, but this table is the strict/final
+# boundary consumed by downstream evaluation.  It must never inherit the ancestry threshold.
+_DUAL_TERMINAL_SCTM_MIN = 0.85
 
 #: Every ``config.substrate`` field that has a counterpart on the runtime ``ReferenceFlowConfig``
 #: the oracles factory returns, and where that counterpart lives.
@@ -112,6 +118,7 @@ def build_depth_plan(config: Any):
 
 def _journal_path(
     *, inputs: ShardInputs, out_dir: Any, protein_id: str, run_signature: str,
+    root_index: int | None = None,
 ) -> Path:
     """Where this shard's attempt journal lives.
 
@@ -130,13 +137,38 @@ def _journal_path(
                 "whatever the process's working directory happens to be"
             )
         declared = Path(out_dir) / "journals"
-    return Path(declared) / run_signature / f"{protein_id}.attempts.jsonl"
+    directory = Path(declared)
+    if root_index is not None:
+        directory = directory / f"root_{int(root_index):04d}"
+    return directory / run_signature / f"{protein_id}.attempts.jsonl"
+
+
+def _depth0_root_seed(config: Any, protein_id: str, root_index: int) -> int:
+    """Derive the root seed exactly as the ladder does, without loading a model."""
+    from inverse_folding.reference_flow.fusion_v2.seeds import (
+        V2_SEED_ENCODING_VERSION,
+        V2SeedContext,
+    )
+
+    points = [point for point in config.schedule.points if int(point.depth) == 0]
+    if len(points) != 1:
+        raise V2CohortError(f"expected one depth-0 schedule point, found {len(points)}")
+    context = V2SeedContext(
+        seed_schema=V2_SEED_ENCODING_VERSION,
+        campaign_id=config.identity.campaign_id,
+        split_role=config.identity.split_role,
+        master_seed=int(config.identity.master_seed),
+        protein_id=str(protein_id),
+    )
+    return context.depth0_root_seed(
+        checkpoint_step=int(points[0].c_source_step), root_index=int(root_index))
 
 
 def _validate_run_signature(
     *, signature: Any, config: Any, protein_id: str,
     production_depth_authorized: bool = False,
     exploratory_depth_override: bool = False,
+    root_index: int | None = None,
 ):
     """Return a formal signature only when it describes this exact shard."""
     from scripts.rf_fusion_v2_resume import RunSignature
@@ -156,6 +188,11 @@ def _validate_run_signature(
         "production_depth_authorized": bool(production_depth_authorized),
         "exploratory_depth_override": bool(exploratory_depth_override),
     }
+    if root_index is not None:
+        if isinstance(root_index, bool) or not isinstance(root_index, int) or root_index < 0:
+            raise V2CohortError(f"root_index must be a non-negative int, got {root_index!r}")
+        expected["root_index"] = int(root_index)
+        expected["root_seed"] = _depth0_root_seed(config, protein_id, int(root_index))
     drift = [
         name for name, value in expected.items()
         if getattr(signature, name) != value
@@ -279,11 +316,40 @@ def _terminal_records(outcome, admissions: Mapping[str, Any]) -> list[dict]:
     """
     archive = outcome.archive
     records: list[dict] = []
+    from inverse_folding.reference_flow.fusion_v2.state import (  # noqa: PLC0415
+        FeasibilityLevel,
+    )
+
     for endpoint in archive.endpoints():
         endpoint_id = endpoint.endpoint_id
-        if not archive.may_become_ancestry(endpoint_id):
+        # Search ancestry is intentionally wider than final feasibility under the dual profile.
+        # ``may_become_ancestry`` is therefore NOT a terminal predicate: a provisional 0.70-0.85
+        # endpoint may parent the next rung but may never enter this table or a final facade.
+        if endpoint.feasibility_level is not FeasibilityLevel.DEFINITIVE:
             continue
         structure = archive.structure_outcome(endpoint_id)
+        evaluated = bool(getattr(structure, "evaluated", False))
+        common_or_legacy_feasible = getattr(structure, "feasible", None) is True
+        dual = archive.dual_structure_verdict(endpoint_id)
+        if dual is None:
+            # Legacy compatibility: its one structure boolean already denotes the strict gate.
+            if not (evaluated and common_or_legacy_feasible):
+                continue
+        else:
+            sctm = getattr(dual, "sctm", None)
+            strict_min = getattr(dual, "strict_sctm_min", None)
+            if (
+                not bool(getattr(dual, "strict_structure_passed", False))
+                or isinstance(sctm, bool)
+                or not isinstance(sctm, (int, float))
+                or not math.isfinite(float(sctm))
+                or float(sctm) < _DUAL_TERMINAL_SCTM_MIN
+                or isinstance(strict_min, bool)
+                or not isinstance(strict_min, (int, float))
+                or not math.isfinite(float(strict_min))
+                or float(strict_min) < _DUAL_TERMINAL_SCTM_MIN
+            ):
+                continue
         verdict = getattr(admissions.get(endpoint_id), "verdict", None)
         from inverse_folding.reference_flow.fusion_v2.safety import (  # noqa: PLC0415
             IncrementalInapplicable,
@@ -303,9 +369,8 @@ def _terminal_records(outcome, admissions: Mapping[str, Any]) -> list[dict]:
         records.append({
             "endpoint_id": endpoint_id,
             "sequence_md5": endpoint.sequence_md5,
-            "structure_definitive": (bool(getattr(structure, "evaluated", False))
-                                     and bool(getattr(structure, "feasible", False))),
-            "structure_feasible": bool(getattr(structure, "feasible", False)),
+            "structure_definitive": True,
+            "structure_feasible": True,
             "structure_metrics": dict(getattr(structure, "metrics", None) or {}),
             "immune_evaluator": endpoint.head_binding.evaluator.digest(),
             "immune_global_risk": float(endpoint.head_global_risk),
@@ -349,6 +414,403 @@ def _ledger_rows(journal_path: Path) -> list[dict]:
     if not journal_path.exists():
         return []
     return [dataclasses.asdict(event) for event in events_from_journal(journal_path)]
+
+
+_DUAL_RESULT_EVIDENCE_FIELDS = (
+    "dual_structure_profile_id",
+    "dual_structure_policy_digest",
+    "dual_structure_raw_outcome_digest",
+    "dual_structure_ancestry_sctm_min",
+    "dual_structure_strict_sctm_min",
+    "dual_structure_sctm",
+    "dual_structure_common_feasible",
+    "dual_structure_ancestry_passed",
+    "dual_structure_strict_passed",
+    "dual_structure_verdict_digest",
+    "dual_structure_verdict_json",
+    "ancestry_authorization_digest",
+    "admission_evidence_digest",
+)
+
+_HIGH_RISK_DUAL_R4_PROFILE_NAMES = (
+    "highrisk_d2_k32_r40",
+    "highrisk_d8_k32_r40",
+)
+
+
+def is_highrisk_dual_r4_config(config: Any) -> bool:
+    """Whether ``config`` names the one closed-negative experiment family.
+
+    A dual gate by itself is not authority to turn a zero-yield run into paid reusable evidence.
+    The closed status belongs only to the frozen high-risk capability split and its D2/D8 schedule
+    identities; future dual-gate experiments must opt in deliberately instead of inheriting this
+    semantic by accident.
+    """
+    from inverse_folding.reference_flow.fusion_v2.structure_gate import (
+        HIGH_RISK_ANCESTRY_SCTM_MIN,
+        HIGH_RISK_DUAL_SCTM_PROFILE_ID,
+        HIGH_RISK_STRICT_SCTM_MIN,
+    )
+    from inverse_folding.reference_flow.fusion_v2.policy import (
+        HEAD_DIRECTED_CAPPED_POLICY_ID,
+    )
+    from inverse_folding.reference_flow.fusion_v2.reward import DEPTH0_BOOTSTRAP_RULE
+    from scripts.materialize_v2_canary_config import EXPLORATORY_PROFILES
+
+    try:
+        policy = config.dual_structure_policy()
+        identity = config.identity
+        schedule = config.schedule
+        profile = next(
+            EXPLORATORY_PROFILES[name]
+            for name in _HIGH_RISK_DUAL_R4_PROFILE_NAMES
+            if EXPLORATORY_PROFILES[name]["schedule"]["schedule_id"] == schedule.schedule_id
+        )
+        observed_schedule = {
+            "schedule_id": schedule.schedule_id,
+            "coordinate_law": getattr(schedule.coordinate_law, "value", schedule.coordinate_law),
+            "depth_cap": schedule.depth_cap,
+            "active_population_width": schedule.active_population_width,
+            "min_lookahead_tail_steps": schedule.min_lookahead_tail_steps,
+            "points": [
+                {
+                    name: getattr(point, name)
+                    for name in (
+                        "depth", "r_step", "c_source_step", "c_next_step",
+                        "n_lookaheads", "band_key",
+                    )
+                }
+                for point in schedule.points
+            ],
+        }
+        stratum_key = getattr(schedule, "stratum_key", None)
+        substrate = config.substrate
+        projection = config.projection
+        head_directed = projection.head_directed
+        caps = config.caps
+        return bool(
+            policy is not None
+            and identity.phase == profile["phase"]
+            and identity.split_role == profile["split_role"]
+            and isinstance(stratum_key, str) and bool(stratum_key)
+            and observed_schedule == profile["schedule"]
+            and policy.profile_id == HIGH_RISK_DUAL_SCTM_PROFILE_ID
+            and policy.ancestry_sctm_min == HIGH_RISK_ANCESTRY_SCTM_MIN
+            and policy.strict_sctm_min == HIGH_RISK_STRICT_SCTM_MIN
+            and config.arm.feedback_enabled is True
+            and config.arm.arm_role == "v2"
+            and substrate.n_steps == 100
+            and substrate.temperature == 1.0
+            and substrate.amplification_form == "constant_one"
+            and substrate.controller_enabled is False
+            and substrate.remask_enabled is True
+            and substrate.remask_fraction_scale == 0.0
+            and substrate.rf_config_label == "v2_null_no_remask"
+            and projection.support_policy_id == HEAD_DIRECTED_CAPPED_POLICY_ID
+            and projection.support_policy_version == profile["required_policy_version"]
+            and projection.support_policy_is_diagnostic is False
+            and head_directed is not None
+            and head_directed.lineage_incumbent_depth0_rule == DEPTH0_BOOTSTRAP_RULE
+            and head_directed.max_counterfactual_head_calls_per_cycle
+                == profile["required_counterfactual_head_calls_per_cycle"]
+            and config.safety.cumulative_reference_kind == "native_wt"
+            and config.safety.cumulative_reference_label == "wt_native"
+            and config.safety.structure_cadence == "every_endpoint"
+            and all(
+                getattr(caps, field) == value
+                for field, value in profile["caps"].items()
+            )
+            and caps.retry_scope == "per_request"
+        )
+    except (AttributeError, StopIteration, TypeError, ValueError):
+        return False
+
+
+def _closed_negative_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _closed_negative_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _closed_negative_finite(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return result if math.isfinite(result) else None
+
+
+def _closed_negative_json_object(value: Any) -> Mapping[str, Any] | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, Mapping) else None
+
+
+def _audit_dual_strict_pool(
+    *, config: Any, outcome: Any, payload: Mapping[str, Any], root_index: int | None,
+) -> tuple[int] | bool:
+    """Return ``(n_strict_final,)`` for an auditable explicit dual R4 pool, else false.
+
+    This deliberately validates the serialized evidence surface, not merely
+    ``outcome.best_definitive is None``.  A timeout, empty archive, missing structure row, edited
+    dual verdict, or half-bound root therefore remains ``failed`` and retryable.  The positive
+    capability is intentionally local to an explicit R4 dual-search invocation.
+    """
+    if not is_highrisk_dual_r4_config(config):
+        return False
+    if isinstance(root_index, bool) or not isinstance(root_index, int) \
+            or root_index not in range(4):
+        return False
+    try:
+        policy = config.dual_structure_policy()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if policy is None:
+        return False
+    if (
+        getattr(outcome, "root_index", None) != root_index
+        or getattr(outcome, "root_identity_bound", None) is not True
+        or isinstance(getattr(outcome, "root_seed", None), bool)
+        or not isinstance(getattr(outcome, "root_seed", None), int)
+        or int(getattr(outcome, "root_seed")) < 0
+        or isinstance(getattr(outcome, "depth_reached", None), bool)
+        or not isinstance(getattr(outcome, "depth_reached", None), int)
+        or int(getattr(outcome, "depth_reached")) < 0
+        or getattr(outcome, "production_depth_authorized", None) is not False
+        or getattr(outcome, "exploratory_depth_override", None) is not True
+        or payload.get("production_depth_authorized") is not False
+        or payload.get("exploratory_depth_override") is not True
+    ):
+        return False
+
+    tables: dict[str, list[Mapping[str, Any]]] = {}
+    for name in ("complete_endpoints", "archive", "structure_evaluations"):
+        rows = payload.get(name)
+        if not isinstance(rows, (list, tuple)) or not rows \
+                or not all(isinstance(row, Mapping) for row in rows):
+            return False
+        tables[name] = list(rows)
+
+    keyed: dict[str, dict[str, Mapping[str, Any]]] = {}
+    for name, rows in tables.items():
+        by_id: dict[str, Mapping[str, Any]] = {}
+        for row in rows:
+            endpoint_id = row.get("endpoint_id")
+            if not isinstance(endpoint_id, str) or not endpoint_id or endpoint_id in by_id:
+                return False
+            by_id[endpoint_id] = row
+        keyed[name] = by_id
+    endpoint_ids = set(keyed["complete_endpoints"])
+    if set(keyed["archive"]) != endpoint_ids \
+            or set(keyed["structure_evaluations"]) != endpoint_ids:
+        return False
+
+    from inverse_folding.reference_flow.fusion_v2.identity import canonical_digest
+
+    expected_profile = getattr(policy, "profile_id", None)
+    expected_policy_digest = getattr(policy, "policy_digest", None)
+    ancestry_min = _closed_negative_finite(getattr(policy, "ancestry_sctm_min", None))
+    strict_min = _closed_negative_finite(getattr(policy, "strict_sctm_min", None))
+    if (
+        not isinstance(expected_profile, str) or not expected_profile
+        or not _closed_negative_digest(expected_policy_digest)
+        or ancestry_min is None or strict_min is None
+    ):
+        return False
+
+    proteins: set[str] = set()
+    n_definitive = 0
+    for endpoint_id in endpoint_ids:
+        endpoint = keyed["complete_endpoints"][endpoint_id]
+        archive = keyed["archive"][endpoint_id]
+        structure = keyed["structure_evaluations"][endpoint_id]
+
+        protein_id = endpoint.get("protein_id")
+        if not isinstance(protein_id, str) or not protein_id:
+            return False
+        proteins.add(protein_id)
+        if archive.get("protein_id") != protein_id or structure.get("protein_id") != protein_id:
+            return False
+        expected_root = f"{protein_id}:v2:d0:r{root_index}"
+        expected_family = f"fam{root_index}"
+        if (
+            endpoint.get("root_id") != expected_root
+            or archive.get("root_id") != expected_root
+            or endpoint.get("family_id") != expected_family
+            or archive.get("family_id") != expected_family
+        ):
+            return False
+
+        # The three redundant evidence copies must agree exactly.  The result fragment is written
+        # before parquet conversion, so no nullable dtype coercion is involved here.
+        for field in _DUAL_RESULT_EVIDENCE_FIELDS:
+            observed = (endpoint.get(field), archive.get(field), structure.get(field))
+            if observed[0] != observed[1] or observed[1] != observed[2]:
+                return False
+        if endpoint.get("dual_structure_profile_id") != expected_profile \
+                or endpoint.get("dual_structure_policy_digest") != expected_policy_digest:
+            return False
+
+        evaluated = _closed_negative_bool(structure.get("evaluated"))
+        feasible = _closed_negative_bool(structure.get("feasible"))
+        common = _closed_negative_bool(endpoint.get("dual_structure_common_feasible"))
+        ancestry = _closed_negative_bool(endpoint.get("dual_structure_ancestry_passed"))
+        strict = _closed_negative_bool(endpoint.get("dual_structure_strict_passed"))
+        sctm = _closed_negative_finite(endpoint.get("dual_structure_sctm"))
+        observed_ancestry_min = _closed_negative_finite(
+            endpoint.get("dual_structure_ancestry_sctm_min")
+        )
+        observed_strict_min = _closed_negative_finite(
+            endpoint.get("dual_structure_strict_sctm_min")
+        )
+        # A closed negative is a measured negative.  A deferred/failed refold or absent/non-finite
+        # scTM is incomplete evidence and remains operational ``failed``.
+        if (
+            evaluated is not True or feasible is None or common is None
+            or ancestry is None or strict is None or sctm is None
+            or observed_ancestry_min != ancestry_min or observed_strict_min != strict_min
+        ):
+            return False
+        expected_common = bool(evaluated and feasible)
+        if common is not expected_common:
+            return False
+        if ancestry is not bool(common and sctm >= ancestry_min) \
+                or strict is not bool(common and sctm >= strict_min):
+            return False
+
+        metrics = _closed_negative_json_object(structure.get("metrics_json"))
+        if metrics is None or "scTM" not in metrics \
+                or _closed_negative_finite(metrics.get("scTM")) != sctm:
+            return False
+        numeric_metrics: dict[str, float] = {}
+        for name, value in metrics.items():
+            measured = _closed_negative_finite(value)
+            if not isinstance(name, str) or measured is None:
+                return False
+            numeric_metrics[name] = measured
+        model_executed = _closed_negative_bool(structure.get("model_executed"))
+        walltime_s = _closed_negative_finite(structure.get("walltime_s"))
+        if model_executed is None or walltime_s is None:
+            return False
+        raw_payload = {
+            "evaluated": evaluated,
+            "feasible": feasible,
+            "cache_status": str(structure.get("cache_status")),
+            "model_executed": model_executed,
+            "failure_reason": structure.get("failure_reason"),
+            "walltime_s": walltime_s,
+            "metrics": dict(sorted(numeric_metrics.items())),
+        }
+        raw_digest = endpoint.get("dual_structure_raw_outcome_digest")
+        if not _closed_negative_digest(raw_digest) or canonical_digest(raw_payload) != raw_digest:
+            return False
+
+        verdict = _closed_negative_json_object(
+            endpoint.get("dual_structure_verdict_json")
+        )
+        verdict_digest = endpoint.get("dual_structure_verdict_digest")
+        expected_verdict_fields = {
+            "profile_id": expected_profile,
+            "ancestry_sctm_min": ancestry_min,
+            "strict_sctm_min": strict_min,
+            "evaluated": evaluated,
+            "common_structure_feasible": common,
+            "sctm": sctm,
+            "ancestry_structure_passed": ancestry,
+            "strict_structure_passed": strict,
+            "raw_outcome_digest": raw_digest,
+        }
+        if (
+            verdict is None or not _closed_negative_digest(verdict_digest)
+            or canonical_digest(verdict) != verdict_digest
+            or any(verdict.get(field) != value
+                   for field, value in expected_verdict_fields.items())
+        ):
+            return False
+        if not _closed_negative_digest(endpoint.get("admission_evidence_digest")):
+            return False
+        archive_reason = archive.get("admission_reason")
+        structure_reason = structure.get("admission_reason")
+        if not isinstance(archive_reason, str) or not archive_reason \
+                or structure_reason != archive_reason:
+            return False
+
+        level = endpoint.get("feasibility_level")
+        if archive.get("feasibility_level") != level \
+                or structure.get("feasibility_level") != level \
+                or level not in {"unvalidated", "provisional", "definitive"}:
+            return False
+        may_ancestry = _closed_negative_bool(archive.get("may_become_ancestry"))
+        authorization = endpoint.get("ancestry_authorization_digest")
+        has_authorization = _closed_negative_digest(authorization)
+        if authorization is not None and not has_authorization:
+            return False
+        if may_ancestry is None or may_ancestry is not has_authorization:
+            return False
+        endpoint_evaluated = _closed_negative_bool(endpoint.get("structure_evaluated"))
+        endpoint_feasible = _closed_negative_bool(endpoint.get("structure_feasible"))
+        endpoint_metrics = _closed_negative_json_object(endpoint.get("structure_metrics_json"))
+        if endpoint_evaluated is None or endpoint_feasible is None or endpoint_metrics is None:
+            return False
+        if level == "definitive":
+            n_definitive += 1
+            if not (
+                strict and may_ancestry and endpoint_evaluated and endpoint_feasible
+                and _closed_negative_finite(endpoint_metrics.get("scTM")) == sctm
+            ):
+                return False
+        elif level == "provisional":
+            if not (
+                ancestry and not strict and may_ancestry
+                and endpoint_evaluated and endpoint_feasible
+                and _closed_negative_finite(endpoint_metrics.get("scTM")) == sctm
+            ):
+                return False
+        else:
+            # Strict structure can still land here when the independent immune/anchor admission
+            # fails.  That is a legitimate strict-structure / final-negative measurement.
+            if may_ancestry or endpoint_evaluated or endpoint_feasible or endpoint_metrics:
+                return False
+
+    if len(proteins) != 1:
+        return False
+    best_is_present = getattr(outcome, "best_definitive", None) is not None
+    if best_is_present is not (n_definitive > 0):
+        return False
+    # A one-tuple keeps a valid zero distinguishable from the false invalid sentinel.
+    return (n_definitive,)
+
+
+def _ladder_result_status(
+    *, config: Any, outcome: Any, cap_verdict: Any,
+    payload: Mapping[str, Any], root_index: int | None,
+) -> str:
+    """Classify an ordinary ladder without conflating completion, success and failure."""
+    breached = tuple(getattr(cap_verdict, "breached", ()) or ())
+    explicit_dual = root_index is not None and is_highrisk_dual_r4_config(config)
+    if explicit_dual:
+        audit = _audit_dual_strict_pool(
+            config=config, outcome=outcome, payload=payload, root_index=root_index,
+        )
+        if breached or audit is False:
+            return "failed"
+        return "ok" if audit[0] > 0 else "complete_negative"
+    if (
+        getattr(outcome, "depth_reached", 0) > 0
+        and getattr(outcome, "best_definitive", None) is not None
+        and not breached
+    ):
+        return "ok"
+    return "failed"
 
 
 def assert_runtime_substrate_matches(config: Any, runtime: Any) -> None:
@@ -409,6 +871,7 @@ def run_v2_shard(
     inputs: ShardInputs | None = None,
     oracles_factory=None, production_depth_authorized: bool = False,
     exploratory_depth_override: bool = False,
+    root_index: int | None = None,
 ) -> tuple[str, Mapping[str, Any]]:
     """Run one protein's V2 ladder and return ``(status, payload)`` for the driver's fragment.
 
@@ -447,10 +910,16 @@ def run_v2_shard(
         signature=signature, config=config, protein_id=protein_id,
         production_depth_authorized=production_depth_authorized,
         exploratory_depth_override=exploratory_depth_override,
+        root_index=root_index,
     )
 
     plan = build_depth_plan(config)
-    oracles = oracles_factory(protein_id=protein_id, config=config, inputs=inputs)
+    oracle_kwargs = dict(protein_id=protein_id, config=config, inputs=inputs)
+    # Preserve the legacy factory call byte-for-byte when root identity is omitted.  Explicit
+    # root zero is intentionally different: it must reach the factory just like roots 1..3.
+    if root_index is not None:
+        oracle_kwargs["root_index"] = int(root_index)
+    oracles = oracles_factory(**oracle_kwargs)
     cycle_kwargs = dict(oracles["cycle_kwargs"])
     conflicting = [name for name in RUN_OWNED_CYCLE_KWARGS if name in cycle_kwargs]
     if conflicting:
@@ -472,6 +941,7 @@ def run_v2_shard(
     journal_path = _journal_path(
         inputs=inputs, out_dir=out_dir, protein_id=protein_id,
         run_signature=signature.value,
+        root_index=root_index,
     )
     cost_meter = CostMeter(
         journal=AttemptJournal(journal_path), protein_id=str(protein_id),
@@ -490,6 +960,7 @@ def run_v2_shard(
         split_role=config.identity.split_role,
         phase=config.identity.phase,
         master_seed=int(config.identity.master_seed),
+        root_index=root_index,
         allow_production_depth_gt_1=bool(production_depth_authorized),
         exploratory_depth_override=bool(exploratory_depth_override),
         feedback_enabled=bool(config.arm.feedback_enabled),
@@ -500,12 +971,16 @@ def run_v2_shard(
         **cycle_kwargs,
     )
 
+    admissions = _admissions(outcome)
     endpoint_rows: list[dict] = []
     by_depth: dict[int, list] = {}
     for endpoint, depth in _endpoints_by_depth(outcome):
         by_depth.setdefault(depth, []).append(endpoint)
     for depth in sorted(by_depth):
-        endpoint_rows.extend(complete_endpoint_rows(by_depth[depth], depth=depth))
+        endpoint_rows.extend(complete_endpoint_rows(
+            by_depth[depth], depth=depth, archive=outcome.archive,
+            admission_by_endpoint=admissions,
+        ))
 
     events = [
         dict(source=record.cycle.source, endpoint=record.cycle.selected_endpoint,
@@ -516,7 +991,6 @@ def run_v2_shard(
              pair_id=None, arm_slot=None, treatment_identity=config.arm.arm_role)
         for record in outcome.cycles
     ]
-    admissions = _admissions(outcome)
     ledger_events = _ledger_rows(journal_path)
     # Checked against the run's OWN realized ledger, not against a projection: a shard that spent
     # past a declared hard cap produced a result outside the protocol the cohort is reporting.
@@ -531,18 +1005,14 @@ def run_v2_shard(
         "partial_states": partial_state_rows(_partial_states(outcome)),
         "feedback_events": feedback_event_rows(events),
         "archive": archive_rows(
-            outcome.archive,
-            admission_by_endpoint={
-                endpoint_id: admission.reason for endpoint_id, admission in admissions.items()},
+            outcome.archive, admission_by_endpoint=admissions,
         ),
         # Every structure verdict, PASSED OR FAILED.  A rejected endpoint keeps
         # ``structure_evaluated=false`` and empty metrics by design, so without this table a cell
         # that admitted nothing cannot say WHY from its own bundle -- the first Canary's
         # `5zhv_r30` folded four endpoints, rejected all four, and recorded no scTM anywhere.
         "structure_evaluations": structure_evaluation_rows(
-            outcome.archive,
-            admission_by_endpoint={
-                endpoint_id: admission.reason for endpoint_id, admission in admissions.items()},
+            outcome.archive, admission_by_endpoint=admissions,
             conditioning=oracles["cycle_kwargs"].get("conditioning"),
         ),
         "a2_views": a2_view_rows(
@@ -572,12 +1042,18 @@ def run_v2_shard(
         "production_depth_authorized": bool(outcome.production_depth_authorized),
         "exploratory_depth_override": bool(outcome.exploratory_depth_override),
     }
-    # "ok" means the ladder advanced at least one depth, left a definitive design behind, and
-    # stayed inside every declared hard cap.  A typed stop with nothing definitive is a real result
-    # and a real FAILURE for this protein: the cohort must be able to count it as such rather than
-    # as a success with an empty table.
-    status = "ok" if (outcome.depth_reached > 0 and outcome.best_definitive is not None
-                      and not verdict.breached) else "failed"
+    if root_index is not None:
+        payload.update(
+            root_index=int(outcome.root_index), root_seed=int(outcome.root_seed),
+            root_identity_bound=bool(outcome.root_identity_bound))
+    # A strict-positive keeps the long-standing ``ok`` meaning.  Only the explicit high-risk R4
+    # dual-search path may additionally close as ``complete_negative`` -- and only after the three
+    # evidence tables prove a normally measured, finite-scTM, zero-strict pool.  Every operational
+    # or evidentiary null remains ``failed`` and retryable.
+    status = _ladder_result_status(
+        config=config, outcome=outcome, cap_verdict=verdict,
+        payload=payload, root_index=root_index,
+    )
     return status, payload
 
 
@@ -860,20 +1336,22 @@ def run_v2_mechanism_shard(
                 # the end held ~39 GiB against a 40 GiB allocation on ONE prefix.  Rows are small,
                 # already de-duplicated by join key, and are all the bundle ever needed.
                 local = _admissions(outcome)
-                reasons = {eid: adm.reason for eid, adm in local.items()}
                 by_depth: dict[int, list] = {}
                 for endpoint, depth in _endpoints_by_depth(outcome):
                     if endpoint.endpoint_id not in endpoint_rows_by_id:
                         by_depth.setdefault(depth, []).append(endpoint)
                 for depth in sorted(by_depth):
-                    for row in complete_endpoint_rows(by_depth[depth], depth=depth):
+                    for row in complete_endpoint_rows(
+                        by_depth[depth], depth=depth, archive=outcome.archive,
+                        admission_by_endpoint=local,
+                    ):
                         endpoint_rows_by_id.setdefault(row["endpoint_id"], row)
                 for state_row in partial_state_rows(_partial_states(outcome)):
                     state_rows_by_id.setdefault(state_row["state_id"], state_row)
-                for row in archive_rows(outcome.archive, admission_by_endpoint=reasons):
+                for row in archive_rows(outcome.archive, admission_by_endpoint=local):
                     archive_rows_by_id.setdefault(row["endpoint_id"], row)
                 for row in structure_evaluation_rows(
-                        outcome.archive, admission_by_endpoint=reasons,
+                        outcome.archive, admission_by_endpoint=local,
                         conditioning=cycle_kwargs.get("conditioning")):
                     structure_rows_by_id.setdefault(row["endpoint_id"], row)
                 if arm.cycle.a2_view is not None:

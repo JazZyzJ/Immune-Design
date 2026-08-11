@@ -9,6 +9,8 @@ a cluster check and is not claimed here.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import types
 
 import pytest
@@ -17,9 +19,70 @@ from scripts.rf_fusion_v2_oracles import (
     SUPPORT_POLICY_REGISTRY,
     OracleSeams,
     V2OracleError,
+    _root_lineage_identity,
     resolve_support_policy,
 )
 from tests.inverse_folding import _v2_fixtures as F
+
+
+def _structure_runtime_fixture(tmp_path):
+    from inverse_folding.evaluation.esmfold2_live import (
+        ESMC_SNAPSHOT_REQUIRED_FILES,
+        ESMFOLD2_SNAPSHOT_REQUIRED_FILES,
+        esmfold2_overlay_identity,
+        hf_snapshot_identity,
+    )
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    weights = snapshot / "model.safetensors"
+    weights.write_bytes(b"weights-v1")
+    (snapshot / "config.json").write_text('{"model_type":"esmfold2"}\n')
+    ccd = snapshot / "ccd.pkl"
+    ccd.write_bytes(b"ccd-v1")
+    esmc = tmp_path / "esmc"
+    esmc.mkdir()
+    for name in ESMC_SNAPSHOT_REQUIRED_FILES:
+        (esmc / name).write_bytes(f"content:{name}".encode())
+    site = tmp_path / "site-packages"
+    esm = site / "esm" / "models" / "esmfold2"
+    transformers = site / "transformers" / "models" / "esmfold2"
+    esm.mkdir(parents=True)
+    transformers.mkdir(parents=True)
+    (esm / "model.py").write_text("ESM = 1\n")
+    (transformers / "model.py").write_text("HF = 1\n")
+    payload = {
+        "schema_version": "v2-esmfold2-runtime-1",
+        "backend": "esmfold2_live",
+        "model_selector": str(snapshot.resolve()),
+        "esmc_model_selector": str(esmc.resolve()),
+        "ccd_path": str(ccd.resolve()),
+        "protocol": {
+            "num_loops": 3,
+            "num_sampling_steps": 50,
+            "num_diffusion_samples": 1,
+            "seed": 0,
+        },
+        "local_model_snapshot_sha256": hashlib.sha256(weights.read_bytes()).hexdigest(),
+        "site_packages_overlay": esmfold2_overlay_identity(site),
+        "model_snapshot": hf_snapshot_identity(
+            snapshot, ESMFOLD2_SNAPSHOT_REQUIRED_FILES),
+        "esmc_snapshot": hf_snapshot_identity(esmc, ESMC_SNAPSHOT_REQUIRED_FILES),
+        "ccd_sha256": hashlib.sha256(ccd.read_bytes()).hexdigest(),
+    }
+    raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    identity = tmp_path / "runtime.json"
+    identity.write_bytes(raw)
+    return {
+        "identity": identity,
+        "digest": hashlib.sha256(raw).hexdigest(),
+        "payload": payload,
+        "snapshot": snapshot,
+        "weights": weights,
+        "site": site,
+        "esmc": esmc,
+        "ccd": ccd,
+    }
 
 
 def _config(**over):
@@ -32,6 +95,15 @@ def _config(**over):
                "identity.phase": "state_transition_canary"}
     payload.update(over)
     return load_v2_config(_mapping(**payload))
+
+
+def test_root_lineage_identity_is_explicit_and_root_specific():
+    assert _root_lineage_identity("5ZHV_B", 0) == (
+        "5ZHV_B:v2:d0:r0", "fam0", "5ZHV_B:fam0")
+    assert _root_lineage_identity("5ZHV_B", 3) == (
+        "5ZHV_B:v2:d0:r3", "fam3", "5ZHV_B:fam3")
+    with pytest.raises(V2OracleError, match="root_index"):
+        _root_lineage_identity("5ZHV_B", -1)
 
 
 # --------------------------------------------------------------------------------------------
@@ -100,6 +172,45 @@ def test_a_version_the_run_did_not_declare_is_caught_before_the_prefix_is_paid()
     config = _config(**{"projection.support_policy_version": "v9"})
     with pytest.raises(V2OracleError, match="version"):
         resolve_support_policy(config, band_table=F.band_table(), stratum_key=F.STRATUM)
+
+
+def test_production_builder_keeps_d0_reward_incumbent_absent_but_binds_attribution():
+    """The v2 factory must not silently turn WT back into I0 while assembling real oracles."""
+    from inverse_folding.reference_flow.fusion_v2 import config as cfg
+    from inverse_folding.reference_flow.fusion_v2 import identity as ident
+    from inverse_folding.reference_flow.fusion_v2 import reward as rw
+    from scripts import rf_fusion_v2_oracles as mod
+    from tests.inverse_folding.test_fusion_v2_head_directed_policy import (
+        _config_payload,
+        _evaluator,
+        _incumbent,
+        _score,
+    )
+
+    payload = _config_payload()
+    payload["projection"]["support_policy_version"] = "v2"
+    payload["projection"]["head_directed"]["lineage_incumbent_depth0_rule"] = (
+        rw.DEPTH0_BOOTSTRAP_RULE
+    )
+    config = cfg.load_v2_config(payload)
+    attribution = _incumbent()
+
+    policy = mod._build_head_directed_capped(
+        band_table=F.band_table(), stratum_key=F.STRATUM, config=config,
+        head_oracle=types.SimpleNamespace(score=lambda requests: ()), incumbent=None,
+        depth0_attribution_reference=attribution,
+        safety_reference_score=_score(attribution.sequence), evaluator=_evaluator(),
+        window_grid_digest=ident.window_grid_digest(attribution.head_score.windows),
+    )
+    assert policy.incumbent is None
+    assert policy.depth0_attribution_reference is attribution
+    assert policy.depth0_incumbent_rule == rw.DEPTH0_BOOTSTRAP_RULE
+    assert policy.policy_version == "v2"
+
+    assert mod.bind_lineage_incumbent(
+        config=config, cumulative_reference=object(), reference_sequence="unused",
+        evaluator=_evaluator(), lineage_id="5ZHV_B:fam0",
+    ) is None
 
 
 # --------------------------------------------------------------------------------------------
@@ -542,6 +653,14 @@ def test_a_protein_with_no_declared_stratum_fails_closed(tmp_path):
         resolve_stratum(manifest, "9L2Q_A")
 
 
+def test_highrisk_stratum_manifest_must_equal_the_config_bound_cell():
+    from scripts.rf_fusion_v2_oracles import assert_stratum_matches_config
+
+    assert_stratum_matches_config("cell_A", "cell_A")
+    with pytest.raises(V2OracleError, match="config.*manifest|manifest.*config"):
+        assert_stratum_matches_config("cell_A", "cell_B")
+
+
 def test_an_anchored_protein_may_not_run_on_an_unconstrained_band():
     """The declared stratum is a LABEL; the constraint class is a FACT about the protein.
 
@@ -578,6 +697,8 @@ class _Scorer:
     allele, score_scale = "DRB1_0701", "raw_logit"
     window_k_min, window_k_max = 12, 25
     head_config_hash, head_checkpoint_digest = "a" * 64, "b" * 64
+    allele_idx, window_batch_size = 0, 64
+    predictor = types.SimpleNamespace(checkpoint_metadata={"variant_id": "LC1"})
 
     def __init__(self, md5_override=None):
         self._md5_override = md5_override
@@ -619,6 +740,103 @@ def test_the_head_identity_is_read_off_the_scorer_that_actually_scored():
     assert (identity.window_k_min, identity.window_k_max) == (12, 25)
     assert identity.head_config_hash == "a" * 64
     assert identity.head_checkpoint_digest == "b" * 64
+
+
+def test_extended_head_runtime_identity_is_verified_and_persisted():
+    identity = _oracle(
+        head_variant_id="LC1", head_allele_idx=0, head_window_batch_size=64,
+    ).evaluator_identity()
+    assert identity.head_variant_id == "LC1"
+    assert identity.head_allele_idx == 0
+    assert identity.head_window_batch_size == 64
+    with pytest.raises(V2OracleError, match="head_allele_idx"):
+        _oracle(head_variant_id="LC1", head_allele_idx=1, head_window_batch_size=64)
+
+
+def test_highrisk_structure_runtime_reverifies_model_overlay_and_protocol(tmp_path):
+    from scripts.rf_fusion_v2_oracles import load_verified_esmfold2_runtime
+
+    case = _structure_runtime_fixture(tmp_path)
+    verified = load_verified_esmfold2_runtime(
+        case["identity"], expected_sha256=case["digest"],
+        model_selector=str(case["snapshot"]), site_packages=str(case["site"]),
+        esmc_model_selector=str(case["esmc"]), ccd_path=str(case["ccd"]),
+        protocol=case["payload"]["protocol"],
+    )
+    assert verified["model_selector"] == str(case["snapshot"].resolve())
+    assert verified["resolved_model_safetensors"]["sha256"] == \
+        case["payload"]["local_model_snapshot_sha256"]
+
+    case["weights"].write_bytes(b"changed after materialization")
+    with pytest.raises(V2OracleError, match="model.safetensors|snapshot"):
+        load_verified_esmfold2_runtime(
+            case["identity"], expected_sha256=case["digest"],
+            model_selector=str(case["snapshot"]), site_packages=str(case["site"]),
+            esmc_model_selector=str(case["esmc"]), ccd_path=str(case["ccd"]),
+            protocol=case["payload"]["protocol"],
+        )
+
+
+def test_highrisk_structure_runtime_refuses_an_overlay_or_protocol_swap(tmp_path):
+    from scripts.rf_fusion_v2_oracles import load_verified_esmfold2_runtime
+
+    case = _structure_runtime_fixture(tmp_path)
+    (case["site"] / "esm" / "models" / "esmfold2" / "model.py").write_text("ESM = 2\n")
+    with pytest.raises(V2OracleError, match="overlay"):
+        load_verified_esmfold2_runtime(
+            case["identity"], expected_sha256=case["digest"],
+            model_selector=str(case["snapshot"]), site_packages=str(case["site"]),
+            esmc_model_selector=str(case["esmc"]), ccd_path=str(case["ccd"]),
+            protocol=case["payload"]["protocol"],
+        )
+
+    other = tmp_path / "other"
+    other.mkdir()
+    case = _structure_runtime_fixture(other)
+    changed_protocol = dict(case["payload"]["protocol"], seed=1)
+    with pytest.raises(V2OracleError, match="protocol"):
+        load_verified_esmfold2_runtime(
+            case["identity"], expected_sha256=case["digest"],
+            model_selector=str(case["snapshot"]), site_packages=str(case["site"]),
+            esmc_model_selector=str(case["esmc"]), ccd_path=str(case["ccd"]),
+            protocol=changed_protocol,
+        )
+
+
+def test_highrisk_refold_cache_is_exclusively_claimed_and_foreign_files_are_refused(tmp_path):
+    from scripts.rf_fusion_v2_oracles import claim_v2_refold_cache
+
+    cache = tmp_path / "cache"
+    first = claim_v2_refold_cache(cache, {"instrument": "A"})
+    assert first == claim_v2_refold_cache(cache, {"instrument": "A"})
+    with pytest.raises(V2OracleError, match="identity differs|fresh cache"):
+        claim_v2_refold_cache(cache, {"instrument": "B"})
+
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "P1_deadbeef.pdb").write_text("ATOM\n")
+    with pytest.raises(V2OracleError, match="unclaimed|foreign"):
+        claim_v2_refold_cache(foreign, {"instrument": "A"})
+
+
+def test_realized_worker_must_load_the_verified_snapshot_and_overlay(tmp_path):
+    from scripts.rf_fusion_v2_oracles import verify_esmfold2_worker_runtime
+
+    case = _structure_runtime_fixture(tmp_path)
+    metadata = {
+        "model_name": str(case["snapshot"].resolve()),
+        "esmc_model": str(case["esmc"].resolve()),
+        "ccd_path": str(case["ccd"].resolve()),
+        "esm_module": str(case["site"] / "esm" / "__init__.py"),
+        "transformers_module": str(case["site"] / "transformers" / "__init__.py"),
+        "python_executable": "/env/python",
+        "torch_version": "2.5.1",
+    }
+    assert verify_esmfold2_worker_runtime(case["payload"], metadata) == metadata
+    with pytest.raises(V2OracleError, match="model_name"):
+        verify_esmfold2_worker_runtime(
+            case["payload"], dict(metadata, model_name="biohub/ESMFold2"),
+        )
 
 
 def test_a_scorer_whose_domain_differs_from_the_declared_one_is_refused_by_field():
@@ -745,12 +963,73 @@ def test_a_passing_structure_is_an_EVALUATED_feasible_verdict():
     assert outcome.metrics["scTM"] == pytest.approx(0.95)
 
 
+@pytest.mark.parametrize(
+    ("cache_hit", "expected_status", "expected_executed"),
+    [(True, "hit", False), (False, "miss", True)],
+)
+def test_structure_oracle_preserves_real_refold_cache_execution_status(
+    cache_hit, expected_status, expected_executed,
+):
+    """A cache hit must not spend or report a definitive model execution."""
+    gate = _structure_only(
+        _fake_build_oracles(
+            metrics=_metrics(cache_hit=cache_hit, model_executed=not cache_hit),
+            manifest=_Manifest(),
+        )
+    )
+    outcome = gate(_request())
+    assert outcome.cache_status == expected_status
+    assert outcome.model_executed is expected_executed
+
+
 def test_a_failing_scTM_is_refused_with_the_gates_own_reason():
     gate = _structure_only(_fake_build_oracles(metrics=_metrics(scTM=0.10),
                                                manifest=_Manifest()))
     outcome = gate(_request())
     assert outcome.evaluated is True and outcome.feasible is False
     assert "scTM" in outcome.failure_reason
+
+
+def _dual_structure_policy(*, strict=0.85):
+    from inverse_folding.reference_flow.fusion_v2.structure_gate import DualScTMGatePolicy
+
+    return DualScTMGatePolicy(
+        profile_id="exploratory_dual_sctm_ancestry070_strict085_v1",
+        ancestry_sctm_min=0.70, strict_sctm_min=strict,
+    )
+
+
+def test_dual_structure_oracle_leaves_sctm_to_the_two_tier_policy():
+    gate = _structure_only(
+        _fake_build_oracles(metrics=_metrics(scTM=0.75), manifest=_Manifest()),
+        dual_structure_policy=_dual_structure_policy(),
+    )
+    raw = gate(_request())
+    assert raw.evaluated is True and raw.feasible is True
+    verdict = _dual_structure_policy().evaluate(raw)
+    assert verdict.ancestry_structure_passed is True
+    assert verdict.strict_structure_passed is False
+
+
+def test_dual_structure_oracle_keeps_the_common_active_site_gate_fail_closed():
+    gate = _structure_only(
+        _fake_build_oracles(metrics=_metrics(scTM=0.95),
+                            manifest=_Manifest(anchored={"5ZHV_B"})),
+        dual_structure_policy=_dual_structure_policy(),
+    )
+    raw = gate(_request())
+    assert raw.feasible is False
+    verdict = _dual_structure_policy().evaluate(raw)
+    assert not verdict.ancestry_structure_passed
+    assert not verdict.strict_structure_passed
+
+
+def test_dual_policy_strict_threshold_must_equal_the_v0_structure_config():
+    with pytest.raises(V2OracleError, match="strict|scTM"):
+        _structure_only(
+            _fake_build_oracles(metrics=_metrics(), manifest=_Manifest()),
+            dual_structure_policy=_dual_structure_policy(strict=0.90),
+        )
 
 
 def test_a_fold_failure_is_evaluated_and_infeasible_never_deferred():

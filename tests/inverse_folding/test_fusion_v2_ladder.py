@@ -166,6 +166,75 @@ def test_breadth_is_declared_per_depth():
     assert plan.lookaheads_at(1) == 1
 
 
+def _explicit_root(index: int):
+    return F.lineage(
+        root_id=f"5ZHV_B:v2:d0:r{index}", family_id=f"fam{index}")
+
+
+def test_explicit_root_index_binds_root_seed_lineage_and_pair_ordinal():
+    from inverse_folding.reference_flow.fusion_v2.seeds import (
+        V2_SEED_ENCODING_VERSION,
+        FeedbackPairSeedContext,
+        V2SeedContext,
+    )
+
+    root_index = 3
+    outcome = _run(root_index=root_index, lineage=_explicit_root(root_index))
+    run_context = V2SeedContext(
+        seed_schema=V2_SEED_ENCODING_VERSION,
+        campaign_id="v2-canary", split_role="dev", master_seed=20260805,
+        protein_id="5ZHV_B",
+    )
+    pair_context = FeedbackPairSeedContext(
+        seed_schema=V2_SEED_ENCODING_VERSION,
+        campaign_id="v2-canary", split_role="dev", master_seed=20260805,
+        protein_id="5ZHV_B", depth=0, r_step=R1, c_next_step=C1,
+        pair_ordinal=root_index, n_forks=1, n_descendant_lookaheads=2,
+    )
+    assert outcome.root_index == root_index
+    assert outcome.root_seed == run_context.depth0_root_seed(
+        checkpoint_step=C0, root_index=root_index)
+    assert outcome.root_identity_bound is True
+    assert outcome.cycles[0].cycle.source.lineage.root_id == "5ZHV_B:v2:d0:r3"
+    assert outcome.cycles[0].cycle.source.lineage.family_id == "fam3"
+    assert outcome.cycles[0].propagation_seed == pair_context.matched_descendant_seed(0)
+
+
+def test_d2_and_d8_style_ladders_share_the_same_explicit_d0_pool():
+    """Depth profiles compare search capacity, not a different random starting partial state."""
+    root_index = 2
+    short = _run(
+        plan=_progressive_plan(
+            depth_cap=1, cycles=((R1, C0, C1),), lookaheads_per_depth=(3,)),
+        root_index=root_index, lineage=_explicit_root(root_index),
+        allow_production_depth_gt_1=False,
+    )
+    deep = _run(root_index=root_index, lineage=_explicit_root(root_index))
+    assert short.cycles[0].cycle.source.content_digest == \
+        deep.cycles[0].cycle.source.content_digest
+
+
+def test_distinct_explicit_roots_do_not_share_the_d0_state():
+    first = _run(root_index=0, lineage=_explicit_root(0))
+    second = _run(root_index=1, lineage=_explicit_root(1))
+    assert first.root_seed != second.root_seed
+    assert first.cycles[0].cycle.source.state_id != second.cycles[0].cycle.source.state_id
+
+
+def test_an_explicit_root_refuses_a_foreign_lineage_before_capture():
+    denoiser = _CountingDenoiser()
+    with pytest.raises(V2LadderError, match="root_index|lineage"):
+        _run(root_index=1, denoiser=denoiser)
+    assert denoiser.calls == 0
+
+
+def test_omitting_root_identity_preserves_the_legacy_root_zero_stream():
+    outcome = _run()
+    assert outcome.root_index == 0
+    assert outcome.root_seed is None
+    assert outcome.root_identity_bound is False
+
+
 def test_the_breadth_vector_must_cover_every_depth():
     with pytest.raises(V2LadderError, match="lookaheads_per_depth|depth"):
         _progressive_plan(lookaheads_per_depth=(3,))
@@ -308,6 +377,53 @@ def test_the_next_rung_uses_the_advanced_policy_identity():
     ]
     assert calls[0][0] == 0
     assert calls[0][2:] == ("pass-0", 1)
+
+
+def test_depth_zero_bootstrap_advances_on_proof_without_a_donor_gate_verdict():
+    """D0 has no reward incumbent, so a committed rank-0 proof -- not epsilon -- mints I1."""
+    from inverse_folding.reference_flow.fusion_v2.reward import Depth0SelectionProof
+
+    calls = []
+
+    class BootstrapProbe:
+        consumes_runtime = True
+
+        def __init__(self, generation=0):
+            self.generation = generation
+
+        @property
+        def requires_depth0_selection_proof(self):
+            return self.generation == 0
+
+        def __call__(self, source, endpoint, coordinates, runtime=None):
+            decision = _support_policy(source, endpoint, coordinates)
+            proof = None if runtime is None else runtime.selection_proof
+            if self.generation == 0:
+                assert isinstance(proof, Depth0SelectionProof)
+                gate = None
+            else:
+                assert proof is None
+                gate = f"strict-pass-{self.generation}"
+            evidence = types.SimpleNamespace(donor_gate=gate)
+            return dataclasses.replace(decision, decision_evidence=evidence)
+
+        def advance_lineage_incumbent(
+            self, *, donor, verdict, accepted_at_depth, depth0_selection_proof=None,
+        ):
+            calls.append((self.generation, verdict, depth0_selection_proof, accepted_at_depth))
+            if self.generation == 0:
+                assert verdict is None
+                assert isinstance(depth0_selection_proof, Depth0SelectionProof)
+            else:
+                assert verdict == f"strict-pass-{self.generation}"
+                assert depth0_selection_proof is None
+            return BootstrapProbe(self.generation + 1)
+
+    outcome = _run(support_policy=BootstrapProbe())
+    assert outcome.depth_reached == 2
+    assert calls[0][0] == 0 and calls[0][3] == 1
+    assert isinstance(calls[0][2], Depth0SelectionProof)
+    assert calls[1] == (1, "strict-pass-1", None, 2)
 
 
 def test_the_stationary_ladder_reaches_the_declared_depth():

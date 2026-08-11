@@ -62,6 +62,21 @@ MECHANISM_PREFIXES="${MECHANISM_PREFIXES:-0}"
 # First prefix index of THIS batch.  Batch 2 continues the sequence (e.g. 16) rather
 # than repeating batch 1, whose seeds are derived from the index.
 MECHANISM_PREFIX_START="${MECHANISM_PREFIX_START:-0}"
+# Explicit R4 depth-ladder root.  Empty preserves the historical single-root invocation exactly;
+# new ceiling campaigns set ROOT_INDEX=0,1,2,3 on every job, including zero.
+ROOT_INDEX="${ROOT_INDEX:-}"
+ROOT_INDEX_ARGS=()
+if [[ -n "${ROOT_INDEX}" ]]; then
+  if [[ ! "${ROOT_INDEX}" =~ ^[0-3]$ ]]; then
+    echo "ROOT_INDEX must be empty or one of 0,1,2,3, got ${ROOT_INDEX}" >&2
+    exit 4
+  fi
+  if [[ "${MECHANISM_PREFIXES}" -ne 0 ]]; then
+    echo "ROOT_INDEX cannot be combined with mechanism mode" >&2
+    exit 4
+  fi
+  ROOT_INDEX_ARGS+=(--root-index "${ROOT_INDEX}")
+fi
 # 1 = V2F5A Head-directed support-policy qualification.  This is deliberately separate from the
 # older mechanism view: it runs treatment/control support laws and must never be selected merely
 # because a config happens to contain a Head-directed block.
@@ -81,6 +96,10 @@ case "${QUALIFICATION}" in
     exit 4
     ;;
 esac
+if [[ -n "${ROOT_INDEX}" && "${QUALIFICATION}" -ne 0 ]]; then
+  echo "ROOT_INDEX cannot be combined with qualification mode" >&2
+  exit 4
+fi
 
 # Explicit, identity-bound exception for the non-confirmatory recursive capability sandbox in
 # runbook §10.  It is never inferred from a D>1 config: both the resolved capability identity and
@@ -103,6 +122,11 @@ case "${EXPLORATORY_DEPTH_OVERRIDE}" in
 esac
 
 OUT_DIR="${RUNDIR}/${CELL}"
+if [[ -n "${ROOT_INDEX}" ]]; then
+  # Four roots of one profile may run concurrently.  Separating only fragments/journals would
+  # still let their final parquet tables and run_manifest.json overwrite one another.
+  OUT_DIR="${OUT_DIR}/root_$(printf '%04d' "${ROOT_INDEX}")"
+fi
 ARGS_FILE="${WORK}/resolved_configs/${CELL}.args.sh"
 
 # ── Env ──
@@ -128,7 +152,7 @@ echo "[v2canary] cell=${CELL} cohort=${V2_COHORT} config=${V2_CONFIG}"
 echo "[v2canary] git=$(git rev-parse HEAD) env=${CONDA_ENV} node=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START} qualification=${QUALIFICATION} exploratory_depth_override=${EXPLORATORY_DEPTH_OVERRIDE}"
+echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START} qualification=${QUALIFICATION} exploratory_depth_override=${EXPLORATORY_DEPTH_OVERRIDE} root_index=${ROOT_INDEX:-legacy}"
 
 set +e
 python scripts/run_rf_fusion_v2.py \
@@ -137,6 +161,7 @@ python scripts/run_rf_fusion_v2.py \
   --cohort      "${V2_COHORT}" \
   --mechanism-prefixes "${MECHANISM_PREFIXES}" \
   --mechanism-prefix-start "${MECHANISM_PREFIX_START}" \
+  "${ROOT_INDEX_ARGS[@]}" \
   "${QUALIFICATION_ARGS[@]}" \
   "${EXPLORATORY_DEPTH_ARGS[@]}" \
   --input-file  "${INPUT_FILES[@]}" \

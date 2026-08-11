@@ -498,3 +498,68 @@ def test_a_placeholder_code_revision_is_refused():
 def test_an_explicit_revision_is_accepted():
     assert _load(**{"identity.code_revision": "a1b2c3d4e5f6"}
                  ).identity.code_revision == "a1b2c3d4e5f6"
+
+
+def _dual_structure_overrides(**block_overrides):
+    block = {
+        "policy_kind": "exploratory_dual_sctm",
+        "profile_id": "exploratory_dual_sctm_ancestry070_strict085_v1",
+        "ancestry_sctm_min": 0.70,
+        "strict_sctm_min": 0.85,
+    }
+    block.update(block_overrides)
+    return {
+        "identity.phase": "capability_ladder",
+        "identity.split_role": "exploratory_highrisk_ceiling_v1",
+        "schedule.stratum_key": "highrisk_nod_v1_P1_unconstrained",
+        "head.head_variant_id": "LC1",
+        "head.head_allele_idx": 0,
+        "head.head_window_batch_size": 64,
+        "projection.support_policy_id": "source_writeback_v1",
+        "projection.support_policy_is_diagnostic": False,
+        "safety.search_structure": block,
+    }
+
+
+def test_the_authorized_dual_structure_profile_is_signed_by_the_config():
+    loaded = _load(**_dual_structure_overrides())
+    policy = loaded.dual_structure_policy()
+    assert policy is not None
+    assert policy.profile_id == "exploratory_dual_sctm_ancestry070_strict085_v1"
+    assert policy.ancestry_sctm_min == 0.70
+    assert policy.strict_sctm_min == 0.85
+    assert loaded.canonical_payload()["safety"]["search_structure"] \
+        == policy.canonical_payload()
+
+
+def test_legacy_config_payload_omits_the_dual_structure_key_byte_for_byte():
+    loaded = _load()
+    assert loaded.dual_structure_policy() is None
+    assert "search_structure" not in loaded.canonical_payload()["safety"]
+
+
+@pytest.mark.parametrize(
+    "block_overrides",
+    [
+        {"policy_kind": "self_authorized_relaxed_gate"},
+        {"profile_id": "exploratory_dual_sctm_ancestry050_strict085_v1"},
+        {"ancestry_sctm_min": 0.69},
+        {"strict_sctm_min": 0.84},
+        {"strict_sctm_min": 0.90},
+    ],
+)
+def test_dual_structure_thresholds_and_profile_are_closed_not_self_authorizing(block_overrides):
+    with pytest.raises(cfg.V2ConfigError, match="search_structure|profile|threshold|scTM"):
+        _load(**_dual_structure_overrides(**block_overrides))
+
+
+def test_dual_structure_profile_is_limited_to_an_exploratory_capability_ladder():
+    wrong_phase = _dual_structure_overrides()
+    wrong_phase["identity.phase"] = "mechanism_cohort"
+    with pytest.raises(cfg.V2ConfigError, match="capability_ladder"):
+        _load(**wrong_phase)
+
+    wrong_split = _dual_structure_overrides()
+    wrong_split["identity.split_role"] = "holdout_application"
+    with pytest.raises(cfg.V2ConfigError, match="exploratory"):
+        _load(**wrong_split)

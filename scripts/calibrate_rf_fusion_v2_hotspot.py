@@ -1,8 +1,9 @@
 """Produce the V2 whole-landscape hotspot calibration artifact, PER PROTEIN (runbook §2.1).
 
-**Scope, first, because the artifact is easy to over-read.**  This authorizes the WIRING of the
-two-protein Canary only.  It is not a production immune-safety threshold and may not be carried into
-a mechanism cohort, policy qualification, capability ladder, or holdout.
+**Scope, first, because the artifact is easy to over-read.**  The population/statistic and explicit
+structure-diagnostic mode are part of the artifact identity. Legacy Canary/resumed calibrations and
+the high-risk full-trajectory capability-ceiling calibration are distinct consuming profiles. None
+is a production immune-validity threshold, and an artifact may not be relabelled across profiles.
 
 The calibration law is FROZEN by the runbook, not chosen here.  Implemented exactly as §2.1 states:
 
@@ -12,8 +13,9 @@ The calibration law is FROZEN by the runbook, not chosen here.  Implemented exac
 2. score every candidate AND that protein's own native reference with the production Head, and
    compute ``N_H^whole(y; ybar_p) = max_w [z_w(y) - z_w(ybar_p)]_+`` through the ADMISSION GATE's
    own comparator;
-3. run the exact definitive structure gate the Canary uses and record its verdict and metrics in
-   full -- as a DIAGNOSTIC.  It does **not** select the calibration population;
+3. by default, run the exact definitive structure gate and record its verdict and metrics as an
+   independent DIAGNOSTIC; the explicit capability-ceiling skip records it as not measured and
+   performs no calibration refolds. Neither mode selects the Head-valid calibration population;
 4. require at least ``--min-head-valid`` endpoints with a valid Head measurement, and below that
    floor write NO artifact;
 5. take the empirical ``Q0.90`` over ALL head-valid endpoints by the **higher** order statistic --
@@ -75,6 +77,7 @@ __all__ = [
     "resumed_draws",
     "source_variance",
     "SEED_NAMESPACE",
+    "STRUCTURE_DIAGNOSTIC_MODES",
     "CalibrationSeams",
     "q90_higher_order_statistic",
     "source_id_for",
@@ -82,6 +85,11 @@ __all__ = [
     "build_parser",
     "main",
 ]
+
+STRUCTURE_DIAGNOSTIC_MODES = frozenset({
+    "evaluate",
+    "skip_independent_capability_ceiling",
+})
 
 #: The ONE admissible value PER POPULATION.  A closed map rather than a free-form label: the
 #: producer must interpret each exactly as runbook §2.1 step 5 and reject anything else.
@@ -475,6 +483,7 @@ def calibrate_protein(
     draws: Sequence["Draw"] | None = None,
     n_completions: int | None = None, master_seed: Any = None,
     population: str = "full_trajectory", native_structure: Any = None,
+    structure_diagnostic_mode: str = "evaluate",
 ) -> tuple[list[dict], dict]:
     """Run the frozen law for ONE protein and return ``(rows, summary)``.
 
@@ -513,6 +522,11 @@ def calibrate_protein(
             protein_id=protein_id, n_completions=n_completions, master_seed=master_seed,
             model=model, seams=seams)
     draws = list(draws)
+    if structure_diagnostic_mode not in STRUCTURE_DIAGNOSTIC_MODES:
+        raise V2HotspotCalibrationError(
+            f"unknown structure_diagnostic_mode {structure_diagnostic_mode!r}; expected one of "
+            f"{sorted(STRUCTURE_DIAGNOSTIC_MODES)}"
+        )
 
     reference_score = _score_one(seams["head_scorer"], protein_id, reference_sequence)
     _assert_declared_window_domain(reference_score, head_identity, protein_id=protein_id)
@@ -564,14 +578,21 @@ def calibrate_protein(
         row["n_h_whole"] = float(evidence.max_increase)
         row["window_grid_digest"] = window_grid_digest(design_score.windows)
 
-        # Evaluated and recorded, but NOT a filter: a structure rejection is a fact about geometry,
-        # not a reason the Head measurement did not happen.
-        outcome = seams["structure_gate"](_oracle_request(protein_id, sequence))
-        row["structure_evaluated"] = bool(getattr(outcome, "evaluated", False))
-        row["structure_feasible"] = bool(getattr(outcome, "feasible", False))
-        row["structure_definitive_feasible"] = _definitive_feasible(outcome)
-        row["structure_metrics_json"] = json.dumps(
-            dict(getattr(outcome, "metrics", None) or {}), sort_keys=True)
+        # Evaluated and recorded, but NOT a filter.  The capability-ceiling campaign may explicitly
+        # omit this independent diagnostic because its realized endpoints are all folded later;
+        # the omission is a signed mode and writes false/not-measured fields, never fake passes.
+        if structure_diagnostic_mode == "evaluate":
+            outcome = seams["structure_gate"](_oracle_request(protein_id, sequence))
+            row["structure_evaluated"] = bool(getattr(outcome, "evaluated", False))
+            row["structure_feasible"] = bool(getattr(outcome, "feasible", False))
+            row["structure_definitive_feasible"] = _definitive_feasible(outcome)
+            row["structure_metrics_json"] = json.dumps(
+                dict(getattr(outcome, "metrics", None) or {}), sort_keys=True)
+        else:
+            row["structure_evaluated"] = False
+            row["structure_feasible"] = False
+            row["structure_definitive_feasible"] = False
+            row["structure_metrics_json"] = "{}"
         rows.append({**row, "status": "head_valid"})
 
     head_valid = [row["n_h_whole"] for row in rows if row["status"] == "head_valid"]
@@ -593,18 +614,31 @@ def calibrate_protein(
     # visible is what stops "the Head null was measured over every endpoint" from being read as
     # "structure was not checked" -- it was checked on all of them, and here is how it went.
     n_definitive = sum(1 for row in rows if row.get("structure_definitive_feasible"))
+    structure_operability = (
+        {
+            "status": "measured",
+            "n_definitive_feasible": n_definitive,
+            "rate": (n_definitive / len(head_valid)) if head_valid else 0.0,
+            "note": "DIAGNOSTIC ONLY -- an independent admission gate, not a filter on this "
+                    "threshold's population",
+        }
+        if structure_diagnostic_mode == "evaluate" else
+        {
+            "status": "not_measured",
+            "n_definitive_feasible": None,
+            "rate": None,
+            "note": "EXPLICITLY SKIPPED for capability-ceiling calibration; the Head threshold "
+                    "does not condition on structure and realized campaign endpoints are folded",
+        }
+    )
     summary.update({
         "population": population,
         "sampling_unit": (RESUMED_SAMPLING_UNIT if population == "resumed" else "trajectory"),
         "n_attempted": len(draws),
         "n_head_valid": len(head_valid),
         "failure_counts": dict(sorted(failures.items())),
-        "structure_operability": {
-            "n_definitive_feasible": n_definitive,
-            "rate": (n_definitive / len(head_valid)) if head_valid else 0.0,
-            "note": "DIAGNOSTIC ONLY -- an independent admission gate, not a filter on this "
-                    "threshold's population",
-        },
+        "structure_diagnostic_mode": structure_diagnostic_mode,
+        "structure_operability": structure_operability,
     })
     if population == "resumed":
         summary["source_variance"] = source_variance(rows)
@@ -748,6 +782,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--head-window-batch-size", type=int, default=64)
     parser.add_argument("--refold-cache-dir", required=True,
                         help="the v0 on-disk refold cache identity the definitive gate folds into")
+    parser.add_argument(
+        "--structure-diagnostic-mode", choices=sorted(STRUCTURE_DIAGNOSTIC_MODES),
+        default="evaluate",
+        help="evaluate preserves the original diagnostic; the explicit capability-ceiling skip "
+             "does not alter the Head-valid threshold population and records structure as "
+             "not measured rather than fabricating an operability rate",
+    )
     for name in ("--esmfold2-site-packages", "--esmfold2-model"):
         parser.add_argument(name, default=None)
     for name in ("--esmfold2-num-loops", "--esmfold2-num-sampling-steps",
@@ -854,6 +895,7 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
             head_window_batch_size=args.head_window_batch_size,
             constraint_manifest=args.constraint_manifest, device=args.device,
             esmfold2=(esmfold2 or None),
+            bind_extended_head_identity=True,
         )
         resolved["head_scorer"] = resolved["head_scorer"] or produced_head
         resolved["structure_gate"] = resolved["structure_gate"] or produced_structure
@@ -891,8 +933,9 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
             master_seed=args.master_seed, cycle_kwargs=oracles["cycle_kwargs"], seams=resolved)
         # The native under the SAME backend and protocol: without it the native-relative anchor
         # excess has no baseline, and an absolute band is exactly what the ruling replaced.
-        native_structure = resolved["structure_gate"](
-            _oracle_request(args.protein_id, reference_sequence))
+        if args.structure_diagnostic_mode == "evaluate":
+            native_structure = resolved["structure_gate"](
+                _oracle_request(args.protein_id, reference_sequence))
     else:
         draws = full_trajectory_draws(
             protein_id=args.protein_id, n_completions=args.n_completions,
@@ -905,6 +948,7 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
             reference_sequence=reference_sequence, reference_digest=reference_digest,
             head_identity=head_identity, model=model, seams=resolved,
             population=args.population, native_structure=native_structure,
+            structure_diagnostic_mode=args.structure_diagnostic_mode,
         )
     except V2HotspotFloorNotMet as exc:
         # The THRESHOLD is withheld; the EVIDENCE is not.  Without this the only record of why the
@@ -925,7 +969,7 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
     # of the same measurements must not look like a different calibration.
     data_digest = canonical_digest({
         "schema": "v2-hotspot-calibration-rows/2",
-        "statistic": THRESHOLD_STATISTIC,
+        "statistic": THRESHOLD_STATISTIC_BY_POPULATION[args.population],
         "rows": sorted(rows, key=lambda row: row["replicate_index"]),
     })
     # ``allele`` / ``score_scale`` / ``window_k_*`` come from the REALIZED Head identity, never
@@ -957,18 +1001,24 @@ def main(argv=None, *, seams: CalibrationSeams | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({
         "delta_new": delta_new, "protein_id": args.protein_id,
+        "head": head_identity.canonical_payload(),
         "code_revision": args.code_revision, "threshold_statistic": statistic,
         "seed_namespace": SEED_NAMESPACE, "master_seed": args.master_seed,
         "min_head_valid": args.min_head_valid,
+        "structure_diagnostic_mode": args.structure_diagnostic_mode,
         "rows_path": str(args.out_rows), **summary,
     }, indent=2, sort_keys=True))
     structure = summary["structure_operability"]
     print(f"[calibrate_rf_fusion_v2_hotspot] {args.protein_id}: "
           f"{summary['n_head_valid']}/{summary['n_attempted']} head-valid, "
           f"Q0.90(higher) at rank {summary['order_statistic_rank']} -> {value!r} -> {out}")
-    print(f"[calibrate_rf_fusion_v2_hotspot] structure-operability DIAGNOSTIC (not a filter): "
-          f"{structure['n_definitive_feasible']}/{summary['n_head_valid']} definitive feasible "
-          f"({structure['rate']:.1%})")
+    if structure["status"] == "measured":
+        print(f"[calibrate_rf_fusion_v2_hotspot] structure-operability DIAGNOSTIC (not a filter): "
+              f"{structure['n_definitive_feasible']}/{summary['n_head_valid']} definitive feasible "
+              f"({structure['rate']:.1%})")
+    else:
+        print("[calibrate_rf_fusion_v2_hotspot] structure-operability DIAGNOSTIC explicitly "
+              "not measured; realized campaign endpoints retain their full structure gate")
     print("copy the 'delta_new' block into config.safety.delta_new_cumulative VERBATIM; the loader "
           "recomputes source_ref and refuses an edited one")
     return 0

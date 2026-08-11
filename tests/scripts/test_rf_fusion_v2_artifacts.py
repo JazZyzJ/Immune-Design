@@ -29,6 +29,20 @@ pytest.importorskip("pyarrow")
 
 import pyarrow.parquet as pq  # noqa: E402
 
+from inverse_folding.reference_flow.fusion.v1_admission import StructureOutcome  # noqa: E402
+from inverse_folding.reference_flow.fusion_v2 import state as st  # noqa: E402
+from inverse_folding.reference_flow.fusion_v2.identity import (  # noqa: E402
+    canonical_digest,
+    canonical_json_bytes,
+)
+from inverse_folding.reference_flow.fusion_v2.structure_gate import (  # noqa: E402
+    DualScTMGatePolicy,
+    authorize_ancestry,
+)
+from inverse_folding.reference_flow.fusion_v2_runtime.admission import (  # noqa: E402
+    admit_endpoint,
+)
+from inverse_folding.reference_flow.fusion_v2_runtime.archive import ExactArchive  # noqa: E402
 from scripts.rf_fusion_v2_artifacts import (  # noqa: E402
     V2_TABLE_SCHEMAS,
     V2ArtifactError,
@@ -48,6 +62,51 @@ from tests.inverse_folding import _v2_fixtures as F  # noqa: E402
 def _read(path):
     table = pq.read_table(str(path))
     return table.column_names, table.to_pylist()
+
+
+_DUAL_PROFILE = "exploratory_dual_sctm_ancestry070_strict085_v1"
+
+
+def _dual_archive(sctm: float):
+    """One exact endpoint plus the dual/admission evidence the runtime produced for it."""
+    endpoint = F.endpoint(
+        feasibility_level=st.FeasibilityLevel.UNVALIDATED,
+        structure_outcome=None,
+    )
+    policy = DualScTMGatePolicy(
+        profile_id=_DUAL_PROFILE, ancestry_sctm_min=0.70, strict_sctm_min=0.85,
+    )
+    outcome = StructureOutcome(
+        feasible=True, cache_status="hit", model_executed=False, evaluated=True,
+        metrics={"scTM": sctm, "pLDDT": 82.0},
+    )
+    verdict = policy.evaluate(outcome)
+    admission = admit_endpoint(
+        F.safety_gate(), endpoint=endpoint,
+        structure_definitive=verdict.strict_structure_passed,
+        structure_ancestry=verdict.ancestry_structure_passed,
+        structure_evidence_digest=verdict.verdict_digest,
+        endpoint_tokens=tuple(
+            evidence.token for evidence in endpoint.endpoint_provenance_evidence_by_pos
+        ),
+        hard_anchors=(),
+    )
+    authorization = authorize_ancestry(
+        endpoint=endpoint, structure_verdict=verdict,
+        search_admission_evidence=admission.search_evidence,
+    )
+    level = (
+        st.FeasibilityLevel.DEFINITIVE
+        if verdict.strict_structure_passed else st.FeasibilityLevel.PROVISIONAL
+    )
+    endpoint = dataclasses.replace(
+        endpoint, feasibility_level=level, structure_outcome=outcome,
+        dual_structure_verdict=verdict, ancestry_authorization=authorization,
+        endpoint_id=None,
+    )
+    archive = ExactArchive()
+    archive.admit(endpoint, depth=0)
+    return endpoint, archive, admission, policy, verdict, authorization
 
 
 # --------------------------------------------------------------------------------------------
@@ -86,6 +145,13 @@ def test_the_manifest_carries_one_config_digest_and_the_declared_caps(tmp_path):
                             content_identities={"reference.fasta": "a" * 64},
                             seed_namespaces=("v2_lookahead", "matched_descendant"))
     assert manifest["config_digest"] == config.config_digest()
+    assert manifest["config_canonical_json"] == json.dumps(
+        config.canonical_payload(), sort_keys=True, separators=(",", ":"),
+    )
+    assert manifest["config_canonical_json"].encode("utf-8") == \
+        canonical_json_bytes(config.canonical_payload())
+    assert canonical_digest(json.loads(manifest["config_canonical_json"])) == \
+        manifest["config_digest"]
     assert manifest["caps"]["max_logical_dfe"] == config.caps.max_logical_dfe
     assert manifest["split_role"] == config.identity.split_role
     assert manifest["code_revision"] == "deadbeef"
@@ -94,6 +160,45 @@ def test_the_manifest_carries_one_config_digest_and_the_declared_caps(tmp_path):
 
     write_v2_bundle(tmp_path, manifest=manifest, tables={n: [] for n in V2_TABLE_SCHEMAS})
     assert json.loads((tmp_path / "run_manifest.json").read_text()) == manifest
+
+
+def test_manifest_refuses_a_config_digest_that_does_not_sign_its_live_payload():
+    config = F.v2_config()
+
+    class _TamperedConfig:
+        def __getattr__(self, name):
+            return getattr(config, name)
+
+        def canonical_payload(self):
+            return config.canonical_payload()
+
+        def config_digest(self):
+            return F.digest("foreign-config")
+
+    with pytest.raises(V2ArtifactError, match="config_digest.*canonical_payload"):
+        run_manifest(
+            config=_TamperedConfig(), code_revision="deadbeef",
+            content_identities={}, seed_namespaces=("v2_lookahead",),
+        )
+
+
+def test_manifest_carries_explicit_root_ordinal_and_per_protein_seed():
+    manifest = run_manifest(
+        config=F.v2_config(), code_revision="deadbeef", content_identities={},
+        seed_namespaces=("v2_depth0_root",), root_index=2,
+        root_seeds_by_protein={"5ZHV_B": 12345},
+    )
+    assert manifest["root_index"] == 2
+    assert manifest["root_seeds_by_protein"] == {"5ZHV_B": 12345}
+
+
+def test_legacy_manifest_omits_root_fields_for_byte_compatibility():
+    manifest = run_manifest(
+        config=F.v2_config(), code_revision="deadbeef", content_identities={},
+        seed_namespaces=("v2_depth0_root",),
+    )
+    assert "root_index" not in manifest
+    assert "root_seeds_by_protein" not in manifest
 
 
 # --------------------------------------------------------------------------------------------
@@ -199,6 +304,88 @@ def test_archive_rows_carry_membership_feasibility_and_the_depth_span():
     assert row["first_depth_seen"] == 0 and row["last_depth_seen"] == 0
     assert row["family_id"] == F.endpoint().lineage.family_id
     assert row["sequence_equivalence_key"] == F.endpoint().sequence_md5
+
+
+@pytest.mark.parametrize(
+    ("sctm", "level", "strict_passed"),
+    [(0.75, "provisional", False), (0.85, "definitive", True)],
+)
+def test_every_endpoint_archive_and_structure_row_persists_exact_dual_gate_evidence(
+    sctm, level, strict_passed,
+):
+    endpoint, archive, admission, policy, verdict, authorization = _dual_archive(sctm)
+    admissions = {endpoint.endpoint_id: admission}
+    conditioning = types.SimpleNamespace(
+        structure_backend="b" * 64, v0_structure_gate_config="g" * 64,
+    )
+
+    rows = (
+        complete_endpoint_rows(
+            [endpoint], depth=0, archive=archive,
+            admission_by_endpoint=admissions,
+        )[0],
+        archive_rows(archive, admission_by_endpoint=admissions)[0],
+        structure_evaluation_rows(
+            archive, admission_by_endpoint=admissions, conditioning=conditioning,
+        )[0],
+    )
+    for row in rows:
+        assert row["feasibility_level"] == level
+        assert row["dual_structure_profile_id"] == _DUAL_PROFILE
+        assert row["dual_structure_policy_digest"] == policy.policy_digest
+        assert row["dual_structure_raw_outcome_digest"] == verdict.raw_outcome_digest
+        assert row["dual_structure_ancestry_sctm_min"] == 0.70
+        assert row["dual_structure_strict_sctm_min"] == 0.85
+        assert row["dual_structure_sctm"] == sctm
+        assert row["dual_structure_common_feasible"] is True
+        assert row["dual_structure_ancestry_passed"] is True
+        assert row["dual_structure_strict_passed"] is strict_passed
+        assert row["dual_structure_verdict_digest"] == verdict.verdict_digest
+        assert json.loads(row["dual_structure_verdict_json"]) == verdict.canonical_payload()
+        assert row["ancestry_authorization_digest"] == authorization.authorization_digest
+        assert row["admission_evidence_digest"] == admission.admission_evidence_digest
+
+
+def test_legacy_structure_rows_keep_dual_columns_explicitly_null():
+    archive = ExactArchive()
+    endpoint = F.endpoint()
+    archive.admit(endpoint, depth=0)
+
+    rows = (
+        complete_endpoint_rows([endpoint], depth=0)[0],
+        archive_rows(archive)[0],
+        structure_evaluation_rows(archive)[0],
+    )
+    dual_columns = {
+        "dual_structure_profile_id", "dual_structure_policy_digest",
+        "dual_structure_raw_outcome_digest", "dual_structure_ancestry_sctm_min",
+        "dual_structure_strict_sctm_min", "dual_structure_sctm",
+        "dual_structure_common_feasible", "dual_structure_ancestry_passed",
+        "dual_structure_strict_passed", "dual_structure_verdict_digest",
+        "dual_structure_verdict_json", "ancestry_authorization_digest",
+        "admission_evidence_digest",
+    }
+    for row in rows:
+        assert {column for column in dual_columns if row[column] is not None} == set()
+
+
+def test_artifact_refuses_an_admission_digest_that_breaks_the_authorization_binding():
+    endpoint, archive, admission, _policy, _verdict, _authorization = _dual_archive(0.75)
+    # Bypass EndpointAdmission.__post_init__ to exercise the artifact boundary independently; an
+    # ordinary dataclasses.replace is already refused by the producer-side typed contract.
+    foreign = object.__new__(type(admission))
+    for field in dataclasses.fields(admission):
+        object.__setattr__(
+            foreign, field.name,
+            F.digest("foreign-admission")
+            if field.name == "admission_evidence_digest"
+            else getattr(admission, field.name),
+        )
+    with pytest.raises(V2ArtifactError, match="different evidence digests"):
+        complete_endpoint_rows(
+            [endpoint], depth=0, archive=archive,
+            admission_by_endpoint={endpoint.endpoint_id: foreign},
+        )
 
 
 def test_a_REJECTED_endpoint_s_structure_metrics_survive_into_the_evaluations_table():

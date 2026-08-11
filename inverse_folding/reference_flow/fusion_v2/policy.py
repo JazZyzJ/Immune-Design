@@ -42,10 +42,15 @@ from .evidence import (
 )
 from .identity import HeadEvaluatorIdentity, ProjectionPolicyIdentity, require_digest
 from .reward import (
+    DEPTH0_BOOTSTRAP_RULE,
+    Depth0SelectionProof,
     DonorGateVerdict,
     INCUMBENT_UPDATE_LAWS,
     LineageIncumbent,
+    LineageIncumbentKind,
+    RewardGateKind,
     advance_incumbent,
+    bind_incumbent_from_depth0_proof,
     donor_gate,
 )
 from .schedule import (
@@ -433,6 +438,11 @@ class PolicyRuntime:
 
     cost_meter: Any = None
     event_prefix: str = ""
+    #: Minted by the cycle from its real post-admission ordering.  ``None`` for legacy policies,
+    #: deeper rungs, and any non-rank-zero D0 intervention.
+    selection_proof: Depth0SelectionProof | None = None
+    source_state_id: str | None = None
+    source_depth: int | None = None
 
 
 @runtime_checkable
@@ -759,6 +769,9 @@ class StallReason(str, enum.Enum):
     #: keeps the projected budget a real bound; the offline replay measures how often it fires
     #: before anything launches.
     COUNTERFACTUAL_BUDGET_EXCEEDED = "stall_counterfactual_budget_exceeded"
+    #: V2 policy v2 starts with no logical reward incumbent.  Only the cycle can prove which
+    #: endpoint was rank zero in the actual search-admissible pool; without that proof D0 refuses.
+    MISSING_DEPTH0_SELECTION_PROOF = "stall_missing_depth0_selection_proof"
 
 
 @dataclass(frozen=True)
@@ -1031,6 +1044,13 @@ class HeadDirectedDecisionEvidence:
     head_calls: int
     #: Explicitly recorded so the CONTROL arm can prove it consulted no Head evidence at all.
     head_evidence_consulted: bool
+    #: D0 rank bootstrap and D1+ strict-improvement are different reward laws.  Keeping the label
+    #: beside the decision prevents a configured epsilon (needed later) from reading as applied at
+    #: D0, where no reward incumbent exists.
+    reward_gate_kind: str | None = None
+    attribution_reference_id: str | None = None
+    attribution_reference_sequence_md5: str | None = None
+    depth0_selection_proof: Depth0SelectionProof | None = None
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -1062,6 +1082,13 @@ class HeadDirectedDecisionEvidence:
             "reopen_candidates": [row.canonical_payload() for row in self.reopen_candidates],
             "head_calls": self.head_calls,
             "head_evidence_consulted": self.head_evidence_consulted,
+            "reward_gate_kind": self.reward_gate_kind,
+            "attribution_reference_id": self.attribution_reference_id,
+            "attribution_reference_sequence_md5": self.attribution_reference_sequence_md5,
+            "depth0_selection_proof": (
+                None if self.depth0_selection_proof is None
+                else self.depth0_selection_proof.canonical_payload()
+            ),
         }
 
 
@@ -1101,8 +1128,8 @@ class HeadDirectedCappedPolicy:
 
     One cycle, three guarantees, and nothing else:
 
-    * **donor direction** -- feedback may originate only from an exact, definitively feasible
-      endpoint that beats the lineage incumbent by more than the calibrated ``epsilon_R``;
+    * **donor direction** -- v2 D0 uses the cycle-proved rank-zero search-admissible endpoint with no
+      reward incumbent or epsilon; D1+ requires a donor to beat ``I_d`` by calibrated ``epsilon_R``;
     * **applied-dose direction** -- every written identity carries positive identity-bound
       frozen-Head leave-one-out contribution evidence, and every reopened position carries declared
       residual/worsened/new-hotspot/uncertainty evidence; and
@@ -1121,7 +1148,7 @@ class HeadDirectedCappedPolicy:
 
     band_table: ScheduleBandTable
     stratum_key: str
-    incumbent: LineageIncumbent
+    incumbent: LineageIncumbent | None
     #: The immutable cumulative safety reference's exact Head score (``ybar``), for the new-hotspot
     #: conjunct of the reopen priority.  Held separately from ``incumbent`` even when the depth-0
     #: rule makes the two the same sequence: the artifact must always say which reference each
@@ -1139,6 +1166,11 @@ class HeadDirectedCappedPolicy:
     counterfactual_scorer: Any
     policy_spec_digest: str = ""
     policy_version: str = "v1"
+    #: Present only for policy v2's logical-incumbent bootstrap.  It is typed with the existing
+    #: complete-reference binding, but occupies an attribution role: it supplies D0 window direction
+    #: and leave-one-out revert residues while ``incumbent`` remains truly absent.
+    depth0_attribution_reference: LineageIncumbent | None = None
+    depth0_incumbent_rule: str = "cumulative_safety_reference"
 
     #: The kernel hands a ``PolicyRuntime`` only to policies that ask for one.
     consumes_runtime: bool = True
@@ -1152,24 +1184,60 @@ class HeadDirectedCappedPolicy:
             )
         if not isinstance(self.stratum_key, str) or not self.stratum_key.strip():
             raise V2PolicyError("stratum_key must be a non-empty str")
-        if not isinstance(self.incumbent, LineageIncumbent):
-            raise V2PolicyError(
-                "incumbent must be a bound LineageIncumbent; a bare sequence or score could not "
-                "say which reference the donor gate compared against"
-            )
         if not isinstance(self.evaluator, HeadEvaluatorIdentity):
             raise V2PolicyError("evaluator must be a HeadEvaluatorIdentity")
-        if self.evaluator.digest() != self.incumbent.head_identity_digest:
-            raise V2PolicyError(
-                "the incumbent was scored by a different Head evaluator than this policy runs; "
-                "every margin and every a_i would subtract two instruments"
-            )
+        bootstrap = self.depth0_incumbent_rule == DEPTH0_BOOTSTRAP_RULE
+        if bootstrap:
+            if self.policy_version != "v2":
+                raise V2PolicyError(
+                    f"{DEPTH0_BOOTSTRAP_RULE!r} requires policy_version='v2'; legacy v1 always "
+                    "binds a predeclared I0"
+                )
+            reference = self.depth0_attribution_reference
+            if not isinstance(reference, LineageIncumbent) \
+                    or reference.kind is not LineageIncumbentKind.CUMULATIVE_SAFETY_REFERENCE:
+                raise V2PolicyError(
+                    "policy v2 requires a typed cumulative-safety depth0_attribution_reference; "
+                    "WT supplies local attribution but is not the reward incumbent"
+                )
+            if self.incumbent is not None and (
+                    not isinstance(self.incumbent, LineageIncumbent)
+                    or self.incumbent.kind is not LineageIncumbentKind.ACCEPTED_ENDPOINT):
+                raise V2PolicyError(
+                    "after D0, policy v2's incumbent must be an accepted endpoint (I1+), not WT"
+                )
+        else:
+            if self.policy_version == "v2":
+                raise V2PolicyError(
+                    "policy_version='v2' is reserved for best_admissible_depth0; constructing it "
+                    "with a predeclared reward incumbent would relabel the legacy v1 method"
+                )
+            if not isinstance(self.incumbent, LineageIncumbent):
+                raise V2PolicyError(
+                    "incumbent must be a bound LineageIncumbent; a bare sequence or score could not "
+                    "say which reference the donor gate compared against"
+                )
+            if self.depth0_attribution_reference is not None:
+                raise V2PolicyError(
+                    "depth0_attribution_reference is legal only under best_admissible_depth0; "
+                    "legacy v1 uses its declared reward incumbent for attribution"
+                )
+        for role, reference in (
+            ("incumbent", self.incumbent),
+            ("depth0 attribution reference", self.depth0_attribution_reference),
+        ):
+            if reference is not None and self.evaluator.digest() != reference.head_identity_digest:
+                raise V2PolicyError(
+                    f"the {role} was scored by a different Head evaluator than this policy runs; "
+                    "every margin and every a_i would subtract two instruments"
+                )
         reference_md5 = getattr(self.safety_reference_score, "sequence_md5", None)
-        if reference_md5 != self.incumbent.safety_reference_sequence_md5:
+        lineage_reference = self.depth0_attribution_reference if bootstrap else self.incumbent
+        if reference_md5 != lineage_reference.safety_reference_sequence_md5:
             raise V2PolicyError(
                 f"the supplied safety-reference Head score describes {reference_md5!r} but the "
                 f"incumbent was bound against safety reference "
-                f"{self.incumbent.safety_reference_sequence_md5!r}; the new-hotspot conjunct would "
+                f"{lineage_reference.safety_reference_sequence_md5!r}; the new-hotspot conjunct would "
                 "be measured against a reference this lineage never froze"
             )
         if not isinstance(self.calibration, HeadDirectedCalibration):
@@ -1196,31 +1264,43 @@ class HeadDirectedCappedPolicy:
         # this cell's realized binding.  Same split as the state-derived probe, and for the same
         # reason: one frozen spec must be able to sign a multi-cell campaign whose cells pin
         # different bands, incumbents and thresholds.
+        config_payload = {
+            "policy_id": HEAD_DIRECTED_CAPPED_POLICY_ID,
+            "policy_version": self.policy_version,
+            "write_window_rule": WRITE_WINDOW_RULE,
+            "reopen_count_law": REOPEN_COUNT_LAW,
+            "reopen_priority_law": REOPEN_PRIORITY_LAW,
+            "policy_spec_digest": self.policy_spec_digest,
+            "stratum_key": self.stratum_key,
+            "band_calibration_id": self.band_table.provenance.calibration_id,
+            "band_calibration_digest": self.band_table.provenance.calibration_content_digest,
+            "calibration": self.calibration.canonical_payload(),
+            "incumbent": (
+                None if self.incumbent is None else self.incumbent.canonical_payload()),
+            "incumbent_update_law": self.incumbent_update_law,
+            "head_identity_digest": self.evaluator.digest(),
+            "window_grid_digest": self.window_grid_digest,
+        }
+        # Preserve the already-published v1 identity byte-for-byte.  The logical bootstrap is a new
+        # policy/spec version, so only v2 signs the two new roles into its config identity.
+        if self.policy_version == "v2":
+            config_payload.update({
+                "depth0_incumbent_rule": self.depth0_incumbent_rule,
+                "depth0_attribution_reference": (
+                    None if self.depth0_attribution_reference is None
+                    else self.depth0_attribution_reference.canonical_payload()),
+            })
         return ProjectionPolicyIdentity(
             policy_id=HEAD_DIRECTED_CAPPED_POLICY_ID,
             policy_version=self.policy_version,
-            policy_config_digest=canonical_digest({
-                "policy_id": HEAD_DIRECTED_CAPPED_POLICY_ID,
-                "policy_version": self.policy_version,
-                "write_window_rule": WRITE_WINDOW_RULE,
-                "reopen_count_law": REOPEN_COUNT_LAW,
-                "reopen_priority_law": REOPEN_PRIORITY_LAW,
-                "policy_spec_digest": self.policy_spec_digest,
-                "stratum_key": self.stratum_key,
-                "band_calibration_id": self.band_table.provenance.calibration_id,
-                "band_calibration_digest": self.band_table.provenance.calibration_content_digest,
-                "calibration": self.calibration.canonical_payload(),
-                "incumbent": self.incumbent.canonical_payload(),
-                "incumbent_update_law": self.incumbent_update_law,
-                "head_identity_digest": self.evaluator.digest(),
-                "window_grid_digest": self.window_grid_digest,
-            }),
+            policy_config_digest=canonical_digest(config_payload),
             policy_spec_digest=self.policy_spec_digest,
             is_diagnostic_only=False,
         )
 
     def advance_lineage_incumbent(
-        self, *, donor: Any, verdict: DonorGateVerdict, accepted_at_depth: int,
+        self, *, donor: Any, verdict: DonorGateVerdict | None,
+        accepted_at_depth: int, depth0_selection_proof: Depth0SelectionProof | None = None,
     ) -> "HeadDirectedCappedPolicy":
         """Return the policy for the next rung after adopting one accepted donor.
 
@@ -1228,12 +1308,35 @@ class HeadDirectedCappedPolicy:
         gives the next decision a new identity digest.  A refused verdict returns ``self`` exactly:
         stalled/null cycles must not manufacture a new lineage reference.
         """
-        advanced = advance_incumbent(
-            incumbent=self.incumbent, donor=donor, verdict=verdict,
-            evaluator=self.evaluator, accepted_at_depth=int(accepted_at_depth),
-            law=self.incumbent_update_law,
-        )
+        if self.incumbent is None:
+            if self.depth0_incumbent_rule != DEPTH0_BOOTSTRAP_RULE:
+                raise V2PolicyError("a policy with no incumbent is not authorized to advance")
+            if verdict is not None:
+                raise V2PolicyError(
+                    "D0 bootstrap has no strict donor-gate verdict; supplying one would imply an "
+                    "epsilon comparison against a reward incumbent that does not exist"
+                )
+            advanced = bind_incumbent_from_depth0_proof(
+                donor=donor, proof=depth0_selection_proof,
+                attribution_reference=self.depth0_attribution_reference,
+                evaluator=self.evaluator, accepted_at_depth=int(accepted_at_depth),
+            )
+        else:
+            if depth0_selection_proof is not None:
+                raise V2PolicyError(
+                    "a depth0 selection proof cannot advance I1+; deeper updates require the "
+                    "strict epsilon donor-gate verdict"
+                )
+            advanced = advance_incumbent(
+                incumbent=self.incumbent, donor=donor, verdict=verdict,
+                evaluator=self.evaluator, accepted_at_depth=int(accepted_at_depth),
+                law=self.incumbent_update_law,
+            )
         return self if advanced is self.incumbent else replace(self, incumbent=advanced)
+
+    @property
+    def requires_depth0_selection_proof(self) -> bool:
+        return self.depth0_incumbent_rule == DEPTH0_BOOTSTRAP_RULE and self.incumbent is None
 
     # -- the decision -----------------------------------------------------------------------
 
@@ -1241,6 +1344,16 @@ class HeadDirectedCappedPolicy:
                coordinates: CycleCoordinates,
                runtime: PolicyRuntime | None = None) -> PolicyResult:
         """The kernel's entry point: read the law's inputs off a live state and apply it."""
+        if runtime is not None:
+            # Bind a caller-supplied selection proof to the source the policy is actually reading.
+            # The cycle supplies these fields directly; filling only missing values keeps the pure
+            # policy API usable in tests while a conflicting caller value remains detectable below.
+            runtime = replace(
+                runtime,
+                source_state_id=(runtime.source_state_id or source.state_id),
+                source_depth=(int(source.lineage.depth) if runtime.source_depth is None
+                              else runtime.source_depth),
+            )
         return self.select(source_view=SourceView.of(source), donor=endpoint,
                            r_step=int(coordinates.r_step), runtime=runtime)
 
@@ -1261,14 +1374,20 @@ class HeadDirectedCappedPolicy:
         masked = list(view.masked_positions)
         resolved = list(view.resolved_positions)
         donor_sequence = endpoint.sequence
-        incumbent_sequence = self.incumbent.sequence
+        bootstrap = self.incumbent is None
+        attribution_reference = (
+            self.depth0_attribution_reference if bootstrap else self.incumbent)
+        incumbent_sequence = attribution_reference.sequence
+        selection_proof: Depth0SelectionProof | None = None
 
         def evidence(**over: Any) -> HeadDirectedDecisionEvidence:
             base = dict(
                 policy_id=HEAD_DIRECTED_CAPPED_POLICY_ID, stall_reason=None, donor_gate=None,
-                incumbent_id=self.incumbent.incumbent_id,
-                incumbent_sequence_md5=self.incumbent.sequence_md5,
-                safety_reference_sequence_md5=self.incumbent.safety_reference_sequence_md5,
+                incumbent_id=(None if self.incumbent is None else self.incumbent.incumbent_id),
+                incumbent_sequence_md5=(
+                    None if self.incumbent is None else self.incumbent.sequence_md5),
+                safety_reference_sequence_md5=(
+                    attribution_reference.safety_reference_sequence_md5),
                 donor_endpoint_id=str(endpoint.endpoint_id),
                 donor_sequence_md5=str(endpoint.sequence_md5),
                 incumbent_window_evidence_digest=None, safety_window_evidence_digest=None,
@@ -1280,6 +1399,11 @@ class HeadDirectedCappedPolicy:
                 realized_writes=0, required_reopen=None, realized_reopen=0,
                 n_legal_reopen_candidates=len(resolved), write_candidates=(),
                 reopen_candidates=(), head_calls=0, head_evidence_consulted=True,
+                reward_gate_kind=(RewardGateKind.DEPTH0_BOOTSTRAP.value if bootstrap
+                                  else RewardGateKind.STRICT_IMPROVEMENT.value),
+                attribution_reference_id=attribution_reference.incumbent_id,
+                attribution_reference_sequence_md5=attribution_reference.sequence_md5,
+                depth0_selection_proof=selection_proof,
             )
             base.update(over)
             return HeadDirectedDecisionEvidence(**base)
@@ -1290,28 +1414,48 @@ class HeadDirectedCappedPolicy:
                 decision_evidence=evidence(stall_reason=reason.value, **over),
             )
 
-        # ---- 1. the donor gate ---------------------------------------------------------------
-        gate = donor_gate(
-            donor=endpoint, incumbent=self.incumbent,
-            epsilon_r=self.calibration.epsilon_r,
-            epsilon_source_ref=self.calibration.epsilon_source_ref,
-        )
-        if not gate.passed:
-            return stall(
-                StallReason.NO_BETTER_DONOR,
-                f"donor {endpoint.endpoint_id} scores {gate.donor_global_risk:.6f} against "
-                f"incumbent {gate.incumbent_global_risk:.6f} (margin {gate.margin:.6f}, required "
-                f"> {gate.epsilon_r:.6f}); reason={gate.reason.value}. The lineage keeps its "
-                "incumbent rather than adopting a donor whose advantage is inside the frozen "
-                "Head's own noise floor",
-                donor_gate=gate,
+        # ---- 1. the reward gate --------------------------------------------------------------
+        if bootstrap:
+            proof = None if runtime is None else runtime.selection_proof
+            valid = isinstance(proof, Depth0SelectionProof)
+            valid = valid and runtime.source_depth == 0 and proof.depth == 0
+            valid = valid and runtime.source_state_id == proof.source_state_id
+            valid = valid and proof.protein_id == endpoint.protein_id
+            valid = valid and proof.selected_endpoint_id == endpoint.endpoint_id
+            valid = valid and proof.selected_endpoint_content_digest == endpoint.content_digest
+            if not valid:
+                return stall(
+                    StallReason.MISSING_DEPTH0_SELECTION_PROOF,
+                    "policy v2 D0 has no reward incumbent and therefore requires the cycle's exact "
+                    "rank-0 proof over the real search-admissible pool; no epsilon comparison or "
+                    "fallback donor is permitted",
+                )
+            selection_proof = proof
+            gate = None
+        else:
+            gate = donor_gate(
+                donor=endpoint, incumbent=self.incumbent,
+                epsilon_r=self.calibration.epsilon_r,
+                epsilon_source_ref=self.calibration.epsilon_source_ref,
             )
+            if not gate.passed:
+                return stall(
+                    StallReason.NO_BETTER_DONOR,
+                    f"donor {endpoint.endpoint_id} scores {gate.donor_global_risk:.6f} against "
+                    f"incumbent {gate.incumbent_global_risk:.6f} (margin {gate.margin:.6f}, required "
+                    f"> {gate.epsilon_r:.6f}); reason={gate.reason.value}. The lineage keeps its "
+                    "incumbent rather than adopting a donor whose advantage is inside the frozen "
+                    "Head's own noise floor",
+                    donor_gate=gate,
+                )
 
         # ---- 2. raw aligned-window evidence, on ONE common scale ------------------------------
         try:
             incumbent_windows = build_window_evidence(
-                donor_score=endpoint.head_score, reference_score=self.incumbent.head_score,
-                evaluator=self.evaluator, reference_label="lineage_incumbent",
+                donor_score=endpoint.head_score, reference_score=attribution_reference.head_score,
+                evaluator=self.evaluator,
+                reference_label=("depth0_attribution_reference" if bootstrap
+                                 else "lineage_incumbent"),
             )
             safety_windows = build_window_evidence(
                 donor_score=endpoint.head_score, reference_score=self.safety_reference_score,

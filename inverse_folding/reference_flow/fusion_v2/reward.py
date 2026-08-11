@@ -4,15 +4,17 @@ PLAN §2.5 binds three complete-sequence references that must never be interchan
 
 * the **immutable cumulative safety reference** ``ybar`` -- never updates, owned by
   :mod:`fusion_v2.safety`, and decides ADMISSION;
-* the **lineage reward incumbent** ``I_d`` -- the best ACCEPTED exact feasible endpoint for the
-  family, owned by this module, and decides whether a donor may open feedback at all; and
+* the **lineage reward incumbent** ``I_d`` -- an accepted endpoint for the family, owned by this
+  module, and the comparator for strict donor improvement from depth one onward; and
 * the **current donor** ``Y*_d`` -- the endpoint proposed to supply feedback at this depth.
 
-The distinction is the whole point of the V2F5A change.  S7 selected a donor by exact global Head
-rank and then applied a Head-blind positional dose; ranking alone is not direction.  Here a donor
-may open feedback only when it beats the lineage's own incumbent by more than a calibrated
-tolerance, and a lineage that has no such donor STALLS rather than adopting the least-bad endpoint:
-PLAN A.2, "It must not fall back to an arbitrary endpoint token".
+The distinction is the whole point of the V2F5A change.  Policy v2 begins with no reward incumbent:
+depth zero takes exact rank zero from the real search-admissible generated pool, and only a committed
+transition binds that endpoint as ``I_1``.  From depth one onward a donor may open feedback only
+when it beats the lineage's own incumbent by more than a calibrated tolerance.  A lineage that has
+no such donor STALLS rather than adopting the least-bad endpoint: PLAN A.2, "It must not fall back
+to an arbitrary endpoint token".  The immutable WT/native reference remains safety and D0 local-
+attribution evidence; it is never relabelled as a v2 reward incumbent.
 
 **Purity.**  No config import (the policy imports this module, and PLAN §2.5 forbids a policy that
 can reach an unfrozen threshold), no torch, no I/O.  ``epsilon_r`` arrives as a plain float that the
@@ -43,7 +45,14 @@ __all__ = [
     "IncumbentIdentityError",
     "IncumbentAliasError",
     "DEPTH0_INCUMBENT_RULES",
+    "DEPTH0_BOOTSTRAP_RULE",
+    "DEPTH0_SELECTION_ORDERING",
     "INCUMBENT_UPDATE_LAWS",
+    "RewardGateKind",
+    "Depth0SelectionCandidate",
+    "Depth0SelectionProof",
+    "make_depth0_selection_proof",
+    "bind_incumbent_from_depth0_proof",
     "LineageIncumbentKind",
     "LineageIncumbent",
     "DonorGateReason",
@@ -70,6 +79,10 @@ class IncumbentAliasError(V2RewardError):
 #: How ``I_0`` is bound before any depth-0 endpoint outcome is inspected.  PLAN §3.1 leaves the
 #: depth-zero binding an OPEN decision, so the run must DECLARE which rule it used; this module
 #: implements the vocabulary and refuses anything outside it.  It has no default anywhere.
+DEPTH0_BOOTSTRAP_RULE = "best_admissible_depth0"
+DEPTH0_SELECTION_ORDERING = "head_global_risk_then_endpoint_id"
+
+
 DEPTH0_INCUMBENT_RULES = frozenset({
     #: ``I_0 = ybar``: the frozen complete reference the run already content-binds for the safety
     #: ratchet also serves as the depth-0 reward baseline.  It is frozen before any endpoint is
@@ -80,10 +93,140 @@ DEPTH0_INCUMBENT_RULES = frozenset({
     #: frozen before the depth-0 pool exists.  Implemented here; a runtime that offers it must
     #: supply the sequence through its own content-bound input role.
     "predeclared_external_design",
+    #: There is no reward incumbent at depth zero.  The cycle deterministically selects rank zero
+    #: from the search-admissible endpoint pool under ``(head_global_risk, endpoint_id)`` and binds
+    #: that endpoint as ``I_1`` only after the transition commits.  The immutable complete reference
+    #: remains the safety and local-attribution comparator; it is not relabelled as ``I_0``.
+    DEPTH0_BOOTSTRAP_RULE,
 })
 
 #: How ``I_d`` moves.  One law, named so the artifact records which one ran.
 INCUMBENT_UPDATE_LAWS = frozenset({"strict_improvement_by_epsilon"})
+
+
+class RewardGateKind(str, enum.Enum):
+    """Which logically different law authorized the selected donor."""
+
+    DEPTH0_BOOTSTRAP = "depth0_bootstrap"
+    STRICT_IMPROVEMENT = "strict_improvement"
+
+
+@dataclass(frozen=True)
+class Depth0SelectionCandidate:
+    """One row in the exact search-admissible pool used for the D0 rank decision."""
+
+    endpoint_id: str
+    endpoint_content_digest: str
+    head_global_risk: float
+
+    def __post_init__(self) -> None:
+        _text(self.endpoint_id, "endpoint_id")
+        require_digest(self.endpoint_content_digest, "endpoint_content_digest")
+        _finite(self.head_global_risk, "head_global_risk")
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "endpoint_id": self.endpoint_id,
+            "endpoint_content_digest": self.endpoint_content_digest,
+            "head_global_risk": float(self.head_global_risk),
+        }
+
+
+@dataclass(frozen=True)
+class Depth0SelectionProof:
+    """Cycle-minted proof that one donor was rank zero in the real admissible pool.
+
+    The proof is deliberately about the pool *after* search admission.  It does not duplicate the
+    structure/safety gate or name what makes an endpoint search-admissible; changing that gate is a
+    separate method.  Binding the full ordered rows and endpoint content digest prevents a caller
+    from presenting a rank over a detached list of ids.
+    """
+
+    protein_id: str
+    source_state_id: str
+    depth: int
+    ordering: str
+    selected_rank: int
+    selected_endpoint_id: str
+    selected_endpoint_content_digest: str
+    ordered_candidates: tuple[Depth0SelectionCandidate, ...]
+
+    def __post_init__(self) -> None:
+        _text(self.protein_id, "protein_id")
+        _text(self.source_state_id, "source_state_id")
+        if isinstance(self.depth, bool) or not isinstance(self.depth, int) or self.depth != 0:
+            raise V2RewardError(f"a depth-zero selection proof requires depth=0, got {self.depth!r}")
+        if self.ordering != DEPTH0_SELECTION_ORDERING:
+            raise V2RewardError(
+                f"depth-zero ordering must be {DEPTH0_SELECTION_ORDERING!r}, got {self.ordering!r}"
+            )
+        if self.selected_rank != 0:
+            raise V2RewardError(
+                f"a depth-zero bootstrap proof must select rank 0, got {self.selected_rank!r}"
+            )
+        _text(self.selected_endpoint_id, "selected_endpoint_id")
+        require_digest(self.selected_endpoint_content_digest,
+                       "selected_endpoint_content_digest")
+        rows = tuple(self.ordered_candidates)
+        if not rows or not all(isinstance(row, Depth0SelectionCandidate) for row in rows):
+            raise V2RewardError("ordered_candidates must contain typed admissible endpoint rows")
+        if len({row.endpoint_id for row in rows}) != len(rows):
+            raise V2RewardError("ordered_candidates contains duplicate endpoint ids")
+        expected = tuple(sorted(
+            rows, key=lambda row: (float(row.head_global_risk), row.endpoint_id)))
+        if rows != expected:
+            raise V2RewardError(
+                "ordered_candidates is not ordered by (head_global_risk, endpoint_id)"
+            )
+        selected = rows[0]
+        if (selected.endpoint_id != self.selected_endpoint_id
+                or selected.endpoint_content_digest != self.selected_endpoint_content_digest):
+            raise V2RewardError(
+                "the declared selected endpoint is not rank zero in ordered_candidates"
+            )
+        object.__setattr__(self, "ordered_candidates", rows)
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "protein_id": self.protein_id,
+            "source_state_id": self.source_state_id,
+            "depth": self.depth,
+            "ordering": self.ordering,
+            "selected_rank": self.selected_rank,
+            "selected_endpoint_id": self.selected_endpoint_id,
+            "selected_endpoint_content_digest": self.selected_endpoint_content_digest,
+            "ordered_candidates": [row.canonical_payload() for row in self.ordered_candidates],
+        }
+
+    @property
+    def proof_digest(self) -> str:
+        return canonical_digest(self.canonical_payload())
+
+
+def make_depth0_selection_proof(
+    *, ordered_candidates: Any, selected: Any, source_state_id: str, depth: int,
+) -> Depth0SelectionProof:
+    """Mint a proof from the cycle's already search-admitted, deterministically ranked pool."""
+    endpoints = tuple(ordered_candidates)
+    if not endpoints:
+        raise V2RewardError("cannot mint a depth-zero proof from an empty admissible pool")
+    rows = tuple(Depth0SelectionCandidate(
+        endpoint_id=str(endpoint.endpoint_id),
+        endpoint_content_digest=str(endpoint.content_digest),
+        head_global_risk=float(endpoint.head_global_risk),
+    ) for endpoint in endpoints)
+    if endpoints[0].endpoint_id != selected.endpoint_id:
+        raise V2RewardError(
+            f"selected endpoint {selected.endpoint_id!r} is not rank zero "
+            f"({endpoints[0].endpoint_id!r}) in the supplied admissible pool"
+        )
+    return Depth0SelectionProof(
+        protein_id=str(selected.protein_id), source_state_id=str(source_state_id),
+        depth=int(depth), ordering=DEPTH0_SELECTION_ORDERING, selected_rank=0,
+        selected_endpoint_id=str(selected.endpoint_id),
+        selected_endpoint_content_digest=str(selected.content_digest),
+        ordered_candidates=rows,
+    )
 
 
 class LineageIncumbentKind(str, enum.Enum):
@@ -141,6 +284,7 @@ class LineageIncumbent:
     accepted_at_depth: int
     safety_reference_sequence_md5: str
     source_endpoint_id: str | None = None
+    source_ancestry_authorization_digest: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, LineageIncumbentKind):
@@ -193,13 +337,22 @@ class LineageIncumbent:
             raise V2RewardError(
                 f"an incumbent of kind {self.kind.value!r} may not name a source endpoint"
             )
+        if self.source_ancestry_authorization_digest is not None:
+            require_digest(
+                self.source_ancestry_authorization_digest,
+                "source_ancestry_authorization_digest",
+            )
+            if self.kind is not LineageIncumbentKind.ACCEPTED_ENDPOINT:
+                raise V2RewardError(
+                    "only an accepted-endpoint incumbent may carry ancestry authorization"
+                )
 
     @property
     def aliases_safety_reference(self) -> bool:
         return self.safety_reference_sequence_md5 == self.sequence_md5
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "kind": self.kind.value,
             "incumbent_id": self.incumbent_id,
             "protein_id": self.protein_id,
@@ -214,6 +367,13 @@ class LineageIncumbent:
             "source_endpoint_id": self.source_endpoint_id,
             "aliases_safety_reference": self.aliases_safety_reference,
         }
+        # Preserve the published legacy payload when no exploratory capability exists.  Dual-gate
+        # incumbents sign the exact endpoint-bound authorization that permitted ancestry.
+        if self.source_ancestry_authorization_digest is not None:
+            payload["source_ancestry_authorization_digest"] = (
+                self.source_ancestry_authorization_digest
+            )
+        return payload
 
     @property
     def content_digest(self) -> str:
@@ -300,16 +460,16 @@ def bind_incumbent_from_endpoint(
 ) -> LineageIncumbent:
     """Bind ``I_d`` to an exact endpoint this lineage accepted (or a predeclared external design).
 
-    Refuses an endpoint that is not definitively feasible: PLAN §4.2 forbids a non-definitive
-    endpoint from becoming ancestry, and an incumbent is what ancestry is measured against.
+    Refuses any endpoint that cannot legally become ancestry.  The ordinary path remains strict;
+    the exploratory dual-scTM profile may additionally admit a provisional endpoint only when its
+    endpoint-bound authorization revalidates against the exact structure evidence.
     """
-    from .state import FeasibilityLevel  # local: state imports nothing this module needs at import
+    from .state import endpoint_may_become_ancestry
 
-    if getattr(endpoint, "feasibility_level", None) is not FeasibilityLevel.DEFINITIVE:
+    if not endpoint_may_become_ancestry(endpoint):
         raise V2RewardError(
-            "only a definitively feasible endpoint may become the lineage reward incumbent; a "
-            "provisional one would make every later donor gate a comparison against an unverified "
-            "design (PLAN §4.2)"
+            "only a strict endpoint or an exactly authorized exploratory provisional endpoint may "
+            "become the lineage reward incumbent"
         )
     binding = getattr(endpoint, "head_binding", None)
     if getattr(binding, "evaluator", None) != evaluator:
@@ -317,6 +477,10 @@ def bind_incumbent_from_endpoint(
             "the endpoint was scored by a different Head evaluator than the one the lineage runs; "
             "the donor gate would subtract two instruments"
         )
+    authorization = getattr(endpoint, "ancestry_authorization", None)
+    authorization_digest = (
+        None if authorization is None else authorization.authorization_digest
+    )
     payload = {
         "kind": kind.value,
         "lineage_id": lineage_id,
@@ -325,6 +489,8 @@ def bind_incumbent_from_endpoint(
         "head_identity_digest": evaluator.digest(),
         "accepted_at_depth": int(accepted_at_depth),
     }
+    if authorization_digest is not None:
+        payload["source_ancestry_authorization_digest"] = authorization_digest
     return LineageIncumbent(
         kind=kind,
         incumbent_id=_incumbent_id(payload),
@@ -346,6 +512,51 @@ def bind_incumbent_from_endpoint(
         safety_reference_sequence_md5=str(safety_reference_sequence_md5),
         source_endpoint_id=(str(endpoint.endpoint_id)
                             if kind is LineageIncumbentKind.ACCEPTED_ENDPOINT else None),
+        source_ancestry_authorization_digest=(
+            authorization_digest
+            if kind is LineageIncumbentKind.ACCEPTED_ENDPOINT else None
+        ),
+    )
+
+
+def bind_incumbent_from_depth0_proof(
+    *, donor: Any, proof: Depth0SelectionProof, attribution_reference: LineageIncumbent,
+    evaluator: HeadEvaluatorIdentity, accepted_at_depth: int,
+) -> LineageIncumbent:
+    """Bind the committed D0 donor as ``I_1`` without inventing an ``I_0``.
+
+    The transition's commit boundary is enforced by the caller (the ladder invokes this method only
+    after a committed cycle).  This function enforces the evidence half: the proof must select these
+    exact endpoint bytes at rank zero, and the resulting incumbent keeps the immutable WT/reference
+    identity solely as its safety lineage binding.
+    """
+    if not isinstance(proof, Depth0SelectionProof):
+        raise V2RewardError("depth-zero incumbent bootstrap requires a Depth0SelectionProof")
+    if not isinstance(attribution_reference, LineageIncumbent) \
+            or attribution_reference.kind is not LineageIncumbentKind.CUMULATIVE_SAFETY_REFERENCE:
+        raise V2RewardError(
+            "depth-zero attribution_reference must be the typed cumulative safety reference"
+        )
+    if proof.selected_endpoint_id != str(getattr(donor, "endpoint_id", "")):
+        raise V2RewardError(
+            f"proof selected {proof.selected_endpoint_id!r} but donor "
+            f"{getattr(donor, 'endpoint_id', None)!r} was supplied"
+        )
+    if proof.selected_endpoint_content_digest != getattr(donor, "content_digest", None):
+        raise V2RewardError(
+            "proof selected endpoint content different from the donor supplied for I1"
+        )
+    if proof.protein_id != getattr(donor, "protein_id", None):
+        raise V2RewardError("proof and donor describe different proteins")
+    if isinstance(accepted_at_depth, bool) or int(accepted_at_depth) != 1:
+        raise V2RewardError(
+            f"a depth-zero committed donor must become I1 at accepted_at_depth=1, got "
+            f"{accepted_at_depth!r}"
+        )
+    return bind_incumbent_from_endpoint(
+        endpoint=donor, lineage_id=attribution_reference.lineage_id, evaluator=evaluator,
+        safety_reference_sequence_md5=attribution_reference.safety_reference_sequence_md5,
+        accepted_at_depth=1,
     )
 
 
@@ -357,7 +568,7 @@ class DonorGateReason(str, enum.Enum):
     STALL_NO_BETTER_DONOR = "stall_no_better_donor"
     #: The donor IS the incumbent -- it cannot improve on itself.
     DONOR_IS_INCUMBENT = "donor_is_incumbent"
-    #: The donor never reached definitive feasibility, so it may not become ancestry at all.
+    #: The donor is neither strict nor covered by an exact exploratory ancestry authorization.
     DONOR_NOT_DEFINITIVE = "donor_not_definitive"
 
 
@@ -450,9 +661,9 @@ def donor_gate(
             epsilon_source_ref=epsilon_source_ref,
         )
 
-    from .state import FeasibilityLevel
+    from .state import endpoint_may_become_ancestry
 
-    if getattr(donor, "feasibility_level", None) is not FeasibilityLevel.DEFINITIVE:
+    if not endpoint_may_become_ancestry(donor):
         return verdict(False, DonorGateReason.DONOR_NOT_DEFINITIVE)
     if donor.sequence_md5 == incumbent.sequence_md5:
         return verdict(False, DonorGateReason.DONOR_IS_INCUMBENT)

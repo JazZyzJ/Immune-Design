@@ -264,6 +264,28 @@ def test_an_unresolved_structure_verdict_is_still_only_a_diagnostic():
     assert summary["structure_operability"]["n_definitive_feasible"] == 0
 
 
+def test_capability_ceiling_calibration_can_explicitly_skip_the_independent_structure_diagnostic():
+    """Skipping the diagnostic must not change the Head population or pretend structure passed.
+
+    The high-risk campaign folds every realized search endpoint under its dual structure policy;
+    refolding all 64 null draws per protein adds no information to the Head Q0.90 that the
+    calibration artifact authorizes.  The omission is explicit and signed, never a silent missing
+    oracle or a fabricated zero operability rate.
+    """
+    seams = _seams()
+    seams["structure_gate"] = lambda request: (_ for _ in ()).throw(
+        AssertionError("structure diagnostic must not execute"))
+    rows, summary = _run_law(
+        seams=seams,
+        structure_diagnostic_mode="skip_independent_capability_ceiling",
+    )
+    assert summary["n_head_valid"] == 64
+    assert summary["structure_operability"]["status"] == "not_measured"
+    assert summary["structure_operability"]["rate"] is None
+    assert all(row["structure_evaluated"] is False for row in rows)
+    assert all(row["structure_definitive_feasible"] is False for row in rows)
+
+
 
 
 class _FlakyHead(_Scorer):

@@ -23,7 +23,9 @@ pytest.importorskip("pyarrow")
 pytest.importorskip("yaml")
 
 import yaml  # noqa: E402
+import scripts.run_rf_fusion_v2 as driver_mod  # noqa: E402
 
+from inverse_folding.reference_flow.fusion_v2.identity import canonical_digest  # noqa: E402
 from scripts.run_rf_fusion_v2 import (  # noqa: E402
     DeclaredInput,
     EXIT_FAILED,
@@ -32,8 +34,10 @@ from scripts.run_rf_fusion_v2 import (  # noqa: E402
     EXIT_UNLAUNCHABLE,
     V2DriverError,
     build_parser,
+    build_semantic_alias_bindings,
     execution_replicates,
     main,
+    verify_highrisk_git_state,
 )
 from scripts.rf_fusion_v2_preflight import input_signature  # noqa: E402
 from scripts.rf_fusion_v2_resume import RunSignature  # noqa: E402
@@ -67,6 +71,95 @@ def _write_config(tmp_path, **over):
     return path
 
 
+def _write_highrisk_config(tmp_path):
+    """The code-authorized dual-search capability profile used by the R4 experiment."""
+    def scalar(value, unit, measurement_kind, source_id, source_kind):
+        artifact = {
+            "schema_version": "v2-policy-calibration-1",
+            "measurement_kind": measurement_kind,
+            "allele": "DRB1_0701",
+            "score_scale": "nats",
+            "n_observations": 1,
+            "calibration_data_digest": "a" * 64,
+        }
+        block = {
+            "value": value,
+            "unit": unit,
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "artifact": artifact,
+        }
+        block["source_ref"] = canonical_digest(block)
+        return block
+
+    head_directed = {
+        "write_cap_editable_fraction": scalar(
+            0.05, "editable_fraction", "frozen_declared_fraction",
+            "v2f5a-write-cap-0.05-v1", "runbook_frozen",
+        ),
+        "donor_improvement_epsilon": scalar(
+            0.02, "nats", "frozen_head_repeatability",
+            "v2f5a-frozen-head-repeatability-difference-bound-v1",
+            "measured_calibration",
+        ),
+        "local_contribution_tolerance": scalar(
+            0.02, "nats", "frozen_head_repeatability",
+            "v2f5a-local-contribution-repeatability-difference-bound-v1",
+            "measured_calibration",
+        ),
+        "band_center_rule": "midpoint_tie_low",
+        "lineage_incumbent_depth0_rule": "best_admissible_depth0",
+        "lineage_incumbent_update_law": "strict_improvement_by_epsilon",
+        "write_candidate_window_rule": "raw_aligned_window_improved_in_donor",
+        "reopen_count_law": "u_target_minus_u_src_plus_m_write",
+        "reopen_priority_law": (
+            "new_hotspot>worsened>residual_burden>active_uncertainty>"
+            "temporal_instability>index"
+        ),
+        "control_policy_id": "source_geometry_control",
+        "control_policy_version": "v1",
+        "max_counterfactual_head_calls_per_cycle": 454,
+    }
+    return _write_config(
+        tmp_path,
+        **{
+            "identity.phase": "capability_ladder",
+            "identity.split_role": "exploratory_highrisk_ceiling_v1",
+            "schedule.schedule_id": "highrisk-d2-k32-r40-v1",
+            "schedule.points": [
+                {
+                    "depth": 0, "r_step": 40, "c_source_step": 50,
+                    "c_next_step": 70, "n_lookaheads": 32, "band_key": "step40",
+                },
+                {
+                    "depth": 1, "r_step": 40, "c_source_step": 70,
+                    "c_next_step": 90, "n_lookaheads": 32, "band_key": "step40",
+                },
+            ],
+            "schedule.stratum_key": "highrisk_nod_v1_A_1_unconstrained",
+            "head.head_variant_id": "LC1",
+            "head.head_allele_idx": 0,
+            "head.head_window_batch_size": 64,
+            "projection.support_policy_id": "head_directed_capped",
+            "projection.support_policy_version": "v2",
+            "projection.support_policy_is_diagnostic": False,
+            "projection.head_directed": head_directed,
+            "safety.search_structure": {
+                "policy_kind": "exploratory_dual_sctm",
+                "profile_id": "exploratory_dual_sctm_ancestry070_strict085_v1",
+                "ancestry_sctm_min": 0.70,
+                "strict_sctm_min": 0.85,
+            },
+            "caps.max_logical_dfe": 3072,
+            "caps.max_head_calls": 1024,
+            "caps.max_definitive_refolds": 128,
+            "caps.max_gpu_seconds": 14400,
+            "caps.max_walltime_s": 14400,
+            "caps.max_retries": 2,
+        },
+    )
+
+
 def _input_file(tmp_path, name="cohort.tsv", text="protein_id\nA_1\nB_2\n"):
     """A declared input file.  Content is stable across calls so a resume stays valid."""
     path = tmp_path / name
@@ -98,6 +191,22 @@ def _fake_runner(status="ok", rows=1, raises=None):
 
     runner.calls = calls
     return runner
+
+
+@pytest.fixture
+def authorized_highrisk_launch(monkeypatch):
+    """Keep fake-runner status tests focused while still exercising a signed launch digest."""
+    monkeypatch.setattr(
+        driver_mod, "verify_highrisk_git_state", lambda _revision: "f" * 40,
+    )
+    identity = driver_mod.SemanticLaunchIdentity({
+        "schema_version": "rf-fusion-v2-highrisk-semantic-launch/1",
+        "fixture": True,
+    })
+    monkeypatch.setattr(
+        driver_mod, "build_highrisk_semantic_launch_identity", lambda **_kwargs: identity,
+    )
+    return identity
 
 
 def _run(tmp_path, *, cohort=("A_1",), runner=None, extra=(), config_path=None, inputs=None):
@@ -177,6 +286,75 @@ def test_qualification_without_a_prefix_is_refused_before_preflight():
     ])
     with pytest.raises(V2DriverError, match="requires --mechanism-prefixes"):
         execution_replicates(args)
+
+
+def test_root_index_defaults_to_legacy_but_explicit_zero_is_bound():
+    parser = build_parser()
+    legacy = parser.parse_args(["--v2-config", "v2.yaml", "--out-dir", "out"])
+    explicit = parser.parse_args([
+        "--v2-config", "v2.yaml", "--out-dir", "out", "--root-index", "0"])
+    assert legacy.root_index is None
+    assert explicit.root_index == 0
+
+
+@pytest.mark.parametrize("bad", ["-1", "4"])
+def test_root_index_is_frozen_to_the_r4_ordinal_set(tmp_path, bad):
+    assert _run(tmp_path, extra=["--root-index", bad, "--dry-run"]) == EXIT_UNLAUNCHABLE
+
+
+def test_root_index_is_refused_for_mechanism_prefixes(tmp_path):
+    assert _run(
+        tmp_path, extra=["--root-index", "0", "--mechanism-prefixes", "1", "--dry-run"]
+    ) == EXIT_UNLAUNCHABLE
+
+
+def test_explicit_root_reaches_signature_fragment_and_manifest(tmp_path):
+    observed = []
+
+    def runner(**kwargs):
+        observed.append(kwargs)
+        return "ok", {"complete_endpoints": [{"endpoint_id": "A_1:root3"}]}
+
+    assert _run(tmp_path, runner=runner, extra=["--root-index", "3"]) == EXIT_OK
+    signature = observed[0]["signature"]
+    assert observed[0]["root_index"] == signature.root_index == 3
+    assert signature.root_seed is not None
+    assert (tmp_path / "out" / "fragments" / "root_0003" /
+            "A_1.root0003.json").exists()
+    manifest = json.loads((tmp_path / "out" / "run_manifest.json").read_text())
+    assert manifest["root_index"] == 3
+    assert manifest["root_seeds_by_protein"]["A_1"] == signature.root_seed
+
+
+def test_two_explicit_roots_do_not_overwrite_fragments(tmp_path):
+    config = _write_config(tmp_path)
+    shared = tmp_path / "shared_fragments"
+    common = [
+        "--v2-config", str(config), "--cohort", "A_1",
+        "--code-revision", "deadbeef", "--fragment-dir", str(shared),
+        "--input-file", f"cohort_table={_input_file(tmp_path)}",
+    ]
+    explicit_runner = lambda **_: (  # noqa: E731 - compact injected contract seam
+        "ok", {"complete_endpoints": [{"endpoint_id": "A_1:r0"}]})
+    assert main([*common, "--out-dir", str(tmp_path / "out0"), "--root-index", "0"],
+                runner=explicit_runner) == EXIT_OK
+    assert main([*common, "--out-dir", str(tmp_path / "out1"), "--root-index", "1"],
+                runner=lambda **_: (
+                    "ok", {"complete_endpoints": [{"endpoint_id": "A_1:r1"}]})) == EXIT_OK
+    names = sorted(
+        path.relative_to(shared).as_posix() for path in shared.rglob("*.json"))
+    assert names == [
+        "root_0000/A_1.root0000.json", "root_0001/A_1.root0001.json"]
+    assert json.loads((tmp_path / "out0" / "run_manifest.json").read_text())["root_index"] == 0
+    assert json.loads((tmp_path / "out1" / "run_manifest.json").read_text())["root_index"] == 1
+
+
+def test_slurm_passes_explicit_root_identity_only_when_declared():
+    source = (REPO / "scripts" / "submit_rf_fusion_v2_canary.slurm").read_text()
+    assert 'ROOT_INDEX="${ROOT_INDEX:-}"' in source
+    assert "ROOT_INDEX_ARGS+=(--root-index" in source
+    assert '"${ROOT_INDEX_ARGS[@]}"' in source
+    assert 'OUT_DIR="${OUT_DIR}/root_$(printf' in source
 
 
 def test_exploratory_depth_override_requires_capability_phase_and_split(tmp_path):
@@ -275,6 +453,41 @@ def test_a_cohort_where_every_protein_failed_does_not_exit_zero(tmp_path):
                 runner=_fake_runner(status="failed", rows=0)) == EXIT_FAILED
 
 
+def test_a_mixed_completed_and_retryable_failed_cohort_exits_partial(tmp_path):
+    def runner(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
+        status = "ok" if protein_id == "A_1" else "failed"
+        return status, {
+            "complete_endpoints": [{"endpoint_id": protein_id}] if status == "ok" else [],
+        }
+
+    assert _run(tmp_path, cohort=("A_1", "B_2"), runner=runner) == EXIT_PARTIAL
+
+
+def test_complete_negative_label_is_refused_outside_explicit_dual_r4_scope(tmp_path):
+    assert _run(
+        tmp_path, runner=_fake_runner(status="complete_negative", rows=1),
+    ) == EXIT_FAILED
+
+
+def test_complete_negative_label_is_refused_for_a_dual_r4_lookalike_schedule(tmp_path):
+    config_path = _write_highrisk_config(tmp_path)
+    payload = yaml.safe_load(config_path.read_text())
+    payload["schedule"]["schedule_id"] = "unfrozen-d2-lookalike"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=True))
+
+    def lookalike(**kwargs):
+        return "complete_negative", {
+            "complete_endpoints": [{"endpoint_id": f"{kwargs['protein_id']}:measured"}],
+        }
+
+    assert _run(
+        tmp_path,
+        runner=lookalike,
+        config_path=config_path,
+        extra=["--root-index", "0", "--exploratory-depth-override"],
+    ) == EXIT_FAILED
+
+
 def test_a_partial_cohort_exits_partial_and_names_the_missing_protein(tmp_path, capsys):
     def runner(*, protein_id, config, signature, out_dir, inputs=None, oracles_factory=None):
         if protein_id == "B_2":
@@ -318,6 +531,28 @@ def test_paid_work_is_not_recomputed_on_a_second_invocation(tmp_path):
     again = _fake_runner()
     assert _run(tmp_path, cohort=("A_1", "B_2"), runner=again) == EXIT_OK
     assert again.calls == [], "the driver re-paid for work that was already on disk"
+
+
+def test_a_complete_negative_fragment_cannot_bypass_scope_through_resume(tmp_path):
+    from scripts.rf_fusion_v2_resume import write_fragment
+
+    runner = _fake_runner()
+    assert _run(tmp_path, runner=runner) == EXIT_OK
+    fragment_path = tmp_path / "out" / "fragments" / "A_1.json"
+    fragment = json.loads(fragment_path.read_text())
+    write_fragment(
+        fragment_path,
+        signature=RunSignature(**fragment["signature"]),
+        status="complete_negative",
+        payload=fragment["payload"],
+    )
+
+    # Aggregate-only cannot invoke the runner-side guard, so the aggregate boundary must refuse it.
+    assert _run(tmp_path, extra=["--aggregate-only"]) == EXIT_FAILED
+
+    retry = _fake_runner()
+    assert _run(tmp_path, runner=retry) == EXIT_OK
+    assert retry.calls == ["A_1"], "an out-of-scope closed negative was reused"
 
 
 def test_a_crash_after_paid_work_leaves_that_work_reusable(tmp_path):
@@ -417,6 +652,8 @@ def test_the_bundle_records_the_requested_cohort_and_what_was_missing(tmp_path):
     assert manifest["requested_cohort"] == ["A_1", "B_2"]
     assert manifest["n_ok"] == 1
     assert manifest["missing_proteins"] == []
+    assert "n_complete_negative" not in manifest
+    assert "fragment_result_status_by_protein" not in manifest
 
 
 def test_a_failed_fragment_is_retried_rather_than_skipped_forever(tmp_path):
@@ -435,6 +672,73 @@ def test_a_failed_fragment_is_retried_rather_than_skipped_forever(tmp_path):
     retry = _fake_runner(status="ok")
     assert _run(tmp_path, cohort=("A_1",), runner=retry, config_path=config_path) == EXIT_OK
     assert retry.calls == ["A_1"], "a failed shard was skipped instead of retried"
+
+
+def test_closed_highrisk_negative_exits_zero_is_reused_and_is_counted_separately(
+    tmp_path, authorized_highrisk_launch,
+):
+    """Zero strict yield is a completed measurement only under the explicit dual R4 contract."""
+    config_path = _write_highrisk_config(tmp_path)
+    calls = []
+
+    def closed_negative(**kwargs):
+        calls.append(kwargs["protein_id"])
+        return "complete_negative", {
+            "complete_endpoints": [{"endpoint_id": f"{kwargs['protein_id']}:measured"}],
+            "structure_evaluations": [{"endpoint_id": f"{kwargs['protein_id']}:measured"}],
+            "archive": [{"endpoint_id": f"{kwargs['protein_id']}:measured"}],
+        }
+
+    extra = ["--root-index", "2", "--exploratory-depth-override"]
+    assert _run(
+        tmp_path, cohort=("A_1",), runner=closed_negative,
+        config_path=config_path, extra=extra,
+    ) == EXIT_OK
+    assert calls == ["A_1"]
+
+    manifest = json.loads((tmp_path / "out" / "run_manifest.json").read_text())
+    assert manifest["n_ok"] == 0
+    assert manifest["n_complete_negative"] == 1
+    assert manifest["fragment_result_status_by_protein"] == {
+        "A_1": "complete_negative",
+    }
+    assert manifest["semantic_launch_identity"]["digest"] == \
+        authorized_highrisk_launch.digest
+
+    def must_not_run(**_kwargs):
+        raise AssertionError("a closed complete-negative root was recomputed")
+
+    assert _run(
+        tmp_path, cohort=("A_1",), runner=must_not_run,
+        config_path=config_path, extra=extra,
+    ) == EXIT_OK
+
+
+def test_highrisk_failed_fragment_is_still_retryable_and_not_a_completed_negative(
+    tmp_path, authorized_highrisk_launch,
+):
+    config_path = _write_highrisk_config(tmp_path)
+    extra = ["--root-index", "0", "--exploratory-depth-override"]
+
+    assert _run(
+        tmp_path, runner=lambda **_: ("failed", {"error": "structure timeout"}),
+        config_path=config_path, extra=extra,
+    ) == EXIT_FAILED
+
+    calls = []
+
+    def retry(**kwargs):
+        calls.append(kwargs["protein_id"])
+        return "complete_negative", {
+            "complete_endpoints": [{"endpoint_id": "measured"}],
+            "archive": [{"endpoint_id": "measured"}],
+            "structure_evaluations": [{"endpoint_id": "measured"}],
+        }
+
+    assert _run(
+        tmp_path, runner=retry, config_path=config_path, extra=extra,
+    ) == EXIT_OK
+    assert calls == ["A_1"]
 
 
 # --------------------------------------------------------------------------------------------
@@ -915,3 +1219,140 @@ def test_dry_run_parses_the_runtime_paths_it_will_launch_with(tmp_path):
 def test_dry_run_still_succeeds_on_well_formed_runtime_paths(tmp_path):
     """The gate must not be satisfiable by refusing every dry run."""
     assert _run(tmp_path, extra=["--dry-run", "--shard-input", f"pdb_root={tmp_path}"]) == EXIT_OK
+
+
+def test_explicit_highrisk_dry_run_exercises_the_git_gate(tmp_path, monkeypatch, capsys):
+    def refuse(_revision):
+        raise V2DriverError("relevant worktree is dirty")
+
+    monkeypatch.setattr(driver_mod, "verify_highrisk_git_state", refuse)
+    code = _run(
+        tmp_path,
+        config_path=_write_highrisk_config(tmp_path),
+        extra=["--root-index", "0", "--exploratory-depth-override", "--dry-run"],
+    )
+    assert code == EXIT_UNLAUNCHABLE
+    assert "dirty" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------------------------
+# Explicit high-risk R4 launch identity (review P1: signed roles must be what executes)
+# --------------------------------------------------------------------------------------------
+
+
+def _semantic_alias_fixture(tmp_path):
+    """The file-role/worker-alias surface emitted by the high-risk materializer."""
+    roles = {
+        "cohort_table": "cohort",
+        "reference_sequences": "references",
+        "backbone": "backbone",
+        "rf_sampler_config": "sampler",
+        "dplm_checkpoint": "dplm",
+        "head_checkpoint": "head",
+        "structure_backend": "structure-runtime",
+        "structure_config": "structure-config",
+        "v0_structure_gate_config": "v0-gate",
+    }
+    declared = []
+    role_paths = {}
+    for role, content in roles.items():
+        path = tmp_path / f"{role}.bin"
+        path.write_text(content)
+        role_paths[role] = path
+        declared.append(DeclaredInput(role, path, hashlib.sha256(path.read_bytes()).hexdigest()))
+
+    aliases = {
+        "cohort_table": role_paths["cohort_table"],
+        "test_set_parquet": role_paths["cohort_table"],
+        "reference_sequences": role_paths["reference_sequences"],
+        "complete_reference_manifest": role_paths["reference_sequences"],
+        "backbone": role_paths["backbone"],
+        "coordinate_mask": role_paths["backbone"],
+        "rf_sampler_config": role_paths["rf_sampler_config"],
+        "dplm_checkpoint": role_paths["dplm_checkpoint"],
+        "base_if_checkpoint": role_paths["dplm_checkpoint"],
+        "tokenizer": role_paths["dplm_checkpoint"],
+        "head_checkpoint": role_paths["head_checkpoint"],
+        "structure_backend": role_paths["structure_backend"],
+        "esmfold2_runtime_identity": role_paths["structure_backend"],
+        "structure_config": role_paths["structure_config"],
+        "v0_structure_gate_config": role_paths["v0_structure_gate_config"],
+    }
+    from scripts.rf_fusion_v2_cohort import ShardInputs
+
+    return tuple(declared), ShardInputs(**{name: str(path) for name, path in aliases.items()})
+
+
+def test_every_signed_highrisk_role_equals_every_execution_alias(tmp_path):
+    declared, shard_inputs = _semantic_alias_fixture(tmp_path)
+    rows = build_semantic_alias_bindings(declared, shard_inputs)
+    by_role = {row["role"]: row for row in rows}
+    assert set(by_role["dplm_checkpoint"]["aliases"]) == {
+        "base_if_checkpoint", "dplm_checkpoint", "tokenizer",
+    }
+    assert set(by_role["cohort_table"]["aliases"]) == {
+        "cohort_table", "test_set_parquet",
+    }
+    assert set(by_role["structure_backend"]["aliases"]) == {
+        "esmfold2_runtime_identity", "structure_backend",
+    }
+
+
+@pytest.mark.parametrize("alias", [
+    "base_if_checkpoint", "test_set_parquet", "complete_reference_manifest",
+    "structure_backend", "esmfold2_runtime_identity", "structure_config",
+    "v0_structure_gate_config",
+])
+def test_a_worker_alias_cannot_diverge_from_its_signed_role(tmp_path, alias):
+    declared, shard_inputs = _semantic_alias_fixture(tmp_path)
+    foreign = tmp_path / f"foreign-{alias}.bin"
+    foreign.write_text("different executed bytes")
+    shard_inputs.paths[alias] = str(foreign)
+    with pytest.raises(V2DriverError, match=alias):
+        build_semantic_alias_bindings(declared, shard_inputs)
+
+
+def _git(tmp_path, *args):
+    return subprocess.run(
+        ["git", "-C", str(tmp_path), *args], check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ).stdout.strip()
+
+
+def test_highrisk_git_gate_binds_actual_head_and_only_relevant_dirty_files(tmp_path):
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "codex@example.invalid")
+    _git(tmp_path, "config", "user.name", "Codex Test")
+    (tmp_path / "inverse_folding").mkdir()
+    runtime = tmp_path / "inverse_folding" / "runtime.py"
+    runtime.write_text("VALUE = 1\n")
+    (tmp_path / "PROGRESS.md").write_text("user state\n")
+    _git(tmp_path, "add", "inverse_folding/runtime.py", "PROGRESS.md")
+    _git(tmp_path, "commit", "-m", "fixture")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+
+    assert verify_highrisk_git_state(head[:12], repo_root=tmp_path) == head
+    (tmp_path / "PROGRESS.md").write_text("unrelated user state\n")
+    assert verify_highrisk_git_state(head, repo_root=tmp_path) == head
+
+    runtime.write_text("VALUE = 2\n")
+    with pytest.raises(V2DriverError, match="dirty"):
+        verify_highrisk_git_state(head, repo_root=tmp_path)
+
+
+def test_highrisk_git_gate_refuses_a_configured_commit_that_is_not_head(tmp_path):
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "codex@example.invalid")
+    _git(tmp_path, "config", "user.name", "Codex Test")
+    (tmp_path / "inverse_folding").mkdir()
+    runtime = tmp_path / "inverse_folding" / "runtime.py"
+    runtime.write_text("VALUE = 1\n")
+    _git(tmp_path, "add", "inverse_folding/runtime.py")
+    _git(tmp_path, "commit", "-m", "first")
+    old = _git(tmp_path, "rev-parse", "HEAD")
+    runtime.write_text("VALUE = 2\n")
+    _git(tmp_path, "add", "inverse_folding/runtime.py")
+    _git(tmp_path, "commit", "-m", "second")
+
+    with pytest.raises(V2DriverError, match="HEAD"):
+        verify_highrisk_git_state(old, repo_root=tmp_path)

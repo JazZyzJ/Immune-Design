@@ -59,19 +59,17 @@ class StructureCache:
         return metrics, False
 
 
-def structure_feasible(metrics, config: "FusionConfig", *, has_active_site: bool) -> tuple[bool, str]:
-    """Absolute target-backbone gate (§1.4). NOT the refiner's seed-relative gate.
+def structure_common_feasible(
+    metrics, config: "FusionConfig", *, has_active_site: bool,
+) -> tuple[bool, str]:
+    """Evaluate every absolute structure predicate except the scTM floor.
 
-    scTM floor is always enforced. An anchored protein uses exactly the configured
-    active-site metric: the legacy C-alpha shell or the all-heavy-side-chain maximum across
-    anchors. Missing/incomplete values fail closed. A no-anchor protein skips this gate (N/A).
+    This split is additive: the legacy definitive gate below still applies the configured scTM
+    threshold first and then delegates here.  Exploratory V2 dual-scTM profiles use this helper so
+    one fold can yield an ancestry threshold and a stricter final threshold without silently
+    dropping anchor or scRMSD constraints.
     """
     st = config.structure
-    scTM = getattr(metrics, "scTM", None)
-    if not _finite(scTM):  # None / NaN / inf must fail closed, never slip past `<`
-        return False, f"scTM not finite: {scTM}"
-    if float(scTM) < st.scTM_min:
-        return False, f"scTM {scTM} < scTM_min {st.scTM_min}"
     if has_active_site:
         if st.active_site_metric == "legacy_ca_shell":
             if st.active_site_RMSD_max is None:
@@ -109,3 +107,19 @@ def structure_feasible(metrics, config: "FusionConfig", *, has_active_site: bool
         if float(scr) > st.scRMSD_max:
             return False, f"scRMSD {scr} > {st.scRMSD_max}"
     return True, "ok"
+
+
+def structure_feasible(metrics, config: "FusionConfig", *, has_active_site: bool) -> tuple[bool, str]:
+    """Absolute target-backbone gate (§1.4). NOT the refiner's seed-relative gate.
+
+    scTM floor is always enforced. An anchored protein uses exactly the configured
+    active-site metric: the legacy C-alpha shell or the all-heavy-side-chain maximum across
+    anchors. Missing/incomplete values fail closed. A no-anchor protein skips this gate (N/A).
+    """
+    st = config.structure
+    scTM = getattr(metrics, "scTM", None)
+    if not _finite(scTM):  # None / NaN / inf must fail closed, never slip past `<`
+        return False, f"scTM not finite: {scTM}"
+    if float(scTM) < st.scTM_min:
+        return False, f"scTM {scTM} < scTM_min {st.scTM_min}"
+    return structure_common_feasible(metrics, config, has_active_site=has_active_site)

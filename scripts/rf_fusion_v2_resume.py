@@ -16,9 +16,10 @@ possible way to manufacture a cohort success rate.  The format version is valida
 reason: a fragment written by a different writer may lay its payload out differently, and reading it
 under this version's assumptions is how a table silently changes meaning between runs.
 
-**Admissible and successful are different questions.**  A ``failed`` fragment is valid evidence --
-of a failure.  A driver that skipped every ``accepted`` fragment would never retry a failed shard,
-so the verdict reports the fragment's own outcome separately from its admissibility.
+**Admissible, completed and successful are different questions.**  A ``failed`` fragment is valid
+evidence -- of a failure -- and remains retryable.  A high-risk ``complete_negative`` fragment is
+also not a strict success, but its normally completed zero-strict search must not be re-paid.  The
+verdict therefore reports admissibility, reusable completion and strict success separately.
 
 **Every fragment is validated, and every rejection is REPORTED.**  The V1 aggregator skips a stale
 checkpoint with a bare ``continue``; V2 must not, because a silently skipped fragment is precisely
@@ -55,6 +56,7 @@ __all__ = [
     "FRAGMENT_STATUSES",
     "FRAGMENT_RESULT_STATUSES",
     "FRAGMENT_SUCCESS_STATUSES",
+    "FRAGMENT_COMPLETION_STATUSES",
     "write_fragment",
     "read_fragment",
     "validate_fragment",
@@ -73,15 +75,21 @@ class V2ResumeError(V2Error):
 FRAGMENT_SCHEMA = "v2frag-1"
 
 #: Closed vocabulary for a fragment's OWN outcome -- what the shard reported, not whether the
-#: fragment may be reused.  Exactly the two outcomes ``rf_fusion_v2_cohort.run_v2_shard`` and the
+#: fragment may be reused.  These are exactly the closed outcomes the ordinary shard and the
 #: driver's typed-error path can produce; nothing else is writable.  ``running`` is deliberately
 #: absent: no fragment is written before its shard finishes, and an in-progress status would be
 #: accepted by a resume and skip that protein forever without any process having completed it.
-FRAGMENT_RESULT_STATUSES = frozenset({"ok", "failed"})
+FRAGMENT_RESULT_STATUSES = frozenset({"ok", "complete_negative", "failed"})
 
-#: Which of those outcomes counts as work that need not be re-paid.  A ``failed`` fragment is valid
-#: evidence and must be REPORTED, but it is not a reason to skip the protein on a retry.
+#: Which outcomes count as strict-positive results.  This is intentionally narrower than reusable
+#: completion: a closed negative must never inflate strict yield.
 FRAGMENT_SUCCESS_STATUSES = frozenset({"ok"})
+
+#: Outcomes for which the requested scientific work reached a closed terminal state and therefore
+#: need not be re-paid.  ``complete_negative`` is deliberately absent from SUCCESS: it records an
+#: auditable empty strict pool, not a strict-positive design.  ``failed`` remains retryable because
+#: it includes operational exceptions and incomplete evidence.
+FRAGMENT_COMPLETION_STATUSES = frozenset({"ok", "complete_negative"})
 
 #: Closed vocabulary.  Every reason a fragment can fail to be reusable has its own name, because
 #: "skipped" tells an operator nothing about whether to re-run, re-configure, or investigate.
@@ -120,6 +128,9 @@ class RunSignature:
     code_revision: str
     production_depth_authorized: bool = False
     exploratory_depth_override: bool = False
+    root_index: int | None = None
+    root_seed: int | None = None
+    launch_identity_digest: str | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -137,9 +148,28 @@ class RunSignature:
                 "production_depth_authorized and exploratory_depth_override are mutually "
                 "exclusive execution identities"
             )
+        if (self.root_index is None) != (self.root_seed is None):
+            raise V2ResumeError(
+                "root_index and root_seed must either both be present or both be absent; a root "
+                "ordinal without its realized seed is not a complete execution identity"
+            )
+        for name in ("root_index", "root_seed"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise V2ResumeError(f"{name} must be a non-negative int or None")
+        if self.launch_identity_digest is not None and (
+            not isinstance(self.launch_identity_digest, str)
+            or len(self.launch_identity_digest) != 64
+            or any(char not in "0123456789abcdef" for char in self.launch_identity_digest)
+        ):
+            raise V2ResumeError(
+                "launch_identity_digest must be a lowercase SHA-256 digest or None"
+            )
 
     def canonical_payload(self) -> dict:
-        return {
+        payload = {
             "config_digest": self.config_digest,
             "campaign_id": self.campaign_id,
             "split_role": self.split_role,
@@ -150,6 +180,16 @@ class RunSignature:
             "production_depth_authorized": self.production_depth_authorized,
             "exploratory_depth_override": self.exploratory_depth_override,
         }
+        # Omission is intentional: a legacy single-root signature retains its exact historical
+        # canonical bytes.  Explicit R4 roots always carry both fields.
+        if self.root_index is not None:
+            payload["root_index"] = self.root_index
+            payload["root_seed"] = self.root_seed
+        # High-risk formal launches bind the files and scalar aliases the execution shard reads.
+        # Omission preserves the exact historical signature bytes of every legacy experiment.
+        if self.launch_identity_digest is not None:
+            payload["launch_identity_digest"] = self.launch_identity_digest
+        return payload
 
     @property
     def value(self) -> str:
@@ -169,10 +209,19 @@ class RunSignature:
         ):
             if other.get(name) != getattr(self, name):
                 return "foreign_run"
+        if self.root_index is not None or "root_index" in other or "root_seed" in other:
+            if (other.get("root_index"), other.get("root_seed")) != (
+                self.root_index, self.root_seed
+            ):
+                return "foreign_run"
         if other.get("config_digest") != self.config_digest:
             return "stale_config"
         if other.get("input_signature") != self.input_signature:
             return "stale_input"
+        if (self.launch_identity_digest is not None
+                or "launch_identity_digest" in other):
+            if other.get("launch_identity_digest") != self.launch_identity_digest:
+                return "stale_input"
         if other.get("code_revision") != self.code_revision:
             return "stale_code"
         return None
@@ -183,9 +232,9 @@ class FragmentVerdict:
     """One fragment's admissibility, with the reason attached.
 
     ``result_status`` is the fragment's OWN outcome and is populated only when the fragment was
-    admitted.  Admissibility and success are different questions: a ``failed`` fragment is
-    admissible evidence of a failure, and a caller that read only :attr:`accepted` would skip that
-    protein forever instead of retrying it.
+    admitted.  Admissibility, reusable completion and strict success are different questions: a
+    ``failed`` fragment is admissible evidence of a failure but retryable; a closed negative is
+    reusable but not strict-positive.
     """
 
     path: str
@@ -214,8 +263,13 @@ class FragmentVerdict:
 
     @property
     def records_success(self) -> bool:
-        """True only for admitted work that actually succeeded -- the resume-skip condition."""
+        """True only for admitted work that produced a strict-positive result."""
         return self.accepted and self.result_status in FRAGMENT_SUCCESS_STATUSES
+
+    @property
+    def records_complete(self) -> bool:
+        """True only for admitted work whose scientific result is closed and reusable."""
+        return self.accepted and self.result_status in FRAGMENT_COMPLETION_STATUSES
 
 
 @dataclass(frozen=True)
@@ -228,6 +282,8 @@ class AggregateReport:
     tables: Mapping[str, list] = field(default_factory=dict)
     ledger_events: tuple = ()
     n_ok: int = 0
+    n_complete_negative: int = 0
+    n_failed: int = 0
 
     @property
     def complete(self) -> bool:
@@ -237,6 +293,11 @@ class AggregateReport:
     @property
     def any_success(self) -> bool:
         return self.n_ok > 0
+
+    @property
+    def any_completed(self) -> bool:
+        """Whether any strict-positive or closed-negative result was admitted."""
+        return self.n_ok + self.n_complete_negative > 0
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -471,6 +532,8 @@ def aggregate_fragments(
     ledger_events: list = []
     contributed: set[str] = set()
     n_ok = 0
+    n_complete_negative = 0
+    n_failed = 0
     for verdict in accepted:
         data = read_fragment(verdict.path)
         contributed.add(data["signature"]["protein_id"])
@@ -478,6 +541,10 @@ def aggregate_fragments(
         # result digest; re-reading the raw field here would count a status no validator approved.
         if verdict.result_status in ok_statuses:
             n_ok += 1
+        if verdict.result_status == "complete_negative":
+            n_complete_negative += 1
+        if verdict.result_status == "failed":
+            n_failed += 1
         payload = data.get("payload", {})
         for name in table_names:
             tables[name].extend(payload.get(name, []) or [])
@@ -492,4 +559,5 @@ def aggregate_fragments(
         accepted=accepted, rejected=rejected,
         missing_proteins=tuple(p for p in requested if p not in contributed),
         tables=tables, ledger_events=tuple(ledger_events), n_ok=n_ok,
+        n_complete_negative=n_complete_negative, n_failed=n_failed,
     )

@@ -80,6 +80,54 @@ def test_a_changed_scientific_condition_makes_paid_work_unreusable(tmp_path, fie
     assert verdict.status == status
 
 
+def test_explicit_root_ordinal_and_seed_are_part_of_resume_identity(tmp_path):
+    signature = _sig(root_index=2, root_seed=12345)
+    path = _write(tmp_path, signature)
+    assert validate_fragment(path, expected=signature).accepted
+    assert validate_fragment(
+        path, expected=_sig(root_index=2, root_seed=12346)).status == "foreign_run"
+    assert validate_fragment(
+        path, expected=_sig(root_index=3, root_seed=12345)).status == "foreign_run"
+
+
+def test_legacy_signature_omits_new_root_fields_for_byte_compatibility():
+    payload = _sig().canonical_payload()
+    assert "root_index" not in payload
+    assert "root_seed" not in payload
+    assert "launch_identity_digest" not in payload
+
+    import hashlib
+
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    assert _sig().value == hashlib.sha256(encoded).hexdigest()
+
+
+def test_highrisk_semantic_launch_identity_is_part_of_resume_identity(tmp_path):
+    """Changing an execution alias must invalidate work even when signed role files are stable."""
+    signature = _sig(
+        root_index=2, root_seed=12345, launch_identity_digest="a" * 64,
+    )
+    path = _write(tmp_path, signature)
+    verdict = validate_fragment(
+        path,
+        expected=_sig(
+            root_index=2, root_seed=12345, launch_identity_digest="b" * 64,
+        ),
+    )
+    assert verdict.status == "stale_input"
+
+
+@pytest.mark.parametrize("value", ["", "A" * 64, "not-a-sha256", "a" * 63])
+def test_launch_identity_digest_must_be_a_lowercase_sha256(value):
+    with pytest.raises(V2ResumeError, match="launch_identity_digest"):
+        _sig(launch_identity_digest=value)
+
+
+def test_a_half_bound_root_signature_is_refused():
+    with pytest.raises(V2ResumeError, match="root_index.*root_seed|root_seed.*root_index"):
+        _sig(root_index=0)
+
+
 def test_a_fragment_whose_digest_disagrees_with_its_own_fields_is_corrupt(tmp_path):
     """Tampering, not staleness: the two would otherwise be reported the same way."""
     path = _write(tmp_path, _sig())
@@ -223,8 +271,40 @@ def test_zero_success_is_distinguishable_from_no_work(tmp_path):
     assert report.missing_proteins == ()
     assert report.rejected == ()
     assert report.n_ok == 0
+    assert report.n_failed == 2
     assert report.any_success is False
     assert report.complete is True, "every requested protein DID produce a valid fragment"
+
+
+def test_complete_negative_is_reusable_completion_but_not_a_strict_success(tmp_path):
+    """A closed scientific null is paid work, but it must never inflate strict yield.
+
+    ``complete_negative`` is narrower than ``failed``: the producer has finished an explicit
+    high-risk dual-search root and proved that its strict pool is empty.  Aggregation therefore
+    keeps every evidence row and resume may skip it, while ``n_ok`` / ``any_success`` retain their
+    original strict-positive meaning.
+    """
+    signature = _sig(root_index=2, root_seed=12345)
+    path = _write(
+        tmp_path, signature, status="complete_negative", rows=2, name="closed_negative",
+    )
+
+    verdict = validate_fragment(path, expected=signature, table_names=TABLES)
+    assert verdict.accepted is True
+    assert verdict.result_status == "complete_negative"
+    assert verdict.records_success is False
+    assert verdict.records_complete is True
+
+    report = aggregate_fragments(
+        tmp_path, requested_cohort=[signature.protein_id],
+        expected_by_protein={signature.protein_id: signature}, table_names=TABLES,
+    )
+    assert report.n_ok == 0
+    assert report.n_complete_negative == 1
+    assert report.n_failed == 0
+    assert report.any_success is False
+    assert report.any_completed is True
+    assert len(report.tables["complete_endpoints"]) == 2
 
 
 def test_paid_work_survives_a_crash_and_is_not_recomputed(tmp_path):
@@ -384,6 +464,7 @@ def test_a_verdict_carries_the_fragments_own_result_status(tmp_path):
     assert failed.accepted is True, "a recorded failure is still valid evidence"
     assert failed.result_status == "failed"
     assert failed.records_success is False, "a failed shard must be retried, not skipped"
+    assert failed.records_complete is False
 
 
 def test_a_rejected_verdict_records_no_result_status(tmp_path):

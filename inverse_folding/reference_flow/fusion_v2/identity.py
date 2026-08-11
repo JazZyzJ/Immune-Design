@@ -380,6 +380,11 @@ class HeadEvaluatorIdentity:
     window_k_max: int
     head_config_hash: str
     head_checkpoint_digest: str
+    # Optional only for legacy artifacts.  A high-risk evaluator binds all three because each can
+    # change the logits while leaving the checkpoint/config directory bytes unchanged.
+    head_variant_id: str | None = None
+    head_allele_idx: int | None = None
+    head_window_batch_size: int | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.allele, "allele")
@@ -392,9 +397,23 @@ class HeadEvaluatorIdentity:
             )
         require_digest(self.head_config_hash, "head_config_hash")
         require_digest(self.head_checkpoint_digest, "head_checkpoint_digest")
+        extended = (
+            self.head_variant_id, self.head_allele_idx, self.head_window_batch_size,
+        )
+        if any(value is not None for value in extended) and not all(
+            value is not None for value in extended
+        ):
+            raise V2IdentityError(
+                "head_variant_id, head_allele_idx and head_window_batch_size must be declared "
+                "together; a partial Head runtime identity is not an evaluator identity"
+            )
+        if self.head_variant_id is not None:
+            _require_text(self.head_variant_id, "head_variant_id")
+            _require_index(self.head_allele_idx, "head_allele_idx")
+            _require_index(self.head_window_batch_size, "head_window_batch_size", minimum=1)
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema": V2_STATE_SCHEMA_VERSION,
             "allele": self.allele,
             "score_scale": self.score_scale,
@@ -403,6 +422,13 @@ class HeadEvaluatorIdentity:
             "head_config_hash": self.head_config_hash,
             "head_checkpoint_digest": self.head_checkpoint_digest,
         }
+        if self.head_variant_id is not None:
+            payload.update({
+                "head_variant_id": self.head_variant_id,
+                "head_allele_idx": self.head_allele_idx,
+                "head_window_batch_size": self.head_window_batch_size,
+            })
+        return payload
 
     def digest(self) -> str:
         return canonical_digest(self.canonical_payload())

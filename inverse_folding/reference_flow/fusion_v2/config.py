@@ -28,13 +28,10 @@ from typing import Any, Mapping, Sequence
 from .errors import V2Error
 from .identity import CONTENT_ROLE_TO_FIELD, FROZEN_DIGEST_ROLES, canonical_digest, require_digest
 from .policy import (
-    DIAGNOSTIC_ALLOWED_PHASES,
-    DIAGNOSTIC_POLICY_ID_PREFIX,
     DIAGNOSTIC_ALLOWED_PHASES as _POLICY_DIAGNOSTIC_ALLOWED_PHASES,
     DIAGNOSTIC_POLICY_ID_PREFIX,
     DIAGNOSTIC_POLICY_IDS,
     DeclaredPolicy,
-    policy_id_is_diagnostic,
     V2PolicyError,
     policy_id_is_diagnostic,
 )
@@ -53,7 +50,8 @@ __all__ = [
     "V2HeadDirectedConfig",
     "ContentIdentity", "V2IdentityConfig",
     "V2SubstrateConfig", "V2ArmConfig", "DepthSchedulePoint", "V2ScheduleConfig",
-    "V2ProjectionConfig", "V2HeadConfig", "V2SafetyConfig", "V2CapsConfig", "V2Config",
+    "V2ProjectionConfig", "V2HeadConfig", "V2SearchStructureConfig", "V2SafetyConfig",
+    "V2CapsConfig", "V2Config",
     "load_v2_config", "default_content_bindings",
 ]
 
@@ -463,6 +461,10 @@ class V2ScheduleConfig:
     active_population_width: int
     min_lookahead_tail_steps: int
     points: tuple[DepthSchedulePoint, ...]
+    # Per-cell calibration key.  Optional only for legacy configs; the explicit high-risk profile
+    # requires it so changing the runtime protein->stratum manifest changes/refuses the run rather
+    # than silently selecting a different B(r) cell under the same config digest.
+    stratum_key: str | None = None
 
     def __post_init__(self) -> None:
         # ``active_population_width`` is a required field precisely so a run must state how many
@@ -674,6 +676,68 @@ class V2HeadConfig:
     score_scale: str
     window_k_min: int
     window_k_max: int
+    # These are evaluator semantics, not deployment decoration.  Kept optional so legacy configs
+    # retain their canonical bytes; the high-risk profile requires the complete triple.
+    head_variant_id: str | None = None
+    head_allele_idx: int | None = None
+    head_window_batch_size: int | None = None
+
+
+@dataclass(frozen=True)
+class V2SearchStructureConfig:
+    """Closed authorization for the high-risk exploratory ancestry structure profile.
+
+    Thresholds are code-authorized constants, not arbitrary config knobs: otherwise a run could
+    mint its own weaker ancestry gate while reusing the campaign's profile label.
+    """
+
+    policy_kind: str
+    profile_id: str
+    ancestry_sctm_min: float
+    strict_sctm_min: float
+
+    def __post_init__(self) -> None:
+        from .structure_gate import (
+            DUAL_SCTM_POLICY_KIND,
+            HIGH_RISK_ANCESTRY_SCTM_MIN,
+            HIGH_RISK_DUAL_SCTM_PROFILE_ID,
+            HIGH_RISK_STRICT_SCTM_MIN,
+        )
+
+        observed = {
+            "policy_kind": self.policy_kind,
+            "profile_id": self.profile_id,
+            "ancestry_sctm_min": self.ancestry_sctm_min,
+            "strict_sctm_min": self.strict_sctm_min,
+        }
+        expected = {
+            "policy_kind": DUAL_SCTM_POLICY_KIND,
+            "profile_id": HIGH_RISK_DUAL_SCTM_PROFILE_ID,
+            "ancestry_sctm_min": HIGH_RISK_ANCESTRY_SCTM_MIN,
+            "strict_sctm_min": HIGH_RISK_STRICT_SCTM_MIN,
+        }
+        if observed != expected:
+            raise V2ConfigError(
+                "config.safety.search_structure must exactly match the code-authorized high-risk "
+                f"dual-scTM profile {expected!r}; observed {observed!r}"
+            )
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "policy_kind": self.policy_kind,
+            "profile_id": self.profile_id,
+            "ancestry_sctm_min": float(self.ancestry_sctm_min),
+            "strict_sctm_min": float(self.strict_sctm_min),
+        }
+
+    def to_policy(self):
+        from .structure_gate import DualScTMGatePolicy
+
+        return DualScTMGatePolicy(
+            profile_id=self.profile_id,
+            ancestry_sctm_min=self.ancestry_sctm_min,
+            strict_sctm_min=self.strict_sctm_min,
+        )
 
 
 @dataclass(frozen=True)
@@ -684,6 +748,7 @@ class V2SafetyConfig:
     incremental_gate_enabled: bool
     delta_new_incremental: CalibratedScalar | None
     structure_cadence: str
+    search_structure: V2SearchStructureConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -711,20 +776,48 @@ class V2Config:
     content: tuple[ContentIdentity, ...]
 
     def canonical_payload(self) -> dict[str, Any]:
+        schedule_payload = {
+            "schedule_id": self.schedule.schedule_id,
+            "coordinate_law": self.schedule.coordinate_law.value,
+            "depth_cap": self.schedule.depth_cap,
+            "active_population_width": self.schedule.active_population_width,
+            "min_lookahead_tail_steps": self.schedule.min_lookahead_tail_steps,
+            "points": [vars(point) for point in self.schedule.points],
+        }
+        if self.schedule.stratum_key is not None:
+            schedule_payload["stratum_key"] = self.schedule.stratum_key
+        head_payload = {
+            "allele": self.head.allele,
+            "score_scale": self.head.score_scale,
+            "window_k_min": self.head.window_k_min,
+            "window_k_max": self.head.window_k_max,
+        }
+        for name in ("head_variant_id", "head_allele_idx", "head_window_batch_size"):
+            value = getattr(self.head, name)
+            if value is not None:
+                head_payload[name] = value
+        safety_payload = {
+            "cumulative_reference_kind": self.safety.cumulative_reference_kind,
+            "cumulative_reference_label": self.safety.cumulative_reference_label,
+            "delta_new_cumulative": self.safety.delta_new_cumulative.canonical_payload(),
+            "incremental_gate_enabled": self.safety.incremental_gate_enabled,
+            "delta_new_incremental": (
+                None if self.safety.delta_new_incremental is None
+                else self.safety.delta_new_incremental.canonical_payload()
+            ),
+            "structure_cadence": self.safety.structure_cadence,
+        }
+        if self.safety.search_structure is not None:
+            safety_payload["search_structure"] = (
+                self.safety.search_structure.canonical_payload()
+            )
         return {
             "schema": self.schema_version,
             "identity": vars(self.identity),
             "substrate": vars(self.substrate),
             "arm": {**vars(self.arm),
                     "a2_unmatched_reported": list(self.arm.a2_unmatched_reported)},
-            "schedule": {
-                "schedule_id": self.schedule.schedule_id,
-                "coordinate_law": self.schedule.coordinate_law.value,
-                "depth_cap": self.schedule.depth_cap,
-                "active_population_width": self.schedule.active_population_width,
-                "min_lookahead_tail_steps": self.schedule.min_lookahead_tail_steps,
-                "points": [vars(point) for point in self.schedule.points],
-            },
+            "schedule": schedule_payload,
             "projection": {
                 **{name: value for name, value in vars(self.projection).items()
                    if name != "head_directed"},
@@ -739,18 +832,8 @@ class V2Config:
                     }
                 ),
             },
-            "head": vars(self.head),
-            "safety": {
-                "cumulative_reference_kind": self.safety.cumulative_reference_kind,
-                "cumulative_reference_label": self.safety.cumulative_reference_label,
-                "delta_new_cumulative": self.safety.delta_new_cumulative.canonical_payload(),
-                "incremental_gate_enabled": self.safety.incremental_gate_enabled,
-                "delta_new_incremental": (
-                    None if self.safety.delta_new_incremental is None
-                    else self.safety.delta_new_incremental.canonical_payload()
-                ),
-                "structure_cadence": self.safety.structure_cadence,
-            },
+            "head": head_payload,
+            "safety": safety_payload,
             "caps": vars(self.caps),
             "content": [row.canonical_payload() for row in self.content],
         }
@@ -815,6 +898,11 @@ class V2Config:
             is_diagnostic=policy_id_is_diagnostic(block.control_policy_id),
             phase=self.identity.phase,
         )
+
+    def dual_structure_policy(self):
+        """Return the explicit dual gate, or ``None`` for the byte-compatible strict path."""
+        block = self.safety.search_structure
+        return None if block is None else block.to_policy()
 
     def config_digest(self) -> str:
         """One shared digest, derivable with no model and no file access."""
@@ -926,7 +1014,8 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
 
     sched_node = _section(payload, "schedule", "config")
     _reject_unknown(sched_node, ("schedule_id", "coordinate_law", "depth_cap",
-                                 "active_population_width", "min_lookahead_tail_steps", "points"),
+                                 "active_population_width", "min_lookahead_tail_steps", "points",
+                                 "stratum_key"),
                     "config.schedule")
     law_text = _text(sched_node, "coordinate_law", "config.schedule",
                      allowed=frozenset(member.value for member in CoordinateLaw))
@@ -956,6 +1045,10 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
         min_lookahead_tail_steps=_int(sched_node, "min_lookahead_tail_steps", "config.schedule",
                                       minimum=1),
         points=tuple(points),
+        stratum_key=(
+            _text(sched_node, "stratum_key", "config.schedule")
+            if "stratum_key" in sched_node else None
+        ),
     )
     # Delegate: the schedule layer owns every ordering law, so the two can never disagree.
     schedule.to_depth_schedule(substrate.n_steps)
@@ -990,25 +1083,41 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
             f"allowed phases are {sorted(DIAGNOSTIC_ALLOWED_PHASES)} and widening that requires an "
             "authority edit, never a config key (PLAN §2.5, §5.1)"
         )
+    policy_version = _text(proj_node, "support_policy_version", "config.projection")
     projection = V2ProjectionConfig(
         support_policy_id=policy_id,
-        support_policy_version=_text(proj_node, "support_policy_version", "config.projection"),
+        support_policy_version=policy_version,
         support_policy_is_diagnostic=is_diagnostic,
         temporal_history_rule=_text(proj_node, "temporal_history_rule", "config.projection"),
         assimilation_rule=_text(proj_node, "assimilation_rule", "config.projection"),
         admissible_mask_load_unit=_text(proj_node, "admissible_mask_load_unit",
                                         "config.projection", allowed=MASK_LOAD_UNITS),
-        head_directed=_head_directed(proj_node, policy_id=policy_id),
+        head_directed=_head_directed(
+            proj_node, policy_id=policy_id, policy_version=policy_version),
     )
 
     head_node = _section(payload, "head", "config")
-    _reject_unknown(head_node, ("allele", "score_scale", "window_k_min", "window_k_max"),
+    _reject_unknown(head_node, ("allele", "score_scale", "window_k_min", "window_k_max",
+                                "head_variant_id", "head_allele_idx",
+                                "head_window_batch_size"),
                     "config.head")
     head = V2HeadConfig(
         allele=_text(head_node, "allele", "config.head"),
         score_scale=_text(head_node, "score_scale", "config.head"),
         window_k_min=_int(head_node, "window_k_min", "config.head", minimum=1),
         window_k_max=_int(head_node, "window_k_max", "config.head", minimum=1),
+        head_variant_id=(
+            _text(head_node, "head_variant_id", "config.head")
+            if "head_variant_id" in head_node else None
+        ),
+        head_allele_idx=(
+            _int(head_node, "head_allele_idx", "config.head", minimum=0)
+            if "head_allele_idx" in head_node else None
+        ),
+        head_window_batch_size=(
+            _int(head_node, "head_window_batch_size", "config.head", minimum=1)
+            if "head_window_batch_size" in head_node else None
+        ),
     )
     if head.window_k_max < head.window_k_min:
         raise V2ConfigError("config.head.window_k_max is below window_k_min")
@@ -1018,7 +1127,8 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
     safety_node = _section(payload, "safety", "config")
     _reject_unknown(safety_node, ("cumulative_reference_kind", "cumulative_reference_label",
                                   "delta_new_cumulative", "incremental_gate_enabled",
-                                  "delta_new_incremental", "structure_cadence"), "config.safety")
+                                  "delta_new_incremental", "structure_cadence",
+                                  "search_structure"), "config.safety")
     cumulative_reference_kind = _text(
         safety_node, "cumulative_reference_kind", "config.safety")
     cumulative_reference_label = _text(
@@ -1058,13 +1168,64 @@ def load_v2_config(payload: Mapping[str, Any]) -> V2Config:
             head=head,
             path="config.safety.delta_new_incremental",
         )
+    structure_cadence = _text(safety_node, "structure_cadence", "config.safety")
+    search_structure = None
+    if "search_structure" in safety_node:
+        search_node = _section(safety_node, "search_structure", "config.safety")
+        _reject_unknown(
+            search_node,
+            ("policy_kind", "profile_id", "ancestry_sctm_min", "strict_sctm_min"),
+            "config.safety.search_structure",
+        )
+        search_structure = V2SearchStructureConfig(
+            policy_kind=_text(
+                search_node, "policy_kind", "config.safety.search_structure"),
+            profile_id=_text(
+                search_node, "profile_id", "config.safety.search_structure"),
+            ancestry_sctm_min=_float(
+                search_node, "ancestry_sctm_min", "config.safety.search_structure"),
+            strict_sctm_min=_float(
+                search_node, "strict_sctm_min", "config.safety.search_structure"),
+        )
+        if identity.phase != "capability_ladder":
+            raise V2ConfigError(
+                "config.safety.search_structure is authorized only in phase='capability_ladder'"
+            )
+        if not identity.split_role.startswith("exploratory_"):
+            raise V2ConfigError(
+                "config.safety.search_structure requires an explicitly exploratory split_role"
+            )
+        if not arm.feedback_enabled or arm.arm_role != "v2":
+            raise V2ConfigError(
+                "config.safety.search_structure requires the feedback-enabled V2 arm"
+            )
+        if structure_cadence != "every_endpoint":
+            raise V2ConfigError(
+                "config.safety.search_structure requires structure_cadence='every_endpoint'; "
+                "ancestry selection cannot use an unevaluated completion"
+            )
+        missing_identity = [
+            name for name, value in (
+                ("schedule.stratum_key", schedule.stratum_key),
+                ("head.head_variant_id", head.head_variant_id),
+                ("head.head_allele_idx", head.head_allele_idx),
+                ("head.head_window_batch_size", head.head_window_batch_size),
+            ) if value is None
+        ]
+        if missing_identity:
+            raise V2ConfigError(
+                "config.safety.search_structure requires explicit runtime-semantic identity "
+                f"fields {missing_identity}; changing a band stratum or Head instrument must "
+                "change/refuse the config rather than survive under one resume signature"
+            )
     safety = V2SafetyConfig(
         cumulative_reference_kind=cumulative_reference_kind,
         cumulative_reference_label=cumulative_reference_label,
         delta_new_cumulative=cumulative_threshold,
         incremental_gate_enabled=incremental_enabled,
         delta_new_incremental=incremental_threshold,
-        structure_cadence=_text(safety_node, "structure_cadence", "config.safety"),
+        structure_cadence=structure_cadence,
+        search_structure=search_structure,
     )
 
     caps_node = _section(payload, "caps", "config")
@@ -1117,7 +1278,9 @@ def _policy_calibrated(node: Mapping[str, Any], key: str, path: str) -> PolicyCa
     )
 
 
-def _head_directed(proj_node: Mapping[str, Any], *, policy_id: str) -> V2HeadDirectedConfig | None:
+def _head_directed(
+    proj_node: Mapping[str, Any], *, policy_id: str, policy_version: str,
+) -> V2HeadDirectedConfig | None:
     """Parse ``config.projection.head_directed``, required exactly for the Head-directed policy.
 
     Both directions are refused.  A run that declares ``head_directed_capped`` without the block
@@ -1132,7 +1295,11 @@ def _head_directed(proj_node: Mapping[str, Any], *, policy_id: str) -> V2HeadDir
         SOURCE_GEOMETRY_CONTROL_POLICY_ID,
         WRITE_WINDOW_RULE,
     )
-    from .reward import DEPTH0_INCUMBENT_RULES, INCUMBENT_UPDATE_LAWS
+    from .reward import (
+        DEPTH0_BOOTSTRAP_RULE,
+        DEPTH0_INCUMBENT_RULES,
+        INCUMBENT_UPDATE_LAWS,
+    )
     from .schedule import BandCenterRule
 
     present = "head_directed" in proj_node
@@ -1189,6 +1356,17 @@ def _head_directed(proj_node: Mapping[str, Any], *, policy_id: str) -> V2HeadDir
         raise V2ConfigError(
             f"{path}.write_cap_editable_fraction.value must equal the frozen V2F5A value 0.05, "
             f"got {fraction}; changing the cap is a different scientific policy"
+        )
+    bootstrap = config.lineage_incumbent_depth0_rule == DEPTH0_BOOTSTRAP_RULE
+    if bootstrap and policy_version != "v2":
+        raise V2ConfigError(
+            f"{path}.lineage_incumbent_depth0_rule={DEPTH0_BOOTSTRAP_RULE!r} requires "
+            "support_policy_version='v2'; v1 binds a predeclared reward incumbent before D0"
+        )
+    if policy_version == "v2" and not bootstrap:
+        raise V2ConfigError(
+            "support_policy_version='v2' is the logical-incumbent bootstrap method and requires "
+            f"{path}.lineage_incumbent_depth0_rule={DEPTH0_BOOTSTRAP_RULE!r}"
         )
     return config
 

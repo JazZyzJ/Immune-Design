@@ -1,0 +1,48 @@
+{
+  "schema_version": "v2-projection-policy-spec/1",
+  "policy_id": "head_directed_capped",
+  "policy_version": "v2",
+  "is_diagnostic_only": false,
+  "authority": "FUSION_V2 logical-incumbent bootstrap freeze",
+  "scope": "Depth-ladder Head-directed support policy. Depth zero establishes the generated-design reward lineage from the exact search-admissible pool; deeper rungs use strict incumbent improvement. WT/native is never relabelled as a reward incumbent.",
+  "depth0_reward_bootstrap": {
+    "reward_incumbent": null,
+    "candidate_domain": "The exact endpoint pool remaining after the cycle's search-admission and sequence-equivalence representative selection.",
+    "selection": "Ascending (head_global_risk, endpoint_id); select rank zero only.",
+    "required_proof": "Cycle-minted binding of source state, depth zero, protein, selected endpoint id and content digest, and the complete ordered search-admissible candidate rows.",
+    "epsilon_R": null,
+    "fallback": "none; a missing or mismatched rank-zero proof emits stall_missing_depth0_selection_proof",
+    "commit_law": "Only a committed D0 transition binds the selected donor as I1. A null, stalled or invalid transition creates no reward incumbent."
+  },
+  "reference_roles": {
+    "cumulative_safety_reference": "Immutable WT/native complete sequence used by the cumulative safety admission ratchet at every depth.",
+    "depth0_attribution_reference": "The same content-bound WT/native bytes used only for D0 aligned-window direction and leave-one-out revert residues; this role is not a reward incumbent.",
+    "lineage_reward_incumbent": "Absent at D0; I1 is the committed D0 rank-zero donor; Id for d >= 1 is the last accepted exact feasible endpoint in the lineage."
+  },
+  "deeper_donor_gate": {
+    "domain": "d >= 1",
+    "law": "R_H(donor) < R_H(lineage_incumbent) - epsilon_R",
+    "epsilon_source": "frozen Head repeatability or numerical precision calibration",
+    "fallback": "none; emit stall_no_better_donor"
+  },
+  "write_law": {
+    "candidate_domain": "editable non-anchor positions unresolved in the live source, donor/attribution-reference-discordant at D0 or donor/incumbent-discordant at d >= 1, and covered by an aligned Head window improved in the donor",
+    "contribution": "R_H(donor with position reverted to the active attribution comparator) - R_H(donor)",
+    "positive_gate": "strictly greater than the calibrated local-contribution tolerance",
+    "cap": "ceil(0.05 * N_editable)",
+    "selection": "descending contribution, residue index as final deterministic tie-break",
+    "fallback": "none; emit stall_no_positive_local_write"
+  },
+  "reopen_law": {
+    "count": "u_target - u_source + m_write",
+    "target": "content-bound midpoint_tie_low centre of the exact schedule band",
+    "priority": "new_hotspot>worsened>residual_burden>active_uncertainty>temporal_instability>index",
+    "background_remask": false
+  },
+  "artifact_contract": {
+    "required_fields": "reward_gate_kind, nullable incumbent identity, nullable donor-gate epsilon, attribution-reference identity, and the nullable canonical D0 selection proof",
+    "d0_gate_kind": "depth0_bootstrap",
+    "deeper_gate_kind": "strict_improvement"
+  },
+  "not_authorized": "WT-as-reward-incumbent at D0, a D0 epsilon comparison, endpoint_rank > 0 bootstrap, proof construction outside the real search-admissible cycle pool, incumbent advancement before commit, or weakening the strict D1+ margin."
+}
