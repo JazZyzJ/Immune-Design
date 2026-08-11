@@ -4229,3 +4229,23 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.91
 - status: done locally; real D4/K12 GPU execution pending.
 - next_action: Reconcile the four remote §9 execution commits, materialize all characterized-24 cells from the same §9 Head/structure instrument with the cohort-specific policy ceiling, dry-run, then submit runbook §10.
+
+### L0154
+- timestamp: 2026-08-11T04:29:46-04:00
+- type: FEATURE
+- module: RF/FUSION_V2
+- trigger: The high-risk capability campaign must optimize against generated DPLM-native designs rather than require the first generated donor to beat WT, and must run the 100-protein cohort as one serial GPU task.
+- change_summary: Added the closed `highrisk_d8_k32_r40` single-root exploratory profile; policy v2 selects the rank-zero search-admissible generated endpoint at D0 without a WT reward comparison, then restores strict epsilon-gated lineage incumbents from D1 onward. The structure adapter now preserves refold cache execution status. The shared launcher accepts a serial `CELL_LIST` in one GPU job.
+- rationale: WT remains the immutable cumulative safety and D0 local-attribution reference, but is not the optimization baseline. This removes the baseline mismatch without changing the Head-directed positional law, the cumulative safety ratchet, or the one-lineage recursion. Cache hits must not be counted as new model executions. Serial list mode matches the available GPU topology without creating 100 independent jobs.
+- artifacts:
+  - `inverse_folding/reference_flow/fusion_v2/{config,policy,reward}.py`
+  - `inverse_folding/reference_flow/fusion_v2_runtime/cycle.py`
+  - `inverse_folding/reference_flow/configs/{v2_head_directed_capped_policy_v2.json,rf_refine_fusion_highrisk_sctm070.yaml}`
+  - `scripts/{materialize_v2_canary_config.py,submit_rf_fusion_v2_canary.slurm,rf_fusion_v2_oracles.py,rf_fusion_v2_artifacts.py,run_rf_refine_fusion.py}`
+- evidence: focused D0/cache TDD `5 passed`; combined V2 policy/ladder/oracle/artifact/config/materializer regression `236 passed`; `bash -n` and `git diff --check` pass.
+- impact:
+  - scope: additive policy/profile and launcher mode. Published policy v1 identity and existing one-cell launch behavior are unchanged.
+  - risk: medium -- the new D0 reward law changes ancestry selection only for configs explicitly declaring policy v2 and `best_admissible_depth0`.
+  - confidence: 0.90
+- status: code complete; real smoke and 100-protein execution pending.
+- next_action: Materialize one global unconstrained band and relaxed hotspot declaration, run a real single-protein smoke, then submit one serial 100-protein job.

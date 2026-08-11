@@ -142,7 +142,8 @@ V2_TABLE_SCHEMAS: dict[str, TableSchema] = {
          "n_positive_contributions", "m_band_min", "m_band_max", "required_reopen",
          "n_legal_reopen_candidates", "policy_head_calls",
          "write_candidate_evidence_json", "reopen_candidate_evidence_json",
-         "policy_calibration_json"],
+         "policy_calibration_json", "reward_gate_kind",
+         "attribution_reference_sequence_md5"],
         # ``arm_slot`` and ``treatment_identity`` are part of the KEY, not merely columns.  A
         # matched pair runs both arms off one source through one transition id, so without them two
         # arms of the same contrast collide on the join key and the bundle refuses a table whose
@@ -570,6 +571,7 @@ _POLICY_EVIDENCE_COLUMNS = (
     "m_band_min", "m_band_max", "required_reopen", "n_legal_reopen_candidates",
     "policy_head_calls", "write_candidate_evidence_json", "reopen_candidate_evidence_json",
     "policy_calibration_json",
+    "reward_gate_kind", "attribution_reference_sequence_md5",
 )
 
 
@@ -611,6 +613,9 @@ def _policy_evidence_columns(evidence: Any) -> dict:
         "write_candidate_evidence_json": _json(payload.get("write_candidates", [])),
         "reopen_candidate_evidence_json": _json(payload.get("reopen_candidates", [])),
         "policy_calibration_json": _json(payload.get("calibration", {})),
+        "reward_gate_kind": payload.get("reward_gate_kind"),
+        "attribution_reference_sequence_md5": payload.get(
+            "attribution_reference_sequence_md5"),
     }
 
 

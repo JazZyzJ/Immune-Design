@@ -605,6 +605,8 @@ def build_oracles(args, config):
             active_site_min_pLDDT=(
                 None if v2 is None else v2.predicted_active_site_min_plddt
             ),
+            cache_hit=bool(pred.get("cache_hit", False)),
+            model_executed=not bool(pred.get("cache_hit", False)),
         )
 
     from inverse_folding.reference_flow.fusion.oracles import FusionOracles

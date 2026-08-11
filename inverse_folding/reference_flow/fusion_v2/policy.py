@@ -42,10 +42,12 @@ from .evidence import (
 )
 from .identity import HeadEvaluatorIdentity, ProjectionPolicyIdentity, require_digest
 from .reward import (
+    DEPTH0_BOOTSTRAP_RULE,
     DonorGateVerdict,
     INCUMBENT_UPDATE_LAWS,
     LineageIncumbent,
     advance_incumbent,
+    bind_incumbent_from_endpoint,
     donor_gate,
 )
 from .schedule import (
@@ -433,6 +435,9 @@ class PolicyRuntime:
 
     cost_meter: Any = None
     event_prefix: str = ""
+    source_depth: int | None = None
+    selected_rank: int | None = None
+    selected_endpoint_id: str | None = None
 
 
 @runtime_checkable
@@ -1031,6 +1036,9 @@ class HeadDirectedDecisionEvidence:
     head_calls: int
     #: Explicitly recorded so the CONTROL arm can prove it consulted no Head evidence at all.
     head_evidence_consulted: bool
+    #: D0 pool bootstrap and D1+ strict improvement are different reward gates.
+    reward_gate_kind: str | None = None
+    attribution_reference_sequence_md5: str | None = None
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -1062,6 +1070,8 @@ class HeadDirectedDecisionEvidence:
             "reopen_candidates": [row.canonical_payload() for row in self.reopen_candidates],
             "head_calls": self.head_calls,
             "head_evidence_consulted": self.head_evidence_consulted,
+            "reward_gate_kind": self.reward_gate_kind,
+            "attribution_reference_sequence_md5": self.attribution_reference_sequence_md5,
         }
 
 
@@ -1139,6 +1149,7 @@ class HeadDirectedCappedPolicy:
     counterfactual_scorer: Any
     policy_spec_digest: str = ""
     policy_version: str = "v1"
+    depth0_incumbent_rule: str = "cumulative_safety_reference"
 
     #: The kernel hands a ``PolicyRuntime`` only to policies that ask for one.
     consumes_runtime: bool = True
@@ -1186,6 +1197,15 @@ class HeadDirectedCappedPolicy:
                 "the Head-blind law V2F5A exists to replace"
             )
         require_digest(self.policy_spec_digest, "policy_spec_digest")
+        if self.depth0_incumbent_rule == DEPTH0_BOOTSTRAP_RULE:
+            if self.policy_version != "v2":
+                raise V2PolicyError(
+                    f"{DEPTH0_BOOTSTRAP_RULE!r} requires policy_version='v2'"
+                )
+        elif self.policy_version == "v2":
+            raise V2PolicyError(
+                "policy_version='v2' is reserved for best_admissible_depth0"
+            )
 
     # -- identity ---------------------------------------------------------------------------
 
@@ -1196,10 +1216,7 @@ class HeadDirectedCappedPolicy:
         # this cell's realized binding.  Same split as the state-derived probe, and for the same
         # reason: one frozen spec must be able to sign a multi-cell campaign whose cells pin
         # different bands, incumbents and thresholds.
-        return ProjectionPolicyIdentity(
-            policy_id=HEAD_DIRECTED_CAPPED_POLICY_ID,
-            policy_version=self.policy_version,
-            policy_config_digest=canonical_digest({
+        payload = {
                 "policy_id": HEAD_DIRECTED_CAPPED_POLICY_ID,
                 "policy_version": self.policy_version,
                 "write_window_rule": WRITE_WINDOW_RULE,
@@ -1214,13 +1231,19 @@ class HeadDirectedCappedPolicy:
                 "incumbent_update_law": self.incumbent_update_law,
                 "head_identity_digest": self.evaluator.digest(),
                 "window_grid_digest": self.window_grid_digest,
-            }),
+        }
+        if self.policy_version == "v2":
+            payload["depth0_incumbent_rule"] = self.depth0_incumbent_rule
+        return ProjectionPolicyIdentity(
+            policy_id=HEAD_DIRECTED_CAPPED_POLICY_ID,
+            policy_version=self.policy_version,
+            policy_config_digest=canonical_digest(payload),
             policy_spec_digest=self.policy_spec_digest,
             is_diagnostic_only=False,
         )
 
     def advance_lineage_incumbent(
-        self, *, donor: Any, verdict: DonorGateVerdict, accepted_at_depth: int,
+        self, *, donor: Any, verdict: DonorGateVerdict | None, accepted_at_depth: int,
     ) -> "HeadDirectedCappedPolicy":
         """Return the policy for the next rung after adopting one accepted donor.
 
@@ -1228,11 +1251,24 @@ class HeadDirectedCappedPolicy:
         gives the next decision a new identity digest.  A refused verdict returns ``self`` exactly:
         stalled/null cycles must not manufacture a new lineage reference.
         """
-        advanced = advance_incumbent(
-            incumbent=self.incumbent, donor=donor, verdict=verdict,
-            evaluator=self.evaluator, accepted_at_depth=int(accepted_at_depth),
-            law=self.incumbent_update_law,
-        )
+        if (self.depth0_incumbent_rule == DEPTH0_BOOTSTRAP_RULE
+                and self.incumbent.kind.value == "cumulative_safety_reference"):
+            if verdict is not None:
+                raise V2PolicyError(
+                    "best_admissible_depth0 has no WT donor-gate verdict"
+                )
+            advanced = bind_incumbent_from_endpoint(
+                endpoint=donor, lineage_id=self.incumbent.lineage_id,
+                evaluator=self.evaluator,
+                safety_reference_sequence_md5=self.incumbent.safety_reference_sequence_md5,
+                accepted_at_depth=int(accepted_at_depth),
+            )
+        else:
+            advanced = advance_incumbent(
+                incumbent=self.incumbent, donor=donor, verdict=verdict,
+                evaluator=self.evaluator, accepted_at_depth=int(accepted_at_depth),
+                law=self.incumbent_update_law,
+            )
         return self if advanced is self.incumbent else replace(self, incumbent=advanced)
 
     # -- the decision -----------------------------------------------------------------------
@@ -1262,12 +1298,16 @@ class HeadDirectedCappedPolicy:
         resolved = list(view.resolved_positions)
         donor_sequence = endpoint.sequence
         incumbent_sequence = self.incumbent.sequence
+        bootstrap = (
+            self.depth0_incumbent_rule == DEPTH0_BOOTSTRAP_RULE
+            and self.incumbent.kind.value == "cumulative_safety_reference"
+        )
 
         def evidence(**over: Any) -> HeadDirectedDecisionEvidence:
             base = dict(
                 policy_id=HEAD_DIRECTED_CAPPED_POLICY_ID, stall_reason=None, donor_gate=None,
-                incumbent_id=self.incumbent.incumbent_id,
-                incumbent_sequence_md5=self.incumbent.sequence_md5,
+                incumbent_id=(None if bootstrap else self.incumbent.incumbent_id),
+                incumbent_sequence_md5=(None if bootstrap else self.incumbent.sequence_md5),
                 safety_reference_sequence_md5=self.incumbent.safety_reference_sequence_md5,
                 donor_endpoint_id=str(endpoint.endpoint_id),
                 donor_sequence_md5=str(endpoint.sequence_md5),
@@ -1280,6 +1320,8 @@ class HeadDirectedCappedPolicy:
                 realized_writes=0, required_reopen=None, realized_reopen=0,
                 n_legal_reopen_candidates=len(resolved), write_candidates=(),
                 reopen_candidates=(), head_calls=0, head_evidence_consulted=True,
+                reward_gate_kind=(DEPTH0_BOOTSTRAP_RULE if bootstrap else "strict_improvement"),
+                attribution_reference_sequence_md5=self.incumbent.sequence_md5,
             )
             base.update(over)
             return HeadDirectedDecisionEvidence(**base)
@@ -1291,21 +1333,30 @@ class HeadDirectedCappedPolicy:
             )
 
         # ---- 1. the donor gate ---------------------------------------------------------------
-        gate = donor_gate(
-            donor=endpoint, incumbent=self.incumbent,
-            epsilon_r=self.calibration.epsilon_r,
-            epsilon_source_ref=self.calibration.epsilon_source_ref,
-        )
-        if not gate.passed:
-            return stall(
-                StallReason.NO_BETTER_DONOR,
-                f"donor {endpoint.endpoint_id} scores {gate.donor_global_risk:.6f} against "
-                f"incumbent {gate.incumbent_global_risk:.6f} (margin {gate.margin:.6f}, required "
-                f"> {gate.epsilon_r:.6f}); reason={gate.reason.value}. The lineage keeps its "
-                "incumbent rather than adopting a donor whose advantage is inside the frozen "
-                "Head's own noise floor",
-                donor_gate=gate,
+        gate = None
+        if bootstrap:
+            if runtime is None or runtime.source_depth != 0 or runtime.selected_rank != 0 \
+                    or runtime.selected_endpoint_id != str(endpoint.endpoint_id):
+                return stall(
+                    StallReason.NO_BETTER_DONOR,
+                    f"{DEPTH0_BOOTSTRAP_RULE} requires the cycle-proved rank-zero endpoint",
+                )
+        else:
+            gate = donor_gate(
+                donor=endpoint, incumbent=self.incumbent,
+                epsilon_r=self.calibration.epsilon_r,
+                epsilon_source_ref=self.calibration.epsilon_source_ref,
             )
+            if not gate.passed:
+                return stall(
+                    StallReason.NO_BETTER_DONOR,
+                    f"donor {endpoint.endpoint_id} scores {gate.donor_global_risk:.6f} against "
+                    f"incumbent {gate.incumbent_global_risk:.6f} (margin {gate.margin:.6f}, required "
+                    f"> {gate.epsilon_r:.6f}); reason={gate.reason.value}. The lineage keeps its "
+                    "incumbent rather than adopting a donor whose advantage is inside the frozen "
+                    "Head's own noise floor",
+                    donor_gate=gate,
+                )
 
         # ---- 2. raw aligned-window evidence, on ONE common scale ------------------------------
         try:

@@ -745,6 +745,24 @@ def test_a_passing_structure_is_an_EVALUATED_feasible_verdict():
     assert outcome.metrics["scTM"] == pytest.approx(0.95)
 
 
+@pytest.mark.parametrize(
+    ("cache_hit", "expected_status", "expected_executed"),
+    [(True, "hit", False), (False, "miss", True)],
+)
+def test_structure_oracle_preserves_real_refold_cache_execution_status(
+    cache_hit, expected_status, expected_executed,
+):
+    gate = _structure_only(
+        _fake_build_oracles(
+            metrics=_metrics(cache_hit=cache_hit, model_executed=not cache_hit),
+            manifest=_Manifest(),
+        )
+    )
+    outcome = gate(_request())
+    assert outcome.cache_status == expected_status
+    assert outcome.model_executed is expected_executed
+
+
 def test_a_failing_scTM_is_refused_with_the_gates_own_reason():
     gate = _structure_only(_fake_build_oracles(metrics=_metrics(scTM=0.10),
                                                manifest=_Manifest()))

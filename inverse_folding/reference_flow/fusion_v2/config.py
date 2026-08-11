@@ -1184,6 +1184,12 @@ def _head_directed(proj_node: Mapping[str, Any], *, policy_id: str) -> V2HeadDir
         max_counterfactual_head_calls_per_cycle=_int(
             node, "max_counterfactual_head_calls_per_cycle", path, minimum=1),
     )
+    from .reward import DEPTH0_BOOTSTRAP_RULE
+    if config.lineage_incumbent_depth0_rule == DEPTH0_BOOTSTRAP_RULE \
+            and _text(proj_node, "support_policy_version", "config.projection") != "v2":
+        raise V2ConfigError(
+            f"{DEPTH0_BOOTSTRAP_RULE!r} requires support_policy_version='v2'"
+        )
     fraction = float(config.write_cap_editable_fraction.value)
     if fraction != 0.05:
         raise V2ConfigError(

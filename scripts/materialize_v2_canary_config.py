@@ -89,6 +89,32 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
             "max_definitive_refolds": 64,
         },
     },
+    "highrisk_d8_k32_r40": {
+        "phase": "capability_ladder",
+        "split_role": "exploratory_highrisk_ceiling_v1",
+        "support_policy_version": "v2",
+        "schedule": {
+            "schedule_id": "highrisk-d8-k32-r40-global-v1",
+            "coordinate_law": "progressive_checkpoint",
+            "depth_cap": 8,
+            "active_population_width": 1,
+            "min_lookahead_tail_steps": 10,
+            "points": [
+                {"depth": depth, "r_step": 40, "c_source_step": 50 + 5 * depth,
+                 "c_next_step": 55 + 5 * depth, "n_lookaheads": 32,
+                 "band_key": "step40"}
+                for depth in range(8)
+            ],
+        },
+        # Engineering ceilings only. This campaign asks for capability, not matched compute.
+        "caps": {
+            "max_logical_dfe": 20000,
+            "max_head_calls": 20000,
+            "max_definitive_refolds": 1024,
+            "max_gpu_seconds": 604800,
+            "max_walltime_s": 604800,
+        },
+    },
 }
 
 
@@ -328,7 +354,7 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
         if int(args.r_step) != 40:
             raise MaterializeError(
                 f"exploratory profile {profile_name!r} requires --r-step 40, got {args.r_step}; "
-                "all four depths are bound to the measured B(40) cell"
+                "every depth is bound to the declared B(40) cell"
             )
         substrate = config.get("substrate") or {}
         required_substrate = {
@@ -407,7 +433,8 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
         )
         config["projection"].update({
             "support_policy_id": "head_directed_capped",
-            "support_policy_version": "v1",
+            "support_policy_version": str(
+                profile.get("support_policy_version", "v1") if profile is not None else "v1"),
             "support_policy_is_diagnostic": False,
             "head_directed": json.loads(json.dumps(block)),
         })

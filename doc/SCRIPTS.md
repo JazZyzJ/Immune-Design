@@ -528,7 +528,11 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     (`--campaign-id` overrides `identity.campaign_id`, so the runbook §7 mechanism cohort can
     reuse this producer with the mechanism-stage `--hotspot-json` and
     `--v0-structure-gate-config` without signing its artifacts as more Canary)
-    plus that cell's measured artifacts (runbook §3). `--policy-calibration-json` switches the
+    plus that cell's measured artifacts (runbook §3). The closed
+    `highrisk_d8_k32_r40` exploratory profile is a single-root, eight-rung, K=32 capability
+    schedule with a common `B(40)` lookup; its policy v2 bootstraps the logical reward incumbent
+    from the generated D0 rank-zero endpoint, while WT remains safety/attribution only.
+    `--policy-calibration-json` switches the
     cell to the V2F5A `head_directed_capped` qualification law; it refuses unless the calibration's
     Head instrument/domain and committed policy-spec digest match the exact files supplied to this
     cell, and `--qualification-max-head-calls` freezes the cohort Head cap. Required flags name the cell
@@ -609,8 +613,10 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `a2_matched_extra_lookaheads`, the quantity whose being zero is why no contrast is licensed.
     Exit `0` only if every check passes on every cell.
 
-23. `scripts/submit_rf_fusion_v2_canary.slurm` — one Canary CELL per job (runbook §5).
-    `CELL={5zhv_r30|5zhv_r40|q00511_r30|q00511_r40}` is the only required variable; the job sources
+23. `scripts/submit_rf_fusion_v2_canary.slurm` — one Canary CELL per job (runbook §5), or one
+    serial cell list in one GPU job. Exactly one of `CELL=<stem>` or `CELL_LIST=<file>` is required;
+    list mode reads one stem per line and runs them sequentially without arrays/background jobs,
+    continuing after typed cell failures so the whole requested cohort is attempted. The job sources
     that cell's `<CELL>.args.sh` and adds only what belongs to the JOB rather than the cell
     (`journal_dir`, `device`). `rtx6000` + `CONDA_ENV=immune-design-blackwell` (sm_120), which is
     the env the `B(r)` scan and the hotspot calibration also ran under — a different stack would

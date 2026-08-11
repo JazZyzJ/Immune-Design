@@ -122,6 +122,38 @@ def test_explicit_uricase_recursive_profile_materializes_the_frozen_d4_k12_sched
     assert loaded.schedule.depth_cap == 4
 
 
+def test_highrisk_profile_is_single_root_d8_k32_with_five_step_rungs(tmp_path):
+    template, args, frozen = _case(tmp_path)
+    args.exploratory_profile = "highrisk_d8_k32_r40"
+    args.run_max_head_calls = 20000
+    args.esmfold2_model = "biohub/ESMFold2"
+    args.esmfold2_num_loops = 3
+    args.esmfold2_num_sampling_steps = 50
+    args.esmfold2_num_diffusion_samples = 1
+    args.esmfold2_seed = 0
+    payload = json.loads(args.policy_calibration_json.read_text())
+    payload["head_directed"]["lineage_incumbent_depth0_rule"] = "best_admissible_depth0"
+    spec = tmp_path / "policy-v2.json"
+    spec.write_text(json.dumps({"policy_id": "head_directed_capped", "policy_version": "v2"}))
+    payload["policy_spec_sha256"] = hashlib.sha256(spec.read_bytes()).hexdigest()
+    args.policy_calibration_json.write_text(json.dumps(payload))
+    frozen["projection_policy_spec"] = payload["policy_spec_sha256"]
+
+    config = fill_config(template, args=args, frozen=frozen, runtime={})
+
+    assert config["projection"]["support_policy_version"] == "v2"
+    assert config["schedule"]["active_population_width"] == 1
+    assert config["schedule"]["depth_cap"] == 8
+    assert [point["n_lookaheads"] for point in config["schedule"]["points"]] == [32] * 8
+    assert [(point["c_source_step"], point["c_next_step"])
+            for point in config["schedule"]["points"]] == [
+        (50, 55), (55, 60), (60, 65), (65, 70),
+        (70, 75), (75, 80), (80, 85), (85, 90),
+    ]
+    assert config["caps"]["max_logical_dfe"] == 20000
+    assert load_v2_config(config).schedule.depth_cap == 8
+
+
 def test_recursive_profile_is_never_inferred_from_an_ordinary_calibrated_call(tmp_path):
     template, args, frozen = _case(tmp_path)
 

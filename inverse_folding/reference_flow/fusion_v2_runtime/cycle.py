@@ -496,7 +496,9 @@ def run_one_cycle(
         decision = support_policy(
             source, selected, coordinates,
             runtime=PolicyRuntime(cost_meter=cost_meter,
-                                  event_prefix=f"{origin_transition_id}:policy"),
+                                  event_prefix=f"{origin_transition_id}:policy",
+                                  source_depth=int(lineage.depth), selected_rank=rank,
+                                  selected_endpoint_id=str(selected.endpoint_id)),
         )
     else:
         decision = support_policy(source, selected, coordinates)

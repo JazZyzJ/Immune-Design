@@ -42,6 +42,7 @@ __all__ = [
     "V2RewardError",
     "IncumbentIdentityError",
     "IncumbentAliasError",
+    "DEPTH0_BOOTSTRAP_RULE",
     "DEPTH0_INCUMBENT_RULES",
     "INCUMBENT_UPDATE_LAWS",
     "LineageIncumbentKind",
@@ -70,6 +71,8 @@ class IncumbentAliasError(V2RewardError):
 #: How ``I_0`` is bound before any depth-0 endpoint outcome is inspected.  PLAN §3.1 leaves the
 #: depth-zero binding an OPEN decision, so the run must DECLARE which rule it used; this module
 #: implements the vocabulary and refuses anything outside it.  It has no default anywhere.
+DEPTH0_BOOTSTRAP_RULE = "best_admissible_depth0"
+
 DEPTH0_INCUMBENT_RULES = frozenset({
     #: ``I_0 = ybar``: the frozen complete reference the run already content-binds for the safety
     #: ratchet also serves as the depth-0 reward baseline.  It is frozen before any endpoint is
@@ -80,6 +83,9 @@ DEPTH0_INCUMBENT_RULES = frozenset({
     #: frozen before the depth-0 pool exists.  Implemented here; a runtime that offers it must
     #: supply the sequence through its own content-bound input role.
     "predeclared_external_design",
+    #: No logical reward incumbent exists at D0. The cycle's rank-zero generated endpoint is
+    #: adopted as I1; WT remains only the immutable safety/local-attribution reference.
+    DEPTH0_BOOTSTRAP_RULE,
 })
 
 #: How ``I_d`` moves.  One law, named so the artifact records which one ran.

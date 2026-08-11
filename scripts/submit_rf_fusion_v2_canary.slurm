@@ -40,7 +40,14 @@ set -euo pipefail
 export PS1
 
 # ── Cell + layout (override via env; no cluster path is hardcoded in a module) ──
-CELL="${CELL:?set CELL to the stem of a generated resolved config + .args.sh}"
+# CELL runs one legacy cell. CELL_LIST runs one cell stem per line, serially, in this ONE GPU job.
+# Exactly one is required; CELL_LIST never creates an array or background process.
+CELL="${CELL:-}"
+CELL_LIST="${CELL_LIST:-}"
+if [[ -n "${CELL}" && -n "${CELL_LIST}" ]] || [[ -z "${CELL}" && -z "${CELL_LIST}" ]]; then
+  echo "set exactly one of CELL or CELL_LIST" >&2
+  exit 4
+fi
 # EXPORTED, not merely set: the DPLM checkpoint carries a stored hydra config whose paths are
 # ``oc.env:PROJECT_ROOT`` interpolations, so omegaconf resolves them out of the ENVIRONMENT while
 # loading the checkpoint.  As a plain shell variable it is invisible there and the load dies with
@@ -102,9 +109,6 @@ case "${EXPLORATORY_DEPTH_OVERRIDE}" in
     ;;
 esac
 
-OUT_DIR="${RUNDIR}/${CELL}"
-ARGS_FILE="${WORK}/resolved_configs/${CELL}.args.sh"
-
 # ── Env ──
 module purge
 module load anaconda3/2025.12
@@ -120,31 +124,79 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 cd "${PROJECT_ROOT}"
 
-# shellcheck source=/dev/null
-source "${ARGS_FILE}"   # -> V2_CONFIG, V2_COHORT, INPUT_FILES[], SHARD_INPUTS[]
-
-mkdir -p "${OUT_DIR}"
-echo "[v2canary] cell=${CELL} cohort=${V2_COHORT} config=${V2_CONFIG}"
 echo "[v2canary] git=$(git rev-parse HEAD) env=${CONDA_ENV} node=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START} qualification=${QUALIFICATION} exploratory_depth_override=${EXPLORATORY_DEPTH_OVERRIDE}"
 
-set +e
-python scripts/run_rf_fusion_v2.py \
-  --v2-config   "${V2_CONFIG}" \
-  --out-dir     "${OUT_DIR}" \
-  --cohort      "${V2_COHORT}" \
-  --mechanism-prefixes "${MECHANISM_PREFIXES}" \
-  --mechanism-prefix-start "${MECHANISM_PREFIX_START}" \
-  "${QUALIFICATION_ARGS[@]}" \
-  "${EXPLORATORY_DEPTH_ARGS[@]}" \
-  --input-file  "${INPUT_FILES[@]}" \
-  --shard-input "${SHARD_INPUTS[@]}" \
-                "journal_dir=${OUT_DIR}/journals" \
-                "device=${DEVICE}"
-RC=$?
-set -e
+run_cell() (
+  set -euo pipefail
+  local cell=$1
+  local out_dir="${RUNDIR}/${cell}"
+  local args_file="${WORK}/resolved_configs/${cell}.args.sh"
+  if [[ ! -r "${args_file}" ]]; then
+    echo "[v2canary] unreadable args file: ${args_file}" >&2
+    exit 4
+  fi
+  # shellcheck source=/dev/null
+  source "${args_file}"   # -> V2_CONFIG, V2_COHORT, INPUT_FILES[], SHARD_INPUTS[]
+  mkdir -p "${out_dir}"
+  echo "[v2canary] cell=${cell} cohort=${V2_COHORT} config=${V2_CONFIG}"
+  python scripts/run_rf_fusion_v2.py \
+    --v2-config   "${V2_CONFIG}" \
+    --out-dir     "${out_dir}" \
+    --cohort      "${V2_COHORT}" \
+    --mechanism-prefixes "${MECHANISM_PREFIXES}" \
+    --mechanism-prefix-start "${MECHANISM_PREFIX_START}" \
+    "${QUALIFICATION_ARGS[@]}" \
+    "${EXPLORATORY_DEPTH_ARGS[@]}" \
+    --input-file  "${INPUT_FILES[@]}" \
+    --shard-input "${SHARD_INPUTS[@]}" \
+                  "journal_dir=${out_dir}/journals" \
+                  "device=${DEVICE}"
+)
+
+if [[ -n "${CELL}" ]]; then
+  set +e
+  run_cell "${CELL}"
+  RC=$?
+  set -e
+else
+  if [[ ! -r "${CELL_LIST}" ]]; then
+    echo "CELL_LIST is not readable: ${CELL_LIST}" >&2
+    exit 4
+  fi
+  TOTAL=0
+  SUCCEEDED=0
+  FAILED=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%%#*}"
+    read -r cell _ <<< "${line}"
+    [[ -n "${cell:-}" ]] || continue
+    TOTAL=$((TOTAL + 1))
+    set +e
+    run_cell "${cell}"
+    cell_rc=$?
+    set -e
+    if [[ ${cell_rc} -eq 0 ]]; then
+      SUCCEEDED=$((SUCCEEDED + 1))
+    else
+      FAILED=$((FAILED + 1))
+      echo "[v2canary] cell=${cell} EXIT=${cell_rc}; continuing serial list" >&2
+    fi
+  done < "${CELL_LIST}"
+  if [[ ${TOTAL} -eq 0 ]]; then
+    echo "CELL_LIST contains no cell stems" >&2
+    exit 4
+  elif [[ ${FAILED} -eq 0 ]]; then
+    RC=0
+  elif [[ ${SUCCEEDED} -eq 0 ]]; then
+    RC=2
+  else
+    RC=3
+  fi
+  echo "[v2canary] serial_summary total=${TOTAL} succeeded=${SUCCEEDED} failed=${FAILED}"
+fi
 
 # The driver's exit code is the whole interface: 0 complete with a success, 2 nothing usable or a
 # realized cap breached, 3 partial, 4 not launchable.  Echoed so the log says which, unambiguously.

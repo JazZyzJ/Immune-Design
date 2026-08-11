@@ -165,6 +165,7 @@ def _build_head_directed_capped(*, band_table, stratum_key, config, head_oracle=
         counterfactual_scorer=CounterfactualHeadScorer(head_oracle=head_oracle),
         policy_spec_digest=_content_digest(config, "projection_policy_spec"),
         policy_version=config.projection.support_policy_version,
+        depth0_incumbent_rule=config.projection.head_directed.lineage_incumbent_depth0_rule,
     )
 
 
@@ -740,7 +741,10 @@ def build_production_oracles(
                 failure_reason=f"{type(exc).__name__}: {exc}",
                 walltime_s=time.perf_counter() - started, evaluated=True)
         return StructureOutcome(
-            feasible=bool(feasible), cache_status="miss", model_executed=True,
+            feasible=bool(feasible),
+            cache_status=("hit" if bool(getattr(metrics, "cache_hit", False)) else "miss"),
+            model_executed=bool(getattr(
+                metrics, "model_executed", not bool(getattr(metrics, "cache_hit", False)))),
             failure_reason=(None if feasible else str(reason)),
             metrics={name: float(value) for name, value in (
                 ("scTM", getattr(metrics, "scTM", None)),
