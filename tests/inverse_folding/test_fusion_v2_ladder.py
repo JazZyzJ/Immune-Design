@@ -310,6 +310,44 @@ def test_the_next_rung_uses_the_advanced_policy_identity():
     assert calls[0][2:] == ("pass-0", 1)
 
 
+def test_depth0_generated_rank_bootstraps_the_ladder_without_a_wt_donor_verdict():
+    """Policy v2 intentionally has no global WT comparison at D0.
+
+    The cycle proves the selected endpoint is rank zero and records the bootstrap gate kind.  The
+    ladder must pass ``verdict=None`` to the policy's own guarded advancement exactly at depth zero,
+    then require ordinary donor verdicts again at later depths.
+    """
+    from inverse_folding.reference_flow.fusion_v2.reward import DEPTH0_BOOTSTRAP_RULE
+
+    calls = []
+
+    class BootstrapProbe:
+        depth0_incumbent_rule = DEPTH0_BOOTSTRAP_RULE
+
+        def __init__(self, generation=0):
+            self.generation = generation
+
+        def __call__(self, source, endpoint, coordinates):
+            decision = _support_policy(source, endpoint, coordinates)
+            verdict = None if self.generation == 0 else f"pass-{self.generation}"
+            evidence = types.SimpleNamespace(
+                donor_gate=verdict,
+                reward_gate_kind=(DEPTH0_BOOTSTRAP_RULE
+                                  if self.generation == 0 else "strict_improvement"),
+            )
+            return dataclasses.replace(decision, decision_evidence=evidence)
+
+        def advance_lineage_incumbent(self, *, donor, verdict, accepted_at_depth):
+            calls.append((self.generation, verdict, accepted_at_depth, donor.endpoint_id))
+            return BootstrapProbe(self.generation + 1)
+
+    outcome = _run(support_policy=BootstrapProbe())
+
+    assert outcome.depth_reached == 2
+    assert calls[0][0:3] == (0, None, 1)
+    assert calls[1][0:3] == (1, "pass-1", 2)
+
+
 def test_the_stationary_ladder_reaches_the_declared_depth():
     outcome = _run(plan=_stationary_plan())
     assert outcome.depth_reached == 2

@@ -86,6 +86,43 @@ def test_a_policy_id_with_no_authorized_implementation_is_refused_by_name():
         resolve_support_policy(config, band_table=F.band_table(), stratum_key=F.STRATUM)
 
 
+def test_depth0_generated_pool_rule_binds_the_wt_only_as_bootstrap_attribution_reference():
+    """The production factory must assemble the policy-v2 runtime it accepts in config.
+
+    ``best_admissible_depth0`` does not need a second external sequence: the cycle proves which
+    generated endpoint is rank zero and the ladder adopts that endpoint as I1.  The already-bound
+    WT object is still needed at D0 for cumulative safety and local Head attribution, but it is not
+    consulted by the global donor gate.
+    """
+    from inverse_folding.reference_flow.fusion_v2.reward import (
+        DEPTH0_BOOTSTRAP_RULE,
+        LineageIncumbentKind,
+    )
+    from scripts.rf_fusion_v2_oracles import bind_lineage_incumbent
+    from tests.inverse_folding.test_fusion_v2_head_directed_policy import (
+        _evaluator,
+        _live_safety_gate,
+    )
+
+    _, reference, sequence = _live_safety_gate()
+    config = types.SimpleNamespace(projection=types.SimpleNamespace(
+        head_directed=types.SimpleNamespace(
+            lineage_incumbent_depth0_rule=DEPTH0_BOOTSTRAP_RULE,
+        )
+    ))
+
+    bound = bind_lineage_incumbent(
+        config=config,
+        cumulative_reference=reference,
+        reference_sequence=sequence,
+        evaluator=_evaluator(),
+        lineage_id="5ZHV_B:fam0",
+    )
+
+    assert bound.kind is LineageIncumbentKind.CUMULATIVE_SAFETY_REFERENCE
+    assert bound.sequence == sequence
+
+
 def test_the_predeclared_probe_is_deliberately_absent_from_the_registry():
     """``explicit_probe`` measures only typed nulls against a realized state: its predeclared reopen
     set names positions whose resolvedness is stochastic.  Leaving it registered would let a canary

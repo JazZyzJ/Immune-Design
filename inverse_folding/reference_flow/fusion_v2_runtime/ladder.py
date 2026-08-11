@@ -33,6 +33,7 @@ from typing import Any
 
 from ..fusion_v2.errors import V2Error
 from ..fusion_v2.identity import canonical_digest
+from ..fusion_v2.reward import DEPTH0_BOOTSTRAP_RULE
 from ..fusion_v2.schedule import CoordinateLaw, make_cycle
 from ..fusion_v2.seeds import (
     V2_SEED_ENCODING_VERSION,
@@ -432,7 +433,14 @@ def run_depth_ladder(
         advance_reward = getattr(support_policy, "advance_lineage_incumbent", None)
         if advance_reward is not None:
             verdict = getattr(cycle.policy_evidence, "donor_gate", None)
-            if verdict is None:
+            bootstrap = (
+                depth == 0
+                and getattr(support_policy, "depth0_incumbent_rule", None)
+                    == DEPTH0_BOOTSTRAP_RULE
+                and getattr(cycle.policy_evidence, "reward_gate_kind", None)
+                    == DEPTH0_BOOTSTRAP_RULE
+            )
+            if verdict is None and not bootstrap:
                 raise V2LadderError(
                     "a committed incumbent-aware policy emitted no donor-gate verdict; the next "
                     "depth cannot know which reference its reward comparison advanced from"

@@ -98,11 +98,11 @@ def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, 
                            lineage_id):
     """``I_0`` under the run's DECLARED depth-0 rule (PLAN §3.1, V2F5A).
 
-    PLAN §3.1 leaves the depth-zero binding an OPEN decision, so this factory refuses to choose one:
-    the rule comes from ``config.projection.head_directed.lineage_incumbent_depth0_rule``, and the
-    only rule it can execute today is ``cumulative_safety_reference`` -- the frozen complete
-    reference the run already content-binds for the safety ratchet, which is frozen before any
-    depth-0 endpoint is scored by construction.
+    The rule comes from ``config.projection.head_directed.lineage_incumbent_depth0_rule``.  Under
+    ``cumulative_safety_reference`` the bound object is the actual reward incumbent.  Under
+    ``best_admissible_depth0`` it is only the already-content-bound D0 safety/local-attribution
+    reference: the cycle proves the generated rank-zero endpoint and the ladder adopts that exact
+    endpoint as ``I_1`` without a global WT donor gate.
 
     ``predeclared_external_design`` is a legal declaration in the vocabulary and is deliberately NOT
     executed here: it would need its own content-bound input role for the design's bytes and its own
@@ -110,6 +110,7 @@ def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, 
     decides which donors may open feedback.
     """
     from inverse_folding.reference_flow.fusion_v2.reward import (
+        DEPTH0_BOOTSTRAP_RULE,
         bind_incumbent_from_safety_reference,
     )
 
@@ -120,7 +121,7 @@ def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, 
             "rule; the Head-directed policy cannot be built without one"
         )
     rule = block.lineage_incumbent_depth0_rule
-    if rule != "cumulative_safety_reference":
+    if rule not in {"cumulative_safety_reference", DEPTH0_BOOTSTRAP_RULE}:
         raise V2OracleError(
             f"depth-0 incumbent rule {rule!r} is declared in the vocabulary but has no authorized "
             "runtime binding: it needs its own content-bound input role for the predeclared "
@@ -130,7 +131,7 @@ def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, 
         )
     return bind_incumbent_from_safety_reference(
         reference=cumulative_reference, reference_sequence=reference_sequence,
-        lineage_id=lineage_id, evaluator=evaluator, rule=rule,
+        lineage_id=lineage_id, evaluator=evaluator, rule="cumulative_safety_reference",
     )
 
 
