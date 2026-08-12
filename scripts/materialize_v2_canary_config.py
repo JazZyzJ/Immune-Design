@@ -89,6 +89,28 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
             "max_definitive_refolds": 64,
         },
     },
+    "highrisk_d4_k12_r40": {
+        "phase": "capability_ladder",
+        "split_role": "exploratory_highrisk_ceiling_v2",
+        "support_policy_version": "v2",
+        "schedule": {
+            "schedule_id": "highrisk-d4-k12-r40-global-v2",
+            "coordinate_law": "progressive_checkpoint",
+            "depth_cap": 4,
+            "active_population_width": 1,
+            "min_lookahead_tail_steps": 10,
+            "points": [
+                {"depth": depth, "r_step": 40, "c_source_step": 50 + 10 * depth,
+                 "c_next_step": 60 + 10 * depth, "n_lookaheads": 12,
+                 "band_key": "step40"}
+                for depth in range(4)
+            ],
+        },
+        "caps": {
+            "max_logical_dfe": 2200,
+            "max_definitive_refolds": 64,
+        },
+    },
     "highrisk_d8_k32_r40": {
         "phase": "capability_ladder",
         "split_role": "exploratory_highrisk_ceiling_v1",
@@ -335,6 +357,11 @@ def fill_config(template: dict, *, args, frozen: dict, runtime: dict) -> dict:
     # must not sign their artifacts under one campaign, or the second reads as more of the first.
     if getattr(args, "campaign_id", None):
         config["identity"]["campaign_id"] = str(args.campaign_id)
+    master_seed = getattr(args, "master_seed", None)
+    if master_seed is not None:
+        if isinstance(master_seed, bool) or not isinstance(master_seed, int) or master_seed < 0:
+            raise MaterializeError("--master-seed must be an integer >= 0")
+        config["identity"]["master_seed"] = int(master_seed)
 
     profile_name = getattr(args, "exploratory_profile", None)
     profile = EXPLORATORY_PROFILES.get(profile_name) if profile_name else None
@@ -625,6 +652,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--campaign-id", default=None,
                         help="override identity.campaign_id (default: the template's).  Use a "
                              "distinct campaign for a distinct question, e.g. the mechanism cohort")
+    parser.add_argument("--master-seed", type=int, default=None,
+                        help="override identity.master_seed for an independent seeded lineage")
     parser.add_argument(
         "--policy-calibration-json", default=None,
         help="optional v2-head-policy-calibration-bundle/1 artifact. When supplied, materialize "
