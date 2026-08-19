@@ -50,6 +50,7 @@ VOLS = {"/data": data_vol, "/runs": runs_vol}
 ALLELES = {
     "drb0701": ("HLA-DRB1*07:01", "/data/manifests/drb0701"),
     "drb0401": ("HLA-DRB1*04:01", "/data/manifests/drb0401"),
+    "drb1501": ("HLA-DRB1*15:01", "/data/manifests/drb1501"),
 }
 
 
@@ -61,10 +62,20 @@ def _prot(allele_tag: str) -> str:
     return f"{_data_dir(allele_tag)}/protein_samples_strict.parquet"
 
 
-def _nmp_cache(allele_tag: str, split: str) -> str:
+def _nmp_cache(allele_tag: str, split: str, fold=None) -> str:
     if allele_tag == "drb0701":
         return "/data/nmp/cache_0701_all1308.parquet"
-    return f"/data/nmp/cache_0401_{split}.parquet"  # 0401: per-split caches
+    if allele_tag == "drb0401":
+        # CV folds re-partition the full pool, so a fold's val/test mix proteins
+        # from the original train/val/test -> a single full-pool cache serves all
+        # folds. Single-split (fold=None) keeps the original per-split caches.
+        return ("/data/nmp/cache_0401_all1865.parquet" if fold is not None
+                else f"/data/nmp/cache_0401_{split}.parquet")
+    if allele_tag == "drb1501":
+        # 1501 has one full-pool cache (1536 proteins, built on Della); it is a
+        # superset of every fold's val/test, so it serves CV and single-split alike.
+        return "/data/nmp/cache_1501_all1536.parquet"
+    raise KeyError(f"no NMP cache mapping for allele_tag={allele_tag}")
 
 
 def _ids_path(allele_tag: str, fold, split: str) -> str:
@@ -158,7 +169,7 @@ def evaluate(run_tag: str, ckpt_file: str, split: str, fold, arm_tag: str,
         "--netmhciipan-bin", "/bin/true",
         "--allele", ALLELES[allele_tag][0],
         "--output-json", out_json,
-        "--reuse-nmp-from-cache", _nmp_cache(allele_tag, split),
+        "--reuse-nmp-from-cache", _nmp_cache(allele_tag, split, fold),
     ] + (["--exact-head"] if exact_head else []) + [
         # CV folds provide the uncertainty; per-eval CI is wasted compute. n=1
         # (not 0 — _bootstrap_ci(n=0) crashes on np.quantile of an empty array)
@@ -232,6 +243,75 @@ def run_cv(arms: str = "cnn_himp_beta4,cnn_himp_beta4_iourank_main,cnn_himp_beta
 
     arms_tags = ",".join(ARM_TAG[a] for a in arm_list)
     print(aggregate.remote("/runs/benchmark/w4", arms_tags))
+
+
+@app.local_entrypoint()
+def run_cv_allele(arms: str = "cnn_himp_a1_res03", folds: str = "0,1,2,3,4",
+                  allele_tag: str = "drb0401", seed: int = 42):
+    """5-fold cluster CV for a non-0701 allele (e.g. drb0401): train each
+    (arm x fold) on that allele's cv5 splits, eval every saved epoch on val+test
+    reusing the allele's FULL-pool NMP cache, aggregate into a per-allele eval
+    dir. Requires the allele's cv5/fold{k}/ id files + full NMP cache uploaded to
+    the data volume (see _nmp_cache / _ids_path)."""
+    arm_list = arms.split(",")
+    fold_list = [int(f) for f in folds.split(",")]
+    eval_dir = f"/runs/benchmark/w4_{allele_tag}_cv"
+    sd = f"seed_{seed}"
+
+    train_jobs = [(a, f, seed, False, allele_tag) for a in arm_list for f in fold_list]
+    print(f"[run_cv_allele:{allele_tag}] training {len(train_jobs)} (arm x fold) runs ...")
+    tags = list(train.starmap(train_jobs))
+    print("[run_cv_allele] trained:", tags)
+
+    eval_jobs = []
+    for a in arm_list:
+        at = ARM_TAG[a]
+        for f in fold_list:
+            rt = _run_tag(a, f, seed, allele_tag)
+            for cf in list_ckpts.remote(rt, sd):
+                for split in ("val", "test"):
+                    eval_jobs.append((rt, cf, split, f, at, sd, False, allele_tag, eval_dir))
+    print(f"[run_cv_allele] evaluating {len(eval_jobs)} (run x ckpt x split) jobs ...")
+    list(evaluate.starmap(eval_jobs))
+    print(aggregate.remote(eval_dir, ",".join(ARM_TAG[a] for a in arm_list)))
+
+
+@app.local_entrypoint()
+def train_cv_allele(arms: str = "cnn_himp_a1_res03", folds: str = "0,1,2,3,4",
+                    allele_tag: str = "drb0401", seed: int = 42):
+    """Train-only phase of allele CV (NMP-INDEPENDENT) — run in parallel with the
+    Della NMP-cache build. Training uses only span/protein data + cv5 splits and
+    selects best.pt on val residue pp_ap (no NetMHCIIpan). Eval later with
+    eval_cv_allele once the full NMP cache is uploaded."""
+    arm_list = arms.split(",")
+    fold_list = [int(f) for f in folds.split(",")]
+    train_jobs = [(a, f, seed, False, allele_tag) for a in arm_list for f in fold_list]
+    print(f"[train_cv_allele:{allele_tag}] training {len(train_jobs)} (arm x fold) ...")
+    tags = list(train.starmap(train_jobs))
+    print("[train_cv_allele] trained:", tags)
+
+
+@app.local_entrypoint()
+def eval_cv_allele(arms: str = "cnn_himp_a1_res03", folds: str = "0,1,2,3,4",
+                   allele_tag: str = "drb0401", seed: int = 42):
+    """Eval + aggregate an already-trained allele CV (needs the full NMP cache
+    uploaded to the data volume). Pairs with train_cv_allele — the deferred eval
+    phase once the Della NMP-cache build lands."""
+    arm_list = arms.split(",")
+    fold_list = [int(f) for f in folds.split(",")]
+    eval_dir = f"/runs/benchmark/w4_{allele_tag}_cv"
+    sd = f"seed_{seed}"
+    eval_jobs = []
+    for a in arm_list:
+        at = ARM_TAG[a]
+        for f in fold_list:
+            rt = _run_tag(a, f, seed, allele_tag)
+            for cf in list_ckpts.remote(rt, sd):
+                for split in ("val", "test"):
+                    eval_jobs.append((rt, cf, split, f, at, sd, False, allele_tag, eval_dir))
+    print(f"[eval_cv_allele:{allele_tag}] evaluating {len(eval_jobs)} jobs ...")
+    list(evaluate.starmap(eval_jobs))
+    print(aggregate.remote(eval_dir, ",".join(ARM_TAG[a] for a in arm_list)))
 
 
 @app.local_entrypoint()

@@ -59,11 +59,11 @@ VARIANT_ID="${VARIANT_ID:-LC1}"
 DEVICE="${DEVICE:-cuda}"
 
 # ── Paths ────────────────────────────────────────────────────────────────
-PROJECT_ROOT="/home/zc1519/src/Immune-Design"
+PROJECT_ROOT="${PROJECT_ROOT:-/home/zc1519/src/Immune-Design}"   # override to run a worktree's code (e.g. epi-head-wave3)
 DPLM_ROOT="${PROJECT_ROOT}/inverse_folding/dplm"
 OUTPUT_DIR="/scratch/gpfs/KAIYIJIANG/zijie/run/benchmark/epi_v2"
 LOG_DIR="/scratch/gpfs/KAIYIJIANG/zijie/logs/benchmark/epi_v2"
-NETMHCIIPAN_BIN="${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan"
+NETMHCIIPAN_BIN="${NETMHCIIPAN_BIN:-${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan}"  # worktrees have no NMP install; point at the main checkout
 
 ALLELE_TAG="$(echo "${ALLELE}" | tr -c '[:alnum:]' '_' | sed 's/_*$//')"
 
