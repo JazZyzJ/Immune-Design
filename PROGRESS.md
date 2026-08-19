@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-07-29T12:53:03-04:00
+> **Last synced**: 2026-08-19T01:37:19-04:00
 > **Branch**: fusion_rf_refine
 
 ---
@@ -18,7 +18,7 @@
 > - **0701 5-fold cluster CV (held-out test):** a1res03 IoU50 **0.581**, ExAP 0.262, **Pearson 0.508** (vs NMP 0.682 / 0.336 / **0.170** — landscape carries). Progression A0 0.493 → A1 (+λ_iou_rank) 0.578 → a1res03 (+λ_residue=0.3) 0.581; Δ A1−A0 = **+0.085 IoU50, +0.089 Pearson, zero regression**.
 > - **The lever**: IoU-graded ranking promoted from Wave-3 aux (λ=0.3, +0.007 null) to main objective (λ=1.0) **after fixing the starved hard-negative candidate spectrum** (`train.yaml` 0.8/5 → 0.95/5/hard_frac0.5).
 > - **0401 (now 5-fold cluster CV, mean±std):** landscape Pearson **0.429±0.036 ≫ NMP 0.146** (~2.9×) holds; region/exact/ResAP trail NMP under proper CV (IoU50 0.513 vs 0.556, ExAP 0.239 vs 0.280, ResAP 0.528 vs 0.562, ResAUC 0.851 vs 0.870). The earlier single split (IoU50 0.544, ResAP 0.562>NMP) was **optimistic split-luck**; CV is the defensible number. ⇒ 0401's claim is the **landscape dominance**, not a region tie.
-> - **1501 (single split, live NetMHCIIpan):** a1res03 IoU50 0.567 vs NMP 0.623, **Res_Pearson 0.461 ≫ NMP 0.154**, Exact-AP **0.251 vs old `LC1_drb1501_aug` 0.172 (+46%)** — the poor-1501 problem is fixed. ⇒ **a1res03 unified across all 3 alleles**; landscape Pearson dominates NMP on every allele (0.508/0.450/0.461 vs 0.170/0.139/0.154).
+> - **1501 (now 5-fold cluster CV, mean±std; 2026-08-19):** landscape Pearson **0.354±0.048 ≫ NMP 0.143** (~2.5×) holds; every other axis trails NMP under proper CV (IoU50 0.468±0.044 vs 0.544, IoU70 0.425 vs 0.500, ExAP 0.179±0.026 vs 0.240, ResAUC 0.807 vs 0.841, ResAP 0.477±0.047 vs 0.550). Goal epochs f0=e9, f1=e29, f2=e24, f3=e24, f4=e19; pool 1536 proteins / 1284 clusters. **The earlier single split was optimistic on every cell** (IoU50 0.567→0.468, ExAP 0.251→0.179, Pearson 0.461→0.354, ResAP 0.573→0.477) — CV is the reported basis now. Trained on Modal; NMP full-pool cache `cache_1501_all1536.parquet` built on Della (4 ailab shards). Aggregate `run/benchmark/w4_drb1501_cv/cv_summary_w4.json`.
 > - **Two architecture levers, both NEGATIVE** (→ convergence): dual-head exact readout (`z_exact` exact-AP 0.249 ≈ z_region 0.255 — exact-15mer boundary is the IEDB peptide convention, not sequence-recoverable); core-aware 9-mer scorer (IoU50 +0.006, within noise). Cheap levers (λ_iou {0.5,2}, λ_residue {0.3,0.5}, β {2,8}, near-exact negs) all swept → converged.
 > - Goal priority (frozen): **IoU≥0.5/0.7 region AP**, then **residue density Pearson/Spearman**; exact-AP loose guardrail; downstream consumes ONLY the per-residue landscape (NMP = reference).
 
@@ -58,7 +58,8 @@
 - **Multi-allele a1res03 deliverables (Wave-4, unified config `epitope_head/configs/cnn_himp_a1_res03.yaml`)**: a1res03 is the unified best across all 3 alleles. **All three are EVAL-SPLIT-trained** (held out val+test for honest NMP comparison) — **none is trained on full data** (see Full-data status). Reported test metrics ↔ the exact ckpt below:
   - DRB1*07:01: 5-fold cluster CV — now on **Della** `run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold{0..4}/runs/LC1/seed_42/` (each fold: goal-epoch ckpt + best.pt + configs/logs; also on Modal `immune-design-runs`). Per-fold goal epochs (argmax val IoU50, reproduce the reported mean exactly): **f0=e29, f1=e24, f2=e39, f3=e29, f4=e34**; best.pt = val-pp_ap-selected (downstream-leaning). No single full-data model (CV by construction; each fold trains on 4/5). Test mean: IoU50 **0.581**, ExAP 0.262, Pearson **0.508**.
   - DRB1*04:01: **5-fold cluster CV** (mean±std, goal-selected epoch/fold: f0=e9,f1=e34,f2=e24,f3=e39,f4=e44) — 5 fold ckpts on **Della** `run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold{0..4}/runs/LC1/seed_42/`. Test mean: IoU50 **0.513±0.012**, IoU70 0.487±0.014, ExAP 0.239±0.014, **Pearson 0.429±0.036**, ResAUC 0.851±0.009, ResAP 0.528±0.015 (NMP 0.556/0.533/0.280/0.146/0.870/0.562). Aggregate: `run/benchmark/w4_drb0401_cv/cv_summary_w4.json`; NMP reused from full-pool cache `run/benchmark/epi_himp_sweep/cache_0401_all1865.parquet`. *(The earlier single-split epoch_34 ckpt at `cnn_himp_a1_res03_drb0401_seed42/` is retained but the CV supersedes it as the reported basis.)*
-  - DRB1*15:01: single split, **best.pt** — deliverable on **Della** `run/epitope_head/cnn_himp_a1_res03_drb1501_seed42/runs/LC1/seed_42/best.pt`. Trained on **1,236/1,536** (val 153 + test 147 held out). Test: IoU50 **0.567**, ExAP 0.251, Pearson **0.461** (vs old `LC1_drb1501_aug` exact-AP 0.172 → **+46%**).
+  - DRB1*15:01: **5-fold cluster CV** (mean±std, goal-selected epoch/fold: f0=e9, f1=e29, f2=e24, f3=e24, f4=e19) — 5 fold ckpts on **Modal** `immune-design-runs:/epitope_head/cnn_himp_a1_res03_drb1501_seed42_cv5_fold{0..4}/runs/LC1/seed_42/`. Test mean: IoU50 **0.468±0.044**, IoU70 0.425±0.043, ExAP 0.179±0.026, **Pearson 0.354±0.048**, ResAUC 0.807±0.018, ResAP 0.477±0.047 (NMP 0.544/0.500/0.240/0.143/0.841/0.550). Aggregate: `run/benchmark/w4_drb1501_cv/cv_summary_w4.json`; NMP reused from full-pool cache `run/benchmark/epi_himp_sweep/cache_1501_all1536.parquet`. *(The earlier single-split best.pt at `cnn_himp_a1_res03_drb1501_seed42/` is retained but the CV supersedes it as the reported basis.)*
+  - **Production heads (full-data refit, 2026-08-19)** — all three alleles retrained on the WHOLE pool (train+val+test) with `cnn_himp_a1_res03`, seed 42, fixed epoch budget = median CV goal epoch (0701 e29 / 0401 e34 / 1501 e24), early stopping off. Modal `immune-design-runs:/epitope_head/cnn_himp_a1_res03_drb{0701,0401,1501}_seed42_full/`, deliverables `epoch_{29,34,24}.pt`; Della mirror `run/epitope_head_fulldata/`. **No held-out metrics by construction** — val ⊂ train (curve only, pp_auc≈0.999), so `best.pt` from these runs is leaky and must not be used; the reported numbers stay the 5-fold CV ones. Splits: `splits/strict/full/` + `full_config.json`.
   - manifests: `work/immune-design/manifests/{drb0701,drb0401,drb1501}/splits/strict/`.
 - **0401 full 5-fold CV — DONE** (2026-07-07). cv5 splits generated; 5 folds trained on Modal then pulled to Della; full-pool NMP cache `cache_0401_all1865.parquet` built on Della (16h41m); **eval + aggregate run LOCALLY on Della** (ailab GPU, reuse cache, no NetMHCIIpan). Result: landscape Pearson **0.429±0.036 ≫ NMP 0.146**; region/exact/ResAP trail NMP (see blockquote). Single-split 0401 was optimistic → CV is the reported basis now. report + this file backfilled. (Fixed a `cv_select_and_aggregate.py` single-arm IndexError along the way.)
 - **Full-data (production) checkpoints**: **NONE trained yet** for a1res03 on any allele. Every a1res03 ckpt holds out ~20% (val+test). A full-data refit (train on train+val+test at the goal epoch) would be the downstream-deployment checkpoint — not built (a1res03 downstream deployment not yet requested; for the paper, eval-split is the correct basis).
@@ -450,9 +451,65 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 > of sampling noise (the two "natural `c=50`" estimates disagree by 9 points on `Q00511`); only the
 > within-run paired `r` comparison is tight.
 >
-> **Next:** execute runbook §10 only as the explicitly marked Uricase capability sandbox. Re-emit
-> the §9 calibration over the same evidence with the characterized-24 counterfactual ceiling;
-> do not reinterpret the exploratory D4 outcome as a production-depth authorization.
+> **§10 ACTIVE15 URICASE CAPABILITY SANDBOX COMPLETE (2026-08-08, `19f2fa1`).** The frozen
+> D4/K12/r40 profile ran on 15 experimentally active characterized uricases with the shared
+> active-site manifest (14 proteins × 8 hard anchors; Q9RV70 × 7; every non-anchor position
+> editable). H200 execution spanned 19m14s: 12 launchers exited 0 and three stopped at depth 0 by
+> the bound `stall_no_better_donor` policy, while all 15 persisted analyzable bundles. The official
+> per-protein top-30 exports contain 325 structure-feasible designs (median 26/protein, minimum 2,
+> five proteins at 30); 224/325 (68.9%) have lower same-Head risk than their own WT and 223/325
+> clear `epsilon_R`, covering 12/15 proteins. Hard-anchor violations are 0/468 complete endpoints
+> and 0/325 selected designs; selected scTM minimum is 0.89256 and maximum anchor side-chain RMSD
+> is 6.296515 against frozen thresholds 0.89244/13.937296. All realized caps stayed within bounds.
+> A single official cross-protein facade is correctly refused because ten sequence lengths produce
+> ten window-grid identities despite one shared Head evaluator digest; 15/15 official per-protein
+> facades were materialized. RAR: `0045-rf-fusion-v2-active15-h200-final-cohort`; run root:
+> `run/inverse_folding/v2_uricase_active15_anchor8_d4k12_r40_exploratory_v1/final_h200/`. This is
+> unblinded same-Head exploratory evidence and does not authorize production `D>1`.
+>
+> **§7.12 TWO-PROTEIN ADAPTIVE-DEPTH DIAGNOSTIC COMPLETE (2026-08-11, `d0928bb`, job
+> `12273253`).** The frozen §9 Head-directed v1 policy ran as one serial ailab H200 job at
+> D4/K4/r40. `5ZHV_B` committed two transitions, then stopped at attempt depth 2 by
+> `stall_no_better_donor`; its archive frontier was `3.475507 → -8.786900 → -9.473177`, then held.
+> `Q00511` committed three transitions, then stopped at attempt depth 3 by the same typed reason;
+> its frontier was `-4.815323 → -8.545032 → -8.649444 → -8.919034`, then held. Both archives equal
+> the minimum definitively feasible endpoint risk, all 17 terminal-validated endpoints passed the
+> cumulative hotspot gate, and no declared cap was breached. RAR:
+> `0047-rf-fusion-v2-two-protein-adaptive-depth-`. Step C production-depth freeze is pending.
+>
+> **§7.12 HIGH-RISK 100-PROTEIN MULTIROOT ANALYSIS COMPLETE (2026-08-19, `21cd73d`).** The
+> frozen V2 `D4/K12/r40`, `epsilon_search=0.005`, four-independent-root campaign completed all
+> 400 cells: 328 cells / 84 proteins had a definitive feasible archive and 72 cells stopped at D0
+> with structure-rejected candidates. Realized maximum depth D0/D1/D2/D3/D4 was
+> `72/54/117/104/53`; the 328-lineage carry-forward frontier mean deltas were
+> `D1 -2.3786`, `D2 -0.6091`, `D3 -0.0799`, `D4 -0.0180`, with D4 adding 8 reporting-floor
+> frontiers. The main typed stop was `stall_no_better_donor` (263); only four failed margins were
+> in `(0,0.005]`. The 72 rejected cells retain 864 complete Head-scored D0 candidates, including
+> 22 cells with best risk below -9; all 864 were rejected by `scTM<0.70`.
+> On the 84 success proteins, four-root archive merge/dedup without structure filtering produced
+> 13,774 unique designs. Protein-equal-weight mean best Head risk was `-9.3298`, versus the correct
+> current-cohort DPLM-native Gumbel `-3.5121` and same-Head-rescored ProteinMPNN eight-design
+> `-5.8459`; Fusion won 82/84 and 79/84 paired protein bests. ProteinMPNN Head-only rescore job
+> `12616980` completed 672/672 with per-residue hotspots. RAR:
+> `0049-rf-fusion-v2-high-risk-100-protein-multi`; stable Della archive:
+> `work/immune-design/rar_analysis_archive/current/Results/Analysis/0049-rf-fusion-v2-high-risk-100-protein-multi/`.
+>
+> **HIGH-RISK PARETO/NMP + K24 BREADTH FOLLOW-UP ACTIVE (2026-08-19).** Existing DPLM-native
+> and ProteinMPNN NMP (1,344 success-cohort designs) provisionally identify
+> `sum(max(residue_hotspot,0))/sequence_length` as the strongest second Head axis for within-protein
+> NMP strong-fraction agreement (`rho=0.572` versus global-risk `0.542`; difference CI includes
+> zero). The frozen Head/structure first fronts contain 184 definitive-feasible designs over the 84
+> successful proteins and 67 explicitly labelled structure-rejected fallback candidates over the
+> 16 all-failed proteins (768 raw D0 candidates). Fusion NMP is active as ailab stress-panel job
+> `12626693` (1,405 rows including all 864 failed-cell candidates) and full-archive array/merge
+> `12626695`/`12626706` (13,774 success designs). NMP remains explicitly CPU-only; the H200 request
+> is an ailab scheduling allocation. The earlier queued RTX submissions `12625177`/`12625237`/
+> `12625268` were cancelled before execution. Coder added the
+> closed breadth-only `highrisk_d4_k24_r40` profile; 400/400 configs passed typed validation and a
+> real-driver dry-run (`3790` DFE / `120` refolds / `1936` Head calls per cell; caps
+> `4200/128/6000`). Four ailab H200 serial-root jobs `12625634..12625637` are submitted, one
+> 100-protein list per job. Runbook §11 carries the full freeze and status; objective correlation
+> and Pareto artifacts are RAR `0050-rf-fusion-v2-head-nmp-pareto-and-structu`.
 >
 > **STATE-TRANSITION CANARY CLOSED (2026-08-06, `4dd0922`) —
 > `WIRING_PASS_WITH_POPULATION_MISMATCH_DIAGNOSTIC`.** Both proteins produced a legal transition
@@ -476,7 +533,7 @@ disabled — a matched control VIEW, not a second run.
 | V2F6 general D>=1 ladder + stationary comparator | done; production `D>1` launch-disabled |
 | V2F7 artifacts / ledger / resume / driver / preflight | done |
 | V2F5A minimal capped Head-directed policy + matched source-geometry control | done 2026-08-07; §9 verdict `immune_directed_transition_supported`, D1/same-Head scope only |
-| Exploratory recursive Uricase sandbox | local code/runbook ready 2026-08-07; unblinded `D4/K12/r40`, 24 proteins, NOT yet run and not production authorization |
+| Exploratory recursive Uricase sandbox | complete 2026-08-08; Active15, unblinded `D4/K12/r40`, 7–8 shared hard anchors, 325 selected designs, 0 anchor violations; RAR `0045-rf-fusion-v2-active15-h200-final-cohort`; not production authorization |
 
 Tests: prior broad gate 1250 V2 tests (+86 for V2F5A), V1/v0 regressions green (666). The §9
 handoff additions add a targeted `267 passed`: calibration/materializer/reader/preflight/driver plus the core
@@ -704,7 +761,7 @@ Manifest `inverse_folding/reference_flow/configs/luxsit_active_site_v0.yaml` (co
 |----------|------|--------|
 | **a1res03 DRB0701 (Wave-4 best, 5-fold CV)** | **Della** `run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold{0..4}/runs/LC1/seed_42/` (goal-epoch f0=e29/f1=e24/f2=e39/f3=e29/f4=e34 + best.pt; also Modal `immune-design-runs`) | test mean IoU50 0.581 / ExAP 0.262 / Pearson 0.508. **Eval-split (CV); no full-data model.** |
 | **a1res03 DRB0401 (Wave-4 best, 5-fold CV)** | **Della** `run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold{0..4}/runs/LC1/seed_42/` (also Modal; earlier single-split `_drb0401_seed42/epoch_34.pt` retained) | CV test mean IoU50 0.513±0.012 / ExAP 0.239±0.014 / **Pearson 0.429±0.036** (NMP 0.556/0.280/0.146). Aggregate `run/benchmark/w4_drb0401_cv/cv_summary_w4.json`. |
-| **a1res03 DRB1501 (Wave-4 best)** | **Della** `run/epitope_head/cnn_himp_a1_res03_drb1501_seed42/runs/LC1/seed_42/best.pt` | test IoU50 0.567 / ExAP 0.251 / Pearson 0.461 (vs old aug exact-AP 0.172, +46%). **Eval-split: trained 1,236/1,536 (held out val+test).** |
+| **a1res03 DRB1501 (Wave-4 best, 5-fold CV)** | **Modal** `immune-design-runs:/epitope_head/cnn_himp_a1_res03_drb1501_seed42_cv5_fold{0..4}/` (goal-epoch f0=e9/f1=e29/f2=e24/f3=e24/f4=e19 + best.pt; earlier single-split best.pt retained on Della) | CV test mean IoU50 0.468±0.044 / ExAP 0.179±0.026 / **Pearson 0.354±0.048** (NMP 0.544/0.240/0.143). Aggregate `run/benchmark/w4_drb1501_cv/cv_summary_w4.json`. **Eval-split (CV); no full-data model.** |
 | Epitope head checkpoint (npoff DRB0701, prior production / RF-wired) | `run/epitope_head/cnn_himp_v1_npoff_drb0701_seed42/runs/LC1/seed_42/best.pt` | pp_ap=0.3497, pp_auc=0.9532 (superseded by a1res03 on span+landscape goal) |
 | Epitope head checkpoint (legacy DRB0701 aug) | `run/epitope_head/LC1_lite_aug/runs/LC1/seed_42/best.pt` | pp_ap=0.3027 (superseded by npoff) |
 | Epitope head checkpoint (strict) | `run/epitope_head/cnn_strict_full/runs/LC1/seed_42/best.pt` | pp_ap=0.2874 |
@@ -739,7 +796,7 @@ Manifest `inverse_folding/reference_flow/configs/luxsit_active_site_v0.yaml` (co
 | Clinics immunogenicity plot | F1 | — | no | concept only |
 | EL Ability | F2 | NetMHCIIpan benchmark | partial | pp_ap=0.3027, comparisons pending |
 | Synthetic point mutation | F2 | — | partial | hard negative code committed |
-| Multi-allele analysis | F2 | multi-allele eval | partial | DRB0401 + DRB1501 trained, metrics TBD |
+| Multi-allele analysis | F2 | multi-allele eval | **done** | All three alleles on 5-fold cluster CV (0701 / 0401 / 1501); landscape Pearson 0.508 / 0.429 / 0.354 vs NMP 0.170 / 0.146 / 0.143 |
 | Structural metrics on epitope | F2 | Tier 1 PDBs + h_i maps | no | 4 analyses: RSA vs h_i, SS distribution, B-factor, contact number |
 | IF Benchmark | F3 | L (test set) | partial | DPLM baseline validated on CATH (scTM=0.87 median) |
 | Structure Self-Consistency | F3 | L (ESMFold wrapper) | no | |
