@@ -68,6 +68,23 @@ VALID_VARIANT_IDS = VALID_ENCODER_IDS | STAGE_I_VARIANT_IDS
 VALID_SEEDS = {42, 43, 44}
 
 
+def apply_fixed_epoch_overrides(train_cfg: dict, max_epochs, no_early_stopping: bool) -> dict:
+    """Pin the epoch budget and (optionally) switch early stopping off.
+
+    Used by the full-data / production refit: training on train+val+test leaves no
+    honest val split, so the epoch is transferred from the CV goal epoch and held
+    fixed. `checkpoint_every_n_epochs` is deliberately left alone — the caller
+    aligns the budget with the save grid so the target epoch lands on disk.
+    """
+    if max_epochs is not None:
+        if max_epochs < 1:
+            raise ValueError(f"--max-epochs must be >= 1, got {max_epochs}")
+        train_cfg["max_epochs"] = max_epochs
+    if no_early_stopping:
+        train_cfg["early_stopping_patience"] = train_cfg["max_epochs"] + 1
+    return train_cfg
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Train Epitope Head v2 encoder ablation (single run)",
@@ -100,6 +117,15 @@ def parse_args() -> argparse.Namespace:
                          "top-level split.")
     p.add_argument("--output-root", type=str, default=None,
                     help="Root for ablation outputs (default: outputs/ablation/encoder_v2)")
+    p.add_argument("--max-epochs", type=int, default=None,
+                    help="Override the config's max_epochs. For a full-data refit the epoch "
+                         "budget is transferred from CV (there is no held-out val to stop on); "
+                         "keep it on the checkpoint_every_n_epochs grid so the target epoch is "
+                         "actually saved.")
+    p.add_argument("--no-early-stopping", action="store_true",
+                    help="Disable early stopping (patience > max_epochs) so a fixed-epoch run "
+                         "reaches its budget. Required for full-data refits, whose val split is "
+                         "inside the training set and therefore cannot stop training honestly.")
 
     smoke = p.add_argument_group("smoke testing")
     smoke.add_argument("--smoke", action="store_true",
@@ -251,6 +277,12 @@ def main() -> dict:
         logger.info("(deprecated) Static union: %d augmented train entries from %s",
                      len(aug_entries), args.aug_train_parquet)
         train_entries = train_entries + aug_entries
+
+    # ── Fixed-epoch overrides (full-data refit) ───────────────────────
+    apply_fixed_epoch_overrides(train_cfg, args.max_epochs, args.no_early_stopping)
+    if args.max_epochs is not None or args.no_early_stopping:
+        logger.info("Fixed-epoch overrides: max_epochs=%d, early_stopping_patience=%d",
+                    train_cfg["max_epochs"], train_cfg["early_stopping_patience"])
 
     # ── Smoke overrides ───────────────────────────────────────────────
     if args.smoke:

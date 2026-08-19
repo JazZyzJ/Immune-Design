@@ -103,8 +103,19 @@ ARM_TAG = {
 }
 
 
-def _run_tag(arm: str, fold, seed: int, allele_tag: str = "drb0701") -> str:
-    suffix = f"_cv5_fold{fold}" if fold is not None else "_single"
+# Full-data (production) refit: epoch budget per allele. A refit trains on
+# train+val+test, so there is no honest val to early-stop on -- the budget is the
+# MEDIAN goal epoch over that allele's 5 CV folds (robust to the fold-level
+# outliers, e.g. 0401 f0=e9 vs f4=e44). All three land on the
+# checkpoint_every_n_epochs=5 save grid, so the target epoch reaches disk.
+#   0701 folds 24,29,29,34,39 -> e29 | 0401 9,24,34,39,44 -> e34 | 1501 9,19,24,24,29 -> e24
+FULL_DATA_GOAL_EPOCH = {"drb0701": 29, "drb0401": 34, "drb1501": 24}
+
+
+def _run_tag(arm: str, fold, seed: int, allele_tag: str = "drb0701",
+             full: bool = False) -> str:
+    suffix = "_full" if full else (
+        f"_cv5_fold{fold}" if fold is not None else "_single")
     return f"{arm}_{allele_tag}_seed{seed}{suffix}"
 
 
@@ -115,10 +126,10 @@ def _ckpt_tag(ckpt_file: str) -> str:
     return ckpt_file.split(".")[0]
 
 
-@app.function(gpu="A10", volumes=VOLS, timeout=7200)
+@app.function(gpu="A10", volumes=VOLS, timeout=14400)
 def train(arm: str, fold=None, seed: int = 42, smoke: bool = False,
-          allele_tag: str = "drb0701") -> str:
-    run_tag = _run_tag(arm, fold, seed, allele_tag)
+          allele_tag: str = "drb0701", full: bool = False) -> str:
+    run_tag = _run_tag(arm, fold, seed, allele_tag, full)
     out_root = f"/runs/epitope_head/{run_tag}"
     cmd = [
         "python", f"{REPO}/scripts/train_v2_ablation.py",
@@ -129,7 +140,14 @@ def train(arm: str, fold=None, seed: int = 42, smoke: bool = False,
         "--data-dir", _data_dir(allele_tag),
         "--output-root", out_root,
     ]
-    if fold is not None:
+    if full:
+        # splits/strict/full: train_ids = the whole pool, val_ids = the original
+        # val split kept only as a logging curve (it is INSIDE train, so best.pt
+        # from this run is leaky -- the deliverable is epoch_{goal}.pt).
+        goal = FULL_DATA_GOAL_EPOCH[allele_tag]
+        cmd += ["--splits-subdir", "full",
+                "--max-epochs", str(goal + 1), "--no-early-stopping"]
+    elif fold is not None:
         cmd += ["--splits-subdir", f"cv5/fold{fold}"]
     if smoke:
         cmd += ["--smoke"]
@@ -392,3 +410,20 @@ def run_dualhead(arm: str = "cnn_himp_a1res03_exact", folds: str = "0,1,2,3,4"):
     list(evaluate.starmap(eval_jobs))
 
     print(aggregate.remote("/runs/benchmark/w4", f"a1res03,{at},{atz}"))
+
+
+@app.local_entrypoint()
+def run_full_data(arms: str = "cnn_himp_a1_res03",
+                  allele_tags: str = "drb0701,drb0401,drb1501", seed: int = 42):
+    """Full-data production refit, one run per (arm x allele): train on the WHOLE
+    pool (train+val+test) for the allele's CV-derived epoch budget, early stopping
+    off. These checkpoints are the downstream-deployment heads; they have NO
+    held-out metrics by construction -- the honest numbers stay the 5-fold CV ones.
+    Deliverable per run: epoch_{FULL_DATA_GOAL_EPOCH[allele]}.pt (NOT best.pt)."""
+    jobs = [(a, None, seed, False, at, True)
+            for a in arms.split(",") for at in allele_tags.split(",")]
+    for a, _, _, _, at, _ in jobs:
+        print(f"[run_full_data] {a} x {at}: max_epochs={FULL_DATA_GOAL_EPOCH[at] + 1}, "
+              f"deliverable epoch_{FULL_DATA_GOAL_EPOCH[at]}.pt")
+    tags = list(train.starmap(jobs))
+    print("[run_full_data] trained:", tags)
