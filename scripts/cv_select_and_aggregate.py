@@ -168,8 +168,8 @@ def main() -> None:
     print(f"{'NMP (ref)':18} {nmcell('iou50'):>13} {'':>13} {nmcell('exap'):>13} | "
           f"{nmcell('pears'):>13} {nmcell('rauc'):>13} {nmcell('rap'):>13}")
 
-    # A-vs-B delta on region + landscape axes
-    if all(a in summary["arms"] for a in arms[:2]):
+    # A-vs-B delta on region + landscape axes (only when >=2 arms given)
+    if len(arms) >= 2 and all(a in summary["arms"] for a in arms[:2]):
         A, B = summary["arms"][arms[0]], summary["arms"][arms[1]]
         d = {m: round(B[m][0] - A[m][0], 4) for m in HEAD_METRICS
              if A[m][0] is not None and B[m][0] is not None}
