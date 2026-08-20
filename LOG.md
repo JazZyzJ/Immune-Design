@@ -4249,3 +4249,100 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.90
 - status: code complete; real smoke and 100-protein execution pending.
 - next_action: Materialize one global unconstrained band and relaxed hotspot declaration, run a real single-protein smoke, then submit one serial 100-protein job.
+
+### L0155
+- timestamp: 2026-08-11T17:14:23-04:00
+- type: FEATURE
+- module: RF/ADA
+- trigger: The owner reported complete wet-lab failure of the current ADA cohort and requested one substantially stricter next-round mask based on active-site structure plus evolution/coupling evidence, with explicit per-position release importance for later epitope-core decisions.
+- change_summary: Added the single strict P56658 config `ada_p56658_strict_C50_sig50_graph3.yaml`: safety-max hard25 union stable C50 union sigma50 union a cleaned 1KRM PRH+Zn cumulative graph3 and the complete conformational gate. The resulting 273 fixed / 90 designable mask carries overlapping evidence memberships and one disjoint T0-T2c release class on every anchor. Added the reusable ADA generation protocol and its post-generation full-sequence Potts contract; scoring code is deliberately deferred until the generated cohort exists.
+- rationale: The prior 194-position mask used no additional structure membership and left much of the open/closed gate mutable. The new structural tier starts from experimental PRH+Zn contacts and removes `|i-j|<=2` graph edges before third-tier expansion to reduce trivial backbone spread. Evolution thresholds are fixed at ADA-native C50/sigma50 rather than tuned to a target position count. Core-only release is forbidden for direct function/gate (T0) and the active-site network (T1); only evolution-only T2 positions may enter a later Potts-conditioned derived config.
+- artifacts:
+  - `inverse_folding/reference_flow/configs/ada_p56658_strict_C50_sig50_graph3.yaml`
+  - `PROTOCOL/ada_strict_evolution_structure_generation.md`, `PROTOCOL/INDEX.md`
+  - `tests/inverse_folding/test_ada_strict_constraint_config.py`
+- evidence: Contract TDD first failed because the config did not exist, then passed `3 passed`. The tests independently verify C50=104, sigma50=173, direct PRH+Zn seed=15, cleaned graph3=148, full gate=23, structural union=149, final fixed=273/designable=90, exact P56658 MD5/anchor identities, disjoint complete tier coverage, and zero pre-released positions. Input hashes are persisted for the residue score table, 1KRM, baseline hard25 manifest, PLMC model/EC table, focus MSA, and sampler config.
+- impact:
+  - scope: additive; the prior C60/sigma60, C60/sigma70, and rescue configs and historical cases are unchanged.
+  - risk: medium -- only 90 positions remain designable, so immune search feasibility may fall; this is intentional for the strict failure-recovery round and must be measured rather than offset by silently weakening thresholds.
+  - confidence: 0.92
+- status: done locally; no generation job submitted.
+- next_action: Generate the next complete ADA cohort with the strict base config and zero anchor mismatches. After complete sequences exist, implement the separately specified Hamming-conditioned PLMC gate, score every candidate, and only then apply holo/immune shortlist logic or derive any epitope-core release config.
+
+### L0156
+- timestamp: 2026-08-19T04:59:59-04:00
+- type: FEATURE
+- module: RF/FUSION_V2
+- trigger: The high-risk capability ladder needed one frozen breadth-ceiling profile between the existing D4/K12 and D8/K32 profiles, without changing the qualified policy, runtime, archive, or serial launcher behavior.
+- change_summary: Added the closed `highrisk_d4_k24_r40` materialization profile. It declares `phase=capability_ladder`, split role `exploratory_highrisk_breadth_ceiling_v1`, policy v2, and schedule `highrisk-d4-k24-r40-global-v1`: progressive D=4 at r=40 over `(c_source,c_next)=(50,60),(60,70),(70,80),(80,90)`, K=24 per rung, active width 1, and minimum lookahead tail 10. Profile caps are 4200 logical DFE and 128 definitive refolds; the existing explicit 6000 Head-call cap remains supplied through `--run-max-head-calls`.
+- rationale: This is a breadth-only extension of `highrisk_d4_k12_r40`. The materializer continues to copy the same content-bound policy calibration, Head identity, structure gate, safety policy, and substrate rather than adding a second configuration path or runtime knob.
+- artifacts:
+  - `scripts/materialize_v2_canary_config.py`
+  - `tests/scripts/test_materialize_v2_policy_qualification.py`
+  - `doc/SCRIPTS.md`
+- evidence: RED-first profile test initially failed on the closed-profile lookup. After registration, the targeted materializer/preflight gate passed 21 tests. The contract test loads the typed config, proves every top-level algorithm block outside identity/schedule/caps is identical to `highrisk_d4_k12_r40`, pins epsilon 0.005 and local tolerance 0.017012596130371094, and derives the exact feasible one-protein projection: 3790 logical DFE, 120 definitive refolds, and 1936 Head calls (120 endpoint plus 4 x 454 counterfactual). `py_compile` and task-scoped `git diff --check` pass.
+- impact:
+  - scope: additive named profile and its registration/test only; no algorithm runtime, policy implementation, archive, launcher, or existing profile changed.
+  - risk: low
+  - confidence: 0.98
+- status: done locally; no SLURM job submitted.
+- next_action: The cluster-side agent may materialize and model-free preflight the four serial CELL_LIST jobs using the existing materializer and launcher.
+
+### L0157
+- timestamp: 2026-08-19T05:37:58-04:00
+- type: FEATURE
+- module: RF/FUSION_V2
+- trigger: The completed K12 four-root campaign required an explicit protein-level multiroot selector for the frozen Head/structure Pareto fronts. The existing archive facade deliberately rejected repeated proteins and admitted only definitive-feasible endpoints, so reusing its `elite/top-k` path for failed-root rescue would either reject valid multiroot input or weaken a published safety guard.
+- change_summary: Extended `materialize_v2_archive_facade.py` with two isolated high-risk modes. `feasible_immune_pareto` merges repeated-protein roots, keeps only definitive/evaluated/feasible endpoints, deduplicates convergent sequences with complete source endpoint/root provenance, and emits the first front minimizing Head global risk and residue-hotspot positive-mass density. `structure_rejected_fallback` activates only for proteins with zero feasible endpoint across all supplied roots, joins rejected structure evidence by endpoint id, and emits the first front minimizing positive-mass density while maximizing scTM; pLDDT is deterministic ordering only. Fallback rows are explicitly non-terminal and structure-infeasible. Optional hard constraints are content-digest bound and validated against every candidate. Existing `elite/top-k` dispatch, repeated-protein refusal, and definitive-feasible gate remain unchanged.
+- rationale: The two output classes have different scientific authority. A feasible Pareto design is a standard terminal candidate; a rejected fallback is only a rescue seed or diagnostic. A separate explicit mode is what prevents failed roots from entering the standard facade while still preserving the 16 proteins that had no successful root. Selection reads no NMP; independent NMP evaluation occurs only after front membership is frozen.
+- artifacts:
+  - `scripts/materialize_v2_archive_facade.py`
+  - `tests/scripts/test_materialize_v2_archive_facade.py`
+  - `doc/SCRIPTS.md`
+- evidence: Four RED-first synthetic tests cover two-axis domination, duplicate convergence with all source provenance, mixed successful/failed-root exclusion, pLDDT non-selection, forward/reverse input identity, missing Head/structure fields, and hard-anchor refusal. The final facade/constraint gate is 43 passed, including all existing elite/top-k regressions. Real read-only integration over all 400 K12 bundles exactly reproduced the frozen contract: feasible front 84 proteins / 184 rows / 1--7 per protein / median 2; fallback 16 proteins / 768 raw unique D0 candidates / 67 rows / 2--6 per protein / median 4. Reversing all 400 bundle arguments produced frame-identical content with canonical CSV SHA-256 `1c48431b0c22864220a44ce5d25f6ea0756034f10d39490af317d34768129c73` and `750485408b9b9b5ec43ec0d6e78f6a983b7bc0868d078cb4a03f8489abb0af34`, respectively. `py_compile` and task-scoped `git diff --check` pass.
+- impact:
+  - scope: additive offline selection modes only; no runtime, policy, ladder, launcher, materializer, K24 config, or existing facade mode changed.
+  - risk: low
+  - confidence: 0.98
+- status: done locally; no job submitted and no commit created.
+- next_action: Independent immune evaluation may consume the frozen fronts without using NMP to alter membership.
+
+### L0158
+- timestamp: 2026-08-19T06:18:59-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: Independent release review found that count-only root completeness, lineage-local `root_id` provenance, constant terminal authority, and partially validated Head/structure payloads could admit an incomplete or misattributed multiroot selection and could lose fallback authority during Phase-C immune evaluation.
+- change_summary: Replaced the multiroot count argument with a closed four-seed grid interface (`--expected-master-seed` repeated exactly four times), verifies every `(protein_id, master_seed)` cell plus V2 campaign/seed invariants, and emits canonical grid/provenance digests. Campaign roots are identified by `(master_seed, internal root_id)`. The feasible mode now joins every definitive-feasible archive endpoint to matching terminal evidence and derives `terminal_validated` from that row; it does not filter on archive elite status. Fallback structure evidence is bound to manifest backend/gate digests and feasibility level. Head payload identity and window grids are recomputed, and convergent deterministic metrics require exact numerical identity apart from signed zero. Phase-C Head/NMP outputs preserve the four-column selection authority contract.
+- rationale: Fallback eligibility is valid only after proving the complete frozen seed grid, and a standard feasible final row requires persisted terminal structure and immune evidence. Content-bound provenance prevents a caller-supplied count or repeated lineage-local root label from manufacturing campaign completeness. Authority columns must survive independent immune scoring so rejected rescue seeds cannot be mistaken for terminal candidates.
+- artifacts:
+  - `scripts/materialize_v2_archive_facade.py`
+  - `scripts/evaluate_phase_c.py`
+  - `tests/scripts/test_materialize_v2_archive_facade.py`
+  - `tests/scripts/test_evaluate_phase_c_script.py`
+  - `doc/SCRIPTS.md`
+- evidence: The selector/Phase-C targeted suite passes 70 tests, including incomplete/duplicate seed grids, manifest invariant failures, missing/mismatched/immune-failed terminal rows, wrong structure backend/gate/level, malformed Head identity/window grids, endpoint-id swap with sub-tolerance metric conflicts, signed-zero equality, legacy elite/top-k regressions, and Head/NMP authority round-trip. Constraint/refold-wiring tests pass 23. Real read-only integration over all 400 K12 bundles measured 13,148 definitive-feasible endpoint rows and 13,146 sequence-deduplicated designs, then reproduced 84 proteins / 184 feasible-front rows / 1--7 per protein / median 2. Fallback reproduced 16 proteins / 768 unique D0 candidates / 67 rows / 2--6 per protein / median 4. Forward/reverse canonical JSON SHA-256 values are `301f31b2f965aa71be341e708232ae807d68a9d5a3f5a744247793f11ff0be2b` and `a82ec10c85616f3c4ad6e2501c39e63e0c7b26d7a79a01d65e21d07f6778db1b`; both carry seed-grid digest `a6b84c9734bf86cf902a5063796504366a783256e65a05993ca668f24f09ff14`. `py_compile` and task-scoped `git diff --check` pass; `ruff` is unavailable in the environment.
+- impact:
+  - scope: offline multiroot exporter and optional Phase-C authority passthrough only; no algorithm runtime, policy, ladder, launcher, materializer, K24 config, or legacy facade behavior changed.
+  - risk: low
+  - confidence: 0.99
+- status: done locally; no SLURM job submitted and no commit created.
+- next_action: Cluster-side selection should pass the frozen four K12 seeds explicitly; downstream immune evaluation can verify `selection_provenance_digest` without reclassifying fallback authority.
+
+### L0159
+- timestamp: 2026-08-19T06:37:08-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: Final release review showed that a caller could change every root's Head payload to the same wrong non-empty allele or score scale while retaining the persisted endpoint/terminal evaluator digest, and that multiroot selection did not bind the campaign caps or require a clean realized-cap ledger.
+- change_summary: Multiroot Head validation now reconstructs the canonical `HeadEvaluatorIdentity` from each payload's allele, score scale and window k-range plus manifest-authoritative `head_config` and `head_checkpoint`, then requires its digest to exactly equal `head_evaluator_digest`. The manifest gate now requires the complete seven-field caps mapping, compares its typed canonical identity across every root, and requires `realized_caps.within=true` with empty `breached` and `unverifiable` lists.
+- rationale: Pool-wide agreement only proves that payloads agree with one another; it does not prove agreement with the frozen evaluator. Likewise, a complete seed grid is not one frozen campaign when resource caps differ or the realized ledger reports a breach/unverifiable quantity.
+- artifacts:
+  - `scripts/materialize_v2_archive_facade.py`
+  - `tests/scripts/test_materialize_v2_archive_facade.py`
+  - `doc/SCRIPTS.md`
+- evidence: Two RED tests changed all four roots to one consistent wrong allele or score scale and reproduced erroneous acceptance before the fix. Additional tests cover incomplete caps, one-root cap mismatch, a breached cap and an unverifiable cap. The final selector/Phase-C targeted suite passes 76 tests. On real `root0_10PA_A`, canonical reconstruction from `DRB1_0701`, `raw_logit`, k=12--25 and the manifest Head identities exactly reproduces row digest `40d4685ab3bc55d7e9e73e9124720b64a95879d5e436a2ad9439ff363cd7193c`. Full forward/reverse integration over all 400 K12 bundles remains unchanged: 13,148 definitive-feasible endpoints / 13,146 unique designs -> 84 proteins / 184 rows, and 16 proteins / 768 unique D0 -> 67 fallback rows. Canonical output SHA-256 values remain `301f31b2f965aa71be341e708232ae807d68a9d5a3f5a744247793f11ff0be2b` and `a82ec10c85616f3c4ad6e2501c39e63e0c7b26d7a79a01d65e21d07f6778db1b` in both input orders.
+- impact:
+  - scope: multiroot manifest/Head evidence validation only; output schema, Pareto axes, Phase-C propagation, runtime, policy, launcher, materializer, K24 config and legacy facade modes are unchanged.
+  - risk: low
+  - confidence: 0.99
+- status: done locally; no SLURM job submitted and no commit created.
+- next_action: The cluster-side selector can use the existing four-seed CLI; malformed evaluator or cap evidence now fails before pool construction.

@@ -108,4 +108,3 @@ Do not create timestamped routine RAR archive directories; rsync to the stable p
 
 - **Reuse-First Gate**: Before creating any new script or SLURM file, read `doc/SCRIPTS.md` to check for existing scripts that can be parameterized or extended. Default to **adding arguments** over **adding files**.
 - **Registration Gate**: Every new script must be registered in `doc/SCRIPTS.md` under the correct module section; unregistered scripts make the task incomplete.
-- For script or SLURM work, also read `scripts/CLAUDE.md`; do not create a duplicate `scripts/AGENTS.md` unless the user explicitly asks.
