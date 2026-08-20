@@ -360,3 +360,18 @@ Before promoting provisional bands to a true experimental gate:
 6. calibrate Q00511 separately before transferring thresholds across the wider uricase family.
 
 Until then, output the full metric table, stage-paired deltas, plausibility flags, and Pareto tiers.
+
+## Final wet-lab order instantiation
+
+After the paired holo cohort and all required interface/ligand metrics are
+complete, use
+[`final_tetramer_wetlab_order.runner.md`](final_tetramer_wetlab_order.runner.md)
+to turn the measured cohort into a traceable wet-lab order. The case file must
+freeze all hard gates, axis components, normalization scope, cross-axis rule,
+experimental-arm quotas, source-lineage deduplication, and sequence-diversity
+requirements.
+
+Final-order ranking must preserve this protocol's layer hierarchy. In
+particular, candidate-specific Rosetta physical terms remain WT-relative,
+interface-specific supporting evidence until activity calibration establishes
+otherwise; they must not silently become a pooled activity score.

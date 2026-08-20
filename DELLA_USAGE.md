@@ -214,7 +214,7 @@ inference. The shared default `local_gpu` MSA path also passed end to end in Slu
 
 ## 4. SBATCH 模板（项目规范）
 
-权威模板在 `scripts/submit_cnn_enhance.slurm`。所有新脚本必须遵循（见 `scripts/CLAUDE.md`）。最小骨架：
+权威模板在 `scripts/submit_cnn_enhance.slurm`。所有新脚本必须遵循（见 `AGENTS.md` §5）。最小骨架：
 
 ```bash
 #!/bin/bash

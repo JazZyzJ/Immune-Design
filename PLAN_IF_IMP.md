@@ -49,7 +49,7 @@ Use these concrete source points while implementing. Do not replace them with me
 - Special-token logits must remain `-inf` before sampling.
 - When `use_draft_seq=True`, the initial token state at step 0 is encoder-supplied `init_pred`, not `mask_id`. The refiner's entropy mask therefore selects low-confidence positions inside an already-decoded draft at step 0; this is intentional. The no-refiner default path must remain bit-equivalent regardless of draft mode.
 - All cluster paths must be CLI args or environment variables passed into scripts. No hardcoded `/scratch/...` paths in Python modules.
-- Any new script or SLURM file must be registered in `doc/SCRIPTS.md`. Read `scripts/CLAUDE.md` before editing scripts.
+- Any new script or SLURM file must be registered in `doc/SCRIPTS.md`.
 - Append a structured `LOG.md` entry after completing this implementation.
 
 ## File Structure
@@ -1015,7 +1015,6 @@ Read:
 
 ```bash
 sed -n '1,220p' doc/SCRIPTS.md
-sed -n '1,220p' scripts/CLAUDE.md
 sed -n '1,260p' scripts/train_if_v1.py
 sed -n '1,260p' scripts/run_if_phase_c0.py
 ```

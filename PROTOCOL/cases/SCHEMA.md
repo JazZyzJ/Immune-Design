@@ -11,7 +11,7 @@ Relation to the other records:
 |---|---|---|
 | `PROTOCOL/*.md` | **why** — decision logic + its scientific rationale | stable |
 | `PROTOCOL/*.runner.md` | **how** — the fixed procedure, with `{{slots}}` left empty | stable |
-| `cases/*.yaml` | **this one decision** — which inputs, which criteria, what came out | append-only (one per decision) |
+| `PROTOCOL/cases/*.yaml` | **this one decision** — which inputs, which criteria, what came out | append-only (one per decision) |
 | `LOG.md` | implementation changes | append-only |
 | `Results/Analysis/` (RAR) | measurements, conclusions forbidden | append-only |
 
@@ -22,8 +22,8 @@ criteria that were actually applied.
 ## Identity
 
 `tag: <target>_<intent>_<YYYYMMDD>` — e.g. `q00511_drb0401_tetramer_deimm_20260713`.
-Filename = `cases/<tag>.yaml`. The tag carries goal + date, which is what makes a case findable
-without reading it; `cases/index.jsonl` is the one-line-per-case index.
+Filename = `PROTOCOL/cases/<tag>.yaml`. The tag carries goal + date, which is what makes a case findable
+without reading it; `PROTOCOL/cases/index.jsonl` is the one-line-per-case index.
 
 ## Fields
 
@@ -47,5 +47,5 @@ Optional but recommended:
 - `supersedes` — tag of an earlier case this replaces
 
 Filling a case is the agent's whole job for a screening decision; everything else is the
-runner's fixed procedure. Validate with `python scripts/validate_case.py cases/<tag>.yaml`
+runner's fixed procedure. Validate with `python scripts/validate_case.py PROTOCOL/cases/<tag>.yaml`
 before executing (runner Step 0).

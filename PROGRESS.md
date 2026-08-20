@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-08-19T01:37:19-04:00
+> **Last synced**: 2026-08-20T08:02:02-04:00
 > **Branch**: fusion_rf_refine
 
 ---
@@ -475,7 +475,8 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 > its frontier was `-4.815323 → -8.545032 → -8.649444 → -8.919034`, then held. Both archives equal
 > the minimum definitively feasible endpoint risk, all 17 terminal-validated endpoints passed the
 > cumulative hotspot gate, and no declared cap was breached. RAR:
-> `0047-rf-fusion-v2-two-protein-adaptive-depth-`. Step C production-depth freeze is pending.
+> `0047-rf-fusion-v2-two-protein-adaptive-depth-`. This is retained as the historical diagnostic;
+> the production high-risk depth/breadth freeze is complete below.
 >
 > **§7.12 HIGH-RISK 100-PROTEIN MULTIROOT ANALYSIS COMPLETE (2026-08-19, `21cd73d`).** The
 > frozen V2 `D4/K12/r40`, `epsilon_search=0.005`, four-independent-root campaign completed all
@@ -512,12 +513,21 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 > `0050-rf-fusion-v2-head-nmp-pareto-and-structu`. Runbook §11.2 contains the full contract and job
 > provenance.
 >
-> **K24 BREADTH FOLLOW-UP ACTIVE (2026-08-19).** Coder added the closed breadth-only
-> `highrisk_d4_k24_r40` profile; 400/400 configs passed typed validation and a real-driver dry-run
-> (`3790` DFE / `120` refolds / `1936` Head calls per cell; caps `4200/128/6000`). Four ailab H200
-> serial-root jobs `12625634..12625637` remain RUNNING with an eight-hour limit, one 100-protein
-> list per job. Launcher HEAD `6507974` differs from materialization revision `21cd73d` only by
-> `PROGRESS.md`; all scoped Fusion runtime/launcher/DPLM/evaluation paths are byte-identical.
+> **K24 BREADTH CEILING COMPLETE; V2 HIGH-RISK CONFIG FROZEN (2026-08-20).** The breadth-only
+> `highrisk_d4_k24_r40` campaign completed all four 100-cell root lists in jobs
+> `12625634..12625637` (`7:22:34--7:55:15`, all below the eight-hour limit). Slurm records `3:0`
+> because the serial launcher propagates typed cell failures; all 400 manifests and scientific
+> bundles are complete and all caps are clean. K24 produced 332 successful cells / 86 proteins,
+> versus K12's 328 / 84, rescuing `1ZK5_A` and `3ZIX_F`; D0 structure-pass probability was unchanged
+> (`0.7790` versus `0.7802`). Only 41 K24 lineages reached D4 versus 53 under K12, and the K24 D4
+> protein-frontier increment was `-0.00259` with only 3/86 gains above the reporting floor. On the
+> common 84 proteins, final K24-K12 Head delta was mean `-0.18848`, median `-0.01067`, W/T/L
+> `48/0/36`, Wilcoxon `p=0.1627`, bootstrap interval `[-0.64803,0.18134]`; among the 73 proteins
+> below `-9` in both campaigns, the mean was `+0.00334`. The combined feasible Head proxy front has
+> 222 rows (83 K12, 139 K24), so both archives are retained for post-hoc selection, but unchanged
+> global K/D scaling is closed: no K32 or D8 mainline remains. K24 plus the V2/V0/B1 and
+> DPLM-native/ProteinMPNN comparisons are consolidated in formal RAR
+> `0051-rf-fusion-steering-comparison-v2-vs-fina`; runbook §11.3 has the full campaign provenance.
 >
 > **STATE-TRANSITION CANARY CLOSED (2026-08-06, `4dd0922`) —
 > `WIRING_PASS_WITH_POPULATION_MISMATCH_DIAGNOSTIC`.** Both proteins produced a legal transition
@@ -538,7 +548,7 @@ disabled — a matched control VIEW, not a second run.
 | V2F3 segment executor, first-forward assimilation, `token_logprob` | done |
 | V2F4 lookaheads, Head binding, monotone exact archive, A2 view | done |
 | V2F5 one-cycle runner + paired mechanism executor | done; A2 made a shared-pool view 2026-08-05 |
-| V2F6 general D>=1 ladder + stationary comparator | done; production `D>1` launch-disabled |
+| V2F6 general D>=1 ladder + stationary comparator | done; D4/K12 primary and D4/K24 breadth ceiling complete; unchanged global K/D scaling closed |
 | V2F7 artifacts / ledger / resume / driver / preflight | done |
 | V2F5A minimal capped Head-directed policy + matched source-geometry control | done 2026-08-07; §9 verdict `immune_directed_transition_supported`, D1/same-Head scope only |
 | Exploratory recursive Uricase sandbox | complete 2026-08-08; Active15, unblinded `D4/K12/r40`, 7–8 shared hard anchors, 325 selected designs, 0 anchor violations; RAR `0045-rf-fusion-v2-active15-h200-final-cohort`; not production authorization |
@@ -547,11 +557,11 @@ Tests: prior broad gate 1250 V2 tests (+86 for V2F5A), V1/v0 regressions green (
 handoff additions add a targeted `267 passed`: calibration/materializer/reader/preflight/driver plus the core
 Head-directed/paired/artifact/cohort surface; compile, `bash -n` and `git diff --check` pass.
 
-**Parallel non-confirmatory sandbox:** runbook §10 freezes a single-lineage progressive `D=4`,
+**Historical parallel non-confirmatory sandbox:** runbook §10 froze a single-lineage progressive `D=4`,
 `K=12`, no-background-remask Uricase run. The explicit exploratory override is bound into run,
 fragment, checkpoint, resume and manifest identity; the direct archive remains primary and is
-exported to the common immune/structure evaluators without a v0 suffix. This does not change the
-§9 qualification gate or the production `D>1` lock.
+exported to the common immune/structure evaluators without a v0 suffix. Its former production
+`D>1` lock was superseded by the completed high-risk D4 qualification and breadth-ceiling program.
 
 **V2F5A, what landed 2026-08-07** (answers the S7 §7.11 `not_demonstrated` verdict, whose cause was
 a Head-BLIND support law under a Head-ranked donor):

@@ -140,7 +140,7 @@ Mechanical preparation jobs that bridge the fixed IF test set and Phase C refere
 
 ### Evaluation Integration
 
-1. `scripts/evaluate_phase_c.py` — B4 end-to-end evaluator for Phase C outputs. Reads `generated.parquet` plus the test-set parquet and writes `imm_head.parquet`, `imm_nmp.parquet`, canonical v2 `structural.parquet`, and canonical v2 `structural_residues.parquet`; mode-switchable (`imm|struct|all`) and idempotent per mode. Structure defaults to the cache-read `esmfold2` backend and requires `--refold-cache-dir`; `esmfold`, `protenix`, and `af3` remain explicit alternatives. The summary retains scTM and exactly one global full-trace C-alpha RMSD, then reports predicted/reference pLDDT and all active-site geometry through exact all-heavy-side-chain correspondence after that global alignment. The residue table stores index-addressable atom counts, squared-error sums, per-residue side-chain RMSD/max displacement, pLDDT, and match/completeness status. Any later index subset is exactly aggregatable as `sqrt(sum(sidechain_sq_error_sum) / sum(sidechain_atom_count))`; identity or atom-set mismatch fails closed. `--structural-metrics-v2` is a deprecated accepted no-op because v2 is now canonical. Lightweight reuse lives in `inverse_folding/evaluation/structural_metrics_v2.py` (stdlib-only import, lazy NumPy, cached reference context, selective metric families). `--imm-full` independently emits the long immune tables.
+1. `scripts/evaluate_phase_c.py` — B4 end-to-end evaluator for Phase C outputs. Reads `generated.parquet` plus the test-set parquet and writes `imm_head.parquet`, `imm_nmp.parquet`, canonical v2 `structural.parquet`, and canonical v2 `structural_residues.parquet`; mode-switchable (`imm|struct|all`) and idempotent per mode. Structure defaults to the cache-read `esmfold2` backend and requires `--refold-cache-dir`; `esmfold`, `protenix`, and `af3` remain explicit alternatives. The summary retains scTM and exactly one global full-trace C-alpha RMSD, then reports predicted/reference pLDDT and all active-site geometry through exact all-heavy-side-chain correspondence after that global alignment. The residue table stores index-addressable atom counts, squared-error sums, per-residue side-chain RMSD/max displacement, pLDDT, and match/completeness status. Any later index subset is exactly aggregatable as `sqrt(sum(sidechain_sq_error_sum) / sum(sidechain_atom_count))`; identity or atom-set mismatch fails closed. `--structural-metrics-v2` is a deprecated accepted no-op because v2 is now canonical. Lightweight reuse lives in `inverse_folding/evaluation/structural_metrics_v2.py` (stdlib-only import, lazy NumPy, cached reference context, selective metric families). `--imm-full` independently emits the long immune tables. When an input facade carries multiroot selection authority, the four-column contract (`selection_status`, `terminal_validated`, `structure_feasible`, `selection_provenance_digest`) must be complete and self-consistent; it is propagated unchanged into aggregate Head/NMP outputs (and their optional long tables) so fallback rows cannot lose their non-terminal status during the immune round trip.
 2. `scripts/build_wt_facade.py` — Build a WT `generated.parquet` facade (`protein_id`, `design_idx`=0, `sequence`) from a canonical IF-ready test parquet so the WT test set can be scored by `evaluate_phase_c.py` as a single-design generation (the WT immune baseline). Writes the full facade + a `.meta.json` sidecar; `--n-shards N` ALSO writes N round-robin shard facades (`<base>.shardKKofNN.parquet`, split on `sorted(protein_id)[k::N]`) whose names match the shard block in `submit_benchmark.slurm`, so the immune eval can run as a SLURM job array. Pure CPU, deterministic.
 3. `scripts/split_facade_shards.py` — Generic round-robin splitter for ANY existing parquet into `<out-base>.shard{k:02d}of{N:02d}.parquet` (naming matches the `submit_benchmark.slurm` phase_c shard block + `merge_eval_immune_shards.py`). Unlike `build_wt_facade.py` (which BUILDS a single-design WT facade), this preserves ALL input columns, so it shards both a full IF-ready **test parquet** (for parallel Phase C generation — each shard keeps `pdb_path`/`if_*` for the RF driver) and an already-multi-design **`generated.parquet`** (for the sharded immune eval). `--mode {round_robin,contiguous}` (default round_robin balances NMP load by length); asserts the partition covers every input row. Pure CPU, deterministic.
 3. `scripts/merge_eval_immune_shards.py` — Merge per-shard `evaluate_phase_c` immune outputs into one unified run dir. Concatenates the four immune tables (`imm_head`, `imm_nmp`, `imm_head_residues`, `imm_nmp_peptides`) + `failures.json` from `<output_root>/<allele_tag>/<run_id>.shardKKofNN/` into `<output_root>/<allele_tag>/<run_id>/` and writes a merge `manifest.json`. Each protein lives in exactly one shard → a duplicate `(protein_id, design_idx)` in an aggregated table is a hard error; `--expected-proteins N` asserts final coverage. Pairs with `build_wt_facade.py --n-shards` + `submit_benchmark.slurm` `N_SHARDS`.
@@ -532,6 +532,12 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `highrisk_d8_k32_r40` exploratory profile is a single-root, eight-rung, K=32 capability
     schedule with a common `B(40)` lookup; its policy v2 bootstraps the logical reward incumbent
     from the generated D0 rank-zero endpoint, while WT remains safety/attribution only.
+    The closed `highrisk_d4_k24_r40` profile is the breadth-only ceiling over the existing
+    `highrisk_d4_k12_r40` method: progressive D=4 at r=40 with K=24 on each 10-step rung,
+    `support_policy_version=v2`, split identity `exploratory_highrisk_breadth_ceiling_v1`, and
+    caps of 4200 logical DFE / 128 definitive refolds (the existing 6000 Head-call cap is supplied
+    through `--run-max-head-calls`). Its one-protein preflight projection is exactly 3790 logical
+    DFE, 120 definitive refolds and 1936 Head calls (120 endpoints + 4x454 counterfactuals).
     `--policy-calibration-json` switches the
     cell to the V2F5A `head_directed_capped` qualification law; it refuses unless the calibration's
     Head instrument/domain and committed policy-spec digest match the exact files supplied to this
@@ -673,6 +679,46 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     inferred from sequence bytes. Missing/duplicate join keys, mixed Head identities, zero output,
     or a protein appearing in multiple bundles are hard errors. Tested:
     `tests/scripts/test_materialize_v2_archive_facade.py`.
+    Two additional modes form a separate, explicit high-risk multiroot selection interface;
+    `elite` and `top-k` retain the disjoint-protein guard and strict definitive-feasible behavior
+    above. `--mode feasible_immune_pareto` alone permits repeated proteins across roots and pools
+    every definitive/evaluated/feasible archive endpoint, irrespective of `is_elite`. It requires a
+    matching `terminal_validation.parquet` row by `(endpoint_id, sequence_md5)` and verifies real
+    terminal structure-definitive/feasible plus immune evaluator/risk/pass evidence before setting
+    `terminal_validated=true`. It then deduplicates by `(protein_id, sequence_md5)` while retaining
+    every source endpoint/root in canonical JSON provenance, and emits the complete first front
+    minimizing `head_global_risk` and
+    `sum(max(residue_hotspot,0))/sequence_length` parsed from `head_score_json`.
+    `--mode structure_rejected_fallback` first excludes every protein with any feasible endpoint
+    across all supplied roots, then reads rejected-endpoint `scTM`/`pLDDT` by `endpoint_id` from
+    `structure_evaluations.parquet` and emits the complete first front minimizing Head positive-mass
+    density while maximizing scTM; pLDDT is ordering-only. Fallback rows are explicitly
+    `selection_status=structure_rejected_fallback`, `terminal_validated=false`, and
+    `structure_feasible=false`. A non-absence constraint identity requires
+    `--constraint-manifest`, whose digest and every selected hard anchor are validated. Both modes
+    fail closed on missing Head/structure evidence, are invariant to bundle argument order, and
+    never read NMP. `head_score_json` is bound back to its protein, sequence MD5/length, allele,
+    score scale, exact global risk and recomputed window-grid digest. Its allele, score scale and
+    payload window k-range are combined with manifest-authoritative `head_config` and
+    `head_checkpoint` through the canonical `HeadEvaluatorIdentity`; the resulting digest must
+    exactly equal the endpoint `head_evaluator_digest`. Converged deterministic metric values must
+    be exactly equal (with `+0.0 == -0.0`). Fallback structure rows must match the
+    manifest-authoritative structure-backend/gate digests and endpoint feasibility level.
+    Both modes require exactly four repeatable `--expected-master-seed SEED` arguments, with no
+    default; for K12 these are `20260811`, `20260812`, `20260813`, and `20260814`. Every protein must
+    realize the full `(protein_id, master_seed)` Cartesian grid exactly once. The selector also
+    verifies the manifest's one-protein `requested_cohort`, V2 arm/feedback/active-width contract,
+    seed schema/namespaces, complete canonical caps identity and common campaign/content identities
+    before fallback eligibility. `realized_caps` must report `within=true` with empty `breached` and
+    `unverifiable` lists.
+    A three-seed self-report is rejected rather than interpreted as a complete campaign.
+    Source-root provenance is keyed by `(master_seed, endpoint root_id)`, because the internal
+    `root_id` repeats across independently seeded campaign cells; every provenance row carries the
+    seed and `source_root_ids_json` stores the structured pairs. Outputs also carry canonical
+    `master_seed_grid_json`, `master_seed_grid_digest`, and a per-design
+    `selection_provenance_digest`. The K12 integration yields 13,148 definitive-feasible endpoint
+    rows / 13,146 sequence-deduplicated designs, then exactly 84 proteins / 184 feasible-front rows;
+    fallback remains 16 proteins / 768 raw unique D0 candidates / 67 front rows.
 
 9. `scripts/rho_maturity_scan.py` — FROZEN outcome-independent maturity scan (runbook §6): sweeps rho on length-stratified proteins recording ONLY crossing/`|U|`/step/rho_actual/unresolved-mass + Head-free fork diversity (never Head/structure), writes a machine-readable parquet. Decides nothing — proteins/seeds/rho sweep are frozen constants; it is the reproducible basis for `rho_grid=[.30,.50,.70]` (dropped `.85` as near-terminal best-of-K, fork ~0.08). Cluster paths are CLI; the frozen sbatch command is in the module docstring. **`--mode step` (V2, PLAN_RF_REFINE_FUSION_V2 §3.5)** captures at EXPLICIT sampler steps via `ContinuationRequest(at_step=r)` instead of rho crossings and emits the step-indexed empirical maturity band `B(r)` that a projected state must be gated against. It writes one RAW row per attempt including failures (`captured`, `failure_kind`, `rho_actual`, `n_editable`, `n_unresolved_editable`) plus, per `(step, stratum)` cell, quantile vectors on BOTH axes — normalized `rho_edit` and absolute unresolved editable mass, the latter taken at mirrored levels because mass falls as maturity rises. Step-mode flags are all required with no default, because the stratification law, the quantile grid and the capture floor are deferred scientific calibrations: `--steps`, `--stratum-key`, `--quantile-levels`, `--min-captures-per-cell`, `--calibration-id`, `--calibration-json` (plus optional `--attempts-per-cell`). A cell below the capture floor exits non-zero and writes NO calibration artifact. Step mode REFUSES a `remask.fraction_scale != 0.0` substrate: the V1 crossings were compressed into the last ~16 steps by repeated global remasking and PLAN §2.1 forbids reusing them to select V2 coordinates. The artifact is a `fusion_v2.schedule.ScheduleBandTable` bound to sampler/tokenizer/backbone/cohort/constraint-stratum/seed-schema content. Two defects fixed in this pass: attempt seeds now come from `derive_seed` rather than Python's process-randomized `hash()`, and a lost fork is recorded as evidence rather than swallowed by a bare `except Exception`. Tested: `tests/scripts/test_rho_maturity_scan_step_mode.py`.
 
@@ -796,7 +842,7 @@ Post-hoc filter baselines for IF evaluation.
 
 ## Legacy SLURM Duplicates (Pre-Consolidation)
 
-> These scripts predate the parameterization protocol in `scripts/CLAUDE.md`.
+> These scripts predate the parameterization protocol in `AGENTS.md` §5.
 > They are allele-specific copies that should eventually be merged into their parent scripts.
 > **Do not add new files in this pattern** — use env-var overrides instead.
 

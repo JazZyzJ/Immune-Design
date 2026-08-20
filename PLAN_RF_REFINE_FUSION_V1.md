@@ -139,7 +139,7 @@ Read before editing:
 6. `inverse_folding/reference_flow/fusion/{state,config,runner,selection,objective}.py`;
 7. `scripts/run_if_phase_c1.py`, `scripts/run_if_signal_diag.py`, and
    `scripts/run_rf_refine_fusion.py`;
-8. `doc/SCRIPTS.md` and `scripts/CLAUDE.md` before driver or SLURM work;
+8. `doc/SCRIPTS.md` before driver or SLURM work;
 9. the current relevant sampler, Phase-C1, Fusion, and driver tests.
 
 `run_if_signal_diag.py` is diagnostic evidence only. Do not promote its `.pt` snapshots,
@@ -890,7 +890,7 @@ preflight unless the resolved value is empty.
 
 A new orchestration launcher is allowed only if the coder records why neither existing launcher
 covers at least 60% of the required execution and why a thin wrapper cannot safely compose them
-(source: `scripts/CLAUDE.md` reuse-first rule). Any new script/launcher must be registered in
+(source: `AGENTS.md` §5 Reuse-First Gate). Any new script/launcher must be registered in
 `doc/SCRIPTS.md` before the task is complete.
 
 ---
@@ -1125,7 +1125,7 @@ Fusion regression suite.
 
 **Objective:** expose the validated library path as a reproducible cluster-ready workflow.
 
-**Assumptions/inputs:** V1F1-V1F5 complete; `doc/SCRIPTS.md` and `scripts/CLAUDE.md` reread.
+**Assumptions/inputs:** V1F1-V1F5 complete; `doc/SCRIPTS.md` reread.
 
 **Artifacts/interfaces:** production entry CLI, print-config/preflight mode, launcher mode or
 justified new launcher, registered script docs, updated runbook placeholders, one substantive

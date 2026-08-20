@@ -1,0 +1,186 @@
+# ADA strict failure-recovery round (planned).
+#
+# Why this is a CASE rather than a top-level PROTOCOL:
+# - C50/sigma50, the 1KRM graph construction, and the exact tier counts are
+#   P56658- and round-specific decisions.
+# - Reusable monomer ranking and holo catalytic checks remain in PROTOCOL/*.md.
+# - The complete 273-position membership and per-position evidence live only in
+#   the constraint config, so this case cannot drift by copying position lists.
+
+tag: p56658_ada_drb0401_strict_evstruct_20260811
+date: 2026-08-11
+goal: >-
+  Generate the next P56658 ADA failure-recovery cohort under one strict exact-WT
+  constraint mask combining functional, evolutionary, coevolutionary, and
+  active-site-network evidence; permit later epitope-core releases only from the
+  explicitly lower-priority evolution-only tiers, then require a separately
+  implemented full-sequence Potts check before holo and immune selection.
+protocol: PROTOCOL/monomer_structure_rank_refine_seeds.md
+runner: scripts/submit_if_phase_c.slurm
+status: planned
+supersedes_context: PROTOCOL/cases/p56658_ada_drb0401_conservlock_rescue_20260803.yaml
+
+inputs:
+  protein_id: P56658_ADA_BOVIN
+  allele: HLA-DRB1*04:01
+  design_input_parquet: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/design_inputs/P56658_ADA_BOVIN_if_ready.parquet
+  pdb_root: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/pdbs_if_ready
+  constraint_manifest: inverse_folding/reference_flow/configs/ada_p56658_strict_C50_sig50_graph3.yaml
+  baseline_manifest: inverse_folding/reference_flow/configs/therapeutic_enzymes_active_site_v0.yaml
+  sampler: inverse_folding/reference_flow/configs/c1_null.yaml
+  evolution_score_table: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/therapeutic_enzymes/ada_coupling_p56658_v1/03_scores/ada_per_residue_evolution.tsv
+  focus_alignment: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/therapeutic_enzymes/ada_coupling_p56658_v1/01_msa/deep_focus.fasta
+  coupling_model: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/run/ada/coupling_p56658_v1/02_couplings/deep_iter500_rtx.model
+  structure_reference: >-
+    /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/raw/02_structures/experimental/1KRM.pdb
+  n_fixed: 273
+  n_designable: 90
+
+config: inverse_folding/reference_flow/configs/ada_p56658_strict_C50_sig50_graph3.yaml
+cli_overrides: >-
+  None frozen yet. Generation count, seed, controller, output directory, and
+  resource profile must be filled before status changes from planned to run.
+
+models:
+  head: cnn_himp_a1_res03_drb0401_seed42_cv5_fold0
+  immune_oracle: NetMHCIIpan-4.3 accelerated
+  refolder_monomer: esmfold2_live
+  holo_predictor: Protenix
+
+criteria:
+  # Fixed count is an outcome of evidence unions, never a tuning target.
+  fixed_mask:
+    expected_sequence_length: 363
+    expected_sequence_md5: d139a37e7fe8d483c76b2723b509f4a4
+    functional_hard25_n: 25
+    conservation_threshold: 0.50
+    conservation_n: 104
+    sigma_L_percentile_threshold: 0.50
+    sigma_n: 173
+    gap_fraction_cap: 0.50
+    active_site_seed_distance_A: 4.0
+    active_site_seed_n: 15
+    residue_contact_distance_A: 4.5
+    excluded_sequence_neighbor_distance: 2
+    graph_tier: 3
+    graph3_clean_n: 148
+    conformational_gate_n: 23
+    structural_union_n: 149
+    final_fixed_n: 273
+    final_designable_n: 90
+
+  # Structure definition:
+  #   reference = closed-state 1KRM chain A with PRH and Zn;
+  #   canonical position = 1KRM author residue + 3;
+  #   seed = any protein heavy atom <=4.0 A from PRH or Zn;
+  #   graph edge = any protein heavy-atom pair <=4.5 A;
+  #   remove edges with |i-j|<=2 before two expansions from the seed;
+  #   explicitly union the full P56658 gates 57-73 and 183-188, plus the
+  #   activity-sensitive second-shell annotation at S265.
+  structure_policy:
+    state: closed_1KRM_PRH_Zn
+    conformational_gate_ranges_1b: [[57, 73], [183, 188]]
+    activity_sensitive_second_shell_1b: [265]
+    dpp4_surface_blanket_fixed: false
+
+  # Evolution interpretation:
+  # C50 is low entropy, not proof that the P56658 WT residue is the homolog
+  # consensus. sigma50 is coupling-load membership, not single-site identity
+  # conservation. Exact-WT locking preserves the validated P56658 combination.
+  evolution_policy:
+    coverage_filters: [0.60, 0.70, 0.80]
+    sequence_weight_identity_threshold: 0.80
+    neff_per_length: 13.23
+    top_L_contact_precision: 0.6997
+    fixed_count_used_for_threshold_selection: false
+
+  # Disjoint importance tiers after precedence. Overlapping raw evidence remains
+  # attached to every anchor in the config as evidence_memberships.
+  importance_tiers:
+    T0_functional_gate_never_release:
+      n: 37
+      release_class: never_release
+      epitope_core_release_allowed: false
+    T1_active_site_network_manual_exception:
+      n: 112
+      release_class: manual_structure_exception_only
+      epitope_core_release_allowed: false
+    T2a_evolution_joint_C50_sig50:
+      n: 19
+      release_class: potts_conditioned_core_release
+      epitope_core_release_allowed: true
+    T2b_evolution_sigma50_only:
+      n: 85
+      release_class: potts_conditioned_core_release
+      epitope_core_release_allowed: true
+    T2c_evolution_C50_only:
+      n: 20
+      release_class: potts_conditioned_core_release
+      epitope_core_release_allowed: true
+
+  # Core-only release starts with the least multiply supported positions.
+  # Any release creates a derived config; this strict base config is immutable.
+  epitope_core_release:
+    strict_base_released_positions_1b: []
+    consideration_order: [T2c, T2b, T2a]
+    exact_strong_core_overlap_required: true
+    derived_config_required: true
+    unrelated_fixed_positions_may_change: false
+
+  # Full-sequence Potts scoring is intentionally NOT implemented in this change.
+  # It is a separately executed, pre-registered post-generation gate:
+  # - same PLMC model and exact P56658 WT only;
+  # - natural rows with >=0.95 coverage, WT-impute gaps, deduplicate;
+  # - condition on exact-WT Hamming burden, never use one global H threshold;
+  # - choose the smallest symmetric radius containing >=20 unique natural rows;
+  # - radius >20 or any identity/calibration failure fails closed;
+  # - both total and coupling deltas must be >= the local empirical q05;
+  # - fields are diagnostic, and Potts never makes T0/T1 core-releasable.
+  post_generation_full_sequence_potts:
+    required: true
+    implementation_status: deferred_until_generation_complete
+    natural_minimum_coverage: 0.95
+    minimum_unique_natural_references: 20
+    maximum_hamming_radius: 20
+    local_percentile_floor: 5.0
+    hard_components: [total, couplings]
+    fields_component_role: diagnostic_only
+    insufficient_calibration_action: fail_closed
+
+  downstream:
+    zero_anchor_mismatches_required: true
+    holo_protocol: PROTOCOL/holo_catalytic_gate_calibration.md
+    tetramer_required: false
+
+outputs:
+  generation:
+    status: pending
+  full_sequence_potts:
+    status: deferred_until_generation_complete
+  selected:
+    n: 0
+    status: pending
+
+notes:
+  - >-
+    Wet-lab endpoint boundary: the owner reports that the complete current ADA
+    panel failed. No assay endpoint table is present in the repository, so this
+    case records the failure as owner-provided experimental context rather than
+    inventing assay values or candidate-specific causal attribution.
+  - >-
+    The prior C60/sigma60 mask fixed 194 positions but did not add an active-site
+    contact-network membership rule and left much of the open/closed gate mutable.
+    This case closes that provenance gap instead of attempting to explain the
+    experimental failure from saturated monomer or holo computational metrics.
+  - >-
+    Only 90 positions remain designable. Search feasibility may therefore fall;
+    that is an outcome to measure, not a reason to silently lower C, sigma, or
+    graph thresholds.
+  - >-
+    Full-sequence Potts scoring code will be written after complete generated
+    sequences exist, by explicit owner decision on 2026-08-11.

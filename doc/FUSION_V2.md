@@ -7,10 +7,11 @@ _Scientific architecture contract. V2 is the main development route; A2 is its f
 ## 0. Status and decisions
 
 This document replaces the earlier high-level V2 sketch with a concrete scientific architecture.
-It defines the states, operators, causal controls, evaluation philosophy, and claim boundary. It
-does not freeze recursion depth, reopening thresholds, or production configuration values. The
-implementation PLAN defines typed interfaces and falsification gates without inventing those
-numbers; scientific values in Section 10 remain unresolved until mechanism evidence exists.
+It defines the states, operators, causal controls, evaluation philosophy, and claim boundary. The
+architecture remains parameterized, but the first high-risk no-remask development program is now
+closed by the executed D4/K12 and D4/K24 campaigns. Their operating values and evidence boundary
+are recorded below; remaining quantities in Section 10 apply only to a materially new substrate,
+policy, or application campaign and are not an invitation to continue unchanged global scaling.
 
 The following decisions are frozen at the architecture level:
 
@@ -25,8 +26,10 @@ The following decisions are frozen at the architecture level:
    diffusion.
 4. **A2 remains inside every V2 experiment as the feedback-disabled view.** It uses the same
    partial roots, complete lookaheads, Head records, and archive up to the feedback transition.
-5. **Recursion is part of the architecture, but its depth is open.** A one-feedback run is the
-   smallest executable V2 instance, not the definition of the method.
+5. **Recursion is part of the architecture, but unchanged depth scaling is closed on the first
+   substrate.** A one-feedback run is the smallest executable V2 instance, not the definition of
+   the method. The executed high-risk program reached D4 and does not support another global
+   increase in depth without a new mechanism.
 6. **No single fixed compute budget defines success.** The primary scientific object is a
    capability frontier across a predeclared compute ladder. Compute remains fully measured and is
    used for secondary matched-compute attribution.
@@ -42,8 +45,35 @@ The following decisions are frozen at the architecture level:
    use one projected-segment operator. The primary schedule satisfies $c_{d+1}>c_d$; a small
    stationary diagnostic may set $c_{d+1}=c_d$ to test whether temporal progression matters.
    There is no substrate tournament and no second stationary implementation stack.
+10. **The high-risk breadth/depth mainline is frozen and closed.** The primary operating point is
+    D4/K12 with `r=40` and four independent roots; D4/K24 is the completed breadth ceiling. K24
+    added two-protein coverage and complementary archive members, but did not produce a systematic
+    scalar-ceiling gain or deeper realized recursion. No K32 or D8 continuation remains in the
+    development mainline. Preserve the K12+K24 archive union for selection instead of replacing
+    one independent campaign with the other.
 
-### 0.1 Executed V1-A1 result
+### 0.1 Executed high-risk V2 closure
+
+The frozen high-risk campaign used the a1-res03 DRB0701 Head, global epsilon `0.005`, local
+repeatability floor `0.017012596130371094`, scTM gate `0.70`, progressive checkpoints
+`50 -> 60 -> 70 -> 80 -> 90`, `r=40`, and four independent roots. K12 was the primary run and K24
+changed breadth only.
+
+| Measurement | D4/K12 | D4/K24 | Closure |
+|---|---:|---:|---|
+| Successful cells / proteins | `328/400` / `84/100` | `332/400` / `86/100` | K24 rescued two proteins without changing per-candidate D0 structure-pass probability |
+| Definitive-feasible unique designs | `13,146` | `25,530` | breadth nearly doubled archive size |
+| Lineages reaching D4 | `53` | `41` | greater breadth did not deepen recurrence |
+| Protein-union D4 mean frontier delta | `-0.00352` | `-0.00259` | both were at the operational plateau |
+| Common-84 final Head delta | reference | K24-K12 mean `-0.18848`, median `-0.01067`, `p=0.1627`, bootstrap `[-0.64803,0.18134]` | no systematic scalar gain |
+| Combined Head proxy front | 83 retained rows | 139 retained rows | both campaigns retain non-dominated members |
+
+The formal evidence is RAR `0051-rf-fusion-steering-comparison-v2-vs-fina`; the complete execution
+contract and cell-level provenance remain in the cluster runbook. This closes unchanged global
+breadth/depth tuning for the first substrate. It does not prove a mathematical landscape optimum
+or prohibit a later architecture change with a new causal hypothesis.
+
+### 0.2 Executed V1-A1 result
 
 The executed, pre-registered P1 development result comes first. It did not support the operational
 V1-A1 route:
@@ -57,7 +87,7 @@ The persisted verdict was `DEV_DIAGNOSTIC`, not GO/KILL: the 24-protein developm
 meet the frozen holdout coverage or repeat gates. These observations close V1-A1 as the main route;
 they do not constitute a held-out test of A2 or V2, neither of which was executed.
 
-### 0.2 Post-hoc mechanism diagnostics
+### 0.3 Post-hoc mechanism diagnostics
 
 The following measurements explain why V1-A1 was wasteful and motivate retaining exact endpoint
 breadth as an untested primitive. They are not evidence of system superiority:
@@ -77,7 +107,7 @@ comparison. The correct conclusion is narrower: **V1-A1 failed. Prefix-amortized
 remains a plausible but prospectively untested resource.** The counterfactual is sufficient to
 retain A2 as V2's feedback-disabled control, not to claim A2 or V2 efficacy.
 
-### 0.3 Measured substrate risk
+### 0.4 Measured substrate risk
 
 Under the frozen V1 `c1_null` substrate, realized maturity was highly compressed in sampler time:
 the median crossings for `rho=0.30/0.50/0.70` occurred at steps `90/95/98` of 100. At `rho=0.50`,
@@ -863,7 +893,7 @@ the default for V2. One runner and one artifact graph should support the followi
 | State-transition canary | Does exact endpoint feedback produce a replayable, anchor-safe partial descendant? | one ordinary and one anchored protein in the same small run; exact before/after state and lineage | wiring gate only; no scientific null verdict |
 | Mechanism cohort | Does feedback change the descendant endpoint distribution relative to no-feedback breadth? | shared initial roots/lookaheads, both directional dependence tests for $q_\phi$, a predeclared powered sequence-space comparison, archive preservation, diversity and reward shifts | establish or reject transmission only under the frozen power contract |
 | Support-policy qualification | Is the transmitted change immune-directed under a frozen production support law? | reward-ordered endpoint pairs; matched source-aware versus source-off policy; equal support cardinality, horizon, seeds, and resources; descendant Head direction plus safety | authorize recursive capability or revise/reject the policy |
-| Development capability ladder | Does V2 expand the feasible frontier beyond A2 breadth and complete-state local-feedback v0 as scale increases? | calibrate the frozen no-remask step geometry, then run a small progressive breadth-depth ladder plus one stationary diagnostic with complete cost curves and pre-v0 endpoints | choose useful operating region or stop V2 |
+| Development capability ceiling | Does V2 expand the feasible frontier, and does unchanged breadth continue to raise it? | executed D4/K12 primary campaign plus breadth-only D4/K24 ceiling, with complete depth, structure, archive, stopping, and cost evidence | operating region closed; retain the archive union and stop unchanged global K/D scaling |
 | Definitive validation | Do gains survive frozen structure and an independent immune evaluator? | definitive feasible archive, external immune readout, diversity and failure analysis | authorize holdout or reject the claim |
 | Holdout/application | Does the frozen method generalize? | one frozen method, one frozen ladder region, no rescue tuning | final system claim |
 
@@ -982,14 +1012,16 @@ directionally to an immune evaluator that was absent from runtime selection.
 family-aware diversity accounting. The observed effect is then surrogate exploitation or search
 collapse rather than useful design capability.
 
-## 10. Open scientific decisions
+## 10. Remaining scientific decisions
 
-The following quantities are deliberately unresolved. They must be calibrated after the minimal
-state-transition and mechanism evidence exists; they are not reasons to delay defining V2.
+The first high-risk substrate has closed the global depth/breadth questions: D4/K12 is the primary
+operating point, D4/K24 is the completed breadth ceiling, and neither K32 nor D8 is an authorized
+continuation. The following quantities remain scientific decisions only for a materially changed
+mechanism, substrate, or application campaign; they are not reasons to reopen the completed
+high-risk tuning ladder.
 
 | Open decision | Scientific question |
 | --- | --- |
-| Feedback depth $D$ | Does another feedback cycle add a new basin or only repeat the same local search under the frozen coordinate mode? |
 | Progressive coordinate/mask schedule | Which declared tuples `(r_d, c_d, c_{d+1}, B(r_d), admissible mask load)` preserve useful complete lookahead and feedback plasticity on the frozen no-remask substrate? Reopen *identity* remains a policy choice inside this cardinality constraint. |
 | Stationary diagnostic schedule | Which single matched $D=2$ stationary schedule is informative enough to distinguish repeated feedback at fixed maturity from progressive time advance? It is a comparator, not a second production architecture. |
 | Depth-0 complete reference | Which complete sequence, frozen before endpoint scoring, defines the first whole-landscape new-hotspot check under backbone-only generation: a native/source sequence or another external reference? The selected endpoint itself is not admissible. |
@@ -998,14 +1030,12 @@ state-transition and mechanism evidence exists; they are not reasons to delay de
 | FeedbackSupportPolicy | Which frozen residue-attribution, source-history, endpoint-consensus, priority, support-size, and source-off matching law defines the first production immune-directed transition? |
 | Reopening score and threshold | Which uncertainty, Head responsibility, or disagreement signal identifies positions worth reopening? |
 | Protected-identity law | Which selected endpoint identities are trusted strongly enough to survive the next projection? |
-| Breadth-depth allocation | When is another complete lookahead more useful than another feedback round? |
 | Active population width | How much lineage diversity is needed to prevent one selected basin from dominating the loop? |
 | Structure cadence | Which endpoints need early definitive validation, and which may remain provisional until archive promotion? |
 | Stopping rule | Which combination of frontier plateau, diversity loss, marginal gain, and operational ceiling ends recursion? |
 | Terminal cleanup | Is any common short cleanup useful, and can it be reported without washing out the V2 mechanism? |
-| Capability ladder | Which small set of scaling points exposes both the early slope and the attainable plateau for each method? |
 
-No default numerical value is implied by this table.
+No default numerical value is implied by the remaining table.
 
 ## 11. Claim boundary and relationship to prior work
 
@@ -1031,10 +1061,12 @@ and source-forgetting complete-state v0. Weaker outcomes remain scientifically i
 - if all three methods converge to the same plateau, report a shared capability ceiling rather
   than manufacturing a winner at one arbitrary compute point.
 
-The current architecture decision is therefore not that V2 is already superior. It is that
-V1-A1 misused a plausible endpoint-breadth resource, and the most direct next scientific question
-is whether feeding selected exact futures back into their compatible live trajectories creates
-capability that prospective breadth-only search and source-forgetting local feedback do not.
+The current architecture decision is narrower than universal superiority. V1-A1 misused a
+plausible endpoint-breadth resource; V2 demonstrated strong high-risk steering and reached an
+operational plateau under the first no-remask substrate. D4/K24 added coverage and complementary
+archive candidates but did not justify further unchanged global breadth or depth. Any later V2
+experiment must therefore test generalization or a materially new mechanism rather than resume the
+closed scaling ladder.
 
 ## 12. Project authorities
 

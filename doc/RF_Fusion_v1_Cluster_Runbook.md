@@ -332,7 +332,7 @@ the v0 complete-state `ParticleState` contract.
 6. Every T0/P1 entry trajectory resolves to `c1_null`, `controller=None`, and no
    h-map; the resume payload contains no controller memory.
 7. All new scripts and SLURM launchers are registered in `doc/SCRIPTS.md`; launchers
-   follow `scripts/CLAUDE.md` and write stdout/stderr only under `LOG_ROOT`.
+   follow `AGENTS.md` §5 and write stdout/stderr only under `LOG_ROOT`.
 
 Required tests before cluster use:
 

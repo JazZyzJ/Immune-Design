@@ -7,7 +7,7 @@ goal: >-
   answer turned out to be a single epitope core whose four MHC-II pockets are all coevolution-
   locked; releasing two of them restores complete de-immunisation.
 protocol: PROTOCOL/holo_catalytic_gate_calibration.md
-supersedes_context: cases/p56658_ada_drb0401_holo_deimm_20260720.yaml
+supersedes_context: PROTOCOL/cases/p56658_ada_drb0401_holo_deimm_20260720.yaml
 status: selected
 runner: >-
   /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/backup/therapeutic_enzymes/holo_r3/run_holo_r3.sh

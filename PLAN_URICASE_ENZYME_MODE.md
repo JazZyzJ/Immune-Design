@@ -164,7 +164,7 @@ Validation rules:
 ### Task U0 - Preflight And Contract Freeze
 
 - [ ] Re-read `doc/Uricases_Design.md`, this plan, `AGENTS.md`,
-      `doc/SCRIPTS.md`, and `scripts/CLAUDE.md`.
+      and `doc/SCRIPTS.md`.
 - [ ] Confirm the Q00511 v0 hard set is
       `{10, 57, 58, 159, 176, 228, 254, 256}` with expected amino acids
       `K, T, D, F, R, Q, N, H`.

@@ -11,7 +11,7 @@ Assumes RF-ready data exists (`new_target_data_pipeline.md`), where for a binder
 replaced by the **interface consensus derived from a predicted complex** — the manifest cannot be
 authored from the monomer or from a residue list.
 
-First instantiated on PD1_b2 (114-aa BindCraft binder vs PD-1, `cases/pd1b2_binder_deimm_v2_*`).
+First instantiated on PD1_b2 (114-aa BindCraft binder vs PD-1, `PROTOCOL/cases/pd1b2_binder_deimm_v2_*`).
 
 ## Why a binder is not just another enzyme
 
@@ -205,7 +205,7 @@ because central tolerance is not in any of these models.
 
 ## What a correctly constrained cohort looks like
 
-Recorded from the first full instantiation (PD1_b2 v2, 400 designs, `cases/pd1b2_binder_deimm_v2_*`)
+Recorded from the first full instantiation (PD1_b2 v2, 400 designs, `PROTOCOL/cases/pd1b2_binder_deimm_v2_*`)
 because it is the shape to expect, and because it changes what the tiers are *for*.
 
 When the lock set does its job, **the interface tiers stop discriminating**:

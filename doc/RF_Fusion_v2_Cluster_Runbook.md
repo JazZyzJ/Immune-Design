@@ -2173,16 +2173,16 @@ by K24. K24 contributes on 64 proteins and K12 on 50, so neither independent cam
 other. Preserve and merge both archives for post-hoc candidate selection rather than replacing K12
 with K24.
 
-K24 has not yet received independent NMP scoring, so the proxy-front result is not a true immune
-ceiling claim. If the objective is the best obtainable design rather than a small shortlist, score
-the full 27,070-row K24 success archive and the 1,344 rejected D0 candidates from its 14
-all-root-failed proteins. Scoring only the 213-row proxy front is insufficient: in K12, the analogous
-Head front contained the exact definitive-feasible NMP best for only `18/84` proteins.
+K24 has not received independent NMP scoring, so the proxy-front result is not a true external
+immune-ceiling claim. This missing measurement does not block the breadth question: K24 did not
+produce a systematic frozen-Head gain or deeper realized recurrence. If a later application selects
+from the K12+K24 union, its selected candidates require the normal independent immune evaluation;
+the 213-row Head proxy front must not be relabeled as NMP truth.
 
-**Breadth verdict.** K24 is a positive candidate-diversity and minor coverage result, but a negative
-test of unchanged breadth as the route to deeper recursion. The next algorithmic experiment should
-be a stall-only, floor-satisficing donor rescue that keeps the scalar elite immutable and permits
-ancestry to move along the `(global risk, positive-mass density)` surface only after the incumbent
-has reached the Head floor. If that targeted rescue does not turn the reopened stalls into later
-frontier gains, the next mechanism must change the partial-state substrate or introduce
-rejuvenation; further global increases in K or D should not be run first.
+**Breadth verdict and closure.** K24 is a positive candidate-diversity and minor-coverage result,
+but a negative test of unchanged breadth as the route to deeper recursion. Preserve the K12+K24
+archive union for post-hoc selection and close global K/D scaling on this substrate. No K32 or D8
+continuation remains in the mainline. Any future Fusion experiment must introduce a falsifiable
+architecture or generalization question rather than another fine parameter adjustment. The formal
+K24/K12 evidence and the historical steering-method comparisons are consolidated in RAR
+`0051-rf-fusion-steering-comparison-v2-vs-fina`.
