@@ -40,7 +40,7 @@ Before editing code, read:
    `global_risk`, batch scorer).
 5. `inverse_folding/reference_flow/refine.py` and `scripts/refine_rf_designs.py` only as
    evidence/reuse references. Do not carry their NMP objective into Fusion.
-6. `doc/SCRIPTS.md` and `scripts/CLAUDE.md` before driver/SLURM work.
+6. `doc/SCRIPTS.md` before driver/SLURM work.
 
 External `ProDifEvo-Refinement/` and `Fk-Diffusion-Steering/` are read-only scientific
 references. Production code must not import them.
@@ -688,7 +688,7 @@ lineage edges must be globally unique within a run.
   `--nmp-*`, or `--seed-table`) so NMP is never loaded, plus its own `JOB_TAG`/`OUT_DIR` wiring
   (the current `refine_${MODE}_0701` tag is refine-oriented). `#SBATCH --cpus-per-task=8` is a
   static, NMP-sized directive tied to `NMP_WORKERS` and cannot branch on `MODE` inline
-  (`scripts/CLAUDE.md` §3); a fusion run either accepts the 8-core over-request or is submitted
+  (`AGENTS.md` §5); a fusion run either accepts the 8-core over-request or is submitted
   with a submit-time `sbatch --cpus-per-task=N` override.
 - [ ] Register the driver and launcher mode in `doc/SCRIPTS.md`.
 - [ ] Add the smoke YAML and print every resolved field at startup.

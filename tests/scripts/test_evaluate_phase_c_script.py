@@ -20,8 +20,10 @@ from scripts.evaluate_phase_c import (
     compute_recovery,
     evaluate_immunogenicity_rows,
     evaluate_structural_rows,
+    load_generated_designs,
     mode_outputs_exist,
     output_paths,
+    probe_nmp_version,
     resolve_nmp_runtime_params,
 )
 
@@ -192,6 +194,104 @@ def test_evaluate_immunogenicity_rows_matches_predictor_and_nmp_counts():
     assert len(nmp_df) == 6
     assert head_df.iloc[0]["global_risk"] == pytest.approx(0.4)
     assert nmp_df.iloc[0]["n_strong_binders"] == 1
+
+
+def test_selection_authority_round_trips_through_head_and_nmp_outputs(tmp_path):
+    generated = _generated_fixture()
+    generated["selection_status"] = "feasible_immune_pareto"
+    generated["terminal_validated"] = True
+    generated["structure_feasible"] = True
+    generated["selection_provenance_digest"] = [
+        f"{index:064x}" for index in range(1, len(generated) + 1)
+    ]
+    path = tmp_path / "generated.parquet"
+    generated.to_parquet(path, index=False)
+    loaded = load_generated_designs(path)
+
+    head_df, nmp_df, failures = evaluate_immunogenicity_rows(
+        loaded,
+        predictor=_FakePredictor(),
+        nmp_runner=_FakeRunner(),
+        allele="HLA-DRB1*07:01",
+        nmp_batch_size=2,
+        progress_every=0,
+    )
+
+    assert failures == []
+    authority = [
+        "selection_status",
+        "terminal_validated",
+        "structure_feasible",
+        "selection_provenance_digest",
+    ]
+    pd.testing.assert_frame_equal(
+        head_df[["protein_id", "design_idx", *authority]].reset_index(drop=True),
+        loaded[["protein_id", "design_idx", *authority]].reset_index(drop=True),
+        check_dtype=False,
+    )
+    pd.testing.assert_frame_equal(
+        nmp_df[["protein_id", "design_idx", *authority]].reset_index(drop=True),
+        loaded[["protein_id", "design_idx", *authority]].reset_index(drop=True),
+        check_dtype=False,
+    )
+
+
+def test_selection_authority_partial_input_fails_closed(tmp_path):
+    generated = _generated_fixture()
+    generated["selection_status"] = "structure_rejected_fallback"
+    path = tmp_path / "generated.parquet"
+    generated.to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="selection authority columns"):
+        load_generated_designs(path)
+
+
+def test_probe_nmp_version_prefers_standard_data_version_file(tmp_path, monkeypatch):
+    binary = tmp_path / "netMHCIIpan"
+    binary.write_text("binary-placeholder")
+    version_path = tmp_path / "data" / "version"
+    version_path.parent.mkdir()
+    version_path.write_text("  NetMHCIIpan version 4.3i\n")
+
+    def _must_not_probe(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("binary probe must not run when data/version exists")
+
+    monkeypatch.setattr("scripts.evaluate_phase_c.subprocess.run", _must_not_probe)
+
+    assert probe_nmp_version(binary) == "NetMHCIIpan version 4.3i"
+
+
+def test_probe_nmp_version_fallback_accepts_only_explicit_version_line(
+    tmp_path, monkeypatch,
+):
+    binary = tmp_path / "netMHCIIpan"
+    binary.write_text("binary-placeholder")
+    monkeypatch.setattr(
+        "scripts.evaluate_phase_c.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="NetMHCIIpan version 4.3i\n", stderr="", returncode=0,
+        ),
+    )
+
+    assert probe_nmp_version(binary) == "NetMHCIIpan version 4.3i"
+
+
+def test_probe_nmp_version_never_records_usage_or_error_as_version(
+    tmp_path, monkeypatch,
+):
+    binary = tmp_path / "netMHCIIpan"
+    binary.write_text("binary-placeholder")
+    monkeypatch.setattr(
+        "scripts.evaluate_phase_c.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="Usage: netMHCIIpan [options]\n",
+            stderr="ERROR: input file is missing\n",
+            returncode=1,
+        ),
+    )
+
+    assert probe_nmp_version(binary) is None
 
 
 def test_resolve_nmp_runtime_params_original_matches_iedb_baseline():

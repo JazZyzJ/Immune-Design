@@ -8,7 +8,7 @@ frozen config rather than to a local default, and that the seams are called with
 contract names.  What is NOT verified is that the real oracles behave; that stays a cluster check
 and no local green result should be read as evidence for it.
 
-**Reuse (PLAN §5.5, ``scripts/CLAUDE.md``).**  Model preparation is NOT reimplemented: the sampler,
+**Reuse (PLAN §5.5, ``AGENTS.md`` §5).**  Model preparation is NOT reimplemented: the sampler,
 denoiser, alphabet, per-protein backbone and hard-anchor resolution all come from
 ``scripts.rf_fusion_model_factory``, the same factory the V1 oracle path delegates to, so the two
 entry paths cannot drift into running different kernels while both claiming the frozen substrate.

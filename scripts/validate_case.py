@@ -1,6 +1,6 @@
-"""Pre-flight validation for a case file (cases/<tag>.yaml) — runner Step 0.
+"""Pre-flight validation for a case file (PROTOCOL/cases/<tag>.yaml) — runner Step 0.
 
-Deliberately small. The schema (cases/SCHEMA.md) carries the field contract; this script only
+Deliberately small. The schema (PROTOCOL/cases/SCHEMA.md) carries the field contract; this script only
 enforces the invariants a human/agent actually gets wrong, and does so BEFORE any cluster job is
 submitted:
 
@@ -138,7 +138,7 @@ def validate(case_path, repo_root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("case", type=pathlib.Path, help="path to cases/<tag>.yaml")
+    ap.add_argument("case", type=pathlib.Path, help="path to PROTOCOL/cases/<tag>.yaml")
     ap.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[1])
     a = ap.parse_args()
 

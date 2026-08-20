@@ -20,7 +20,7 @@ losing nothing an audit needs.
 (explicit Arrow schema, declared column order, stable sort, hard error on an undeclared column),
 ``write_manifest`` (atomic JSON) and ``write_cost_ledger_jsonl``.  V2 adds its column vocabulary
 through that writer's ``types`` argument rather than a second parquet implementation, per the
-``scripts/CLAUDE.md`` reuse rule: add arguments, not files.
+``AGENTS.md`` §5 reuse rule: add arguments, not files.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from inverse_folding.reference_flow.fusion_v2.identity import canonical_digest  
 # REUSE, not reimplementation: the V1 writers already give an explicit Arrow schema, declared
 # column order, a stable sort, atomic manifest writes and the append-safe JSONL ledger format.
 # V2 adds its own column vocabulary through ``write_stable_parquet(types=...)`` -- an argument, not
-# a second parquet implementation (``scripts/CLAUDE.md`` reuse rule).
+# a second parquet implementation (``AGENTS.md`` §5 reuse rule).
 from scripts.rf_fusion_v1_artifacts import (  # noqa: E402,F401
     TableSchema,
     write_cost_ledger_jsonl,

@@ -494,22 +494,30 @@ as the pristine tree (unrelated modules, missing optional deps) — zero new fai
 > `0049-rf-fusion-v2-high-risk-100-protein-multi`; stable Della archive:
 > `work/immune-design/rar_analysis_archive/current/Results/Analysis/0049-rf-fusion-v2-high-risk-100-protein-multi/`.
 >
-> **HIGH-RISK PARETO/NMP + K24 BREADTH FOLLOW-UP ACTIVE (2026-08-19).** Existing DPLM-native
-> and ProteinMPNN NMP (1,344 success-cohort designs) provisionally identify
-> `sum(max(residue_hotspot,0))/sequence_length` as the strongest second Head axis for within-protein
-> NMP strong-fraction agreement (`rho=0.572` versus global-risk `0.542`; difference CI includes
-> zero). The frozen Head/structure first fronts contain 184 definitive-feasible designs over the 84
-> successful proteins and 67 explicitly labelled structure-rejected fallback candidates over the
-> 16 all-failed proteins (768 raw D0 candidates). Fusion NMP is active as ailab stress-panel job
-> `12626693` (1,405 rows including all 864 failed-cell candidates) and full-archive array/merge
-> `12626695`/`12626706` (13,774 success designs). NMP remains explicitly CPU-only; the H200 request
-> is an ailab scheduling allocation. The earlier queued RTX submissions `12625177`/`12625237`/
-> `12625268` were cancelled before execution. Coder added the
-> closed breadth-only `highrisk_d4_k24_r40` profile; 400/400 configs passed typed validation and a
-> real-driver dry-run (`3790` DFE / `120` refolds / `1936` Head calls per cell; caps
-> `4200/128/6000`). Four ailab H200 serial-root jobs `12625634..12625637` are submitted, one
-> 100-protein list per job. Runbook §11 carries the full freeze and status; objective correlation
-> and Pareto artifacts are RAR `0050-rf-fusion-v2-head-nmp-pareto-and-structu`.
+> **HIGH-RISK FUSION NMP CLOSURE COMPLETE (2026-08-19).** CPU arrays/merges
+> `12626996`/`12627026` and `12627313`/`12627348` completed all 16+128 shards with zero failures,
+> producing exact-key 1,405-row stress and 13,774-row full-archive NMP tables. On the full Fusion
+> archive, positive-mass density has pooled/within-protein Spearman `0.718/0.668` with NMP strong
+> fraction, versus global risk `0.699/0.639`; their mean per-protein difference is `+0.0281`, with
+> 10,000-draw protein-bootstrap CI `[0.0182,0.0388]`. Positive mass is frozen as a complementary
+> second Head axis, not a replacement for global. Fusion protein-best strong fraction is `0.00231`,
+> versus DPLM-native Gumbel `0.01895` and ProteinMPNN `0.01994`; Fusion wins `82/84` and `78/84`
+> proteins, respectively, under the explicitly unequal-budget ceiling. The frozen feasible 184-row
+> front has NMP mean/median `0.00811/0.00669`; the rejected 67-row proxy front remains separate
+> from the post-hoc 57-row NMP/structure diagnostic. All 864 failed-cell candidates are scored;
+> positive mass remains their strongest Head proxy. Under global-risk-first feasible selection,
+> Head Top-8/16/48/64/80 contains an exact minimum-`n_strong` row for
+> `35/46/69/75/81` of 84 proteins; mean raw-count regret is
+> `5.12/2.45/0.76/0.38/0.12`. The full baseline/front/NMP/Top-K evidence is consolidated in RAR
+> `0050-rf-fusion-v2-head-nmp-pareto-and-structu`. Runbook §11.2 contains the full contract and job
+> provenance.
+>
+> **K24 BREADTH FOLLOW-UP ACTIVE (2026-08-19).** Coder added the closed breadth-only
+> `highrisk_d4_k24_r40` profile; 400/400 configs passed typed validation and a real-driver dry-run
+> (`3790` DFE / `120` refolds / `1936` Head calls per cell; caps `4200/128/6000`). Four ailab H200
+> serial-root jobs `12625634..12625637` remain RUNNING with an eight-hour limit, one 100-protein
+> list per job. Launcher HEAD `6507974` differs from materialization revision `21cd73d` only by
+> `PROGRESS.md`; all scoped Fusion runtime/launcher/DPLM/evaluation paths are byte-identical.
 >
 > **STATE-TRANSITION CANARY CLOSED (2026-08-06, `4dd0922`) —
 > `WIRING_PASS_WITH_POPULATION_MISMATCH_DIAGNOSTIC`.** Both proteins produced a legal transition

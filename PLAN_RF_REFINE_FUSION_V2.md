@@ -126,7 +126,7 @@ No task is complete from code alone. Its named artifacts and adversarial validat
 Read before editing:
 
 1. all six authority/evidence files named at the top of this PLAN;
-2. `PROGRESS.md`, `AGENTS.md`, `doc/SCRIPTS.md`, and `scripts/CLAUDE.md`;
+2. `PROGRESS.md`, `AGENTS.md`, and `doc/SCRIPTS.md`;
 3. `inverse_folding/reference_flow/sampler.py`;
 4. `inverse_folding/reference_flow/fusion/v1_{records,config,seeds,alloc,ledger,admission}.py`;
 5. `inverse_folding/reference_flow/fusion/{state,objective,moves,runner,selection,oracles}.py`;
@@ -755,7 +755,7 @@ value. Logical assigned work, observed physical work, and unknown physical work 
 ### 5.5 Reuse-first driver boundary
 
 Before adding a driver, compare the V2 requirements against `run_rf_fusion_v1_entry.py` and
-`run_rf_refine_fusion.py` under the `scripts/CLAUDE.md` 60% reuse rule.
+`run_rf_refine_fusion.py` under the `AGENTS.md` §5 reuse rule.
 
 - Shared model/oracle preparation belongs in library helpers, not copied scripts.
 - Do not add V2 as an ambiguous mode inside the V1 scientific config.

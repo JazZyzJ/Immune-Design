@@ -111,6 +111,28 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
             "max_definitive_refolds": 64,
         },
     },
+    "highrisk_d4_k24_r40": {
+        "phase": "capability_ladder",
+        "split_role": "exploratory_highrisk_breadth_ceiling_v1",
+        "support_policy_version": "v2",
+        "schedule": {
+            "schedule_id": "highrisk-d4-k24-r40-global-v1",
+            "coordinate_law": "progressive_checkpoint",
+            "depth_cap": 4,
+            "active_population_width": 1,
+            "min_lookahead_tail_steps": 10,
+            "points": [
+                {"depth": depth, "r_step": 40, "c_source_step": 50 + 10 * depth,
+                 "c_next_step": 60 + 10 * depth, "n_lookaheads": 24,
+                 "band_key": "step40"}
+                for depth in range(4)
+            ],
+        },
+        "caps": {
+            "max_logical_dfe": 4200,
+            "max_definitive_refolds": 128,
+        },
+    },
     "highrisk_d8_k32_r40": {
         "phase": "capability_ladder",
         "split_role": "exploratory_highrisk_ceiling_v1",

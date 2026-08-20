@@ -9,7 +9,11 @@ import types
 import pytest
 
 from inverse_folding.reference_flow.fusion_v2.identity import HeadEvaluatorIdentity
-from inverse_folding.reference_flow.fusion_v2.config import load_v2_config
+from inverse_folding.reference_flow.fusion_v2.config import (
+    PolicyCalibrationArtifact,
+    load_v2_config,
+    policy_calibration_source_ref,
+)
 from scripts.calibrate_v2_head_policy import build_calibration_bundle
 from scripts.materialize_v2_canary_config import (
     MaterializeError,
@@ -17,6 +21,7 @@ from scripts.materialize_v2_canary_config import (
     _structure_runtime_identity,
     fill_config,
 )
+from scripts.rf_fusion_v2_preflight import project_v2_budget
 from tests.inverse_folding.test_fusion_v2_config import _mapping
 
 
@@ -62,6 +67,18 @@ def _case(tmp_path):
     frozen.update({"head_config": D, "head_checkpoint": D,
                    "projection_policy_spec": spec_sha})
     return template, args, frozen
+
+
+def _replace_calibrated_value(block, key, value):
+    scalar = block[key]
+    scalar["value"] = value
+    scalar["source_ref"] = policy_calibration_source_ref(
+        value=value,
+        unit=scalar["unit"],
+        source_kind=scalar["source_kind"],
+        source_id=scalar["source_id"],
+        artifact=PolicyCalibrationArtifact(**scalar["artifact"]),
+    )
 
 
 def test_policy_qualification_materialization_copies_only_a_matching_calibration(tmp_path):
@@ -152,6 +169,82 @@ def test_highrisk_profile_is_single_root_d8_k32_with_five_step_rungs(tmp_path):
     ]
     assert config["caps"]["max_logical_dfe"] == 20000
     assert load_v2_config(config).schedule.depth_cap == 8
+
+
+def test_highrisk_d4_k24_profile_changes_only_breadth_identity_and_caps(tmp_path):
+    template, args, frozen = _case(tmp_path)
+    args.run_max_head_calls = 6000
+    args.esmfold2_model = "biohub/ESMFold2"
+    args.esmfold2_num_loops = 3
+    args.esmfold2_num_sampling_steps = 50
+    args.esmfold2_num_diffusion_samples = 1
+    args.esmfold2_seed = 0
+
+    payload = json.loads(args.policy_calibration_json.read_text())
+    payload["head_directed"]["lineage_incumbent_depth0_rule"] = (
+        "best_admissible_depth0"
+    )
+    _replace_calibrated_value(
+        payload["head_directed"], "donor_improvement_epsilon", 0.005,
+    )
+    _replace_calibrated_value(
+        payload["head_directed"], "local_contribution_tolerance",
+        0.017012596130371094,
+    )
+    payload["head_directed"]["max_counterfactual_head_calls_per_cycle"] = 454
+    spec = tmp_path / "policy-v2-k24.json"
+    spec.write_text(json.dumps({
+        "policy_id": "head_directed_capped", "policy_version": "v2",
+    }))
+    payload["policy_spec_sha256"] = hashlib.sha256(spec.read_bytes()).hexdigest()
+    args.policy_calibration_json.write_text(json.dumps(payload))
+    frozen["projection_policy_spec"] = payload["policy_spec_sha256"]
+
+    args.exploratory_profile = "highrisk_d4_k12_r40"
+    inherited = fill_config(template, args=args, frozen=frozen, runtime={})
+    args.exploratory_profile = "highrisk_d4_k24_r40"
+    config = fill_config(template, args=args, frozen=frozen, runtime={})
+
+    assert config["identity"]["phase"] == "capability_ladder"
+    assert config["identity"]["split_role"] == "exploratory_highrisk_breadth_ceiling_v1"
+    assert config["projection"]["support_policy_version"] == "v2"
+    assert config["schedule"] == {
+        "schedule_id": "highrisk-d4-k24-r40-global-v1",
+        "coordinate_law": "progressive_checkpoint",
+        "depth_cap": 4,
+        "active_population_width": 1,
+        "min_lookahead_tail_steps": 10,
+        "points": [
+            {"depth": 0, "r_step": 40, "c_source_step": 50, "c_next_step": 60,
+             "n_lookaheads": 24, "band_key": "step40"},
+            {"depth": 1, "r_step": 40, "c_source_step": 60, "c_next_step": 70,
+             "n_lookaheads": 24, "band_key": "step40"},
+            {"depth": 2, "r_step": 40, "c_source_step": 70, "c_next_step": 80,
+             "n_lookaheads": 24, "band_key": "step40"},
+            {"depth": 3, "r_step": 40, "c_source_step": 80, "c_next_step": 90,
+             "n_lookaheads": 24, "band_key": "step40"},
+        ],
+    }
+    assert config["caps"]["max_logical_dfe"] == 4200
+    assert config["caps"]["max_definitive_refolds"] == 128
+    assert config["caps"]["max_head_calls"] == 6000
+
+    # The new profile is a breadth-only extension of the existing D4/K12 high-risk method.
+    algorithm_keys = set(config) - {"identity", "schedule", "caps"}
+    assert {key: config[key] for key in algorithm_keys} == {
+        key: inherited[key] for key in algorithm_keys
+    }
+    assert config["projection"]["head_directed"][
+        "donor_improvement_epsilon"]["value"] == 0.005
+    assert config["projection"]["head_directed"][
+        "local_contribution_tolerance"]["value"] == 0.017012596130371094
+
+    projection = project_v2_budget(load_v2_config(config), n_proteins=1)
+    assert projection.per_protein_logical_dfe == 3790
+    assert projection.total_definitive_refolds == 120
+    assert projection.per_protein_counterfactual_head_calls == 4 * 454
+    assert projection.total_head_calls == 120 + 4 * 454 == 1936
+    assert projection.feasible
 
 
 def test_recursive_profile_is_never_inferred_from_an_ordinary_calibrated_call(tmp_path):

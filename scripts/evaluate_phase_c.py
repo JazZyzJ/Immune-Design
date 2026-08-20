@@ -11,10 +11,12 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -41,6 +43,16 @@ from scripts.run_if_phase_c0 import _fmt_hms
 CANONICAL_AA = frozenset("ACDEFGHIKLMNPQRSTVWY")
 _NMP_WEAK_BINDER_THRESHOLD = 10.0
 _NMP_TOP_K_FOR_MEAN_BEST = 5
+_SELECTION_AUTHORITY_COLUMNS = (
+    "selection_status",
+    "terminal_validated",
+    "structure_feasible",
+    "selection_provenance_digest",
+)
+_SELECTION_STATUSES = frozenset({
+    "feasible_immune_pareto",
+    "structure_rejected_fallback",
+})
 
 
 class DataConsistencyError(RuntimeError):
@@ -233,8 +245,60 @@ def load_generated_designs(generated_parquet: str | Path) -> pd.DataFrame:
     df["sequence"] = df["sequence"].astype(str).str.upper()
     if df[["protein_id", "design_idx"]].duplicated().any():
         raise ValueError("generated parquet contains duplicate (protein_id, design_idx) rows")
+    _validate_selection_authority(df)
     df["design_id"] = df["design_idx"].map(lambda idx: f"design_{idx:04d}")
     return df
+
+
+def _validate_selection_authority(df: pd.DataFrame) -> None:
+    present = set(_SELECTION_AUTHORITY_COLUMNS) & set(df.columns)
+    if not present:
+        return
+    missing = set(_SELECTION_AUTHORITY_COLUMNS) - set(df.columns)
+    if missing:
+        raise ValueError(
+            "generated parquet selection authority columns are partial; missing "
+            f"{sorted(missing)}"
+        )
+    for row in df.itertuples(index=False):
+        status = getattr(row, "selection_status")
+        if not isinstance(status, str) or status not in _SELECTION_STATUSES:
+            raise ValueError(f"invalid selection_status {status!r}")
+        terminal = getattr(row, "terminal_validated")
+        feasible = getattr(row, "structure_feasible")
+        if not isinstance(terminal, (bool, np.bool_)):
+            raise ValueError("terminal_validated must be boolean selection authority")
+        if not isinstance(feasible, (bool, np.bool_)):
+            raise ValueError("structure_feasible must be boolean selection authority")
+        if status == "feasible_immune_pareto" and not (terminal and feasible):
+            raise ValueError(
+                "feasible_immune_pareto requires terminal_validated=true and "
+                "structure_feasible=true"
+            )
+        if status == "structure_rejected_fallback" and (terminal or feasible):
+            raise ValueError(
+                "structure_rejected_fallback requires terminal_validated=false and "
+                "structure_feasible=false"
+            )
+        digest = getattr(row, "selection_provenance_digest")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+        ):
+            raise ValueError(
+                "selection_provenance_digest must be a lowercase SHA-256 digest"
+            )
+
+
+def _selection_authority_fields(row: Any) -> dict[str, Any]:
+    if isinstance(row, Mapping):
+        if "selection_status" not in row:
+            return {}
+        return {column: row[column] for column in _SELECTION_AUTHORITY_COLUMNS}
+    if not hasattr(row, "selection_status"):
+        return {}
+    return {column: getattr(row, column) for column in _SELECTION_AUTHORITY_COLUMNS}
 
 
 def load_test_lookup(test_set_parquet: str | Path) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
@@ -348,6 +412,7 @@ def evaluate_immunogenicity_rows(
         try:
             pred = predictor.predict_protein(str(row.sequence))
             hotspot = pred["residue_hotspot"]
+            selection_authority = _selection_authority_fields(row)
             head_rows.append(
                 {
                     "protein_id": str(row.protein_id),
@@ -357,6 +422,7 @@ def evaluate_immunogenicity_rows(
                     "mean_hotspot": float(hotspot.mean()),
                     "max_hotspot": float(hotspot.max()),
                     "n_hotspot_positions": int((hotspot > hotspot_threshold).sum()),
+                    **selection_authority,
                 }
             )
             if full:
@@ -373,6 +439,7 @@ def evaluate_immunogenicity_rows(
                             if residue_idx < len(sequence_str)
                             else "",
                             "hotspot": float(value),
+                            **selection_authority,
                         }
                     )
         except Exception as exc:  # noqa: BLE001
@@ -436,6 +503,7 @@ def evaluate_immunogenicity_rows(
                     "design_id": f"design_{int(row['design_idx']):04d}",
                     "design_idx": int(row["design_idx"]),
                     **agg,
+                    **_selection_authority_fields(row),
                 }
             )
             if full and not scores_df.empty:
@@ -454,6 +522,7 @@ def evaluate_immunogenicity_rows(
                             "core": str(record["core"]),
                             "rank_EL": float(record["rank_EL"]),
                             "el_score": float(record["el_score"]),
+                            **_selection_authority_fields(row),
                         }
                     )
 
@@ -889,20 +958,30 @@ def build_manifest(
     return manifest
 
 
-def probe_nmp_version(binary_path: str | None) -> str | None:
+def probe_nmp_version(binary_path: str | Path | None) -> str | None:
     if binary_path is None:
         return None
+    binary = Path(binary_path).expanduser()
+    version_path = binary.parent / "data" / "version"
+    try:
+        version_text = version_path.read_text(encoding="utf-8").strip()
+        if version_text:
+            return version_text[:200]
+    except (OSError, UnicodeError):
+        pass
     try:
         result = subprocess.run(
-            [str(binary_path)],
+            [str(binary)],
             capture_output=True,
             text=True,
             timeout=10,
         )
         text = "\n".join([result.stdout.strip(), result.stderr.strip()]).strip()
         for line in text.splitlines():
-            if line.strip():
-                return line.strip()[:200]
+            candidate = line.strip()
+            lowered = candidate.lower()
+            if candidate and "netmhcii" in lowered and "version" in lowered:
+                return candidate[:200]
     except Exception:  # noqa: BLE001
         return None
     return None

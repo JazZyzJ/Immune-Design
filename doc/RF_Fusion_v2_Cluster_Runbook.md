@@ -1123,18 +1123,31 @@ not a licence, for one reason: **nothing has measured whether it compounds.**  A
 cycle is tolerable; a cost that multiplies is not, and `D>1` is exactly the experiment that would
 find out -- so it cannot be its own precondition.
 
-This section previously named a `D=2` compounding cohort as the next experiment. **§7.11 supersedes
-that.** With the reward channel measured inert at one cycle, a second cycle would compound a
-transport that carries no preference — it would price a cost with no benefit on the other side of
-the ledger. The `D=2` cohort is withdrawn; `D>1` stays launch-disabled, now for a stronger reason
-than the unmeasured cost.
+This section has named a `D=2` compounding cohort as the next experiment twice, and withdrawn it
+once. Both revisions are recorded because each turned on a measurement, not on a preference:
+
+* **Withdrawn after §7.11.** With the reward channel measured inert at one cycle, a second cycle
+  would compound a transport that carries no preference — it would price a cost with no benefit on
+  the other side of the ledger.
+* **Reinstated after §9.8, in a different shape.** `head_directed_capped` moved the descendant Head
+  in the intended direction on both predeclared proteins, at write sites `99.5%` disjoint from the
+  Head-blind law's. The channel is inert only when nothing steers it, so the ledger now has
+  something on both sides and depth becomes worth paying for.
+
+**A fixed `D=2` cohort is nonetheless the wrong deliverable.** One extra rung on two proteins cannot
+resolve a depth policy: it would freeze a production depth from a two-point curve, and the quantity
+that actually governs recursion is not a chosen `D` but the depth at which each protein's own
+schedule geometry refuses to continue. §7.12 replaces the fixed-depth cohort with a capacity scan
+plus one wide-`D_max` adaptive run; the `D=1 -> 2` increment is the first rung inside it rather than
+a cell of its own.
 
 (The no-projection arm this section called for before that was proposed to explain a 26-point drop
 which turned out to be a pooling error. It is not the question either.)
 
-`allow_production_depth_gt_1` is never granted by the oracle factory. Opening it is a runbook
-decision that also requires the FeedbackSupportPolicy directionality gate. Nothing in §7 authorizes
-it, and a green secondary readout authorizes nothing at all.
+`allow_production_depth_gt_1` is still never granted, and §7.12 does not ask for it. A descriptive
+depth diagnostic needs no production authorization: it runs on the existing exploratory override,
+which is the correct label for it. Production authorization belongs to the definitive experiment
+frozen after §7.12 Step C — not to the run that decides what that experiment should be.
 
 ### 7.11 Reward directionality at one cycle — `not_demonstrated` (2026-08-07)
 
@@ -1222,6 +1235,97 @@ compounding, which no run has produced.
 §5.2's "a gate that never fires" came from 28 endpoints. Descendants breach slightly more often than
 their own pool on every cell, but no cell is significant: **no evidence that feedback worsens
 safety, which is not the same as evidence that it does not.**
+
+### 7.12 Depth is measured, not chosen — capacity scan, then one adaptive run (frozen 2026-08-08)
+
+**The question**, and it is deliberately modest: not "does `D=2` work", but how deep this recursion
+can legally go on a given protein, and whether the marginal frontier is still moving at the depth it
+reaches. This is a **mechanism diagnostic**. It carries no inferential gate, no upper bound and no
+causal claim; §9.8 remains the last confirmatory result on this axis.
+
+**Why depth is not a free parameter.** Three coupled refusal conditions, all already implemented and
+all already observed at `D=1`:
+
+1. **Schedule arithmetic.** `0 <= r < c_source <= c_next < n_steps`, rungs must chain
+   (`c_next[d] == c_source[d+1]`), and every lookahead needs tail. On the frozen 100-step substrate
+   a chain of four `+10` rungs from `c=50` exhausts the horizon exactly.
+2. **Band feasibility.** `admissible_reopen_cardinality` pins
+   `b_new ∈ [max(1, u_min − u_src + a), min(n_edit − u_src, u_max − u_src + a)]` and reports
+   `feasible=False` rather than clamping. As `c` advances `u_src` falls, so the interval narrows:
+   **the band closes at some depth, and where it closes is protein-specific.** Measured, not
+   hypothetical — one of §9's 56 `5ZHV_B` prefixes already died `stall_band_infeasible` at depth 1
+   (the band demanded 10–41 writes; the `ceil(0.05 · 102) = 6` cap allows 6).
+3. **Donor availability.** `stall_no_better_donor` fired on 23 of 56 `Q00511` prefixes at depth 1,
+   and `advance_lineage_incumbent` ratchets `I_d` after every accepted donor — so each rung raises
+   the bar for the next. Depth is self-limiting in reward, independently of geometry.
+
+Realized depth is therefore an **output** of three conditions the implementation already types. It
+should be read off a run, not declared into a config.
+
+**Step A — offline schedule-capacity scan. No GPU, no denoiser, no Head, and no framework change.**
+An analysis-side pre-check only: it reads frozen artifacts and calls the existing
+`admissible_reopen_cardinality`. It is **skippable** — Step B's `stall_band_infeasible` reports the
+same closure, just after paying GPU-hours to discover it. Per protein, walk candidate rung chains and
+evaluate conditions 1 and 2 to find the deepest chain that stays feasible. Every input is already
+frozen on disk:
+
+| Input | Source |
+|---|---|
+| `B(r)` bands | §1 calibration artifact, `<WORK>/v2_canary/bands` |
+| `n_editable` | measured `102` (`5ZHV_B`) / `278` (`Q00511`) — §5.1 |
+| `u(step)` resolution curve | the same band calibration's absolute maturity evidence |
+| `a` ceiling | write cap `ceil(0.05 · N_editable)` = `6` / `14`; realized medians `6` / `14` — §9 Step 4 |
+
+Exact through depth 1, where `u` at `c=60` is measured on §9's propagated states. Deeper rungs are a
+projection through the exact identity `u_proj = u_src − a + b_new` composed with the measured
+`u(step)` curve, and Step B replaces each projection with its realized value. Output: per-protein
+`D_legal` and the rung at which the band closes. **A protein whose band closes at depth 1 is a
+finding, not a failure** — it says this substrate/re-entry pair cannot recurse, and no GPU-hour needs
+to be spent to learn it.
+
+**Step B — one adaptive-depth run at `D_max = D_legal`.** No new machinery: the ladder's typed stalls
+ARE the stopping law. PLAN V2F6 deliberately excludes an adaptive allocator and none is needed — set
+`depth_cap` wide and let each lineage stop where it refuses. Read three curves, protein-first, never
+pooled:
+
+| Readout | Definition |
+|---|---|
+| realized depth | distribution of stop depth, with the typed reason at each stop |
+| marginal frontier | per-depth Head increment `R_H(d) − R_H(d−1)`, paired within lineage, against `ε_R` |
+| cost per depth | definitive structural feasibility and hotspot-gate breach rate at each depth |
+
+`ε_R = 0.017013` is §9.8's measured instrument floor and may **not** be retuned here. The depth-1
+rung reproduces §9.8 and is the run's own sanity check: a first rung that disagrees with `-1.0481` /
+`-0.4286` invalidates the run rather than updating the estimate.
+
+Compounding is then answered descriptively by two comparisons *inside this one run*: whether the
+depth-2 increment carries the same sign as depth-1 (can compounding happen at all), and whether cost
+per depth is additive or multiplicative (§7.10's actual worry). Neither is a powered test, and
+neither is allowed to become one after the fact.
+
+**Step C — only after reading B.** Freeze the stopping law and a production `D_max`, then design the
+definitive experiment. Fixed `D_cap ∈ {1, 2, 4, 8, …}` cells stay available as an **analysis** tool
+for reading the capability curve; the production V2 main arm is adaptive depth under one unified
+stopping rule with protein-specific realized depth. Step B is descriptive precisely so that the
+freeze after it is not retrofitted from its outcome.
+
+**Scope and cost.** Cohort stays `5ZHV_B` + `Q00511` at `r=40`: changing depth and substrate in the
+same run confounds both. Against §9's measured `D=1` walltime (56 prefixes in `18:07` / `27:55`),
+this needs no separate budget argument.
+
+**Launch condition — no code change is required, and none should be made.** The implemented
+`D>1` path already runs this: a wide `depth_cap`, `phase=capability_ladder` with an `exploratory*`
+split role, and `--exploratory-depth-override`. That is the whole launch surface. The exploratory
+label is not a limitation here, it is the accurate one — this section produces a descriptive
+diagnostic, so an artifact marked `production_depth_authorized=false` is telling the truth about
+what it is. Do not add a production-authorization flag to serve §7.12; that door belongs to Step C's
+definitive experiment, and opening it early would let a diagnostic bundle claim a status its own
+scope disclaims.
+
+The override refuses `--mechanism-prefixes` and `--qualification`, which costs this section nothing:
+the marginal-frontier increment is paired **within a lineage across depths**, not across a
+treatment/control pair, so the ordinary ladder runner is the right one. §10's Uricase sandbox uses
+the same door on a different cohort and schedule; the two neither authorize nor constrain each other.
 
 ---
 
@@ -1802,3 +1906,283 @@ effect or matched-compute superiority.
 The historical Uricase v0 smoke is context only: it showed within-run Head descent, not a matched
 v0-versus-B1Aopen result. A near-floor Head does not imply NMP saturation, so the verdict must give
 independent NMP and structure equal weight.
+
+---
+
+## 11. High-risk 100-protein multiroot ceiling and breadth follow-up
+
+This section records the completed high-risk D4/K12 campaign, the independent-immune and fallback
+selection contract opened from that result, and the breadth-only D4/K24 follow-up. It is an
+unblinded development ceiling on the frozen `highrisk_nod_v1_HLA-DRB1_07_01` cohort. It does not
+replace the prospective mechanism or holdout requirements above.
+
+### 11.1 EXECUTED D4/K12 four-root campaign (2026-08-11 to 2026-08-19)
+
+| Item | Frozen value |
+|---|---|
+| campaign | `highrisk_gumbel_d4k12_r40_v2_eps005_4root_0701` |
+| code revision | `21cd73d22bad7a42ebb9dae82925b3e623449cb8` |
+| cohort | 100 proteins, current-cohort DPLM-native Gumbel parents |
+| schedule | progressive D4, `r=40`, checkpoints `50 -> 60 -> 70 -> 80 -> 90` |
+| breadth | `K=12` at every depth; four independent single-lineage roots |
+| policy | v2 Head-directed capped support, `epsilon_search=0.005` |
+| local/reporting floor | `0.017012596130371094` raw logit |
+| structure gate | `scTM >= 0.70`; whole-landscape hotspot gate permissive; no protein-specific calibration |
+| jobs | `12275741`, `12275742`, `12275813`, `12275814`; one serial 100-cell job per root |
+| run root | `run/inverse_folding/v2_highrisk/highrisk_gumbel_d4k12_r40_v2_eps005_4root_0701__21cd73d/` |
+
+All 400 requested cells persisted complete evidence bundles. There were 328 successful cells over
+84 proteins and 72 structure-rejected cells; 16 proteins had no successful root. Realized maximum
+depth D0/D1/D2/D3/D4 was `72/54/117/104/53`. The carry-forward feasible frontier changed by the
+following amounts; a negative delta is lower Head risk:
+
+| Depth | Lineage mean delta | Lineages improving by more than 0.017013 | Protein-union mean delta | Proteins improving by more than 0.017013 |
+|---:|---:|---:|---:|---:|
+| D1 | -2.3786 | 272 / 328 | -1.6991 | 79 / 84 |
+| D2 | -0.6091 | 155 / 328 | -0.3268 | 51 / 84 |
+| D3 | -0.0799 | 49 / 328 | -0.0650 | 17 / 84 |
+| D4 | -0.0180 | 8 / 328 | -0.0035 | 4 / 84 |
+
+The dominant typed stop was `stall_no_better_donor` (`263` events); `202/263` incumbents were below
+`-9` and `137/263` below `-9.3`. Only four stalled donor margins lay in `(0, 0.005]`, so lowering
+the stopping epsilon is not supported by this run. Median positive writes fell `13 -> 9 -> 6 -> 3`
+while reopen/write rose `3.08 -> 6.10 -> 12.75 -> 32`. The observed result is therefore a
+lineage-local operating plateau under the strict greedy K12 policy, not a global landscape
+saturation claim.
+
+Across the 84 successful proteins, the merged four-root archive contained 13,774 unique sequences
+without a structure filter. Protein-equal-weight mean best Head risk was `-9.3298`, versus `-3.5121`
+for the correct current-cohort DPLM-native Gumbel baseline and `-5.8459` for the same-Head-rescored
+ProteinMPNN eight-design baseline. Fusion won `82/84` and `79/84` paired protein bests. Six of 84
+unfiltered Head minima were structure-infeasible.
+
+The 72 rejected cells retain 864 complete Head-scored D0 candidates, all rejected by `scTM<0.70`.
+Their Head distributions were not detectably worse than successful-cell D0 candidates, while their
+structure distributions were separate. Lowering the gate to `.65/.60/.55/.50/.40` would recover
+only `1/5/11/20/49` of the 72 cells. No same-protocol native refold exists, so this evidence does
+not establish that the native sequence itself fails the gate.
+
+The objective record and machine-readable tables are RAR
+`0049-rf-fusion-v2-high-risk-100-protein-multi`.
+
+### 11.2 Frozen multiroot selection and independent NMP evaluation
+
+NMP is external to runtime selection. Existing DPLM-native and ProteinMPNN NMP outputs use
+NetMHCIIpan 4.3i, HLA-DRB1*07:01, peptide lengths 12--25, and define a strong window by
+`rank_EL < 2.0%`. Report both raw `n_strong_binders` and the length-normalized
+`strong_frac = n_strong_binders / n_windows_scored`.
+
+On the existing 1,344 DPLM-native plus ProteinMPNN designs, the largest within-protein association
+with NMP `strong_frac` was the Head positive-mass quantity. The provisional second immune axis is
+
+`head_positive_mass_density = sum(max(residue_hotspot, 0)) / sequence_length`.
+
+Its within-protein Spearman correlation was `0.572`, versus `0.542` for `global_risk`. The initial
+protein-cluster bootstrap interval for their difference included zero (`[-0.014, 0.076]`). A
+stricter sensitivity that ranks the eight designs separately within each
+`protein x generator` cell reduces the correlations, as expected after removing generator shift,
+but preserves the ordering: positive-mass density `0.506`, mean hotspot `0.466`, and global risk
+`0.440`. Positive mass is first within DPLM (`0.532`) and ProteinMPNN (`0.481`), although its
+ProteinMPNN value is effectively tied with global risk (`0.477`). This baseline-domain result was
+the provisional reason to retain it as a second axis.
+
+The completed Fusion-domain NMP evaluation closes that provisional decision. Correlations use the
+generation-time frozen Head values from RAR 0049, not the Head values recomputed incidentally by
+the NMP jobs:
+
+| Scope | Metric | Pooled Spearman | Within-protein rank Spearman | Mean per-protein Spearman |
+|---|---|---:|---:|---:|
+| full archive, 13,774 | positive-mass density | 0.7176 | 0.6675 | 0.6571 |
+| full archive, 13,774 | global risk | 0.6994 | 0.6395 | 0.6290 |
+| definitive feasible, 13,146 | positive-mass density | 0.7098 | 0.6699 | 0.6560 |
+| definitive feasible, 13,146 | global risk | 0.6940 | 0.6417 | 0.6214 |
+
+The full-archive mean per-protein correlation difference is `+0.02815`; its 10,000-draw
+protein-cluster bootstrap interval is `[0.01816, 0.03876]`. Freeze positive-mass density as the
+second cheap Head axis while retaining global risk as the primary scalar; it complements rather
+than replaces global risk.
+
+The frozen post-hoc selection surfaces are:
+
+1. `feasible_immune_pareto`: require definitive structural feasibility, deduplicate the merged
+   roots by `(protein_id, sequence_md5)`, then return the complete first front minimizing
+   `(global_risk, head_positive_mass_density)`. Current Head-only materialization gives 184 designs
+   over 84 proteins (1--7 per protein, median 2).
+2. `structure_rejected_fallback`: activate only when a protein has zero definitive-feasible
+   endpoints across all four roots. Minimize positive-mass density while maximizing scTM over its
+   merged rejected candidates. The current pool is 16 proteins and 768 unique D0 candidates; its
+   first front contains 67 candidates (2--6 per protein, median 4). These rows must remain labelled
+   `structure_rejected_fallback`, `terminal_validated=false`; they are rescue seeds or diagnostics,
+   not standard feasible final designs. Failed roots belonging to one of the 84 successful proteins
+   are excluded from this fallback.
+
+NMP did not choose members of either frozen front. The completed read-only annotation gives:
+
+- The 184-row feasible front has strong-fraction mean/median `0.00811/0.00669`; it contains the
+  exact definitive-feasible NMP best for `18/84` proteins. Its per-protein best regret relative to
+  the complete feasible pool is mean `0.00382` and median `0.00193`.
+- The 67-row structure-rejected proxy front has strong-fraction mean/median `0.02318/0.01969`.
+  Positive-mass density remains the strongest failed-pool Head proxy (within-protein rho `0.4995`,
+  versus global risk `0.4274`), but it is not an NMP replacement.
+- Separate post-hoc diagnostics enumerate 276 feasible `(global risk, NMP strong fraction)` rows
+  and 57 rejected `(NMP strong fraction, scTM)` rows. They are labelled diagnostic and do not
+  replace, rename, or retrospectively alter the frozen 184/67 proxy fronts.
+
+Across the common 84 successful proteins, the non-compute-matched capability comparison is:
+
+| Method | Designs/protein | Protein-equal mean strong fraction | Protein-equal best strong fraction | Mean best `n_strong` |
+|---|---:|---:|---:|---:|
+| Fusion V2 archive | 60--228 | 0.02088 | 0.00231 | 7.23 |
+| DPLM-native Gumbel | 8 | 0.03656 | 0.01895 | 57.71 |
+| ProteinMPNN | 8 | 0.03540 | 0.01994 | 53.69 |
+
+Fusion wins the per-protein best strong fraction against DPLM in `82/84` proteins (one tie, one
+loss) and against ProteinMPNN in `78/84` (three ties, three losses). This is the requested
+unequal-budget ceiling comparison, not a matched-compute effect estimate.
+
+For an equal-output candidate comparison, rank the 13,146 definitive-feasible rows within each
+protein by frozen global risk and retain up to K rows. Head Top-8 contains at least one exact
+minimum-`n_strong_binders` row for `35/84` proteins; Top-16 gives `46/84`, Top-48 `69/84`, Top-64
+`75/84`, and Top-80 `81/84`. The corresponding mean raw-count regrets are `5.119`, `2.452`,
+`0.762`, `0.381`, and `0.119`. Exact-min recovery first reaches 50/75/80/90/95/100% at
+K=`13/37/42/66/75/146`. These are `up to K` results because feasible pool size ranges from 1 to
+228; the machine table retains the count of proteins having at least K rows. Positive-mass-first
+and global/positive-mass percentile-rank-sum ladders are recorded as sensitivity analyses.
+
+The cumulative definitive-feasible frozen-global choice improves in mean strong fraction
+`0.01614 -> 0.01126 -> 0.00800 -> 0.00830 -> 0.00818` from D0 through D4. D2 therefore captures
+most of the NMP-aligned improvement in this K12 archive; D3/D4 do not show a further mean decrease.
+
+The 72 failed cells retain all 864 NMP-scored D0 candidates. The 768 candidates from the 16
+all-root-failed proteins have mean/median strong fraction `0.02986/0.02807`; the 96 failed-root
+candidates from four mixed-success proteins have `0.05415/0.05001`. Within failed cells,
+distributed positive hotspot mass has the strongest Head association, while a single maximum
+hotspot is weaker. The post-hoc rejected diagnostic therefore remains explicitly bivariate in NMP
+strong fraction and scTM.
+
+The Head-only definitions, baseline-domain analysis, completed Fusion NMP measurements, read-only
+front annotations, and Head Top-K recovery ladder are consolidated in RAR
+`0050-rf-fusion-v2-head-nmp-pareto-and-structu`.
+
+The completed external-evaluation jobs are:
+
+| Job | Input | Execution | Final status / output |
+|---|---|---|---|
+| `12626996` | 1,405-design stress panel: success-domain order statistics plus all 864 rejected-cell candidates | 16-shard CPU array; two cores/task; `1:50:00`; 16-way cap | 16/16 completed, zero failures |
+| `12627026` | merge of the 16 stress-panel shards | dependency on `12626996` | completed; 1,405 rows / 100 proteins; SHA `50ef06a1...99006` |
+| `12627313` | all 13,774 success-archive designs | 128-shard CPU array; two cores/task; `1:50:00`; 32-way cap | 128/128 completed, zero failures |
+| `12627348` | merge of the 128 full-archive shards | dependency on `12627313` | completed; 13,774 rows / 84 proteins; SHA `d257ed3b...bb897` |
+
+The original RTX6000 submissions `12625177`, `12625237` and `12625268` were cancelled before any
+task started because that partition remained queued. A subsequent ailab allocation
+(`12626693`/`12626695`/`12626706`) was also cancelled before execution to avoid consuming H200s for
+a CPU evaluator. The final arrays use the CPU partition with `DEVICE=cpu`; their source-to-shard
+key sets were verified exactly (`1,405/1,405` and `13,774/13,774` unique rows).
+The first CPU full-array attempt (`12627019`/`12627027`) was cancelled after its first two tasks
+correctly rejected an analysis-rich input carrying only part of the four-column selection-authority
+contract. No NMP score was produced. The replacement facade is an exact projection of the same
+13,774 rows onto the standard `protein_id/design_idx/sequence` schema before sharding.
+
+Every design satisfies the complete 12--25mer window law `n_windows_scored = 14L - 245`, and
+peptide-table reaggregation exactly reproduces the summaries under strict `rank_EL < 2.0`.
+The run used NetMHCIIpan 4.3i as verified from the installation `data/version` file and output
+contract. The historical merged manifests contain a sidecar-only defect: their version probe stored
+the binary's missing-`-f` usage message rather than the version. This does not alter scores; the
+probe is fixed for future runs and the old manifests remain unchanged.
+
+### 11.3 EXECUTED D4/K24 breadth-only ceiling (2026-08-19)
+
+The first follow-up changes breadth only. The named closed profile is `highrisk_d4_k24_r40`; its
+algorithm blocks are byte-equal to the D4/K12 resolved method outside identity, schedule and caps.
+
+| Item | Frozen value |
+|---|---|
+| campaign | `highrisk_gumbel_d4k24_r40_v2_eps005_4root_0701` |
+| profile / schedule | `highrisk_d4_k24_r40` / `highrisk-d4-k24-r40-global-v1` |
+| depth and coordinates | D4; `r=40`; `50 -> 60 -> 70 -> 80 -> 90` |
+| breadth | `K=24` at every depth; active population width 1 |
+| unchanged behavior | policy v2, epsilon `.005`, local floor `.017012596130371094`, scTM `.70`, same Head, substrate and calibrations |
+| exact projected cost per cell | 3,790 logical DFE; 120 definitive refolds; 1,936 Head calls |
+| caps per cell | 4,200 logical DFE; 128 definitive refolds; 6,000 Head calls |
+| population | four independent roots, master seeds `20260811..20260814` |
+| execution | four ailab H200 jobs; each job serially attempts one 100-cell root list; eight-hour limit |
+| jobs | `12625634`, `12625635`, `12625636`, `12625637` |
+| work root | `work/immune-design/v2_highrisk/highrisk_gumbel_d4k24_r40_v2_eps005_4root_0701__21cd73d/` |
+| run root | `run/inverse_folding/v2_highrisk/highrisk_gumbel_d4k24_r40_v2_eps005_4root_0701__21cd73d/` |
+
+All 400 typed configs, 400 generated argument files and 400 structure-runtime identities passed
+materialization validation; a real-driver model-free dry-run reported the exact budget above with
+no breached cap. The same numeric master seeds are retained for population labeling, but campaign
+and split identity are new seed inputs, so this is an independent seeded breadth ceiling rather
+than a nested paired extension of the K12 draws.
+
+All four jobs processed their complete 100-cell lists in `7:22:34--7:55:15`, below the eight-hour
+limit. Slurm records each job as `FAILED (3:0)` because the serial launcher intentionally returns
+three when any cell has a typed terminal failure; this is not a timeout or bundle-level failure.
+All 400 cells persisted a manifest, archive, endpoint bundle and fragment, and every realized cap is
+clean. The launcher reports repository HEAD `6507974`, while the materialized campaign identity
+remains `21cd73d`; the only committed difference between those revisions is `PROGRESS.md`. A
+path-scoped git diff over the Fusion runtime, launcher, DPLM and evaluation code is empty, so this is
+a documentation-only revision drift rather than a scientific runtime change.
+
+K24 produced 332 successful cells over 86 proteins and 68 structure-rejected cells; 14 proteins had
+no successful root. Relative to K12, eight cells changed from rejected to successful and four from
+successful to rejected. It rescued `1ZK5_A` and `3ZIX_F` at protein level and lost none of the 84
+K12-success proteins. The merged K24 archive has 27,070 unique sequences, versus 13,774 for K12;
+25,530 of them are definitively structure-feasible. D0 structural pass probability is effectively
+unchanged (`0.7790` for K24 versus `0.7802` for K12), so the small coverage gain comes from more
+independent draws rather than a better per-candidate structural distribution.
+
+The realized maximum-depth distributions are:
+
+| Campaign | D0 | D1 | D2 | D3 | D4 |
+|---|---:|---:|---:|---:|---:|
+| K12 | 72 | 54 | 117 | 104 | 53 |
+| K24 | 68 | 54 | 145 | 92 | 41 |
+
+Doubling breadth therefore did not move lineages deeper. The K24 carry-forward frontier changed as
+follows:
+
+| Depth | Lineage mean delta | Lineages improving by more than 0.017013 | Protein-union mean delta | Proteins improving by more than 0.017013 |
+|---:|---:|---:|---:|---:|
+| D1 | -2.0983 | 276 / 332 | -1.6812 | 78 / 86 |
+| D2 | -0.4045 | 133 / 332 | -0.1806 | 48 / 86 |
+| D3 | -0.0528 | 40 / 332 | -0.0202 | 18 / 86 |
+| D4 | -0.0055 | 8 / 332 | -0.0026 | 3 / 86 |
+
+On the 84 proteins successful in both campaigns, K24 minus K12 final Head risk has mean `-0.1885`,
+median `-0.0107`, and paired wins/losses `48/36`; a protein bootstrap interval for the mean is
+`[-0.6480, 0.1813]`. This average is tail-driven. Among the 73 proteins whose final result is below
+`-9` in both runs, the mean difference is `+0.0033` and median `-0.0078`. K24 thus provides no
+systematic scalar-ceiling gain once a protein is already in the empirical Head floor region.
+
+The dominant stop remains `stall_no_better_donor`: 270 events, versus 263 under K12. Of these,
+205 incumbents are below `-9`, 143 below `-9.3`, and only seven donor margins lie in `(0, 0.005]`.
+Lowering epsilon or running unchanged K32/D5 is therefore unsupported. An offline counterfactual
+also shows that a simple positive-mass Pareto tie-break is too weak: requiring a candidate to improve
+positive-mass density while staying within `0.017013` global risk of the incumbent reopens only
+`12/270` stalls. A floor-satisficing rule is more promising: requiring the donor to remain below
+global risk `-9` while improving positive-mass density yields a candidate for `46/270` stalls,
+including `35/143` whose incumbent is already below `-9.3`. This is an architecture hypothesis, not
+an authorization to change the frozen v2 policy.
+
+Breadth is nevertheless useful at the archive level. The K24 feasible
+`(global risk, positive-mass density)` first front contains 213 rows over 86 proteins. On the 84
+common proteins, the combined K12+K24 first front contains 222 rows: 83 contributed by K12 and 139
+by K24. K24 contributes on 64 proteins and K12 on 50, so neither independent campaign subsumes the
+other. Preserve and merge both archives for post-hoc candidate selection rather than replacing K12
+with K24.
+
+K24 has not yet received independent NMP scoring, so the proxy-front result is not a true immune
+ceiling claim. If the objective is the best obtainable design rather than a small shortlist, score
+the full 27,070-row K24 success archive and the 1,344 rejected D0 candidates from its 14
+all-root-failed proteins. Scoring only the 213-row proxy front is insufficient: in K12, the analogous
+Head front contained the exact definitive-feasible NMP best for only `18/84` proteins.
+
+**Breadth verdict.** K24 is a positive candidate-diversity and minor coverage result, but a negative
+test of unchanged breadth as the route to deeper recursion. The next algorithmic experiment should
+be a stall-only, floor-satisficing donor rescue that keeps the scalar elite immutable and permits
+ancestry to move along the `(global risk, positive-mass density)` surface only after the incumbent
+has reached the Head floor. If that targeted rescue does not turn the reopened stalls into later
+frontier gains, the next mechanism must change the partial-state substrate or introduce
+rejuvenation; further global increases in K or D should not be run first.
