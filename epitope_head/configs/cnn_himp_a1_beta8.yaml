@@ -1,0 +1,30 @@
+# Wave-4 Round-3: A1 (mixed_margin + lambda_iou_rank=1.0) with log_mean_exp
+# beta=8.0 (A1 default is 4.0). beta sets residue-aggregation sharpness
+# h_i = logmeanexp_beta(covering window logits); beta was tuned to 4 for the OLD
+# InfoNCE objective + old eval — re-probe the optimum under the IoU-ranking span
+# objective. Independent of the round-2 lambda axis.
+train:
+  near_positive:
+    enabled: false
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: false
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 8.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
+  loss:
+    lambda_iou_rank: 1.0
+    iou_rank_margin: 0.5
+    iou_rank_min_gap: 0.1

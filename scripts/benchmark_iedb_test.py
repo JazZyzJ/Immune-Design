@@ -106,6 +106,19 @@ def parse_args() -> argparse.Namespace:
              "extensions; 'all' (default) enables residue+iou_ladder+emd.",
     )
     p.add_argument(
+        "--no-emd", action="store_true",
+        help="Force-skip the M3 EMD family even under --metric-suite all. EMD is "
+             "the slowest residue aggregation on very long proteins and is unused "
+             "by the CV aggregator; skip it for sweep throughput.",
+    )
+    p.add_argument(
+        "--exact-head", action="store_true",
+        help="Wave-4 dual-head: score windows with the exact readout z_exact "
+             "(predict_protein(return_exact=True)) instead of the region logit z. "
+             "Run a checkpoint both ways and compare exact-AP(z_exact) vs "
+             "exact-AP(z_region); no-op for single-head checkpoints (z_exact==z).",
+    )
+    p.add_argument(
         "--iou-thresholds",
         type=float,
         nargs="+",
@@ -1064,7 +1077,7 @@ def main() -> int:
     suite = args.metric_suite
     do_residue = suite in ("residue", "all")
     do_iou = suite in ("iou_ladder", "all")
-    do_emd = suite in ("emd", "all")
+    do_emd = suite in ("emd", "all") and not args.no_emd
     iou_thresholds = list(args.iou_thresholds)
 
     # ── Step 1: Load test entries ──────────────────────────────────────
@@ -1194,11 +1207,17 @@ def main() -> int:
 
         t_head_start = time.time()
         for idx, entry in enumerate(entries, start=1):
-            pred = predictor.predict_protein(entry["protein_seq"], allele_idx=0)
+            pred = predictor.predict_protein(
+                entry["protein_seq"], allele_idx=0, return_exact=args.exact_head,
+            )
             wins = {}
             for w in pred["window_logits"]:
                 k = w["end_0b"] - w["start_0b"]
-                wins[(w["start_0b"], k)] = w["z"]
+                # --exact-head routes ALL window scores to z_exact (falls back to
+                # z for single-head checkpoints that carry no z_exact).
+                wins[(w["start_0b"], k)] = (
+                    w.get("z_exact", w["z"]) if args.exact_head else w["z"]
+                )
             head_wins_by_pid[entry["protein_id"]] = wins
             if idx % 20 == 0 or idx == len(entries):
                 _log(f"  Head: {idx}/{len(entries)}")
@@ -1246,11 +1265,17 @@ def main() -> int:
 
         t_head_start = time.time()
         for idx, entry in enumerate(entries, start=1):
-            pred = predictor.predict_protein(entry["protein_seq"], allele_idx=0)
+            pred = predictor.predict_protein(
+                entry["protein_seq"], allele_idx=0, return_exact=args.exact_head,
+            )
             wins = {}
             for w in pred["window_logits"]:
                 k = w["end_0b"] - w["start_0b"]
-                wins[(w["start_0b"], k)] = w["z"]
+                # --exact-head routes ALL window scores to z_exact (falls back to
+                # z for single-head checkpoints that carry no z_exact).
+                wins[(w["start_0b"], k)] = (
+                    w.get("z_exact", w["z"]) if args.exact_head else w["z"]
+                )
             head_wins_by_pid[entry["protein_id"]] = wins
             if idx % 20 == 0 or idx == len(entries):
                 _log(f"  Head: {idx}/{len(entries)}")

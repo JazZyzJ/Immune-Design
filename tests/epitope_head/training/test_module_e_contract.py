@@ -1004,10 +1004,14 @@ class TestComputeLoss:
         pos = torch.tensor([5.0])
         neg = torch.tensor([0.0, -1.0])
         result = compute_loss(pos, neg, tau=0.1, lambda_mp=0.0, lambda_smooth=0.0)
-        assert set(result.keys()) == {"loss_total", "loss_intra", "loss_mp", "loss_smooth", "loss_margin"}
+        assert set(result.keys()) == {
+            "loss_total", "loss_intra", "loss_mp", "loss_smooth", "loss_margin",
+            "loss_iou_rank",  # Wave-3: additive window IoU-ranking term (0 when disabled)
+        }
         assert torch.allclose(result["loss_total"], result["loss_intra"])
         assert result["loss_mp"].item() == 0.0
         assert result["loss_smooth"].item() == 0.0
+        assert result["loss_iou_rank"].item() == 0.0
 
     def test_lambda_mp_contributes(self):
         """Non-zero lambda_mp adds multi-positive term."""

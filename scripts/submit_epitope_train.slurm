@@ -50,6 +50,13 @@ ALLELE_TAG="drb${strip/:/}"
 CFG_NAME=$(basename "${OVERRIDE_CFG}" .yaml)
 RUN_TAG="${CFG_NAME}_${ALLELE_TAG}_seed${SEED}"
 
+# Wave-3 CV: SPLITS_SUBDIR (e.g. cv5/fold0) selects fold-specific id files and
+# gives the run its own output dir so folds do not collide.
+SPLITS_SUBDIR="${SPLITS_SUBDIR:-}"
+if [ -n "${SPLITS_SUBDIR}" ]; then
+    RUN_TAG="${RUN_TAG}_${SPLITS_SUBDIR//\//_}"
+fi
+
 # ── Paths ─────────────────────────────────────────────────────────────────
 DATA_DIR="${DATA_DIR:-/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/manifests/${ALLELE_TAG}}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head/${RUN_TAG}}"
@@ -122,6 +129,13 @@ if [[ "${SMOKE:-0}" == "1" ]]; then
     echo "  SMOKE MODE enabled — small data + few epochs"
 fi
 
+# ── Wave-3 CV fold passthrough ────────────────────────────────────────────
+SPLITS_FLAG=()
+if [ -n "${SPLITS_SUBDIR}" ]; then
+    SPLITS_FLAG=(--splits-subdir "${SPLITS_SUBDIR}")
+    echo "  CV fold split subdir: ${SPLITS_SUBDIR}"
+fi
+
 # ── Launch training ──────────────────────────────────────────────────────
 python "${PROJECT_ROOT}/scripts/train_v2_ablation.py" \
     --variant-id LC1 \
@@ -134,6 +148,7 @@ python "${PROJECT_ROOT}/scripts/train_v2_ablation.py" \
     --output-root "${OUTPUT_ROOT}" \
     "${AUG_FLAG[@]+"${AUG_FLAG[@]}"}" \
     "${SMOKE_FLAG[@]+"${SMOKE_FLAG[@]}"}" \
+    "${SPLITS_FLAG[@]+"${SPLITS_FLAG[@]}"}" \
     --wandb \
     --wandb-name "${RUN_TAG}" \
     --wandb-entity "chenzijie040528-zhejiang-university" \

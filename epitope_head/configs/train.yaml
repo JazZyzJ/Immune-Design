@@ -4,8 +4,16 @@
 train:
   # Negative sampling
   neg_ratio: 7
-  hard_negative_fraction: 0.3
-  hard_neg_max_overlap_ratio: 0.8
+  # Wave-4: widened so the candidate set carries a GRADED IoU-to-GT spectrum
+  # spanning the IoU>=0.70 evaluation band, so the window IoU-ranking loss has
+  # graded pairs to rank. Empirically swept (sample_negatives + max_iou_per_window
+  # over 200 real proteins): 0.95 / offset 5 / hard_frac 0.5 gives a smooth
+  # spread (~48% <0.5, ~21% [0.5,0.7), ~27% [0.7,0.9), ~4% [0.9,1.0)) with no
+  # mid-band gap; offset 2 collapses [0.5,0.7) (bimodal), offset 20 dilutes the
+  # high band. Strict-mode verified: 0 shortfall over all 1308 proteins.
+  # Applies uniformly to all arms (A0/A1/A2), so the internal comparison holds.
+  hard_negative_fraction: 0.5
+  hard_neg_max_overlap_ratio: 0.95
   hard_neg_offset_range: 5
   neg_length_sampling: match_positive  # match_positive | uniform
 

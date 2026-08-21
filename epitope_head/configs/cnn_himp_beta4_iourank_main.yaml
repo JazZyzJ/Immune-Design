@@ -1,0 +1,30 @@
+# Wave-4 Arm A1: cnn_himp_beta4 + IoU-ranking promoted to a STRONG span term
+# (lambda_iou_rank=1.0), InfoNCE+margin retained (objective_mode=mixed_margin
+# inherited from the LC1 profile). Tests whether giving the ranking real weight
+# (vs Wave-3's 0.3 auxiliary) turns it into a real region-AP lever.
+# Residue landscape loss is unchanged (downstream-critical density).
+train:
+  near_positive:
+    enabled: false
+    near_gap_max: 10
+    schedule: ignore
+    schedule_params: {}
+    metric: endpoint_gap
+    apply_to_span_negatives: false
+    apply_to_residue_labels: false
+  residue:
+    enabled: true
+    lambda_residue: 0.1
+    label_mode: binary_coverage
+    aggregation: log_mean_exp
+    aggregation_params:
+      beta: 4.0
+    loss_mode: pairwise_margin
+    margin_m_residue: 0.5
+    window_mode: sampled
+    max_windows_per_chunk: 1024
+    min_far_bg_residues: 4
+  loss:
+    lambda_iou_rank: 1.0
+    iou_rank_margin: 0.5
+    iou_rank_min_gap: 0.1
