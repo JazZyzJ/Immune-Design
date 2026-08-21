@@ -51,6 +51,10 @@ The following decisions are frozen at the architecture level:
     scalar-ceiling gain or deeper realized recursion. No K32 or D8 continuation remains in the
     development mainline. Preserve the K12+K24 archive union for selection instead of replacing
     one independent campaign with the other.
+11.  **WT is a biological reference, not the generative baseline.** The algorithmic base
+    distribution is the matched immune-guidance-off NoD/DPLM sampler under the same backbone,
+    anchors, editability, and sampling law. WT-relative values may be reported for context and
+    cumulative safety but cannot by themselves establish method improvement.
 
 ### 0.1 Executed high-risk V2 closure
 
@@ -130,6 +134,20 @@ changed from `17.5%` to `18.0%`. This is not definitive evidence for recursive V
 local structure, but it gives no basis for treating background remask as a required structural
 protector. The first V2 substrate therefore removes it and verifies only a small terminal/anchor/
 refold sanity before scientific recurrence.
+
+### 0.4 Executed recursive capability sandbox
+
+The first real recursive sandbox was executed on 15 Active15 proteins under the deliberately open
+`D4/K12/r40` profile. It produced 468 complete endpoints, of which 378 were definitively
+structure-feasible and 325 entered the returned facade. All endpoint and selected hard anchors were
+preserved. Twelve of 15 proteins contained at least one selected endpoint below the WT Head value,
+but this WT-relative statistic is contextual only under Decision 11.
+
+This run establishes recursive executability, archive yield, anchor preservation, and a useful
+runtime scale. It does **not** freeze `D4/K12` as the preferred configuration: it used policy v1,
+an unusually open editability domain, no matched fresh-NoD/B1Aopen/v0 comparison, and heterogeneous
+depth utilization. Its scientific role is therefore **sandbox sizing for the capability ladder**,
+not a final effect verdict.
 
 ## 1. Scientific lineage
 
@@ -454,8 +472,11 @@ would be a distinct scientific method and is not authorized by this architecture
 Here, `exact Head` means that the frozen Head is evaluated on and bound to the exact complete
 sequence. It does not mean that the Head is a ground-truth immune assay.
 
-NMP or another independent immune evaluator remains outside the loop. It is used for robustness
-assessment, never for runtime selection, feedback-mask construction, or stopping.
+The frozen Head is nevertheless the sole immune objective of RF/Fusion. It is used consistently
+for runtime selection, feedback construction, configuration choice, and final method comparison.
+Whether another predictor agrees with the Head is a property of Head training and validation, not
+a criterion for accepting or rejecting the generative algorithm. External immune predictors must
+therefore not enter RF/Fusion tuning, GO/KILL, or method ranking.
 
 ### 4.3 Archive update and endpoint selection
 
@@ -770,7 +791,9 @@ The following laws are architecture invariants rather than tunable parameters.
    validation authorizes a final structure claim.
 8. **Whole-landscape protection.** Global Head improvement cannot authorize a descendant that
    violates the frozen lineage-relative new-hotspot gate.
-9. **External-evaluator isolation.** Independent immune evaluation cannot enter the feedback law.
+9. **Objective identity.** The frozen Head is the only immune objective. External immune
+   predictors cannot enter the feedback law, configuration selection, or method verdict; WT is a
+   contextual biological reference rather than an optimization baseline.
 10. **No token-guidance overclaim.** V2 changes live state and ancestry through exact endpoint
    feedback; it does not claim Head gradients or direct logit correction.
 11. **Full cost visibility.** Denoiser forwards, Head evaluation, structure attempts, retries,
@@ -793,7 +816,7 @@ A single matched budget can accidentally favor one search geometry and hide anot
 larger attainable region. V2 therefore does not define success at one arbitrary compute point.
 The primary question is:
 
-> How far can each method move the definitively feasible immune-structure frontier as its natural
+> How far can each method move the definitively feasible frozen-Head frontier as its natural
 > search scale increases, and where does that frontier plateau?
 
 This does not mean compute is ignored or treated as unlimited. Without a resource axis, more
@@ -822,10 +845,38 @@ $B_m(\mathbf{c}_0)$ at one selected point.
 The supported claim is the **attainable capability over the explored ladder** and its observed
 plateau. It is not a claim about the global optimum under unlimited computation.
 
-### 6.2 Natural scaling axes
+### 6.2 Comparison baselines
+
+WT is not the base distribution of a fixed-backbone inverse-folding generator. A WT-relative Head
+delta answers whether one design is lower-risk than one natural sequence; it does not identify how
+much RF/Fusion moved the generated distribution. Low-risk WT proteins create a floor effect, while
+high-risk WT proteins are unusually easy to beat.
+
+The comparison hierarchy is therefore:
+
+| Object | Scientific role | Required binding |
+| --- | --- | --- |
+| Fresh NoD / immune-guidance-off DPLM distribution | primary generated-distribution baseline | same DPLM/DFM kernel, backbone, anchors, editability, temperature, schedule family, and frozen Head |
+| High-risk B1Aopen | strong single-trajectory RF capability bar | same cohort, editability domain, frozen Head, and final feasibility contract |
+| v0 complete-state Fusion | complete-state iterative optimization bar | common depth-0 complete endpoint pool where feasible, same frozen Head, and same final feasibility contract |
+| WT | biological and cumulative-safety reference | same protein; never sufficient as an algorithm baseline |
+
+Here, `guidance-off` means no immune feedback; it does **not** mean that hard anchors or the declared
+editability domain are removed. The high-risk cohort is defined from a frozen-Head summary of an
+independent NoD selection pool. Fresh seeds then establish the evaluation distribution so tail
+selection is not reused as the comparison baseline. NMP or another external predictor may not
+enter cohort selection or RF/Fusion verdicts.
+
+For each protein, evaluation reports both the absolute feasible Head frontier and its location in
+the matched fresh-NoD distribution. B1Aopen and v0 answer whether the new architecture exceeds the
+strongest relevant existing RF and complete-state iterative alternatives.
+
+### 6.3 Natural scaling axes
 
 | Method | Natural scaling axes | What its upper frontier tests |
 | --- | --- | --- |
+| fresh NoD | independent sample count | attainable breadth of the base generator without immune feedback |
+| high-risk B1Aopen | design count and its frozen RF schedule | capability of the previous trajectory-level RF controller |
 | A2 | number of partial prefixes and exact complete lookaheads per prefix | value of prefix-amortized endpoint breadth without feedback |
 | V2 | lookahead breadth, active population width, feedback depth, and re-entry horizon | whether endpoint feedback opens new reachable basins beyond breadth alone |
 | v0 | local reopen/proposal breadth and complete-state feedback rounds | capability of source-forgetting complete-state local-feedback search |
@@ -834,7 +885,7 @@ No method is restricted to one common internal knob. Instead, each receives a sm
 ladder that reaches an informative plateau or operational ceiling. Hard caps remain necessary for
 safe execution, but they are engineering ceilings, not the scientific definition of equivalence.
 
-### 6.3 Role of matched-compute comparisons
+### 6.4 Role of matched-compute comparisons
 
 Matched-compute slices remain useful as secondary causal diagnostics:
 
@@ -850,11 +901,16 @@ Matched-compute slices remain useful as secondary causal diagnostics:
 These comparisons should be made at multiple resource levels. A single matched point cannot serve
 as the sole GO/KILL criterion for the architecture.
 
-### 6.4 Relationship to v0 capability
+The definitive program is capability-first rather than budget-matched: each method follows a small
+natural scaling ladder until its useful feasible-Head frontier plateaus. Compute is retained for
+interpretation and efficiency claims, but the present scientific winner is defined by the attained
+frontier and protein coverage, not by one universal cost conversion.
+
+### 6.5 Relationship to v0 capability
 
 V2 has no finite-compute theorem guaranteeing a better result than v0. A broader action space can
-spend work poorly, a feedback policy can be misdirected, and Head improvements need not transfer
-to definitive structure or an independent immune evaluator.
+spend work poorly, a feedback policy can be misdirected, and low Head burden is irrelevant if the
+result does not satisfy the frozen final feasibility contract.
 
 At the architecture level, V2 can weakly contain the v0 boundary only if its declared action set
 includes the source-forgetting local reopen policy and its monotone archive is initialized with or
@@ -871,17 +927,20 @@ v0 local repair over their explored scaling ladders.
 
 ### 7.1 Arm structure
 
-The main program contains only three scientific arms:
+The high-risk capability program distinguishes one main method, one embedded causal view, and
+three reference comparators:
 
 | Arm | Purpose | Implementation relation |
 | --- | --- | --- |
 | **V2 closed loop** | test recursive exact-endpoint feedback | main arm receiving most development and compute |
 | **A2 archive-only** | expose exact-endpoint breadth without feedback | the initial view is derived before feedback; matched scaling points spend later resources on additional no-feedback breadth |
+| **fresh NoD** | define the matched immune-guidance-off generated distribution | same base kernel and feasibility domain, fresh evaluation seeds |
+| **B1Aopen high-risk** | set the strong previous-RF capability bar | permissive high-risk controller, not the stricter deployment preset |
 | **v0 complete-state local feedback** | test whether source coupling and pre-terminal projection add value beyond local complete-state reopen/repair | existing source-forgetting boundary comparator |
 
 A reward-blind or randomized feedback transition is optional and should be added only if V2 changes
 descendants but the mechanism of that change remains ambiguous. It is a compact diagnostic, not a
-fourth full program.
+new full program. WT is reported as context and cumulative safety, not as an additional method arm.
 
 ### 7.2 Compressed evidence ladder
 
@@ -948,8 +1007,10 @@ Reward directionality uses compatible endpoints whose exact complete-Head orderi
 before descendant outcomes were inspected. Source, support, fork seeds, and propagation horizon
 remain matched, and the question is whether the descendant Head distribution shifts toward the
 better endpoint. This Head readout is appropriate for qualifying the runtime immune direction of
-the policy, but definitive structure and an independent immune evaluator remain required for a
-useful-design or system-level claim.
+the policy because the same frozen Head is the method's declared immune objective. A system-level
+claim additionally requires the frozen final structure/anchor contract and a Head-defined cohort
+that was not used to tune the selected configuration; it does not require agreement with another
+immune predictor.
 
 Only the first row authorizes recursive V2 capability work. Even then, a capability gain is a
 separate result: V2 may be mechanism-positive yet fail to improve the feasible frontier beyond A2
@@ -968,7 +1029,7 @@ the implementation PLAN, but their scientific meanings are fixed here.
 | Archive record | monotone endpoint membership, elite/frontier status, feasibility level, and archive depth |
 | Feedback-event record | selected endpoint, source partial state, re-entry coordinate, support actions/reasons, origin assignments, assimilation status, immediate reopened state, propagated checkpoint state, and policy identity |
 | Compute ledger | logical and physical denoiser work, Head work, structure attempts, retries, cache behavior, GPU time, and walltime |
-| Terminal validation record | definitive structure, independent immune evaluation, diversity, and optional v0 before/after mapping |
+| Terminal validation record | frozen-Head frontier, matched NoD/B1Aopen/v0 coordinates, definitive structure, anchors, diversity, and optional v0 before/after mapping |
 
 The same endpoint and archive records must support both V2 and the embedded A2 view. Separate A2
 resampling would destroy the causal control.
@@ -1000,17 +1061,18 @@ V2 should reach useful basins or frontier points not matched by source-forgettin
 search at its own scaling plateau.
 
 **Falsifier:** v0, or a source-off broad-reopen diagnostic with the same support, reaches the same
-frontier with equal or lower resource use. Source-partial coupling then has no demonstrated
-scientific value; widening the reopen region alone must not be relabeled as V2.
+feasible-Head plateau over its natural scaling ladder. Source-partial coupling then has no
+demonstrated capability value; widening the reopen region alone must not be relabeled as V2.
 
-### H4. The gain survives independent validation
+### H4. The gain survives frozen feasibility and generalization
 
-The V2 frontier must remain structurally feasible, retain useful diversity, and transfer
-directionally to an immune evaluator that was absent from runtime selection.
+The V2 Head frontier must remain structurally feasible, preserve immutable constraints and useful
+diversity, and persist on the frozen Head-defined high-risk cohort or holdout that was not used to
+tune the selected configuration.
 
-**Falsifier:** gains disappear under definitive structure, independent immune evaluation, or
-family-aware diversity accounting. The observed effect is then surrogate exploitation or search
-collapse rather than useful design capability.
+**Falsifier:** gains disappear under the definitive structure/anchor contract, on the frozen
+Head-defined evaluation split, or after family-aware diversity accounting. The observed effect is
+then infeasible search, development-set overfitting, or collapse rather than useful capability.
 
 ## 10. Remaining scientific decisions
 
@@ -1023,7 +1085,9 @@ high-risk tuning ladder.
 | Open decision | Scientific question |
 | --- | --- |
 | Progressive coordinate/mask schedule | Which declared tuples `(r_d, c_d, c_{d+1}, B(r_d), admissible mask load)` preserve useful complete lookahead and feedback plasticity on the frozen no-remask substrate? Reopen *identity* remains a policy choice inside this cardinality constraint. |
-| Stationary diagnostic schedule | Which single matched $D=2$ stationary schedule is informative enough to distinguish repeated feedback at fixed maturity from progressive time advance? It is a comparator, not a second production architecture. |
+| Development config ladder | Does `D4/K32` improve over `D4/K12`, and does `D8/K32` add a further feasible-Head gain? These are the only default post-sandbox scale points. |
+| Head-only high-risk cohort | Which proteins are high-risk under an independent NoD selection pool scored by the frozen Head? External immune predictors and WT delta do not define this cohort. |
+| Comparator binding | Which common NoD endpoint pool, editability domain, Head identity, and final feasibility law bind the fresh-NoD, B1Aopen-highrisk, v0, and V2 comparison? |
 | Depth-0 complete reference | Which complete sequence, frozen before endpoint scoring, defines the first whole-landscape new-hotspot check under backbone-only generation: a native/source sequence or another external reference? The selected endpoint itself is not admissible. |
 | Schedule-consistency band $\mathcal{B}(r)$ | What realized-maturity range is valid at each re-entry coordinate under the frozen base sampler? |
 | Whole-landscape hotspot calibration | Which cumulative-reference $\delta_{\mathrm{new}}$ and optional incremental threshold control hotspot drift under the V2 Head/window domain? The v0 off-halo threshold is not inherited automatically. |
@@ -1051,13 +1115,14 @@ reproduce or extend any one external algorithm. The method is defined only by th
 operator contracts above.
 
 The strongest supported future claim would be that trajectory-coupled endpoint feedback expands
-the independently validated feasible frontier beyond both its embedded A2 archive-only boundary
-and source-forgetting complete-state v0. Weaker outcomes remain scientifically interpretable:
+the frozen-Head, definitively feasible frontier beyond the matched NoD distribution, the previous
+high-risk B1Aopen controller, its embedded A2 archive-only boundary, and source-forgetting
+complete-state v0. Weaker outcomes remain scientifically interpretable:
 
 - if V2 equals A2, reject the value of recursive feedback and judge A2 independently against v0;
 - if V2 equals v0 or source-off broad reopen, reject the value of source-partial coupling;
-- if V2 improves Head but fails structure or independent immune evaluation, reject useful design
-  improvement; and
+- if V2 improves Head but fails the frozen structure/anchor contract or does not generalize beyond
+  the development set, reject useful design improvement; and
 - if all three methods converge to the same plateau, report a shared capability ceiling rather
   than manufacturing a winner at one arbitrary compute point.
 

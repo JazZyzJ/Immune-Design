@@ -1,15 +1,15 @@
-# RF-Refine Fusion V2 — Cluster Runbook (state-transition Canary)
+# RF-Refine Fusion V2 — Cluster Runbook
 
 Authority: `PLAN_RF_REFINE_FUSION_V2.md`. This runbook covers everything PLAN §5.5 deferred
 ("Launcher and Canary commands are outside this PLAN revision and will be added to the runbook
 after the local code gate"). The local code gate is complete.
 
-**What this runbook does NOT authorize.** It now reaches the one-cycle V2F5A Head-directed policy
-qualification in §9, after the state-transition Canary and powered S7 source-transmission result.
-Production or confirmatory `D>1` remains closed. Section 10 is a separately identified, unblinded
-and non-confirmatory Uricase capability sandbox authorized by PLAN §8.6.1; it cannot alter §9,
-authorize a holdout, or support a population-level efficacy claim. No wiring Canary is evidence of
-transmission or reward directionality.
+**Current status.** Sections 1–9 are the executed calibration, state-transition,
+source-transmission, and one-cycle Head-directionality record. Section 10 is the executed unblinded
+D4/K12 Active15 recursive sandbox. Section 11 records the completed high-risk D4/K12 multiroot
+campaign, its frozen post-hoc independent-NMP evaluation, and the completed D4/K24 breadth ceiling.
+The earlier mechanism cells remain narrow historical evidence; none alone authorizes a
+population-level method claim.
 
 ---
 
@@ -1679,7 +1679,8 @@ not be used to filter the Head primary after treatment.
 | operational integrity failure | invalid run; repair/replay under the same frozen question before any scientific reading |
 
 Even a positive result is a one-cycle policy-directionality result, not a recursive capability or
-biological immune-validity claim. Independent terminal immune validation remains downstream.
+generalization claim. The frozen Head is intentionally both the policy objective and the primary
+directionality readout; agreement with another immune predictor is not an RF/Fusion gate.
 
 ### 9.8 EXECUTED (2026-08-07, `f05565d`) — `immune_directed_transition_supported`
 
@@ -1736,11 +1737,11 @@ authority/config may now be designed — separately, and not by widening this on
 
 **Four things this is not.**
 
-* Not an immune-validity claim. The Head that RANKS the write candidates is the Head that SCORES the
-  primary. Both arms write the same COUNT from the same donor, so the contrast does isolate site
-  selection — but much of a `-1.9` shift is the mechanical consequence of committing residues chosen
-  by leave-one-out contribution and then scoring them with that same evaluator. There is no held-out
-  immune measurement here; §9.7's closing sentence stands.
+* Not a recursive capability or generalization claim. The Head that RANKS the write candidates is
+  deliberately the same frozen Head that SCORES the primary because it is RF/Fusion's declared
+  immune objective. Both arms write the same COUNT from the same donor, so the contrast isolates
+  Head-directed site selection. The remaining boundary is scale and generalization, not agreement
+  with another immune predictor.
 * Not powered on `Q00511`. 33 scored prefixes clear the floor of 32 by one. One further
   `stall_no_better_donor` would have made the cell `underpowered_unresolved`.
 * Not a compounding result. One cycle, `D=1`, at one coordinate (`r=40`, `c=50 -> 60`).
@@ -1754,9 +1755,9 @@ authority/config may now be designed — separately, and not by widening this on
 ## 10. Unblinded recursive Uricase capability sandbox — D4/K12
 
 This is the deliberately aggressive follow-up to the executed §9 one-cycle PASS. It asks whether
-the implemented V2 loop can reach a useful final immune/structure frontier on a real enzyme cohort.
+the implemented V2 loop can reach a useful final feasible-Head frontier on a real enzyme cohort.
 It is descriptive and unblinded: the §9 PASS does not itself establish recursive compounding,
-independent immune validity or generalization, and this sandbox is not production authorization.
+configuration optimality or generalization, and this sandbox is not production authorization.
 
 ### 10.1 Frozen scientific configuration
 
@@ -1872,30 +1873,23 @@ retains lineage provenance and collapses sequence-equivalent siblings only in th
 The latter is **top-up-to-12**: keep proteins with fewer than 12 feasible distinct endpoints, report
 their realized count, and summarize distributions protein-first rather than pooling unequal rows.
 
-Run the common terminal evaluator on both facades with the exact current Head and structure stack.
-Use the interface-specific allele spellings:
+Read both facades with the exact frozen Head identity already bound to the archive and summarize the
+definitive structure records from the same V2 refold stack. The Head is the sole RF/Fusion immune
+objective. Do not add an external immune predictor to configuration selection or the sandbox
+verdict. WT values may be retained as biological context but are not the generated-distribution
+baseline.
 
-```text
-V2 calibration/config: DRB1_0701
-Phase-C / NetMHCIIpan evaluation: HLA-DRB1*07:01
-```
-
-The evaluation command is the existing `scripts/evaluate_phase_c.py --mode all` registered in
-`doc/SCRIPTS.md`, with the characterized-24 test set, PDB root, constraint manifest, frozen Head,
-production NetMHCIIpan and the V2 refold cache. Do not select designs using NMP; NMP is read only
-after the Head-selected archive is frozen.
-
-### 10.4 Return one compact immune/structure verdict
+### 10.4 Return one compact feasible-Head verdict
 
 | Readout | V2 elite | V2 top-up-to-12 distribution | historical B1Aopen reference |
 |---|---:|---:|---:|
 | requested / usable proteins and designs | | | |
-| Head `global_risk`, median and IQR | | | |
-| NMP `n_strong_binders`, median and zero count | | | |
-| NMP strong fraction, median | | | |
+| absolute Head `global_risk`, best / top-5 median / distribution median | | | |
+| best feasible Head by depth and last improving depth | | | |
 | scTM, median / p05 / minimum | | | |
 | hard-anchor identity violations | | | |
 | active-site RMSD, median / p95 | | | |
+| feasible endpoint yield and sequence diversity | | | |
 
 Use the existing
 `uricase_characterized23_a1res03_b1open_n16__20260630T041450Z/HLA-DRB1_07_01` package only as an
@@ -1904,8 +1898,28 @@ differ, re-evaluate its selected facade under the exact stack above. Do not repo
 effect or matched-compute superiority.
 
 The historical Uricase v0 smoke is context only: it showed within-run Head descent, not a matched
-v0-versus-B1Aopen result. A near-floor Head does not imply NMP saturation, so the verdict must give
-independent NMP and structure equal weight.
+v0-versus-B1Aopen result. WT-relative Head deltas are contextual only. The sandbox verdict is based
+on absolute feasible-Head frontier, depth utilization, archive yield, and feasibility—not on WT or
+another immune predictor.
+
+### 10.5 EXECUTED (2026-08-08, RAR0045) — sandbox sizing complete
+
+The returned run used the 15-protein Active15 subset rather than all 24 characterized proteins.
+Twelve jobs completed normally and three returned typed exit 2 after preserving their available
+archives. Across the cohort the run produced 468 complete endpoints, 378 definitive
+structure-feasible endpoints, and 325 selected facade rows. Endpoint and selected hard-anchor
+violations were both zero. The 15 jobs spanned about 19 minutes on the cluster.
+
+These data establish that D4/K12/r40 is executable and productive under the deliberately open
+sandbox domain. They do not freeze it as the preferred V2 configuration. The run used policy v1,
+did not contain fresh NoD, matched B1Aopen-highrisk, or v0 comparators, and showed heterogeneous
+depth utilization with three depth-0 stalls. At the time of that sandbox, its status was:
+
+~~~text
+sandbox_executed = true
+configuration_frozen = false
+highrisk_system_verdict = not_yet_run
+~~~
 
 ---
 
