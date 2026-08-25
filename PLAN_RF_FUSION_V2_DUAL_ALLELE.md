@@ -159,18 +159,36 @@ state.
   are forbidden.
 - $b_a$ and $s_a>0$ are fixed by a content-bound calibration population outside the live endpoint
   cloud. Runtime batches never update them.
-- The first calibration uses a frozen guidance-off NoD population. Deduplicate by
-  `(protein_id, sequence_md5)`, give each protein total weight $1/P$ and each of its unique
-  sequences equal within-protein weight, set $b_a$ to the weighted median, and set
+- The calibration population is the **fixed allele-neutral natural panel** of
+  `doc/Dual_Allele_Steering.md` §2.2.1, one natural or reference sequence per protein. A generated
+  population — NoD included — may not be used: it makes $b_a,s_a$ a function of the sampler
+  configuration and normalizes by the distribution the method later claims to have moved away from.
+  NoD remains the matched guidance-off experimental comparator only.
+  *Panel identity is an open decision; see §5 DUALF1a. The implementation must load it as a
+  content-bound artifact and must not embed any candidate path as a module constant.*
+- Because the panel holds exactly one sequence per protein, protein-equal weighting and
+  `(protein_id, sequence_md5)` deduplication are **not** part of the law. Both frozen Heads score
+  the identical panel in one pass and
 
 $$
+b_a=\operatorname{median}\left(R_a\right),
+\qquad
 s_a=\frac{Q_{0.75,a}-Q_{0.25,a}}{1.349}.
 $$
 
-  Fail rather than invent a floor when the weighted IQR is non-finite, non-positive, or no larger
-  than the allele's frozen matched-difference noise bound. Because the initial NoD cohort was
-  selected for allele A, this is **target-cohort normalization**, not a claim of allele-neutral
-  population calibration.
+  Fail rather than invent a floor when the IQR is non-finite, non-positive, or no larger than that
+  allele's frozen matched-difference noise bound.
+- The same pass produces a second calibration pair $\left(b_a^{\rho},s_a^{\rho}\right)$ for the
+  length-normalized positive hotspot mass $\rho$, used **only** by the return-boundary front
+  (`doc/Dual_Allele_Steering.md` §3.2.1). $\rho$ never enters $J_{\mathrm{core}}$, and $\rho_a$ is
+  computed from the per-residue hotspot vector already carried by the Head score, so it costs no
+  additional Head call.
+- The calibration **reports** the realized $\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)$ by bootstrap
+  over panel proteins, next to $\tau$, so a reader can see how much of the credit band
+  $c_u=\tau\log 2$ the calibration's own imprecision occupies. It is a reported diagnostic, not a
+  gate: gating would add a tuning knob to a calibration whose point is that **exactly one number,
+  $\tau$, is chosen by a human** and everything else is measured in the panel pass or derived from
+  the objective's geometry.
 - The primary deterministic rank key is
 
 $$
@@ -187,9 +205,23 @@ J_{\max}(y)=\max(u_A(y),u_B(y)).
 $$
 
   It is a control implementation, not a second runtime architecture.
-- $\tau$ is a required literal in the tracked objective-law spec. The calibration producer signs
-  but does not estimate or tune it. Missing $\tau$ blocks launch; this PLAN deliberately does not
-  fabricate a numerical value.
+- $\tau$ is a required literal in the tracked objective-law spec, declared in **normalized units**
+  through the credit $c_u=\tau\log 2$. A raw-scale declaration is rejected by the loader: $s_A\neq
+  s_B$ makes one normalized credit correspond to two different raw credits, so a raw-unit $\tau$
+  would reintroduce the scale asymmetry the normalization exists to remove. The calibration producer
+  signs but does not estimate or tune $\tau$. Missing $\tau$ blocks launch; this PLAN deliberately
+  does not fabricate a numerical value.
+- The joint margins are **derived, not declared**. $\nabla_u J_\tau$ is the softmax weight vector,
+  so $J_\tau$ is $1$-Lipschitz in the supremum norm on $u$ and each joint margin is
+
+$$
+\epsilon^{\mathrm{joint}}=\max_a\frac{\epsilon_a^{\mathrm{raw}}}{s_a},
+$$
+
+  propagated from that allele's own measured raw-scale floor. This covers
+  $\epsilon_{\mathrm{donor}}$ and $\epsilon_{\mathrm{write}}$;
+  each records the per-allele raw floor it came from. The hard-max control derives its own margins
+  the same way and may not inherit the smooth-max values.
 
 ### 2.2 Donor and incumbent contract
 
@@ -249,26 +281,43 @@ Head A.
 
 ### 2.5 Feasibility and safety contract
 
-Structure, anchors, function, and source legality are inherited unchanged and evaluated once. The
-Dual immune safety verdict is conjunctive:
+Structure, anchors, function, and source legality are inherited unchanged and evaluated once.
 
-$$
-I_{\mathrm{adm}}^{AB}(y\mid\bar y)
-=
-\mathbf 1\left[
-F_{\mathrm{V2}}(y)=1,
-N_A^{\mathrm{whole}}(y;\bar y)\leq\delta_A,
-N_B^{\mathrm{whole}}(y;\bar y)\leq\delta_B
-\right].
-$$
+**The admission law is inherited unchanged; role B is measured, not gated.** The conjunctive
+verdict $I_{\mathrm{adm}}^{AB}$ is not implemented as a second gate in this program. The single-Head
+cumulative gate remains the only admission law, and role B's whole-landscape drift
+$N_B^{\mathrm{whole}}(y;\bar y)$ is computed with the same pure primitive and recorded as telemetry
+on the endpoint's Dual evidence.
 
-- Each allele owns its frozen cumulative reference score, calibration, and verdict.
-- Both references describe the same immutable reference sequence and aligned window domain.
-- Lineage advance updates both immediate-parent comparison bindings together.
-- All-failed safety leaves the lineage at its valid incumbent; it never falls back to an unsafe
-  endpoint.
-- Strict improvement on both raw risks is not required; catastrophic failure on either axis is
-  forbidden.
+Three reasons, in order of weight:
+
+1. **A second gate would have nothing to bind against on the substrate that matters.** The frozen
+   high-risk cohort carries `delta_new_cumulative = 1000000.0` with the incremental gate off, so the
+   allele-A ceiling is already a no-op there and $I_{\mathrm{adm}}^{AB}$ reduces to the structure
+   verdict regardless of what role B does.
+2. **No $\delta_B$ exists and none can be produced under the calibration stage's own constraints.**
+   The per-protein ceiling comes from `scripts/calibrate_rf_fusion_v2_hotspot.py`, which *generates*
+   a feedback-disabled completion population and runs the structure gate. That is a GPU stage the
+   calibration stage explicitly excludes and does not budget.
+3. **The cost is not code volume, it is identity.** `SafetyReferenceBinding` is a field of
+   `LivePartialState` and `ProjectedPartialState`, inside both canonical payloads. A second binding
+   moves every state digest, hence every `state_id`, hence every `endpoint_id` -- breaking both the
+   §0.3 Dual-off equivalence guarantee and the byte-identical shared-root requirement the recursive
+   comparison rests on.
+
+What remains true and is implemented:
+
+- structure, anchors and source legality are evaluated exactly once, unchanged;
+- the inherited single-Head cumulative gate still decides admission, and an all-failed event still
+  leaves the lineage at its valid incumbent rather than falling back to an unsafe endpoint;
+- strict improvement on both raw risks is never required; and
+- role B's `max_increase`, `positive_mass` and `positive_count` against the frozen depth-0 reference
+  are reported per endpoint.
+
+**Claim boundary.** A result from this program may not state that a conjunctive per-allele safety
+gate was enforced. It may state that role-B hotspot drift was measured and report the distribution.
+Promoting the telemetry to a gate is a conditional enhancement, activated by observed drift in that
+distribution -- not by the symmetry of the formula.
 
 ### 2.6 Output contract
 
@@ -432,6 +481,73 @@ objective resolver and `(value, endpoint_id)` rank key.
 **Acceptance:** smooth max satisfies its bounded-max and monotonicity properties; hard max shares
 the interface; canonical serialization/hashing is deterministic; package import remains model-free.
 
+### DUALF1a — Calibration panel selection and the frozen coordinate artifact
+
+**Objective:** produce the one content-bound artifact that freezes $b_a,s_a$ for both $R$ and
+$\rho$, and prove the panel is admissible.
+
+**Inputs/assumptions:** the two frozen Head checkpoints; a candidate natural panel; the frozen
+per-allele raw repeatability floors; the declared $c_u=\tau\log 2$.
+
+**Panel admissibility — every item is a hard gate, not a preference:**
+
+- one natural or reference sequence per protein, canonical AA20, length $\geq$ the maximum Head
+  window $k$;
+- selected by structure or by nothing at all: never by risk under either allele, never by an
+  external immune predictor, never by Fusion or NoD generation;
+- **training overlap measured per allele and its effect bounded, rather than required to be zero.**
+  Existence of overlap is not the hazard; ASYMMETRIC overlap is, because only the NORMALIZED
+  location difference is load-bearing and a shift common in $u$ largely cancels. Both $b_a$ and
+  $s_a$ are robust statistics, so a contaminated fraction $f$ moves the median by at most the
+  $50\rightarrow(50\pm100f)$ percentile displacement. The producer therefore reports $f_A$, $f_B$,
+  and a **leave-overlap-out recomputation** of the whole calibration, and gates on
+
+$$
+\left\lvert\Delta\left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)\right\rvert \;\ll\; c_u
+\qquad\text{and}\qquad
+\left\lvert\Delta\log\frac{s_A}{s_B}\right\rvert \;\ll\; 1
+$$
+
+  between the two recomputations. The quantity is $b_A/s_A-b_B/s_B$ and NOT $b_A-b_B$: the
+  active-worst boundary is $R_A/s_A-R_B/s_B=b_A/s_A-b_B/s_B$, so adding one raw constant to both
+  locations leaves $b_A-b_B$ exactly unchanged while moving the boundary by
+  $\delta\left(1/s_A-1/s_B\right)$ (see `doc/Dual_Allele_Steering.md` §2.2.3). It is already
+  dimensionless, so it is compared against $c_u$ directly rather than divided by an $s$ that is not
+  defined for a pair. The scale-ratio term is the boundary's SLOPE: a recomputation may agree on the
+  intercept and still disagree about which allele is worst over a whole region. Overlap detection is by homology, not exact identifier match; the
+  existing `head_train_overlap_flag` machinery is single-allele and must be extended;
+- length coverage spanning the deployment domain;
+- no single structural family dominating the panel; and
+- large enough that $\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)\ll c_u$, measured by bootstrap
+  over panel proteins and REPORTED. Same coordinate as the gate above, and for the same reason.
+
+  **This one is a reported diagnostic, not a fail-closed gate** — `doc/DUAL_ALLELE_DUALF0_AUDIT.md`
+  Appendix F withdrew the fail-closed form, because a threshold on the calibration's own precision
+  is a second human-chosen number in a calibration whose whole point is that exactly one ($\tau$)
+  is chosen. It is listed here because it must be measured and read, not because a producer may
+  refuse on it. **Measured 2026-08-24: 0.0185 against $c_u=0.10$, i.e. 18.5 % of the credit band**,
+  and it cannot be reduced by enlarging the panel (13,836 homology-independent units is the ceiling
+  the deduplicated Tier-2 pool supports). Accepting that ratio is decision **D3** in Appendix J.4.
+
+**RED tests:** panel entry shorter than the maximum window $k$; a non-canonical residue; two
+sequences for one protein; a leave-overlap-out recomputation that moves $b_A/s_A-b_B/s_B$ by more
+than the declared fraction of $c_u$, or that moves $\log\left(s_A/s_B\right)$ appreciably; a
+calibration whose stability is asserted on the RAW difference $b_A-b_B$; a panel whose
+bootstrap $\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)$ going unreported; $s_a$ not exceeding that
+allele's raw noise floor; an attempt to compute $b_a,s_a$ from anything other than the signed panel;
+an attempt to recompute them from a runtime batch.
+
+**Interfaces/artifacts:** one signed calibration JSON binding panel identity and digest, both Head
+identities, $\left(b_a^{R},s_a^{R}\right)$ and $\left(b_a^{\rho},s_a^{\rho}\right)$, the per-allele
+raw floors, the derived joint margins, the realized bootstrap standard error, and $\tau$/$c_u$ as
+validated inputs rather than fitted outputs. Panel paths arrive by CLI; no module constant.
+
+**Stop:** the panel fails any admissibility gate, or per-allele overlap cannot be measured at all.
+An unmeasurable panel is not usable; a panel with measured, symmetric, effect-bounded overlap is.
+
+**Acceptance:** re-running the producer on the same panel and checkpoints reproduces the artifact
+digest exactly; the artifact is the only source of $b_a,s_a$ anywhere in the codebase.
+
 ### DUALF2 — Paired Head scoring and endpoint binding
 
 **Objective:** attach two frozen Head results to every exact endpoint before any Dual decision.
@@ -507,7 +623,7 @@ typed stalls replace all unauthorized fallbacks.
 - path/label mismatch between DRB1*07:01 and DRB1*04:01;
 - config or calibration hand-edited after materialization;
 - resume after Head/objective/safety drift;
-- shared D0 branches with non-identical endpoint digests;
+- runs of two arms whose depth-0 pools differ, which means a non-arm argument moved;
 - cost ledger charging one Head for two evaluations or duplicating shared refolds;
 - facade/reader silently ranking the Dual run by legacy A risk; and
 - assembly preflight passing while the real Dual policy cannot be constructed.
@@ -555,7 +671,7 @@ Minimum named behaviors:
 - null/incumbent preservation on all-failed events;
 - Dual-off single-Head equivalence;
 - objective-bound resume refusal;
-- shared-D0 exact identity across matched arms;
+- depth-0 exact identity across separately launched arms;
 - deterministic fork/descendant seeds across arm labels;
 - per-Head logical cost and shared physical refold accounting;
 - common-$J$ reconstruction from all definitive endpoints; and
@@ -574,15 +690,40 @@ worktree runbook/CI; do not copy stale command lists from the historical PLAN.
 
 Code completion authorizes only the companion runbook:
 
-1. one offline calibration plus exact dry-run/assembly preflight;
-2. one matched one-cycle Dual directionality experiment; and
-3. one matched 100-protein D4/K12 recursive capability comparison.
+1. one offline calibration plus exact dry-run/assembly preflight; and
+2. one 100-protein D4/K12 recursive capability comparison, run as **one launch per arm**.
 
-The recursive comparison must branch `joint`, `A_only_with_joint_safety`, and
-`B_only_with_joint_safety` from one byte-identical D0/root checkpoint inside each protein cell. The
-control labels are explicit because the non-optimized Head still enforces the common catastrophic
-safety contract; it is not merely a passive observer. Three
-independent campaigns that merely reuse the same numeric seed are invalid because campaign and
+**The arms are compared across runs, not inside one.** The Dual arm enters no seed derivation and
+the depth-zero root capture never sees the Dual runtime, so two launches that differ only in
+`--dual-arm` -- same config, campaign, split, master seed, cohort and inputs -- produce the same
+root, the same lookahead pool and the same role A raw risks, and diverge only at selection. The
+comparison is therefore paired by construction; this is asserted in
+`tests/inverse_folding/test_fusion_v2_dual_arms.py` and verified on the artifacts by comparing each
+protein's depth-0 `endpoint_id` / `sequence_md5` / `source_state_id` across the runs.
+
+This PLAN deliberately adds **no in-run matched-arm engine** for the alleles. One would pay for the
+shared source prefix once instead of twice; it would change no scientific property of the
+comparison, and the existing within-run matched-pair engine (`fusion_v2_runtime/paired.py`) answers
+a different question -- two INTERVENTIONS under one policy -- so the driver refuses `--dual-overlay`
+together with the mechanism/qualification path rather than producing a same-objective contrast that
+reads like an allele one.
+
+The realized $\left(m_{\mathrm{write}},m_{\mathrm{reopen}}\right)$ are reported per arm as
+OUTCOMES and are never a validity precondition: both are functions of the objective, so requiring
+parity would discard exactly the cells in which the second Head acted
+(`doc/Dual_Allele_Steering.md` §5.3.1). The descendant read is stratified by realized dose.
+
+**Arm labels name the objective and nothing else.** The frozen arm vocabulary is exactly
+`joint` / `a_only` / `b_only`, lowercase, identical in both experiments, and it is a load-bearing
+literal: it appears in the matched-arm bundle, the run signature, the resume fragment key, and every
+Dual artifact. The safety contract in force is a separately declared property of the run, recorded
+next to the arm rather than inside its name. The earlier `*_with_joint_safety` labels are withdrawn:
+on the frozen high-risk substrate the cumulative hotspot ceiling is set to an effectively disabling
+value with the incremental gate off, so those labels described a gate that does not exist there
+(`doc/Dual_Allele_Steering.md` §4.2.1). A capability comparison on that substrate reports that its
+arms differ in objective only.
+
+Three independent campaigns that merely reuse the same numeric seed are invalid because campaign and
 split identity participate in V2 seed derivation. After the shared checkpoint, matched stochastic
 draws derive from one comparison identity and fork index rather than the objective-arm label; the
 arm remains present in lineage/artifact identity but cannot silently open an independent RNG stream.
@@ -600,19 +741,19 @@ and a conditional follow-up only if the primary joint law is ambiguous.
 
 ## 8. Coder Completion Checklist
 
-- [ ] Implementation is based on the audited Fusion worktree descendant.
-- [ ] Dual is an optional objective/evidence layer, not a second V2 state machine.
-- [ ] Two Heads bind to the same exact endpoint and compatible window grid.
-- [ ] Fixed normalization and stable smooth max are content-bound.
-- [ ] Family, archive, incumbent, donor, and LOO share one objective digest.
-- [ ] No Head-A prefilter removes Head-B evidence.
-- [ ] Write/reopen share the existing total budget and source legality.
-- [ ] Both allele hotspot gates pass; structure is evaluated once.
-- [ ] Existing endpoint and legacy Head meanings are preserved.
-- [ ] Artifacts and resume bind both Heads, calibration, objective, safety, and arm bundle.
-- [ ] Matched-arm comparison shares one byte-identical D0/root state.
-- [ ] Dual-off behavior is regression-equivalent.
-- [ ] Existing driver and SLURM are extended; no duplicate launcher exists.
-- [ ] `doc/SCRIPTS.md` reflects the implemented modes and removes stale descriptions.
-- [ ] Local gates pass before any cluster submission.
-- [ ] `LOG.md` is updated only when the behavior-changing implementation lands.
+- [x] Implementation is based on the audited Fusion worktree descendant.
+- [x] Dual is an optional objective/evidence layer, not a second V2 state machine.
+- [x] Two Heads bind to the same exact endpoint and compatible window grid.
+- [x] Fixed normalization and stable smooth max are content-bound.
+- [x] Family, archive, incumbent, donor, and LOO share one objective digest.
+- [x] No Head-A prefilter removes Head-B evidence.
+- [x] Write/reopen share the existing total budget and source legality.
+- [~] Structure is evaluated once (asserted by a stack counter). Role B's hotspot drift is **measured and reported, not gated** — see §2.5 and `doc/DUAL_ALLELE_DUALF0_AUDIT.md` Appendix E for why a second gate would bind against nothing on this substrate and would move every endpoint identity.
+- [x] Existing endpoint and legacy Head meanings are preserved.
+- [x] Artifacts and resume bind both Heads, calibration, objective, safety, and arm bundle.
+- [~] Matched arms share one depth-zero **molecule and identity** (`sequence_md5`, `endpoint_id`, `source_state_id`). They cannot share one endpoint OBJECT: an endpoint carries one Head's binding, so `b_only`'s content digest differs by construction. The runbook GO check was corrected accordingly (Appendix F).
+- [x] Dual-off behavior is regression-equivalent.
+- [x] Existing driver and SLURM are extended; no duplicate launcher exists.
+- [x] `doc/SCRIPTS.md` reflects the implemented modes and removes stale descriptions.
+- [x] Local gates pass before any cluster submission.
+- [ ] `LOG.md` is updated only when the behavior-changing implementation lands. *(pending: the Dual layer is opt-in and no behaviour changes until an overlay is supplied, so this lands with the first Dual run.)*

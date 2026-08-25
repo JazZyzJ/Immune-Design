@@ -276,8 +276,12 @@ def run_depth_ladder(
         )
 
     safety_gate = cycle_kwargs["safety_gate"]
+    dual = cycle_kwargs.get("dual")
     admission_by_endpoint: dict[str, Any] = {}
-    archive = ExactArchive()
+    # PLAN DUALF3: the archive elite is maintained under the SAME objective the donor gate applies.
+    # An archive still ordered by ``head_global_risk`` would make a joint run's elite silently
+    # single-allele while every artifact continued to claim otherwise.
+    archive = ExactArchive(rank_key=None if dual is None else dual.rank_key())
     records: list[DepthRecord] = []
     reason = StoppingReason.DEPTH_CAP
     detail = ""
@@ -429,7 +433,12 @@ def run_depth_ladder(
         # For HeadDirectedCappedPolicy the donor that entered this lineage becomes I_{d+1}; if the
         # policy object remained the factory-built depth-zero instance, every deeper rung would
         # compare against I0 and could adopt a donor that regresses from the current lineage.
-        support_policy = cycle_kwargs["support_policy"]
+        # The policy the CYCLE decided with, not the one this loop handed it.  Under Dual the
+        # kernel rebinds the injected policy with the pool's role B donor scores, and advancing the
+        # un-rebound original looked the adopted donor up in an empty map and raised -- so every
+        # Dual ladder run died at the first adopted donor.  A legacy cycle returns the same object
+        # it was given, so this is a no-op there.
+        support_policy = cycle.support_policy or cycle_kwargs["support_policy"]
         advance_reward = getattr(support_policy, "advance_lineage_incumbent", None)
         if advance_reward is not None:
             verdict = getattr(cycle.policy_evidence, "donor_gate", None)

@@ -262,7 +262,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     identity is NOT locally provable and is not claimed. Tested:
     `tests/scripts/test_rf_fusion_model_factory.py`.
 
-14. `scripts/rf_fusion_v2_artifacts.py` — V2 evidence bundle schemas and row builders (PLAN §5.3).
+14. `scripts/rf_fusion_v2_artifacts.py` — V2 evidence bundle schemas and row builders (PLAN §5.3). `DUAL_TABLE_SCHEMAS` declares `dual_endpoint_evidence`, `dual_feedback_evidence` and `dual_terminal_summary`, written only when `write_v2_bundle(..., dual_tables=...)` is supplied; a bundle with no overlay is unchanged. `DUAL_COLUMN_TYPES` declares an Arrow type for every Dual column and asserts that set complete at import — an inferred column types itself from the rows present, so an empty shard would publish a measured risk as text and the first real value could not be appended. Row builders `dual_endpoint_evidence_rows` (both raw risks, both normalized coordinates, the joint value and the active-worst allele — a two-axis front cannot be recovered from a scalar), `dual_feedback_evidence_rows` (per position: the leave-one-out A/B contrasts and the union reducer's per-allele conjuncts and winner; keyed over the UNION of write-candidate and reopen-candidate positions, which are disjoint sets) and `dual_terminal_summary_rows`. `dual_feedback_evidence_rows` reads eligibility against the margin the run APPLIED (carried on the decision evidence) and takes `selected`/`selection_rank` from the decision's own per-position rows.
     Carries a `structure_evaluations` table: EVERY endpoint the structure gate looked at, passed
     or failed, with metrics, verdict, failure reason, cache/execution facts and the backend +
     gate-config digests repeated per row. The endpoint record cannot hold this — the state layer
@@ -291,7 +291,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     with defaulted `0.0`, indistinguishable from a measurement of zero). Tested:
     `tests/scripts/test_rf_fusion_v2_artifacts.py`.
 
-15. `scripts/rf_fusion_v2_resume.py` — content-bound resume and fragment aggregation (PLAN §5.4).
+15. `scripts/rf_fusion_v2_resume.py` — content-bound resume and fragment aggregation (PLAN §5.4). `RunSignature` carries an optional self-omitting `dual_signature`: empty for a legacy run, so its canonical payload and `.value` are byte-identical to before the field existed.
     `RunSignature` binds config digest + campaign + split + arm + protein + input CONTENT + code
     revision; a fragment is reusable only under exact equality. Unlike the V1 aggregator, a
     non-reusable fragment is REPORTED with a typed status (`stale_config` / `stale_input` /
@@ -307,7 +307,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `failed` shard is RE-RUN rather than frozen forever by its own failure record. Tested:
     `tests/scripts/test_rf_fusion_v2_resume.py`.
 
-16. `scripts/rf_fusion_v2_preflight.py` — strict V2 preflight (PLAN V2F7). Resolves the config
+16. `scripts/rf_fusion_v2_preflight.py` — strict V2 preflight (PLAN V2F7). Resolves the config `load_dual_overlay_file(path)` reads a signed dual-allele overlay JSON into a typed `DualOverlay`.
     through the typed loader (adds no defaults of its own), derives the ONE shared
     `config_digest`, signs declared inputs by CONTENT, and projects the run's logical cost from the
     declared schedule under PLAN §3.4 against the declared caps. Fails CLOSED before any work is
@@ -325,7 +325,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     realized ladder's counted forward passes on the SAME schedule. Tested:
     `tests/scripts/test_rf_fusion_v2_preflight.py`.
 
-17. `scripts/rf_fusion_v2_cohort.py` — the per-protein execution stage the driver calls.
+17. `scripts/rf_fusion_v2_cohort.py` — the per-protein execution stage the driver calls. `run_v2_shard(..., dual=(overlay, arm))` forwards the resolved arm to the oracle factory and REFUSES a factory that accepted it and returned no runtime: that mismatch is what made `joint`, `a_only` and `b_only` execute identical A-only V2 under three different signatures, and nothing in the artifact said so. A Dual shard also emits `payload['dual_tables']`, built from the objects the cycle and the policy actually decided with rather than recomputed from the legacy tables. `run_v2_mechanism_shard` takes `dual` too (both mechanism arms then share ONE arm's law -- which is not the M1 cross-objective contrast; see the audit). Dual rows are emitted as TOP-LEVEL payload keys so `aggregate_fragments`, which collects by table name, can see them.
     `build_depth_plan(config)` transcribes the declared schedule into the ladder's `DepthPlan`
     (breadth and coordinates are DECLARED, never allocated); `run_v2_shard(...)` runs the ladder and
     returns `(status, payload)` rows for the driver's fragment. A typed scientific stop RETURNS
@@ -418,7 +418,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     transcribed from the config that will consume the threshold.
     Tested: `tests/scripts/test_calibrate_rf_fusion_v2_hotspot.py`.
 
-19. `scripts/rf_fusion_v2_oracles.py` — the V2 PRODUCTION oracle stack: everything
+19. `scripts/rf_fusion_v2_oracles.py` — the V2 PRODUCTION oracle stack: everything `build_role_b_head_oracle(...)` builds a second frozen Head and its counterfactual scorer through the same construction chain as role A and constructs NO structure stack, asserted against a module-level counter. `build_dual_stack(...)` assembles role B end to end for one shard: it opens the Head from `--shard-input head_b_config=` / `head_b_checkpoint=` (paths are per-filesystem and never come from the signed overlay), proves the RESOLVED checkpoint against the overlay's declared digest -- the driver's earlier call compared the overlay with itself and passed for any checkpoint on disk -- scores the safety reference with role B so J(I_0) is a number both instruments took, and returns `(DualSupportAuthority, DualRuntime)`. `build_v2_oracles(..., dual=(overlay, arm))` injects the authority into the policy and the runtime into `cycle_kwargs['dual']`. The arm resolves the OBJECTIVE through `build_arm_objective`: `joint` reduces both coordinates, `a_only` / `b_only` order on one. Building the joint objective for every arm made the three branches of a matched comparison execute the identical law.
     `run_v2_shard` needs to run a real protein. **REUSES** `rf_fusion_model_factory` for the
     sampler/denoiser/alphabet/backbone/hard-anchors (the same factory the V1 entry path delegates
     to, so the two cannot drift into different kernels) and the V1 Head batch + target-backbone
@@ -464,6 +464,12 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `tests/scripts/test_rf_fusion_v2_oracles.py`.
 
 30. `scripts/calibrate_v2_head_policy.py` — the V2F5A frozen-Head repeatability calibration.
+
+30a. `scripts/calibrate_v2_dual_objective.py` — **DUALF1a**: measures the frozen dual-allele calibration on a fixed NATURAL panel and signs it. Six steps and no more: read the frozen panel FASTA (built upstream — this script consumes it and records its digest, and refuses only the two contaminations it can detect: a deployment protein inside the panel, and a length outside 100–500 aa); score every sequence TWICE per Head through the production Head-construction chain, the second pass in a seeded-SHUFFLED order so that same-sequence drift `e_a` is measurable at all (a same-order repeat returns identical numbers whether the instrument drifts or not); compute `b_a`/`s_a` by protein-equal weighted median and IQR/1.349 for `global_risk`, `positive_mass_density` and per-window `window_z`; refuse any coordinate whose scale is at or below that Head's own drift; report the measured cross-allele Pearson r and the bootstrap SE of the NORMALIZED intercept `b_A/s_A − b_B/s_B` (resampled over proteins); and emit the auditable per-sequence rows plus one signed overlay JSON. τ is **validated** against the spec's declared credit, never selected — there is no path here that could change either. Generates no sequences, folds nothing, sweeps no τ, runs no opportunity experiment. New file rather than a `--mode dual` of the entry above because that one is built around V2 run bundles and one Head: different input, different population, different output.
+
+30b. `scripts/build_dual_calibration_panel.py` — **DUALF1a input**: builds the frozen allele-neutral natural panel the Dual calibration is measured on, and reports every filter so the funnel is auditable rather than asserted. Seven steps: exact-sequence dedup; 100–500 aa; canonical AA20 only (a Head request must describe a COMPLETE canonical design and the oracle refuses anything else); drop the **union** of BOTH Heads' training homology at `cov-mode 2`, 30 % identity / 80 % coverage, where "seen" is `train ∪ val` because training fits the weights and validation selects which checkpoint exists (`--seen-splits` makes that explicit); drop the deployment proteins; drop both alleles' evaluation sets, so calibrating does not spend the test set; and one representative per homology cluster. Reuses `inverse_folding.evaluation.overlap.run_mmseqs_overlap` (its `cath_train_fasta` parameter is just "the reference set") and `freeze_t0_dev_cohort.mmseqs_clusters`. The panel is an INPUT to the calibration producer, never built inside it. Realized on the Tier-2 pool: 225,821 → 57,127 → 56,475 → 45,326 → 45,302 → 44,021 → **13,836**, with measured head homology 14.12 % (A) / 15.78 % (B).
+
+
     Reads exact complete sequences plus their stored `head_global_risk` from one or more existing
     S7 bundles, re-scores the same bytes once with the frozen production Head, and writes paired
     parquet rows plus a typed `v2-head-policy-calibration-bundle/1` JSON. The donor-improvement and
@@ -530,7 +536,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     is 1: PLAN §8.4 keeps production `D>1` launch-disabled. Procedure:
     `doc/RF_Fusion_v2_Cluster_Runbook.md`.
 
-22. `scripts/materialize_v2_canary_config.py` — resolves ONE cell from the template above
+22. `scripts/materialize_v2_canary_config.py` — resolves ONE cell from the template above Optional dual-allele flags: `--dual-overlay`, `--head-b-config-dir`, `--head-b-checkpoint` — PATHS only, because the variant id, allele index and window batch size are carried by the SIGNED overlay and read from there. There is deliberately no `--dual-arm`: the arm is a LAUNCH flag, so one resolved config is launched once per arm and the arms are compared across runs. Every generated `.args.sh` exports `V2_PROTEIN_ID` and `DUAL_MODE`, which is a CAPABILITY (`dual` / `none`), not an arm.
     (`--campaign-id` overrides `identity.campaign_id`, so the runbook §7 mechanism cohort can
     reuse this producer with the mechanism-stage `--hotspot-json` and
     `--v0-structure-gate-config` without signing its artifacts as more Canary)
@@ -588,7 +594,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     per-window increments — which window sets the max, and whether any single position can lower it
     — are not recoverable offline. It costs no extra Head work; the run already scores the reference.
 
-25. `scripts/preflight_v2_canary_assembly.py` — the gate `--dry-run` cannot be.
+25. `scripts/preflight_v2_canary_assembly.py` — the gate `--dry-run` cannot be. Now constructs a `head_directed_capped` support policy model-free by binding the five objects the factory requires (a holdable-but-not-askable stub Head, the lineage incumbent, the reference score, the evaluator and the window-grid digest), so an assembly failure no longer needs a real one-prefix GPU run to surface. Reports `policy_config_digest_is_placeholder_bound`. Optional `--dual-overlay PATH --dual-arm joint|a_only|b_only` proves the JOINT policy assembles too: role B's authority is built from the signed overlay with the same shaped placeholder score role A uses, J(I_0) is DERIVED from it rather than declared, and the check refuses if the resolved policy came back without the authority -- a cell that would run A-only under a Dual signature. Still loads no model.
     `run_rf_fusion_v2.py --dry-run` deliberately loads no model, so it returns BEFORE
     `build_v2_oracles`, which is where the launch-blocking faults actually live: four consecutive
     cluster attempts died there, each after the allocation and the 3 GB checkpoint load were paid
@@ -625,7 +631,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `a2_matched_extra_lookaheads`, the quantity whose being zero is why no contrast is licensed.
     Exit `0` only if every check passes on every cell.
 
-23. `scripts/submit_rf_fusion_v2_canary.slurm` — one Canary CELL per job (runbook §5), or one
+23. `scripts/submit_rf_fusion_v2_canary.slurm` — one Canary CELL per job (runbook §5), or one Dual-allele knobs: `DUAL=0|1`, `DUAL_ARM`, `DUAL_OVERLAY`. `DUAL=1` requires a readable overlay and a valid arm; `DUAL=0` with either set is refused rather than silently running the legacy experiment. Each cell is cross-checked against its `.args.sh` `DUAL_MODE`, and arms write to separate out-dirs.
     serial cell list in one GPU job. Exactly one of `CELL=<stem>` or `CELL_LIST=<file>` is required;
     list mode reads one stem per line and runs them sequentially without arrays/background jobs,
     continuing after typed cell failures so the whole requested cohort is attempted. The job sources
@@ -638,7 +644,7 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     refused unless `N>=1`. A prefix is about three cells, so pass a matching `sbatch --time` (the
     header is sized for a Canary cell).
 
-18. `scripts/run_rf_fusion_v2.py` — the V2 production driver. `--v2-config`, `--out-dir`,
+18. `scripts/run_rf_fusion_v2.py` — the V2 production driver. `--v2-config`, `--out-dir`, Optional dual-allele mode: `--dual-overlay PATH` (signed overlay JSON) and `--dual-arm joint|a_only|b_only`, which must be supplied together; the overlay's own `arm_bundle` is the authority for which arms exist, and the executing arm enters the run signature so two arms of one protein can never resume from each other. Absent, the run is the frozen single-Head V2 in every byte and the Dual layer is never imported. The overlay is resolved BEFORE `--print-config` / `--dry-run` return, so a dry run fails on a missing or malformed overlay and on an undeclared arm instead of exiting 0 and failing on the GPU; the printed payload carries the resolved `dual_mode`, `dual_arm` and `dual_signature`. A Dual run's fragment/aggregation table set includes the three Dual tables, the bundle is written with `dual_tables=`, the manifest carries the arm plus the overlay, calibration, objective and role-B checkpoint identities, and the budget projection prices both Heads.
     `--cohort`, `--input-file ROLE=PATH` (repeatable), `--shard-input NAME=PATH` (repeatable;
     the runtime paths handed to the execution stage — a bare path or a repeated name is refused,
     because guessing which parameter a path meant is how a checkpoint is passed as a PDB root),

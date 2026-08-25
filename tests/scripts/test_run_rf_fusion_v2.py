@@ -915,3 +915,112 @@ def test_dry_run_parses_the_runtime_paths_it_will_launch_with(tmp_path):
 def test_dry_run_still_succeeds_on_well_formed_runtime_paths(tmp_path):
     """The gate must not be satisfiable by refusing every dry run."""
     assert _run(tmp_path, extra=["--dry-run", "--shard-input", f"pdb_root={tmp_path}"]) == EXIT_OK
+
+
+# --------------------------------------------------------------------------------------------
+# the launch gate must see the Dual overlay it would launch with
+# --------------------------------------------------------------------------------------------
+
+
+def _overlay_file(tmp_path, **over):
+    """A signed Dual overlay on disk, authored through the loader's own serializer."""
+    from inverse_folding.reference_flow.fusion_v2.dual_config import dual_overlay_payload
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay
+
+    payload = dual_overlay_payload(overlay())
+    payload.update(over)
+    path = tmp_path / "dual_overlay.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return path
+
+
+def test_dry_run_refuses_a_dual_overlay_that_does_not_exist(tmp_path):
+    """``--dry-run`` returned EXIT_OK before ``resolve_dual`` ran at all.
+
+    So a three-arm Dual submission whose overlay path was wrong passed its own launch gate and
+    failed on the GPU -- after the allocation the gate exists to authorize had been paid for.
+    """
+    code = _run(tmp_path, extra=["--dry-run", "--dual-overlay",
+                                 str(tmp_path / "definitely-missing.json"),
+                                 "--dual-arm", "joint"])
+    assert code == EXIT_UNLAUNCHABLE
+
+
+def test_dry_run_refuses_an_arm_the_overlay_never_declared(tmp_path):
+    code = _run(tmp_path, extra=["--dry-run", "--dual-overlay", str(_overlay_file(tmp_path)),
+                                 "--dual-arm", "b_only"])
+    assert code == EXIT_UNLAUNCHABLE
+
+
+def test_dry_run_refuses_half_a_dual_specification(tmp_path):
+    assert _run(tmp_path, extra=["--dry-run", "--dual-arm", "joint"]) == EXIT_UNLAUNCHABLE
+    assert _run(tmp_path, extra=["--dry-run", "--dual-overlay",
+                                 str(_overlay_file(tmp_path))]) == EXIT_UNLAUNCHABLE
+
+
+def test_dry_run_accepts_a_declared_overlay_and_arm(tmp_path):
+    """The gate must not be satisfiable by refusing every Dual dry run."""
+    assert _run(tmp_path, extra=["--dry-run", "--dual-overlay", str(_overlay_file(tmp_path)),
+                                 "--dual-arm", "joint"]) == EXIT_OK
+
+
+def test_print_config_reports_the_resolved_dual_mode_rather_than_the_flag(tmp_path):
+    """An operator reads the printed payload, not the command line, to know what was resolved."""
+    config_path = _write_config(tmp_path)
+    overlay_path = _overlay_file(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "scripts/run_rf_fusion_v2.py", "--v2-config", str(config_path),
+         "--out-dir", str(tmp_path / "out"), "--cohort", "A_1", "--print-config",
+         "--dual-overlay", str(overlay_path), "--dual-arm", "joint"],
+        capture_output=True, text=True, cwd=str(REPO),
+    )
+    assert result.returncode == EXIT_OK, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["dual_mode"] == "dual"
+    assert payload["dual_arm"] == "joint"
+    assert payload["dual_signature"]
+
+
+def test_print_config_reports_no_dual_mode_for_a_legacy_run(tmp_path):
+    config_path = _write_config(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "scripts/run_rf_fusion_v2.py", "--v2-config", str(config_path),
+         "--out-dir", str(tmp_path / "out"), "--cohort", "A_1", "--print-config"],
+        capture_output=True, text=True, cwd=str(REPO),
+    )
+    assert result.returncode == EXIT_OK, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["dual_mode"] == "none"
+    assert payload["dual_signature"] == ""
+
+
+def test_a_factory_that_ignores_the_resolved_dual_arm_is_refused(tmp_path):
+    """The failure this guard exists for is silent by construction.
+
+    Before the wiring, ``resolve_dual`` fed the run SIGNATURE and nothing else: the shard still ran
+    one Head, so ``joint``, ``a_only`` and ``b_only`` executed identical A-only V2 under three
+    different signatures.  Nothing in the artifact said so -- three arms agreed, and the agreement
+    meant nothing.  So the driver's resolved arm and the factory's returned runtime are compared.
+    """
+    from scripts.rf_fusion_v2_cohort import V2CohortError, run_v2_shard
+
+    def blind_factory(*, protein_id, config, inputs, dual=None):
+        del dual                       # the exact mistake: accepted and dropped
+        return {"gpu_clock": lambda: 0.0, "cycle_kwargs": {}}
+
+    from scripts.rf_fusion_v2_preflight import load_v2_config_file
+    from scripts.run_rf_fusion_v2 import _signatures
+
+    config = load_v2_config_file(_write_config(tmp_path))
+    path = _input_file(tmp_path)
+    declared = (DeclaredInput(
+        "cohort_table", str(path), hashlib.sha256(Path(path).read_bytes()).hexdigest()),)
+    signature = _signatures(
+        config, ("A_1",), arm_role=config.arm.arm_role, code_revision="deadbeef",
+        inputs=declared, dual_signature="deadbeef")["A_1"]
+
+    with pytest.raises(V2CohortError, match="A-only|dual"):
+        run_v2_shard(
+            protein_id="A_1", config=config, signature=signature,
+            out_dir=tmp_path / "out", oracles_factory=blind_factory,
+            dual=(object(), "joint"))

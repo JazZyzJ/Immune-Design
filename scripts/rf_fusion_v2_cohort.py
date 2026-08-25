@@ -32,6 +32,10 @@ __all__ = ["V2CohortError", "ShardInputs", "assert_runtime_substrate_matches",
 #: Cycle arguments the RUN owns, never the oracle factory.  ``feedback_enabled`` is the arm
 #: identity and ``cost_meter`` is the compute journal: a factory able to set either could make a
 #: run's engine and its own artifact disagree about which experiment was performed.
+#: ``dual`` is deliberately NOT one of these.  The factory is where role B's Head is opened, so the
+#: Dual runtime is something it legitimately produces -- what the run owns is the DECISION to run a
+#: Dual arm at all, which is checked separately: the driver's resolved overlay and the factory's
+#: returned runtime must agree, or a run whose signature claims a Dual arm could execute A-only.
 RUN_OWNED_CYCLE_KWARGS = ("feedback_enabled", "cost_meter")
 
 #: Every ``config.substrate`` field that has a counterpart on the runtime ``ReferenceFlowConfig``
@@ -409,6 +413,7 @@ def run_v2_shard(
     inputs: ShardInputs | None = None,
     oracles_factory=None, production_depth_authorized: bool = False,
     exploratory_depth_override: bool = False,
+    dual: Any = None,
 ) -> tuple[str, Mapping[str, Any]]:
     """Run one protein's V2 ladder and return ``(status, payload)`` for the driver's fragment.
 
@@ -450,8 +455,20 @@ def run_v2_shard(
     )
 
     plan = build_depth_plan(config)
-    oracles = oracles_factory(protein_id=protein_id, config=config, inputs=inputs)
+    # Passed only when a Dual overlay was actually resolved, so the long-standing three-argument
+    # factory surface is untouched for every legacy run and every injected fake.
+    factory_kwargs = dict(protein_id=protein_id, config=config, inputs=inputs)
+    if dual is not None:
+        factory_kwargs["dual"] = dual
+    oracles = oracles_factory(**factory_kwargs)
     cycle_kwargs = dict(oracles["cycle_kwargs"])
+    dual_runtime = cycle_kwargs.get("dual")
+    if (dual is None) != (dual_runtime is None):
+        raise V2CohortError(
+            f"the driver resolved dual={dual is not None} but the oracle factory returned "
+            f"dual={dual_runtime is not None}; a run whose signature claims a Dual arm and whose "
+            "engine executes A-only would produce three identical arms under three signatures"
+        )
     conflicting = [name for name in RUN_OWNED_CYCLE_KWARGS if name in cycle_kwargs]
     if conflicting:
         raise V2CohortError(
@@ -572,6 +589,39 @@ def run_v2_shard(
         "production_depth_authorized": bool(outcome.production_depth_authorized),
         "exploratory_depth_override": bool(outcome.exploratory_depth_override),
     }
+    if dual_runtime is not None:
+        # Emitted only by a Dual run, and into a SEPARATE registry, so a legacy bundle gains no
+        # file. Every number here was read off the objects the cycle and the policy actually
+        # decided with -- recomputing them from the legacy tables would be a second measurement of
+        # the same run, and the two could disagree with nothing to say which one it acted on.
+        from scripts.rf_fusion_v2_artifacts import (
+            dual_endpoint_evidence_rows,
+            dual_feedback_evidence_rows,
+            dual_terminal_summary_rows,
+        )
+
+        arm = dual_runtime.arm
+        # TOP-LEVEL keys, one per table, exactly like the legacy tables.  Nested under a
+        # ``dual_tables`` dict they were invisible to ``aggregate_fragments``, which collects
+        # payload keys BY TABLE NAME -- so every Dual shard built its three tables and the driver
+        # dropped all of them, and no production run ever wrote a Dual parquet.
+        dual_rows = {
+            "dual_endpoint_evidence": dual_endpoint_evidence_rows(
+                dual_runtime.evidence_by_endpoint, arm=arm),
+            "dual_feedback_evidence": dual_feedback_evidence_rows(events, arm=arm),
+            "dual_terminal_summary": dual_terminal_summary_rows(
+                dual_runtime.evidence_by_endpoint, arm=arm, protein_id=str(protein_id),
+                root_id=f"{protein_id}:v2:d0:r0",
+                n_definitive=sum(1 for a in admissions.values()
+                                 if getattr(a, "admitted", False)),
+                d0_endpoint_ids=[str(e.endpoint_id)
+                                 for e in by_depth.get(0, ())],
+                last_improving_depth=_last_improving_depth(
+                    by_depth, dual_runtime.evidence_by_endpoint),
+                typed_stop=outcome.stopping_reason.value),
+        }
+        payload.update(dual_rows)
+        payload["dual_arm"] = arm
     # "ok" means the ladder advanced at least one depth, left a definitive design behind, and
     # stayed inside every declared hard cap.  A typed stop with nothing definitive is a real result
     # and a real FAILURE for this protein: the cohort must be able to count it as such rather than
@@ -635,6 +685,32 @@ def _depth0_point(config: Any):
                         "exactly one cycle and has nowhere to start")
 
 
+def _last_improving_depth(by_depth, evidence_by_endpoint) -> int | None:
+    """The deepest rung whose best joint value STRICTLY improved on every shallower rung.
+
+    ``None`` when no rung improved on depth zero -- an unmeasured quantity, not a zero. This column
+    was filled with the ladder's ``depth_reached``, which is how far the loop got and says nothing
+    about whether J ever moved: a run that reached depth 4 and improved only at depth 1 published
+    "4", and every per-depth improvement rate read off this table would have been computed on the
+    depth cap.
+    """
+    best_by_depth: dict[int, float] = {}
+    for depth, endpoints in by_depth.items():
+        values = [float(evidence_by_endpoint[key].risk.value) for key in
+                  (str(getattr(e, "endpoint_id")) for e in endpoints)
+                  if key in evidence_by_endpoint]
+        if values:
+            best_by_depth[int(depth)] = min(values)
+    running: float | None = None
+    last: int | None = None
+    for depth in sorted(best_by_depth):
+        if running is None or best_by_depth[depth] < running:
+            running = best_by_depth[depth]
+            last = depth
+    # Depth zero is the baseline, not an improvement over anything.
+    return None if last is None or last == min(best_by_depth, default=0) else last
+
+
 def run_v2_mechanism_shard(
     *, protein_id: str, config: Any, signature: Any, out_dir: Any,
     inputs: ShardInputs | None = None,
@@ -643,6 +719,7 @@ def run_v2_mechanism_shard(
     prefix_start: int = 0,
     views: Any = None,
     qualification: bool = False,
+    dual: Any = None,
 ) -> tuple[str, Mapping[str, Any]]:
     """Runbook §7: ``n_prefixes`` INDEPENDENT source prefixes, each through the matched arms.
 
@@ -721,6 +798,19 @@ def run_v2_mechanism_shard(
 
     signature = _validate_run_signature(signature=signature, config=config, protein_id=protein_id)
 
+    if dual is not None:
+        # This engine is the V2F5A mechanism/qualification contrast: two arms that differ by
+        # INTERVENTION, inside ONE run, sharing one realized pool. Allele arms are not compared
+        # that way. The Dual arm enters no seed, so two runs differing only in --dual-arm produce
+        # an identical depth-zero pool (asserted in test_fusion_v2_dual_arms.py) -- the comparison
+        # is already paired, across runs, for free. Threading a Dual runtime through here would
+        # give BOTH mechanism arms the same allele law: it answers no allele question while
+        # looking like it does.
+        raise V2CohortError(
+            "the mechanism/qualification shard does not take a Dual overlay: its two arms differ "
+            "by intervention inside one run, while allele arms are compared ACROSS runs. Run the "
+            "cohort once per --dual-arm and compare the artifacts"
+        )
     oracles = oracles_factory(protein_id=protein_id, config=config, inputs=inputs)
     cycle_kwargs = dict(oracles["cycle_kwargs"])
     conflicting = [name for name in RUN_OWNED_CYCLE_KWARGS if name in cycle_kwargs]

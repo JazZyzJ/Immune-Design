@@ -1,6 +1,11 @@
 # Dual-Allele Steering for RF Fusion V2
 
-**Status:** Layered scientific architecture, revised through RAR 0049.
+**Status:** Layered scientific architecture, revised through RAR 0049. Normalization revised
+2026-08-21: the calibration panel is a fixed allele-neutral natural panel rather than a generated
+NoD population, the scale is global rather than per-protein, $\tau$ is declared in normalized units,
+and the joint margins are propagated from per-allele raw floors (2.2, 2.3.1). The return boundary's
+second axis and the substrate-dependence of the conjunctive safety claim are stated explicitly
+(3.2.1, 4.2.1).
 
 **Document type:** Method definition, evidence boundary, and research horizon. This is not an
 implementation plan or experiment runbook.
@@ -164,28 +169,209 @@ a\in\{A,B\},
 $$
 
 where lower is better, $b_a$ is a declared reference location, and $s_a>0$ is a declared scale.
-These values are calibrated on a V2-compatible population such as matched guidance-off NoD or a
-disjoint frozen D0 population. They are fixed for the run and are never recomputed from the current
+They are fixed once, for the lifetime of the method, and are never recomputed from the current
 endpoint cloud.
 
 This shared coordinate is required by the runtime decision law, not merely by final reporting.
-Scoring the final sequences separately against allele-specific NoD references can describe the
-outcome on each axis, but it cannot recover donors or feedback identities that were discarded
-during recursion because one raw Head scale dominated the other. Equal coefficients on two
-independently trained raw-logit Heads therefore do not by themselves imply equal scientific
-pressure. The affine transformation makes the exchange geometry explicit while preserving the
-within-allele ordering of exact endpoints.
+Scoring the final sequences separately against allele-specific references can describe the outcome
+on each axis, but it cannot recover donors or feedback identities that were discarded during
+recursion because one raw Head scale dominated the other. Equal coefficients on two independently
+trained raw-logit Heads therefore do not by themselves imply equal scientific pressure. The affine
+transformation makes the exchange geometry explicit while preserving the within-allele ordering of
+exact endpoints.
 
-Calibration and stochastic tolerance are different:
+#### 2.2.1 The calibration panel is a fixed natural panel, not a generated one
+
+An earlier version of this document calibrated $b_a,s_a$ on a matched guidance-off NoD population.
+That is withdrawn. Calibrating the objective's coordinates on the generator's own output is
+circular in two ways: it makes $b_a,s_a$ a function of the DPLM checkpoint, sampler configuration,
+temperature and backbone set, so a sampler change silently redefines the objective; and it
+normalizes by the very distribution the method later claims to have moved away from.
+
+The calibration panel is instead a fixed panel of natural sequences with:
+
+- one natural or reference sequence per protein;
+- membership decided by structure, or by nothing at all - never by risk under either allele, never
+  by an external immune predictor, never by Fusion or NoD generation;
+- per-allele training overlap **measured and its effect bounded** rather than required to be zero
+  (see 2.2.3);
+- length coverage spanning the deployment domain; and
+- structural diversity such that no single family dominates.
+
+Because there is exactly one sequence per protein, protein-equal weighting and sequence
+deduplication rules are unnecessary and are removed. Both frozen Heads score the identical panel in
+one pass, and
+
+$$
+b_a=\operatorname{median}\left(R_a\right),
+\qquad
+s_a=\frac{Q_{0.75,a}-Q_{0.25,a}}{1.349}.
+$$
+
+This is zero-point and unit calibration of two measuring instruments. It is not a generative
+baseline, and it does not make the objective WT-relative: no protein's own natural sequence ever
+enters its own $u_a$. Anchoring $b_a$ per protein on that protein's own natural sequence was
+considered and rejected, because it would make the entire objective WT-relative and contradict the
+V2 architecture decision that WT is a biological and cumulative-safety reference rather than a
+generative baseline.
+
+NoD retains its role as the matched guidance-off experimental comparator. It no longer defines
+$b_a$, $s_a$, runtime aiming, or the zero point of the Dual objective. Separating the experimental
+baseline from the instrument coordinate is what removes the circularity above.
+
+#### 2.2.1a Why the panel must contain the deployment domain
+
+Panel selection turns out to be governed by one measured property of the two instruments: how
+correlated they are on identical sequences. Measured twice independently on this project, the two
+frozen Heads' complete-sequence risks correlate at Pearson $r\approx0.19$ (Spearman $\approx0.21$),
+and in the shared coordinate a typical natural protein sits more than one calibrated unit apart on
+the two axes. The project's own historical records agree from another direction: WT exact-core
+Jaccard between the two alleles is $0.133$, and head top-decile hotspot Jaccard is near zero.
+
+That number decides panel policy, because the cancellation of 2.2.3 protects only against panel
+effects **common** to both alleles, and its protective value is worth exactly as much as the two
+Heads are correlated. At $r\approx0.19$ it is worth very little: which proteins are in the panel
+largely determines $b_A-b_B$. Splitting one panel into its $A$-leaning and $B$-leaning halves moves
+$b_A-b_B$ by roughly two orders of magnitude more than random-sampling noise at any realistic panel
+size.
+
+The consequence is a hard requirement that is easy to miss: **the panel must be drawn from the same
+region of sequence space as the deployment domain.** A panel that is disjoint from deployment by
+construction would fit the equal-risk line on one region and apply it to another, with no reason to
+expect transfer — and, if the disjointness is enforced by policy, no way to ever test it. That is the
+same systematic active-worst asymmetry this document warns about, arriving through domain mismatch
+rather than through leakage.
+
+Two consequences follow for reporting. The realized cross-allele correlation on the panel is a
+first-class calibration output, because it is what licenses or undermines the cancellation argument;
+existing estimates are within-family and may not transfer. And because the two Heads' training pools
+are themselves of unequal size, homology overlap with the panel is intrinsically asymmetric between
+the alleles; the filter must therefore remove the **union** of both alleles' homologous entries, never
+one allele's, since a per-allele filter would itself induce the asymmetry it is meant to remove.
+Coverage mode matters when doing this: a symmetric-coverage search between short panel chains and
+long full-length training proteins systematically under-detects domain-level homology.
+
+#### 2.2.2 One global scale; per-protein normalization is rejected
+
+$b_a$ and $s_a$ are global constants. Any new protein needs only $R_A(y)$ and $R_B(y)$; it needs no
+NoD designs of its own, no natural-sequence score of its own, and no observation of its candidate
+cloud.
+
+Per-protein normalization is rejected for a scientific reason rather than a numerical one: a method
+must have a fixed definition on unseen proteins. A per-protein scale would make the same
+dual-allele trade-off use a different exchange rate on different proteins, and it would require
+observing that protein's candidate cloud first - one step away from the current-cloud normalization
+this document already forbids. Observed within-protein scales differ across proteins by roughly
+fivefold; that is a real landscape difference, not noise to be flattened.
+
+#### 2.2.3 What the calibration actually decides
+
+For every decision taken inside one protein and one lineage - donor adoption, incumbent
+advancement, and leave-one-out write attribution - a shift common to both alleles cancels exactly:
+
+$$
+J_\tau\left(u_A+c,\;u_B+c\right)=J_\tau\left(u_A,u_B\right)+c.
+$$
+
+The cancelling shift $c$ above is a shift in $u$, that is in **normalized** units. A raw shift
+$\delta_a$ applied to $b_a$ moves $u_a$ by $-\delta_a/s_a$, so it is common to both alleles only
+when $\delta_A/s_A=\delta_B/s_B$. The invariant is therefore the **normalized** location
+difference, not the raw one. Writing the active-worst boundary $u_A(y)=u_B(y)$ out in raw
+coordinates makes this explicit:
+
+$$
+\frac{R_A(y)}{s_A}-\frac{R_B(y)}{s_B}
+=
+\frac{b_A}{s_A}-\frac{b_B}{s_B}.
+$$
+
+The right-hand side is the equal-risk line's intercept and the coefficients $1/s_a$ on the left are
+its slope. Two consequences follow, and both are audit requirements rather than remarks:
+
+1. **The stability criterion is on $b_A/s_A-b_B/s_B$, not on $b_A-b_B$.** The two differ whenever
+   $s_A\neq s_B$, which is the general case: adding the same raw constant to both locations leaves
+   $b_A-b_B$ exactly unchanged while moving the boundary by $\delta\left(1/s_A-1/s_B\right)$. A
+   criterion written on the raw difference can therefore certify a calibration whose decision
+   boundary has moved. The normalized difference is already dimensionless, so it is compared to the
+   credit $c_u$ directly, with no further division by a scale that is not defined for a pair.
+2. **Scale drift is part of the same audit.** A leave-overlap-out recomputation that changes $s_A$
+   or $s_B$ changes the boundary's slope, not merely its intercept, so two calibrations can agree on
+   the intercept and still disagree about which allele is worst for a whole region of the landscape.
+   The producer therefore reports drift in the intercept $b_A/s_A-b_B/s_B$ **and** in the scale
+   ratio $s_A/s_B$.
+
+Read this way, the location parameters declare the equal-risk line: an endpoint at the panel-median
+risk for $A$ and an endpoint at the panel-median risk for $B$ hold the same reference position.
+Median-centering each allele on the same natural panel is what makes that statement symmetric and
+interpretable. The absolute values of $b_a$ matter only where endpoints from different proteins are
+compared, and there they take the full affine map rather than the difference.
+
+This is also why per-allele training overlap matters, and it explains the precise form the
+requirement takes. The hazard is not overlap as such but **asymmetric** overlap: if the panel
+overlaps one Head's training data more than the other's, that Head's panel scores are partly
+memorization, its median and spread shift, $b_A-b_B$ is biased, and the resulting systematic
+active-worst asymmetry is indistinguishable, from inside the method, from a real biological finding.
+A shift common to both alleles largely cancels.
+
+Both location and scale are robust statistics, which bounds the exposure: a contaminated fraction
+$f$ can move a median by at most the displacement from the $50$th to the $(50\pm100f)$th percentile
+of the clean distribution. The requirement is therefore to **measure** $f_A$ and $f_B$ by homology
+rather than by identifier match, to recompute the whole calibration with overlapping entries removed,
+and to require that the normalized location difference $b_A/s_A-b_B/s_B$ move by only a small
+fraction of the frozen credit $c_u$ between the two recomputations -- the raw difference $b_A-b_B$
+is not the invariant, for the reason given in §2.2.3. Zero overlap is neither achievable against immunologically derived training
+pools nor necessary.
+
+#### 2.2.4 Calibration and stochastic tolerance are different
 
 - $b_a,s_a$ define the geometry shared by the two Heads;
-- $\epsilon_a$ describes same-sequence repeatability for Head $a$;
-- $\epsilon_{\mathrm{donor}}$ is the matched-difference noise floor for comparing two exact
-  endpoint values after the complete joint scalarization; and
+- $\epsilon_a$ describes same-sequence repeatability for Head $a$, measured in that allele's own raw
+  score scale;
+- $\epsilon_{\mathrm{donor}}$ is the matched-difference noise floor for comparing two exact endpoint
+  values after the complete joint scalarization;
 - $\epsilon_{\mathrm{write}}$ is the matched-difference noise floor for the exact donor-versus-
-  reverted-sequence contrast.
+  reverted-sequence contrast; and
+There is deliberately **no** $\epsilon_J$. An earlier draft carried one and it conflated two
+different objects: $\epsilon_{\mathrm{donor}}$ and $\epsilon_{\mathrm{write}}$ protect a SINGLE
+endpoint or leave-one-out decision from measurement drift, while the experimental read estimates the
+MEAN method effect across prefixes or proteins by bootstrap. Subtracting a pointwise noise floor
+from a bootstrap mean is not a valid test -- the two quantities do not live on the same sampling
+distribution. The experimental condition is therefore
 
-All are bound to Head checkpoint, config, score scale, window grid, reference population, and
+$$
+\operatorname{UCB}_{95\%}\left[\operatorname{mean}\left(\Delta J\right)\right]<0,
+$$
+
+together with the requirements that donor/write identity actually changed, that both raw allele
+axes are reported in full, and that the shared-D0, seed, budget and safety parity checks all hold.
+If a minimum PRACTICAL effect is ever wanted it must be defined and named separately; reusing the
+noise-floor symbol for it is what produced the confusion in the first place.
+
+The joint margins are not free parameters. $\nabla_u J_\tau$ is the softmax weight vector: it is
+non-negative and sums to one, so $J_\tau$ is $1$-Lipschitz in the supremum norm on $u$ and
+
+$$
+\left\lvert\delta J_\tau\right\rvert
+\leq
+\max_a\left\lvert\delta u_a\right\rvert
+=
+\max_a\frac{\left\lvert\delta R_a\right\rvert}{s_a}.
+$$
+
+Each joint margin is therefore obtained by propagating that allele's own measured raw-scale floor
+through its own $s_a$ and keeping the worse allele:
+
+$$
+\epsilon^{\mathrm{joint}}
+=
+\max_a\frac{\epsilon_a^{\mathrm{raw}}}{s_a}.
+$$
+
+This is conservative, symmetric under allele swap, and derived from the objective's own geometry
+rather than declared by fiat. It also resolves the fact that $s_A\neq s_B$ in general: no single
+raw-scale number can define a margin in $J$-space.
+
+All are bound to Head checkpoint, config, score scale, window grid, calibration panel identity, and
 content digest. The two joint margins may share a numerical value only when repeated-score evidence
 supports that equivalence; one single-allele margin is not silently reused for both.
 
@@ -245,25 +431,53 @@ As $\tau\rightarrow0$, $J_\tau$ converges to the strict normalized maximum. Thus
 specific scientific meaning: it controls the width of the region in which the near-worst allele
 may influence the decision. It is not an unrestricted compensation weight between the two Heads.
 
-This scalar is intentionally the first method, not a claim that one balanced preference recovers
-the complete Pareto frontier. It supplies the total ordering required by the current recursive V2
-policy while remaining a bounded relaxation of strict worst-residual steering.
-
-The matched strict control is
+$\tau$ is declared in normalized units and never in a raw score scale. The maximum credit the
+non-worst allele can buy against the worse one is
 
 $$
-J_{\max}(y)
-=
-\max\left(
-u_A(y),
-u_B(y)
-\right).
+c_u=\tau\log 2,
 $$
 
-It uses the same donor, incumbent, and leave-one-out interfaces but gives no credit to a
-non-worst allele until that allele reaches the active maximum. The comparison between $J_\tau$ and
-$J_{\max}$ therefore isolates whether bounded near-worst evidence improves steering authority.
-Appendix A positions the remaining scalarization families.
+which is dimensionless, symmetric between the alleles, and independent of the calibration
+measurement. A raw-scale statement of the same quantity is ill-posed: $s_A\neq s_B$ makes one
+normalized credit correspond to two different raw credits $s_A\tau\log 2$ and $s_B\tau\log 2$, so
+declaring $\tau$ in raw units would smuggle the raw-scale asymmetry back into the objective.
+Freezing one small $c_u$ before any outcome is inspected is sufficient; no sweep is performed.
+
+#### 2.3.1 Calibration precision is reported, not gated
+
+Once $\tau$ is declared in normalized units, the only remaining channel through which one allele can
+systematically dominate is estimation error in the equal-risk line $b_A-b_B$. That error is a fixed
+bias for the whole program rather than per-endpoint noise, so it does not corrupt donor comparisons
+within a lineage; instead it tilts which allele is the active worst, everywhere, for every protein.
+The active-worst switch sits at $u_A=u_B$ and the smooth region around it has width of order $\tau$,
+so a bias comparable to $\tau\log 2$ would decide the objective's asymmetry more than the objective
+does.
+
+That makes $\operatorname{SE}(b_A/s_A-b_B/s_B)$ a quantity worth **measuring and reporting** alongside
+$\tau$, and it is measured for free: the standard error of a median falls as $n^{-1/2}$ in the
+number of independent panel proteins, and one bootstrap over the panel gives it. It is deliberately
+**not** a gate. Turning it into one would add a tuning knob to a calibration whose entire point is
+that exactly one number -- $\tau$ -- is chosen by a human and everything else is measured or
+derived.
+
+Scoring cost is not the constraint on panel size: at the Head throughput measured on this project a
+panel of a few thousand sequences is minutes of GPU time for both Heads together. So the panel is
+sized generously, and the realized $\operatorname{SE}(b_A/s_A-b_B/s_B)$ is reported next to $\tau$ so a
+reader can see how much of the credit band the calibration's own imprecision occupies.
+
+**Measured 2026-08-24** on the frozen 13,836-protein Tier-2 natural panel:
+$\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)=0.0185$ against $c_u=0.10$, i.e. the calibration's
+own imprecision occupies about **18.5 %** of the credit band. It cannot be reduced by enlarging the
+panel: 44,021 eligible sequences cluster into only 13,836 homology-independent units and the
+standard error is over those units, so reaching $c_u/10$ would need roughly four times as many
+independent families as the deduplicated Tier-2 pool contains. Whether 18.5 % is acceptable is a
+scientific judgement, recorded as **D3** in `doc/DUAL_ALLELE_DUALF0_AUDIT.md` §J.4.
+
+The coordinate is the NORMALIZED difference $b_A/s_A-b_B/s_B$ throughout, including here and in §9's
+reporting list. An earlier revision of those two passages used the raw $\left(b_A-b_B\right)/s$
+while §2.2.3 already carried the correction, so the same document specified two different
+coordinates; $s$ is not even defined for a pair when $s_A\neq s_B$.
 
 ### 2.4 Donor law
 
@@ -321,6 +535,39 @@ $$
 may also be recorded. They explain whether a selected identity is shared-beneficial,
 worst-allele-specific, conflicting, or unresolved, but those labels are derived telemetry in the
 minimal method rather than new controller states.
+
+#### 2.5.1 The union reducer needs its own per-window coordinates
+
+The reopen conjuncts are not endpoint-level scalars. Two of them are per-window **differences**
+$\left[\max_w \Delta_w\right]_+$ against a reference, and one is a per-window absolute **level**
+$\max_w z_w(y)$. Reducing any of them across two alleles therefore requires a coordinate pair
+calibrated on per-window readings, and the coordinates calibrated on $R_a$ cannot be borrowed:
+$R_a$ is a log-mean-exp aggregate over those same windows, so it is a different distribution on the
+same raw scale and its location and spread do not transfer to the windows it summarizes.
+
+The two kinds of quantity are also normalized differently, and the distinction is not cosmetic. A
+difference is divided by the scale alone,
+
+$$
+\tilde{\Delta}_a=\frac{\Delta_a}{s_a^{w}},
+$$
+
+because the location cancels in any difference and re-applying it would turn a zero difference into
+a non-zero coordinate. A level takes the full affine map,
+
+$$
+\tilde{z}_a=\frac{z_a-b_a^{w}}{s_a^{w}}.
+$$
+
+The per-window pair comes from the same single calibration pass over the same panel, since scoring
+the panel already produces every window of every entry for both Heads.
+
+The reduction itself is a maximum over the alleles that have evidence, with absent evidence kept
+absent rather than coerced to zero: "no window reaches this position" and "this position carries
+zero burden" are opposite facts about the Head's reach, and collapsing them would let an unreachable
+position outrank a measured-clean one. The reduced value is symmetric under allele swap; only the
+winning-allele label is not, and only on an exact numerical tie, so an allele-swap replay changes
+the label and nothing that ranks.
 
 The existing V2 legality, history, source, re-entry coordinate, schedule band, and total
 $\mathcal{B}(r)$ constraints remain unchanged. Here, preserving reopen *geometry* means preserving
@@ -405,6 +652,43 @@ irreversibly prunes reproducible, useful trade-off basins. Until then:
 
 This distinction removes the need for a second archive state machine while preserving all
 information needed to study trade-offs.
+
+#### 3.2.1 The return boundary carries a second axis that recursion does not
+
+V2 steers on one scalar but returns on two. Inside the recursion - donor gate, incumbent
+advancement, archive elite, leave-one-out write, reopen ordering - the decision quantity is the
+complete-sequence global risk alone; hotspot positive mass appears only as telemetry attached to
+the whole-landscape safety evidence. At the return boundary, however, the delivered design set is
+the first Pareto front over
+
+$$
+\left(R,\;\rho\right),
+\qquad
+\rho\left(y\right)=\frac{1}{L}\sum_i\max\left(z_i\left(y\right),0\right),
+$$
+
+both minimized, where $\rho$ is the length-normalized positive hotspot mass. The same two-axis rule
+governs the downstream complete-state refinement path.
+
+This asymmetry is inherited, not introduced by Dual, but Dual cannot ignore it. If the runtime
+objective becomes joint while the returned front keeps a single-allele $\rho_A$ axis, the delivered
+design set is filtered by allele $A$ alone even though steering was joint - relocating the
+systematic-domination failure from donor and write selection to the output.
+
+The minimal resolution keeps the two concerns separate:
+
+- **$\rho$ stays out of $J_{\mathrm{core}}$.** The frozen V2 substrate steers on one scalar, and the
+  Dual claim is precisely that replacing that one scalar with a two-Head scalar changes generation.
+  Introducing a second axis into the runtime objective at the same time would confound the Dual
+  claim with a two-axis claim and make C2/C3 unattributable.
+- **The return front becomes symmetric between the alleles.** It is taken over
+  $\left(J_\tau^{R},\,J_\tau^{\rho}\right)$ - the same smooth maximum, the same frozen $\tau$,
+  applied to $R$ and to $\rho$ respectively, each with its own frozen per-allele location and scale
+  from the same calibration panel.
+
+The second calibration pair costs nothing additional to measure: $\rho_a$ is a function of the
+per-residue hotspot vector the Head already returns, so one calibration pass over the panel yields
+$\left(b_a^{R},s_a^{R}\right)$ and $\left(b_a^{\rho},s_a^{\rho}\right)$ together.
 
 ### 3.3 Terminal semantics
 
@@ -499,7 +783,34 @@ frequency of exact endpoints and support actions that are:
 3. non-catastrophic for either allele; and
 4. better under $J_{\mathrm{core}}$ beyond its repeatability margin.
 
-### 4.3 Runtime objective boundary
+#### 4.2.1 The conjunctive safety claim is substrate-dependent
+
+$I_{\mathrm{adm}}^{AB}$ is only as binding as the two $\delta_a$ it carries, and those are properties
+of a substrate rather than of this method. On a substrate whose cumulative hotspot ceiling was
+deliberately relaxed - as it was for the frozen high-risk capability cohort, where the ceiling is
+set to an effectively disabling value with the incremental gate off - the conjunction reduces to the
+inherited structure verdict, and neither allele's hotspot gate constrains anything.
+
+Two consequences are binding on any Dual result. First, a comparison run on such a substrate may not
+name its single-allele controls as though a joint safety gate distinguished them; the arms differ in
+objective only, and the control labels must say so. Second, the conjunctive-safety claim may be made
+only from a substrate whose per-allele ceilings are genuinely measured, and the claim's scope must
+be stated as that substrate rather than as the method in general. Reporting a relaxed-ceiling
+capability comparison and a measured-ceiling safety claim as one result would attribute to the
+objective a protection the run never exercised.
+
+The consequence for the minimal method is that $I_{\mathrm{adm}}^{AB}$ is carried as a
+**definition** rather than as an implemented second gate. The inherited single-allele admission law
+is unchanged, and the non-optimized allele's whole-landscape drift is measured with the same
+primitive and reported per endpoint. This is the weaker of the two available positions and it is
+chosen deliberately: no per-protein ceiling exists for the second allele, the only producer of one
+is generative and outside the calibration stage, and the reference binding a second gate would need
+lives inside the live partial state's content identity -- so adding one would move every endpoint
+identity and forfeit the byte-identical shared root that the recursive comparison depends on.
+
+Measuring first is also the falsifiable order. A second gate becomes justified when the reported
+drift distribution shows descendants accumulating hotspot mass on the non-optimized allele, and is
+not justified by the symmetry of the formula alone.
 
 The two frozen Heads are the only immune steering signals and the only immune quantities used to
 accept, reject, tune, or rank the Dual method. WT-relative changes and predictions from another
@@ -598,6 +909,31 @@ prerequisites and should not define the primary search space. If the paper claim
 advantage from source-compatible recursion, A2, complete-state v0, or source-off controls are
 additionally required; they are not part of the definition of Dual steering itself.
 
+#### 5.3.1 Intervention cardinality is an outcome, not a matching condition
+
+The number of written identities and the number of reopened positions are functions of the
+objective: both derive from the set of positions whose leave-one-out contribution clears the write
+margin, and that set is exactly what a second Head is supposed to change. Requiring the joint arm
+and its single-allele control to realize equal write and reopen counts therefore discards precisely
+the cells in which the second Head did something - biasing the directionality estimate toward the
+null through the validity criterion itself.
+
+The matched quantities are the source state, the exact endpoint pool, the descendant fork seeds, the
+re-entry coordinate and propagation horizon, the safety gates, and the resource envelope. Realized
+$\left(m_{\mathrm{write}},m_{\mathrm{reopen}}\right)$ are reported per arm as outcomes, and the
+descendant read is stratified by realized dose so that a dose difference is visible rather than
+assumed away.
+
+#### 5.3.2 Balanced steering does not mean equal per-allele effort
+
+A protein whose residual risk is genuinely concentrated on one allele should attract more
+pressure toward that allele; that is the objective working, not failing. The pathology to detect is
+narrower: one Head dominating donor and write evidence because of a location or scale artifact
+rather than because of residual risk. The corresponding diagnostic conditions on the
+pre-intervention residual vector - among endpoints where both alleles carry material residual, how
+often is each the active worst - and it is calibration quality assurance. It never refits $b_a$ or
+$s_a$ to the observed candidate cloud.
+
 ### 5.4 Minimal claim levels
 
 These are scientific claim levels, not an implementation schedule:
@@ -610,8 +946,9 @@ These are scientific claim levels, not an implementation schedule:
 | **Generality** | The frozen law holds across proteins, roots, and at least one additional frozen allele pair or untouched protein cohort without hiding the full failure denominator. |
 
 The RAR 0049 cross-score is an efficient opportunity probe, not a generative verdict. Normalization
-must come from an independent NoD or disjoint calibration population, and repeatability must come
-from repeated scoring of the same exact sequences.
+must come from the fixed allele-neutral natural panel of 2.2.1 - never from a generated population,
+and never from the candidate cloud under evaluation - and repeatability must come from repeated
+scoring of the same exact sequences.
 
 ### 5.5 Cost interpretation
 
@@ -844,7 +1181,12 @@ The minimal method must preserve enough evidence to reconstruct its causal claim
 
 - exact endpoint and source/replay identity;
 - raw $R_A,R_B$ and Head provenance on the same sequence digest;
-- frozen normalization, $\epsilon_{\mathrm{donor}}$, $\epsilon_{\mathrm{write}}$, and objective digest;
+- calibration panel identity and digest, $b_a,s_a$ for both $R$ and $\rho$, and the realized
+  $\operatorname{SE}(b_A/s_A-b_B/s_B)$;
+- $\tau$ with its declared credit $c_u=\tau\log 2$, and $\epsilon_{\mathrm{donor}}$,
+  $\epsilon_{\mathrm{write}}$ with the per-allele raw floors they were propagated
+  from, plus the objective digest;
+- per-allele training-disjointness verdicts for the calibration panel;
 - incumbent, donor, and $J_{\mathrm{core}}$ difference;
 - counterfactual $a_i^{\mathrm{core}}$ for tested support positions;
 - selected writes, inherited reopen events, and shared $\mathcal{B}(r)$ usage;

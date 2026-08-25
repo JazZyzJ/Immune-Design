@@ -598,6 +598,24 @@ def _args_script(
         "complete_reference_manifest": str(args.reference_manifest),
         "protein_stratum_manifest": str(args.stratum_manifest),
     })
+    if getattr(args, "dual_overlay", None) is not None:
+        # PATHS only. ``variant_id``, ``allele_idx`` and ``window_batch_size`` are carried by the
+        # SIGNED OVERLAY and read from there; requiring them here made the operator declare three
+        # values that nothing read -- an inert knob is worse than a missing one, because it reads
+        # as a control. A checkpoint path is a property of one filesystem and cannot live in the
+        # signed overlay, which is why these two do stay here.
+        required = {
+            "head_b_config": args.head_b_config_dir,
+            "head_b_checkpoint": args.head_b_checkpoint,
+        }
+        absent = sorted(name for name, value in required.items() if value is None)
+        if absent:
+            raise SystemExit(
+                f"--dual-overlay requires {sorted(required)}; missing {absent}. Neither is "
+                "defaulted: a silent Head-B binding would be a second instrument nobody declared"
+            )
+        shard_inputs.update({name: str(value) for name, value in required.items()})
+        shard_inputs["dual_overlay"] = str(args.dual_overlay)
     if exploratory:
         identity = structure_runtime_identity or _structure_runtime_identity(args)
         protocol = _structure_runtime_protocol(args)
@@ -625,6 +643,16 @@ def _args_script(
         f"# cell: {args.protein_id} r={int(args.r_step)}  stratum={args.stratum_key}",
         f"V2_CONFIG={shlex.quote(str(config_path))}",
         f"V2_COHORT={shlex.quote(str(args.protein_id))}",
+        # A named alias for the same value. The assembly preflight takes --cell CONFIG=PROTEIN_ID
+        # and the launcher cross-checks the Dual mode, and both should read a variable that says
+        # what it is rather than infer the protein from a filename.
+        f"V2_PROTEIN_ID={shlex.quote(str(args.protein_id))}",
+        # `none` for every non-Dual cell. Emitted unconditionally because the launcher runs under
+        # `set -u`, so a Dual-aware launcher reading an unset variable would abort on legacy cells.
+        # CAPABILITY, not arm. The arm is a LAUNCH flag: one resolved config is launched once per
+        # arm, and the arms are compared across runs. Baking an arm in here would force one
+        # materialized cell per arm, which is the per-arm branching this design does not have.
+        f"DUAL_MODE={shlex.quote('dual' if getattr(args, 'dual_overlay', None) else 'none')}",
         "INPUT_FILES=(",
         *[f"  {shlex.quote(item)}" for item in input_files],
         ")",
@@ -657,6 +685,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--head-config-dir", required=True)
     parser.add_argument("--head-checkpoint", required=True)
     parser.add_argument("--head-variant-id", required=True)
+    # Optional dual-allele overlay. Absent by default: a cell materialized without these emits the
+    # same .args.sh arrays it emits today, with DUAL_MODE=none.
+    parser.add_argument("--dual-overlay", default=None,
+                        help="path to the signed dual-allele overlay JSON")
+    # No --dual-arm here. The arm is a LAUNCH flag, so one resolved config is launched once per
+    # arm and the arms are compared across runs; baking an arm in would force one cell per arm.
+    # No --head-b-variant-id / --head-b-allele-idx / --head-b-window-batch-size either: those are
+    # carried by the SIGNED overlay and read from there, so accepting them here would be three
+    # knobs that read as controls and change nothing.
+    parser.add_argument("--head-b-config-dir", default=None)
+    parser.add_argument("--head-b-checkpoint", default=None)
     parser.add_argument("--structure-backend", required=True,
                         help="the structure model's weight file (its bytes ARE the backend)")
     parser.add_argument("--structure-config", required=True)

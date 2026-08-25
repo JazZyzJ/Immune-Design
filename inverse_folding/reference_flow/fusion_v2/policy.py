@@ -1038,6 +1038,10 @@ class HeadDirectedDecisionEvidence:
     head_evidence_consulted: bool
     #: D0 pool bootstrap and D1+ strict improvement are different reward gates.
     reward_gate_kind: str | None = None
+    #: Present only on a Dual decision: the per-allele values the union reducer and the joint
+    #: leave-one-out computed and the single-allele record has no field for.  Legacy rows keep
+    #: their legacy meaning byte for byte, and a Dual-off decision carries no such object.
+    dual: Any = None
     attribution_reference_sequence_md5: str | None = None
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -1072,6 +1076,9 @@ class HeadDirectedDecisionEvidence:
             "head_evidence_consulted": self.head_evidence_consulted,
             "reward_gate_kind": self.reward_gate_kind,
             "attribution_reference_sequence_md5": self.attribution_reference_sequence_md5,
+            # Omitted entirely when absent, so a legacy payload is unchanged rather than gaining a
+            # null key -- the payload is digested, and a new key is a new digest for every run.
+            **({} if self.dual is None else {"dual": self.dual.canonical_payload()}),
         }
 
 
@@ -1153,6 +1160,12 @@ class HeadDirectedCappedPolicy:
 
     #: The kernel hands a ``PolicyRuntime`` only to policies that ask for one.
     consumes_runtime: bool = True
+    #: The optional Dual authority (``fusion_v2.dual_policy.DualSupportAuthority``). ``None`` is
+    #: the frozen single-Head law, unchanged in every byte it produces. When present, the SAME
+    #: decision sequence runs with a joint donor comparison, a union window view and a joint
+    #: leave-one-out -- there is no second decision path, because a second path is what would drift
+    #: out of agreement with the law Dual-off has to remain equivalent to.
+    dual: Any = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.band_table, ScheduleBandTable):
@@ -1170,6 +1183,29 @@ class HeadDirectedCappedPolicy:
             )
         if not isinstance(self.evaluator, HeadEvaluatorIdentity):
             raise V2PolicyError("evaluator must be a HeadEvaluatorIdentity")
+        if self.dual is not None:
+            # Imported HERE, not at module scope: PLAN 3.1 requires that a run with no Dual
+            # overlay never import or instantiate a Dual object, and a module-level import would
+            # make that false for every legacy run.
+            from .dual_policy import DualSupportAuthority
+            from .joint_objective import AlleleRole
+
+            if not isinstance(self.dual, DualSupportAuthority):
+                raise V2PolicyError(
+                    "dual must be a DualSupportAuthority; an untyped stand-in could not prove that "
+                    "role B is the allele the calibration names"
+                )
+            role_a = self.dual.objective.coordinates.coordinate(AlleleRole.A).evaluator
+            if role_a != self.evaluator:
+                raise V2PolicyError(
+                    f"this policy runs Head {self.evaluator.allele!r} but the Dual calibration "
+                    f"names {role_a.allele!r} as role A; role A must be the Head that produced the "
+                    "endpoints and the incumbent, or the legacy fields would describe an "
+                    "instrument the joint objective does not name"
+                )
+            # Role B's half of the lineage state is proved to be the SAME design at the objective's
+            # own value, so J(I_d) cannot be a stale or hand-set threshold.
+            self.dual.assert_incumbent(self.incumbent)
         if self.evaluator.digest() != self.incumbent.head_identity_digest:
             raise V2PolicyError(
                 "the incumbent was scored by a different Head evaluator than this policy runs; "
@@ -1242,6 +1278,24 @@ class HeadDirectedCappedPolicy:
             is_diagnostic_only=False,
         )
 
+    def with_dual_donor_scores(self, scores: Mapping[str, Any]) -> "HeadDirectedCappedPolicy":
+        """Rebind role B's verdicts on the pool this cycle is about to decide over.
+
+        The ladder advances the policy one depth at a time and the advance CLEARS the donor score
+        map, because the next depth's donors are different endpoints and a surviving entry would let
+        a stale score be found where raising is correct.  This is where each cycle supplies its own.
+
+        A legacy policy never reaches here: the kernel only calls it when a Dual runtime is present.
+        """
+        if self.dual is None:
+            raise V2PolicyError(
+                "this policy holds no Dual authority, so it has no role B donor scores to rebind; "
+                "a joint gate cannot be attached to a single-Head policy after the fact"
+            )
+        from dataclasses import replace as _replace
+
+        return replace(self, dual=_replace(self.dual, donor_score_b_by_endpoint=dict(scores)))
+
     def advance_lineage_incumbent(
         self, *, donor: Any, verdict: DonorGateVerdict | None, accepted_at_depth: int,
     ) -> "HeadDirectedCappedPolicy":
@@ -1269,7 +1323,13 @@ class HeadDirectedCappedPolicy:
                 evaluator=self.evaluator, accepted_at_depth=int(accepted_at_depth),
                 law=self.incumbent_update_law,
             )
-        return self if advanced is self.incumbent else replace(self, incumbent=advanced)
+        if advanced is self.incumbent:
+            return self
+        # The Dual authority holds role B's half of the SAME lineage state. Carrying it through
+        # unchanged is what left role B at I_0 while role A moved, so it advances here or the two
+        # halves describe two different designs from the next depth on.
+        return replace(self, incumbent=advanced,
+                       dual=None if self.dual is None else self.dual.advanced(donor=donor))
 
     # -- the decision -----------------------------------------------------------------------
 
@@ -1303,6 +1363,12 @@ class HeadDirectedCappedPolicy:
             and self.incumbent.kind.value == "cumulative_safety_reference"
         )
 
+        #: Filled as soon as the joint leave-one-out has run, so every evidence record built from
+        #: that point on -- including a typed STALL -- carries the per-allele numbers this cycle
+        #: already spent two Head batches producing. A stall that dropped them threw away the only
+        #: evidence that could say WHY the joint law found nothing, which is a scientific result.
+        dual_block: dict[str, Any] = {}
+
         def evidence(**over: Any) -> HeadDirectedDecisionEvidence:
             base = dict(
                 policy_id=HEAD_DIRECTED_CAPPED_POLICY_ID, stall_reason=None, donor_gate=None,
@@ -1323,6 +1389,7 @@ class HeadDirectedCappedPolicy:
                 reward_gate_kind=(DEPTH0_BOOTSTRAP_RULE if bootstrap else "strict_improvement"),
                 attribution_reference_sequence_md5=self.incumbent.sequence_md5,
             )
+            base.update(dual_block)
             base.update(over)
             return HeadDirectedDecisionEvidence(**base)
 
@@ -1346,6 +1413,11 @@ class HeadDirectedCappedPolicy:
                 donor=endpoint, incumbent=self.incumbent,
                 epsilon_r=self.calibration.epsilon_r,
                 epsilon_source_ref=self.calibration.epsilon_source_ref,
+                # Dual-off this is None and the gate compares the raw single-Head risks exactly as
+                # before. Dual-on it compares J, while the verdict keeps reporting role A's raw
+                # risk in the fields that have always meant role A's raw risk.
+                joint=None if self.dual is None
+                else self.dual.joint_comparison(donor=endpoint),
             )
             if not gate.passed:
                 return stall(
@@ -1360,14 +1432,34 @@ class HeadDirectedCappedPolicy:
 
         # ---- 2. raw aligned-window evidence, on ONE common scale ------------------------------
         try:
-            incumbent_windows = build_window_evidence(
-                donor_score=endpoint.head_score, reference_score=self.incumbent.head_score,
-                evaluator=self.evaluator, reference_label="lineage_incumbent",
-            )
-            safety_windows = build_window_evidence(
-                donor_score=endpoint.head_score, reference_score=self.safety_reference_score,
-                evaluator=self.evaluator, reference_label="cumulative_safety_reference",
-            )
+            if self.dual is None:
+                incumbent_windows = build_window_evidence(
+                    donor_score=endpoint.head_score, reference_score=self.incumbent.head_score,
+                    evaluator=self.evaluator, reference_label="lineage_incumbent",
+                )
+                safety_windows = build_window_evidence(
+                    donor_score=endpoint.head_score, reference_score=self.safety_reference_score,
+                    evaluator=self.evaluator, reference_label="cumulative_safety_reference",
+                )
+            else:
+                # A union over both alleles, exposing the same accessors with the same signatures,
+                # so every consumer below -- the write screen, the reopen reducer, the stall
+                # records -- is the single-Head code operating on a wider evidence view rather than
+                # a parallel implementation of it.
+                donor_b = self.dual.donor_score_b(endpoint)
+                incumbent_windows = self.dual.paired_windows(
+                    donor_score_a=endpoint.head_score, donor_score_b=donor_b,
+                    reference_score_a=self.incumbent.head_score,
+                    reference_score_b=self.dual.incumbent_score_b,
+                    evaluator_a=self.evaluator, reference_label="lineage_incumbent",
+                )
+                safety_windows = self.dual.paired_windows(
+                    donor_score_a=endpoint.head_score, donor_score_b=donor_b,
+                    reference_score_a=self.safety_reference_score,
+                    reference_score_b=self.dual.safety_reference_score_b,
+                    evaluator_a=self.evaluator,
+                    reference_label="cumulative_safety_reference",
+                )
         except V2EvidenceError as exc:
             # An unusable comparison is a fact about the evidence, not a crash: the cycle records a
             # typed null the cohort can aggregate.
@@ -1418,7 +1510,16 @@ class HeadDirectedCappedPolicy:
             )
 
         # ---- 4. the frozen-Head leave-one-out counterfactual ---------------------------------
-        budget = int(self.calibration.max_counterfactual_head_calls_per_cycle)
+        # The CANDIDATE ceiling, in editable positions, on both paths.  Under Dual it comes from
+        # the overlay's own ``max_counterfactual_sequences_per_cycle`` rather than from the legacy
+        # field, whose name says Head calls and whose gate has always counted positions: identical
+        # numbers under one Head, different under two.  Charging the legacy number in Head calls
+        # would halve the editable domain because a second Head exists -- a scientific change
+        # nobody asked for.  The domain a cycle may consider is a property of the DESIGN; the
+        # logical Head-call budget is 2*C and is projected by the preflight, not enforced here.
+        budget = (int(self.calibration.max_counterfactual_head_calls_per_cycle)
+                  if self.dual is None
+                  else int(self.dual.max_counterfactual_sequences_per_cycle))
         if len(candidates) > budget:
             # Checked BEFORE the batch, so the refusal costs nothing.  Truncating instead would
             # change the science: ``a_i`` is compared across ALL legal candidates to take the exact
@@ -1426,8 +1527,11 @@ class HeadDirectedCappedPolicy:
             # artifact still claimed the exact rule.
             return stall(
                 StallReason.COUNTERFACTUAL_BUDGET_EXCEEDED,
-                f"{len(candidates)} legal write candidate(s) would need {len(candidates)} Head "
-                f"call(s), above the run's declared {budget} per cycle; the exact top-m_d rule "
+                f"{len(candidates)} legal write candidate(s) would need "
+                f"{len(candidates)} counterfactual sequence(s)"
+                + ("" if self.dual is None
+                   else f" and {2 * len(candidates)} logical Head call(s)")
+                + f", above the run's declared {budget} per cycle; the exact top-m_d rule "
                 "needs every candidate scored, so the transition fails closed rather than ranking "
                 "an arbitrary subset",
                 donor_gate=gate,
@@ -1441,6 +1545,7 @@ class HeadDirectedCappedPolicy:
                 protein_id=endpoint.protein_id, donor_sequence=donor_sequence,
                 donor_global_risk=float(endpoint.head_global_risk),
                 incumbent_sequence=incumbent_sequence, positions=candidates, runtime=runtime,
+                donor=endpoint,
             )
         except V2EvidenceError as exc:
             return stall(
@@ -1455,8 +1560,19 @@ class HeadDirectedCappedPolicy:
             )
         for position, contribution in contributions.items():
             rows[position]["contribution"] = contribution.contribution
+        if self.dual is not None:
+            dual_block["dual"] = _dual_decision_evidence(
+                arm=getattr(self.dual.objective, "arm", ""),
+                objective_digest=self.dual.objective.calibration.content_digest,
+                write_epsilon=float(self.dual.objective.decision_margin),
+                contributions=contributions, reopen=())
 
-        tolerance = float(self.calibration.local_contribution_tolerance)
+        # ``a_i`` is a difference of J under Dual and a difference of raw risk otherwise, so the
+        # floor it is filtered against has to live on the same scale.  J is 1-Lipschitz in the
+        # supremum norm on u, so the propagated floor is the same derived joint margin the donor
+        # gate uses (PLAN 2.1); the raw-scale knob would be a threshold on a different quantity.
+        tolerance = (float(self.calibration.local_contribution_tolerance) if self.dual is None
+                     else float(self.dual.objective.decision_margin))
         positive = [p for p in candidates
                     if contributions[p].contribution > tolerance]
         for position in candidates:
@@ -1540,7 +1656,7 @@ class HeadDirectedCappedPolicy:
                 **common,
             )
 
-        reopen_rows = self._reopen_priority(
+        reopen_rows, dual_reopen_rows = self._reopen_priority(
             view=view, resolved=resolved, incumbent_windows=incumbent_windows,
             safety_windows=safety_windows,
         )
@@ -1579,6 +1695,19 @@ class HeadDirectedCappedPolicy:
             decision_evidence=evidence(
                 write_candidates=tuple(WriteCandidateEvidence(**row) for row in rows.values()),
                 reopen_candidates=reopen_rows, realized_reopen=len(reopen), **common,
+                # The joint law's own numbers.  Without this the per-allele contrasts and the union
+                # reducer's winner are computed on every cycle and then discarded, and the artifact
+                # of a joint run could not say WHICH allele demanded a given write or reopen.
+                dual=None if self.dual is None else _dual_decision_evidence(
+                    # Read off the OBJECTIVE, which is the thing the arm actually names -- the
+                    # authority has no arm field, so this used to publish the empty string.
+                    arm=getattr(self.dual.objective, "arm", ""),
+                    objective_digest=self.dual.objective.calibration.content_digest,
+                    # The floor a_i was ACTUALLY filtered against, so the artifact cannot
+                    # recompute eligibility on a different threshold than the run applied.
+                    write_epsilon=tolerance,
+                    contributions=contributions, reopen=dual_reopen_rows)
+                    if self.dual is not None else None,
             ),
         )
 
@@ -1604,24 +1733,54 @@ class HeadDirectedCappedPolicy:
     def _score_contributions(
         self, *, protein_id: str, donor_sequence: str, donor_global_risk: float,
         incumbent_sequence: str, positions: Sequence[int], runtime: PolicyRuntime | None,
-    ) -> dict[int, LeaveOneOutContribution]:
+        donor: Any = None,
+    ) -> dict[int, Any]:
         scorer = self.counterfactual_scorer
-        if runtime is not None and getattr(runtime, "cost_meter", None) is not None:
+        metered = runtime is not None and getattr(runtime, "cost_meter", None) is not None
+        if metered:
             # PLAN §5.4: journal before execution.  The policy's counterfactual batch is real Head
             # work on real GPUs; off-ledger it would spend against a cap the run cannot see.
+            # Role A keeps the legacy ``<prefix>:counterfactual`` id whether or not Dual is on, at
+            # this stage and at the lookahead stage alike.  Only role B is namespaced.  A Dual
+            # ledger then differs from a legacy one by exactly the added role-B rows, so "what did
+            # the second Head cost" is one subtraction rather than a re-keying exercise -- and an
+            # a_only arm's cost rows join directly against a legacy run's.
             scorer = _metered_scorer(self.counterfactual_scorer, runtime)
-        return score_leave_one_out(
-            scorer=scorer, protein_id=protein_id, donor_sequence=donor_sequence,
-            donor_global_risk=donor_global_risk, incumbent_sequence=incumbent_sequence,
-            positions=positions, evaluator=self.evaluator,
-            window_grid_digest=self.window_grid_digest,
+        if self.dual is None:
+            return score_leave_one_out(
+                scorer=scorer, protein_id=protein_id, donor_sequence=donor_sequence,
+                donor_global_risk=donor_global_risk, incumbent_sequence=incumbent_sequence,
+                positions=positions, evaluator=self.evaluator,
+                window_grid_digest=self.window_grid_digest,
+            )
+        # One counterfactual set, two frozen Heads, one joint contribution per position. The donor
+        # was admitted under J, so the write evidence must be Delta J: selecting under one law and
+        # projecting under another is the degradation hypothesis C3 exists to detect.
+        from .dual_policy import score_joint_leave_one_out
+
+        scorer_b = self.dual.counterfactual_scorer_b
+        if metered:
+            scorer_b = _metered_scorer(
+                self.dual.counterfactual_scorer_b, runtime,
+                event_id=_dual_counterfactual_event_id(runtime, "b"))
+        return score_joint_leave_one_out(
+            scorer_a=scorer, scorer_b=scorer_b, protein_id=protein_id,
+            donor_sequence=donor_sequence, donor_raw_a=donor_global_risk,
+            donor_raw_b=float(getattr(
+                self.dual.donor_score_b(donor), "global_risk")),
+            incumbent_sequence=incumbent_sequence, positions=positions,
+            evaluator_a=self.evaluator, evaluator_b=self.dual.evaluator_b,
+            window_grid_digest=self.window_grid_digest, objective=self.dual.objective,
         )
 
     def _reopen_priority(
         self, *, view: "SourceView", resolved: Sequence[int],
         incumbent_windows: AlignedWindowEvidence, safety_windows: AlignedWindowEvidence,
-    ) -> list[ReopenCandidateEvidence]:
+    ) -> tuple[list[ReopenCandidateEvidence], tuple[Any, ...]]:
         """PLAN §2.5's frozen reopen order, applied to every legal candidate.
+
+        Returns ``(rows, dual_rows)``; ``dual_rows`` is empty unless the window views are the union
+        pair, in which case it carries each candidate's per-allele conjuncts and winner.
 
         ``new-hotspot > worsening > residual burden > active uncertainty > temporal instability >
         index``.  Head decides WHERE new generative freedom is needed; it is never asked to invent
@@ -1632,6 +1791,12 @@ class HeadDirectedCappedPolicy:
         position carries zero burden", and the two are opposite facts about the Head's reach.
         """
         rows: list[ReopenCandidateEvidence] = []
+        # Populated only for a paired view. ``worsening_at`` and friends return the REDUCED value,
+        # which is what makes the union a drop-in for the single-allele view -- and is also why the
+        # two sides and the winner would otherwise be computed and thrown away, leaving a joint
+        # run's reopen table indistinguishable from a single-Head run's.
+        union_rows: list[Any] = []
+        paired = hasattr(incumbent_windows, "worsening_union")
         for position in resolved:
             if position in view.protected_positions:
                 # Defensive: a LIVE state carries only EXPIRED protection (the segment expires it
@@ -1646,6 +1811,14 @@ class HeadDirectedCappedPolicy:
                 if incumbent_windows.covered(position) else None
             residual = incumbent_windows.residual_burden_at(position)
             commit = view.commit_step_by_pos.get(position)
+            if paired:
+                from .dual_policy import DualReopenEvidence
+
+                union_rows.append(DualReopenEvidence(
+                    position=position,
+                    new_hotspot=safety_windows.worsening_union(position),
+                    worsening=incumbent_windows.worsening_union(position),
+                    residual_burden=incumbent_windows.residual_burden_union(position)))
             rows.append(ReopenCandidateEvidence(
                 position=position, new_hotspot=new_hotspot, worsening=worsening,
                 residual_burden=residual,
@@ -1655,7 +1828,7 @@ class HeadDirectedCappedPolicy:
                 selection_rank=None, selected=False,
                 priority_reason=_reopen_reason(new_hotspot, worsening, residual),
             ))
-        return sorted(rows, key=_reopen_sort_key)
+        return sorted(rows, key=_reopen_sort_key), tuple(union_rows)
 
 
 #: Which SupportReason each reopen priority conjunct maps to, so the kernel's per-position reason
@@ -1698,16 +1871,49 @@ def _reopen_sort_key(row: ReopenCandidateEvidence):
     )
 
 
-def _metered_scorer(scorer: Any, runtime: PolicyRuntime) -> Any:
-    """Wrap the injected scorer so its Head batch is journaled before it runs (PLAN §5.4)."""
+def _dual_decision_evidence(*, arm: str, objective_digest: str, write_epsilon: float,
+                            contributions, reopen):
+    """Package the joint law's per-position numbers, imported lazily (PLAN §3.1)."""
+    from .dual_policy import DualDecisionEvidence
+
+    return DualDecisionEvidence(
+        arm=str(arm), objective_digest=str(objective_digest),
+        write_epsilon=float(write_epsilon),
+        contributions=tuple(contributions.values()), reopen=tuple(reopen))
+
+
+def _dual_counterfactual_event_id(runtime: PolicyRuntime, role_value: str) -> str:
+    """The per-allele ledger id for one Dual leave-one-out batch.
+
+    Imported lazily so a Dual-off run never loads the Dual layer (PLAN §3.1), and routed through
+    :func:`dual_stage_event_id` so the counterfactual stage and the lookahead stage cannot drift
+    into two different namespacing conventions.
+    """
+    from ..fusion_v2.joint_objective import AlleleRole
+    from ..fusion_v2_runtime.dual_lookahead import dual_stage_event_id
+
+    return dual_stage_event_id(
+        runtime.event_prefix or "policy", "counterfactual", AlleleRole(role_value.upper()))
+
+
+def _metered_scorer(scorer: Any, runtime: PolicyRuntime, *, event_id: str = "") -> Any:
+    """Wrap the injected scorer so its Head batch is journaled before it runs (PLAN §5.4).
+
+    ``event_id`` defaults to the legacy single-Head spelling ``<prefix>:counterfactual``.  A Dual
+    cycle passes a per-allele id instead: the ledger's logical identity is
+    ``(event_id, protein_id, arm, phase)`` with no allele dimension, so two batches sharing one id
+    merge first-wins -- charging one allele's calls and recording the other as a RETRY, which
+    breaches ``max_retries`` while under-reporting ``max_head_calls``.
+    """
     meter = runtime.cost_meter
     prefix = runtime.event_prefix or "policy"
+    resolved_event_id = str(event_id) if event_id else f"{prefix}:counterfactual"
 
     def metered(protein_id: str, sequences: Sequence[str]):
         from .identity import canonical_digest
 
         with meter.attempt(
-            event_id=f"{prefix}:counterfactual",
+            event_id=resolved_event_id,
             phase="head", request_kind="head_batch",
             request_digest=canonical_digest({"protein_id": str(protein_id),
                                              "sequences": list(sequences)}),

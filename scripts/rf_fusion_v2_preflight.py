@@ -40,6 +40,7 @@ __all__ = [
     "BudgetProjection",
     "resolve_v2_config",
     "load_v2_config_file",
+    "load_dual_overlay_file",
     "input_signature",
     "project_v2_budget",
     "assert_launch_feasible",
@@ -58,6 +59,23 @@ def load_v2_config_file(path: Any):
     with open(Path(path)) as handle:
         return resolve_v2_config(yaml.safe_load(handle))
 
+
+
+def load_dual_overlay_file(path: Any):
+    """Read a signed dual-allele overlay JSON into a fully typed :class:`DualOverlay`.
+
+    The same "read a file, load no model" seam ``load_v2_config_file`` occupies, and for the same
+    reason: ``fusion_v2.dual_config`` performs no I/O, so without this step ``--dual-overlay PATH``
+    has nothing to call. The Dual import is deferred into the body so a legacy run that never passes
+    the flag never loads the Dual layer.
+    """
+    import json
+
+    from inverse_folding.reference_flow.fusion_v2.dual_config import dual_overlay_from_mapping
+
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return dual_overlay_from_mapping(payload)
 
 def resolve_v2_config(payload: Mapping[str, Any]):
     """Delegate to the typed loader.  This module adds no defaults of its own (PLAN §5.1)."""
@@ -139,7 +157,8 @@ class BudgetProjection:
 
 
 def project_v2_budget(
-    config: Any, *, n_proteins: int, execution_replicates: int = 1,
+    config: Any, *, n_proteins: int, execution_replicates: int = 1, n_heads: int = 1,
+    counterfactual_sequences_per_cycle: int | None = None,
 ) -> BudgetProjection:
     r"""Project the run's logical cost from the declared schedule.
 
@@ -199,11 +218,19 @@ def project_v2_budget(
     # (a source with more legal candidates stalls), so charging it here is a real bound rather than
     # an estimate.  One cycle per declared depth point.
     block = config.projection.head_directed
+    # Under Dual the per-cycle CANDIDATE domain is the overlay's own C, not the legacy field --
+    # they are different numbers by design (Appendix I S7), and projecting from the legacy one
+    # would price a domain the run does not use. ``n_heads`` then multiplies it, so the projection
+    # is 2C per cycle exactly as the freeze states.
+    per_cycle = (int(block.max_counterfactual_head_calls_per_cycle) if block is not None else 0)
+    if counterfactual_sequences_per_cycle is not None:
+        per_cycle = int(counterfactual_sequences_per_cycle)
     counterfactual_head_calls = (
-        0 if block is None
-        else int(block.max_counterfactual_head_calls_per_cycle) * len(points)
-             * execution_replicates)
-    head_calls = scored_endpoints + counterfactual_head_calls
+        0 if block is None else per_cycle * len(points) * execution_replicates)
+    # Every Head batch is issued once PER ALLELE. A Dual run scores the same pools and the same
+    # counterfactual sets on two frozen Heads, so a projection built for one Head certifies a
+    # launch that will spend twice what the gate authorized against ``max_head_calls``.
+    head_calls = (scored_endpoints + counterfactual_head_calls) * int(n_heads)
     refolds = scored_endpoints
     breached = []
     if total > int(config.caps.max_logical_dfe):

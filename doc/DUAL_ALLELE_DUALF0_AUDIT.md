@@ -16,7 +16,11 @@ blocked on decisions recorded in §4 below.
 | Intervening commits | `6ecfa66` (epi-head-wave3 merge), `28f647e`, `1bf0fe7` (docs) |
 
 `git diff --stat cdcde74 HEAD -- inverse_folding/` and `-- scripts/*fusion_v2*` are both **empty**.
-Every PLAN §1.2 seam is byte-identical to the audited commit.
+Every PLAN §1.2 seam was byte-identical to the audited commit AT THAT TIME. That is a
+statement about commit history and it remains true of `HEAD`; it is **no longer true of the
+working tree**, where the whole Dual layer and its edits to those seams live uncommitted.
+Until they are committed nothing in git can restore them — including the objective spec whose
+digest the signed overlay binds to.
 
 The PLAN's audit set omits `epitope_head/`, which the merge changed by 905 insertions and which
 *defines the frozen objective*. That gap was closed here; see §2.
@@ -89,13 +93,17 @@ after the GPU is allocated).
 ### 4.1 Scientific decisions — user only
 
 > **STATUS as of 2026-08-25 — this table is the ORIGINAL 2026-08-20 statement, kept for the
-> record.** Live status: **S1 closed** (Appendix I, $c_u=0.10$, $\tau=0.14426950408889636$, frozen
-> in a tracked spec). **S2 closed by deletion** (Appendix I: $\epsilon_J$ conflated a pointwise
+> record.** Live status: **S1 closed** (Appendix I, $c_u=0.10$, $\tau=0.14426950408889636$, frozen in
+> `inverse_folding/reference_flow/configs/v2_dual_smoothmax_policy_v1.json`). **S2 closed by deletion** (Appendix I: $\epsilon_J$ conflated a pointwise
 > floor with a bootstrap mean; the GO test is $\operatorname{UCB}_{95\%}[\operatorname{mean}(\Delta J)]<0$).
 > **S3, S4, S5 withdrawn with the in-process contrast** (Appendix H: arms are compared ACROSS runs,
 > so there are no `*_with_joint_safety` arm labels, no free-vs-dose-matched question and no arm
-> execution form to choose). **S6** (coverage floor) and **S7** — S7 closed in Appendix I by
-> splitting the ceiling. The decisions that are actually open now are **D1–D3 in Appendix J**.
+> **S6 (the 80/100 coverage floor) is STILL OPEN** — nothing has re-derived the single-root
+> expectation, and the runbook still carries the floor with its inherited 4-root provenance. An
+> earlier revision of this banner named S6 and then gave a status only for S7, while Appendix H
+> struck out "S5-S7" as resolved and accounted for only S5 and S7: both implied S6 was closed and
+> neither said so. **S7** closed in Appendix I by splitting the ceiling. The decisions actually
+> open now are **S6** and **D1–D3 in Appendix J**.
 
 | # | Item | Why it blocks |
 |---|---|---|
@@ -495,30 +503,31 @@ evaluation set, and — decisively — it **contains** the deployment domain: al
 ids are present. Build recipe:
 
 1. deduplicate by exact sequence — 225,821 raw records to **57,127**;
-2. keep 100–500 aa — **all 57,127 already are**, so the pool is inside the deployment domain by
-   construction;
-3. drop the **union** of both alleles' training homology, `cov-mode 2` at 30 % identity / 80 %
-   coverage. MEASURED 2026-08-24: **14.06 % for Head A (DRB1\*07:01, 1,182 seen proteins) and
-   15.69 % for Head B (DRB1\*04:01, 1,676 seen proteins)**; union 11,216; **asymmetry 1.63
-   percentage points**. "Seen" is train ∪ val — train fits the weights and validation selects
-   which checkpoint exists — and the held-out test split is not counted;
-4. drop the 100 deployment proteins, so no protein's own natural sequence enters its own $u_a$;
-5. drop the two per-allele evaluation sets (2,879 + 2,829 ids), so calibrating does not spend the
+2. keep 100–500 aa — **all 57,127 already are**;
+3. keep canonical AA20 only — drops **652** entries carrying `B`, `O`, `U`, `X` or `Z`, leaving
+   **56,475**. A Head request must describe a COMPLETE canonical design and the oracle refuses
+   anything else; substituting a residue for an unknown one would invent the measurement the
+   coordinate is built from;
+4. drop the **union** of both alleles' training homology, `cov-mode 2` at 30 % identity / 80 %
+   coverage. MEASURED: **14.12 % for Head A (DRB1\*07:01, 1,182 seen proteins) and 15.78 % for
+   Head B (DRB1\*04:01, 1,676 seen proteins)**; union 11,149; **asymmetry 1.66 percentage points**.
+   "Seen" is train ∪ val — train fits the weights and validation selects which checkpoint exists;
+5. drop the 100 deployment proteins, so no protein's own natural sequence enters its own $u_a$;
+6. drop the two per-allele evaluation sets (2,879 + 2,829 ids), so calibrating does not spend the
    test set; and
-6. cluster by homology and keep one representative per cluster, so no family dominates — raw PDB
-   determination bias is severe (top duplicate multiplicities 1731, 1404, 1091).
+7. cluster by homology and keep one representative per cluster.
 
-Executed by `scripts/build_dual_calibration_panel.py`, which reports every step. Realized:
-57,127 → 45,911 (head homology) → 45,887 (deployment) → 44,585 (evaluation) → **13,872 clusters =
-the panel**.
+Executed by `scripts/build_dual_calibration_panel.py` (SLURM 12891590). Realized:
+57,127 → 56,475 → 45,326 → 45,302 → 44,021 → **13,836 clusters = the panel**.
 
-> **Correction (2026-08-24).** An earlier revision of this recipe cited "4.16 % / 4.91 % published
-> pool figures" for step 3. Those numbers appear in no code, artifact or other document in this
-> repository; they came from the DUALF0 subagent pass and were propagated without their provenance
-> being checked, against this project's own traceability rule. The measured values are roughly
-> **3.4x larger**. The direction of the old claim was right — `cov-mode 0` under-detects — but the
-> magnitudes were not, and they should never have carried the word "published". Separately, that
-> revision had no step 5 at all: it would have calibrated on the evaluation set.
+> **Two corrections to earlier revisions of this passage.** (a) It cited "4.16 % / 4.91 % published
+> pool figures" for the homology step. Those numbers appear in no code, artifact or other document;
+> they came from the DUALF0 subagent pass and were propagated without their provenance being
+> checked. The measured values are ~3.4x larger. (b) It then carried the numbers of the FIRST panel
+> build (SLURM 12890926: 14.06 % / 15.69 %, union 11,216, 13,872 clusters), which was superseded the
+> same day by 12891590 after the canonical-AA20 filter was added — so this appendix contradicted
+> Appendix J and the artifact on disk. The figures above are 12891590's, which is the panel that
+> exists.
 Report on the built panel: $f_A$, $f_B$, the leave-overlap-out shift in $b_A-b_B$, the realized
 $\operatorname{SE}(b_A-b_B)/s$, and the **realized cross-allele correlation** — the last because the
 existing $r\approx0.19$ estimates are within-family (uricase) and the whole domain-transfer argument
@@ -908,10 +917,21 @@ the domain a cycle may consider is a property of the design, not of how many Hea
 
 The legacy field is left alone. The Dual overlay declares its own, explicitly named:
 
+The overlay declares exactly ONE new key:
+
 ```ini
-max_counterfactual_sequences_per_cycle = C      # candidate/sequence domain, unchanged
-logical_head_calls_per_cycle           = 2 * C  # projected by the preflight, never enforced in the policy
+max_counterfactual_sequences_per_cycle = C   # the candidate/sequence domain, unchanged
 ```
+
+The logical Head-call budget is `2 * C` and is **derived by the preflight**, not declared: there is
+no `logical_head_calls_per_cycle` field anywhere, and an earlier revision of this appendix wrote one
+as if there were.
+
+> **Correction (2026-08-25).** That same revision claimed the `2C` projection was already in place.
+> It was not: `project_v2_budget` multiplied by `n_heads` but took its per-cycle base from the
+> LEGACY `max_counterfactual_head_calls_per_cycle`, so a Dual launch was priced against a domain the
+> run does not use. `project_v2_budget` now takes `counterfactual_sequences_per_cycle` and the
+> driver passes the overlay's C.
 
 All three arms bill $2C$: every arm scores both Heads and executes joint safety, so cost and
 candidate domain are identical across the comparison. Overlay schema bumped to `dualcfg-2`.
@@ -973,7 +993,7 @@ executing it:
    write site, and `run_mmseqs_overlap` compares against the CATH / inverse-folding training set —
    a different question entirely. This overlap had genuinely never been computed.
 
-**Not a defect but worth recording**: only 24 of the 100 deployment proteins and 1,302 of the 5,487
+**Not a defect but worth recording**: only 24 of the 100 deployment proteins and 1,281 of the 5,487
 evaluation proteins survived far enough to be removed by their own filters. The rest were already
 gone. That means the homology filter is doing real work — and that WITHOUT it, evaluation proteins
 would have leaked into the panel in bulk.
@@ -999,7 +1019,8 @@ $$
 $$
 
 **The consequence must be stated rather than buried**: against a credit of $c_u = 0.10$ that is one
-part in 2.6 million. The donor gate and the write filter are, in practice, *strict improvement past
+part in 216,000 ($c_u/\epsilon = 0.10 / 4.6386\times10^{-7} = 2.16\times10^{5}$; an earlier
+revision of this line said 2.6 million, which was wrong by a factor of twelve). The donor gate and the write filter are, in practice, *strict improvement past
 float noise*. This is the freeze rule applied faithfully and it is defensible — the Head is
 reproducible to float32, so any difference above that floor is a real difference of instrument
 opinion. It is also five orders of magnitude below V2's legacy raw figure `0.017012596130371094`,
@@ -1039,7 +1060,7 @@ roughly four times as many independent families than the deduplicated Tier-2 poo
 
 | # | Decision | Why it cannot be defaulted | Cost of getting it wrong |
 |---|---|---|---|
-| **D1** | **$C$**, the per-cycle candidate domain | It is signed into the overlay and therefore into the run signature. The current artifact carries the placeholder **278** (M1's historical value). PLAN §7 says it comes from the frozen cohort's maximum legal editable domain, which is measurable — but signing it is a decision | All three arms are invalidated and must be re-run. Re-signing itself is cheap: `--resign-from` is a 1.7 s CPU operation |
+| **D1** | **$C$**, the per-cycle candidate domain | It is signed into the overlay and therefore into the run signature. The current artifact carries the placeholder **278** (M1's historical value). `doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md` §2.1 says it is derived from the cohort's maximum legal editable domain, which is measurable — but signing it is a decision. (An earlier revision cited PLAN §7 for this; §7 is the experiment boundary and says nothing about the ceiling.) | All three arms are invalidated and must be re-run. Re-signing itself is cheap: `--resign-from` loads no model and returns before any oracle import (measured at ~2 s wall on the login node; not a logged artifact) |
 | **D2** | **Leave-overlap-out: run it or declare it unmeasured** | `doc/Dual_Allele_Steering.md` §2.2.3 requires recomputing the calibration WITH the homologous entries and bounding the drift in $b_A/s_A - b_B/s_B$. Only the without-overlap panel exists. At 14–16 % overlap this is not a formality | The intercept is −0.4265, i.e. $4.3\,c_u$. A drift of even a few percent of it consumes the whole credit band. Recommend running it: ~90 min GPU, one more panel build |
 | **D3** | **Accept $\operatorname{SE}/c_u = 0.185$, or change the panel** | The PLAN's own gate is qualitative ("$\ll$") and this is the first time it has had a number to face | The only levers all cost something real: keep the evaluation proteins (contaminates the eval set), loosen clustering (admits correlated units as independent), or accept a wider uncertainty on the equal-risk line |
 
@@ -1054,8 +1075,8 @@ skipped everywhere except inside the producer that never needed it. Fixed; the f
 written and optional on read so a pre-existing overlay still loads.
 
 **Measuring and signing were one act.** Changing $C$ meant re-running 86 minutes of GPU. They are
-now separate: `--out-calibration` writes the measured calibration, `--resign-from` re-emits an
-overlay from it in 1.7 s with no model loaded, and still through the overlay's own strict loader so
+now separate: `--resign-from` re-emits an
+overlay from the signed overlay itself in about two seconds with no model loaded, and still through the overlay's own strict loader so
 a hand-edited calibration is refused at signing rather than at the launch gate.
 
 ### J.6 What is now true of the launch path

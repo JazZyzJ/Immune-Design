@@ -120,6 +120,12 @@ class RunSignature:
     code_revision: str
     production_depth_authorized: bool = False
     exploratory_depth_override: bool = False
+    #: The Dual overlay's content digest folded with the EXECUTING arm, or "" for a legacy run.
+    #: Self-omitting: an empty value never reaches the canonical payload, so a run with no Dual
+    #: overlay produces the byte-identical signature it produced before this field existed. The
+    #: alternative -- emitting it unconditionally as null -- would move the signature of every
+    #: fragment ever written, and nothing downstream would notice until a resume silently refused.
+    dual_signature: str = ""
 
     def __post_init__(self) -> None:
         for name in (
@@ -137,9 +143,15 @@ class RunSignature:
                 "production_depth_authorized and exploratory_depth_override are mutually "
                 "exclusive execution identities"
             )
+        # Checked separately from the loop above because "" is legal here and nowhere else.
+        if not isinstance(self.dual_signature, str):
+            raise V2ResumeError(
+                f"dual_signature must be a str (\"\" for a run with no Dual overlay), got "
+                f"{self.dual_signature!r}"
+            )
 
     def canonical_payload(self) -> dict:
-        return {
+        payload = {
             "config_digest": self.config_digest,
             "campaign_id": self.campaign_id,
             "split_role": self.split_role,
@@ -150,6 +162,9 @@ class RunSignature:
             "production_depth_authorized": self.production_depth_authorized,
             "exploratory_depth_override": self.exploratory_depth_override,
         }
+        if self.dual_signature:
+            payload["dual_signature"] = self.dual_signature
+        return payload
 
     @property
     def value(self) -> str:
@@ -175,6 +190,11 @@ class RunSignature:
             return "stale_input"
         if other.get("code_revision") != self.code_revision:
             return "stale_code"
+        # Defaulted to "" so a fragment written before this field existed compares equal to a
+        # legacy run and is still reusable, while a Dual run's fragment can never be handed to a
+        # legacy run or to another arm of the same bundle.
+        if other.get("dual_signature", "") != self.dual_signature:
+            return "foreign_run"
         return None
 
 

@@ -49,6 +49,7 @@ __all__ = [
     "LineageIncumbent",
     "DonorGateReason",
     "DonorGateVerdict",
+    "JointComparison",
     "bind_incumbent_from_safety_reference",
     "bind_incumbent_from_endpoint",
     "donor_gate",
@@ -368,6 +369,59 @@ class DonorGateReason(str, enum.Enum):
 
 
 @dataclass(frozen=True)
+class JointComparison:
+    """The two joint objective values a Dual donor gate compares, and the law that produced them.
+
+    Supplied by the caller rather than read off the endpoints, because the joint value lives in the
+    Dual evidence sidecar and this module may not import it: ``reward`` is a leaf, and a leaf that
+    reached into the sidecar could no longer be reasoned about without it.
+
+    Both values must carry the SAME objective digest. Two values from two calibrations are two
+    scales, and their difference is not a margin -- the same law this module already applies to two
+    Head evaluator identities, applied one level up.
+    """
+
+    donor_value: float
+    incumbent_value: float
+    objective_digest: str
+    #: PLAN 2.1: ``eps_joint = max_a eps_a_raw / s_a``, DERIVED from the objective's own geometry
+    #: rather than declared.  Carried here because the gate compares NORMALIZED values, and the
+    #: run config's raw-scale ``epsilon_r`` is a threshold on a different quantity: whenever
+    #: ``s_a != 1`` the two mean different amounts of evidence.
+    epsilon: float = 0.0
+    #: The per-allele raw floors the margin above was propagated from, so a verdict records its
+    #: provenance rather than only its result.
+    raw_floor_a: float = 0.0
+    raw_floor_b: float = 0.0
+
+    def __post_init__(self) -> None:
+        _finite(self.donor_value, "donor_value")
+        _finite(self.incumbent_value, "incumbent_value")
+        require_digest(self.objective_digest, "objective_digest")
+        for name in ("epsilon", "raw_floor_a", "raw_floor_b"):
+            value = _finite(getattr(self, name), name)
+            if value < 0.0:
+                raise V2RewardError(
+                    f"{name} must be non-negative, got {value}; a negative floor would ADMIT a "
+                    "donor that is worse than the incumbent"
+                )
+
+    @property
+    def margin(self) -> float:
+        return self.incumbent_value - self.donor_value
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "donor_value": self.donor_value,
+            "incumbent_value": self.incumbent_value,
+            "objective_digest": self.objective_digest,
+            "epsilon": self.epsilon,
+            "raw_floor_a": self.raw_floor_a,
+            "raw_floor_b": self.raw_floor_b,
+        }
+
+
+@dataclass(frozen=True)
 class DonorGateVerdict:
     """The donor gate's decision plus every number behind it.
 
@@ -384,9 +438,15 @@ class DonorGateVerdict:
     incumbent_global_risk: float
     epsilon_r: float
     epsilon_source_ref: str
+    #: Present only on a Dual gate. The raw per-allele risks above keep their meaning either way:
+    #: ``donor_global_risk`` is always role A's raw risk, never a joint scalar.
+    joint: JointComparison | None = None
 
     @property
     def margin(self) -> float:
+        """The quantity the gate actually compared."""
+        if self.joint is not None:
+            return self.joint.margin
         return self.incumbent_global_risk - self.donor_global_risk
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -400,6 +460,9 @@ class DonorGateVerdict:
             "epsilon_r": self.epsilon_r,
             "epsilon_source_ref": self.epsilon_source_ref,
             "margin": self.margin,
+            # Omitted when absent for the same reason the decision evidence omits its Dual block: a
+            # legacy verdict's payload is digested, and an added null key is a new digest.
+            **({} if self.joint is None else {"joint": self.joint.canonical_payload()}),
         }
 
 
@@ -409,6 +472,7 @@ def donor_gate(
     incumbent: LineageIncumbent,
     epsilon_r: float,
     epsilon_source_ref: str,
+    joint: JointComparison | None = None,
 ) -> DonorGateVerdict:
     r"""``R_H(Y*_d) < R_H(I_d) - epsilon_R`` (PLAN §2.5, A.2), as a typed verdict.
 
@@ -448,12 +512,21 @@ def donor_gate(
             "risks are two instruments and their difference is not a margin"
         )
 
+    if joint is not None and not isinstance(joint, JointComparison):
+        raise V2RewardError("joint must be a JointComparison")
+
+    # A joint gate compares NORMALIZED values, so the floor it compares against is the derived
+    # joint margin, not the run config's raw-scale knob.  The verdict reports the number actually
+    # used: a verdict that reported the raw knob would describe a comparison that never happened.
+    compared_epsilon = epsilon if joint is None else float(joint.epsilon)
+
     def verdict(passed: bool, reason: DonorGateReason) -> DonorGateVerdict:
         return DonorGateVerdict(
             passed=passed, reason=reason, donor_endpoint_id=str(donor.endpoint_id),
             donor_global_risk=float(donor.head_global_risk), incumbent_id=incumbent.incumbent_id,
-            incumbent_global_risk=float(incumbent.head_global_risk), epsilon_r=epsilon,
-            epsilon_source_ref=epsilon_source_ref,
+            incumbent_global_risk=float(incumbent.head_global_risk),
+            epsilon_r=compared_epsilon,
+            epsilon_source_ref=epsilon_source_ref, joint=joint,
         )
 
     from .state import FeasibilityLevel
@@ -462,7 +535,14 @@ def donor_gate(
         return verdict(False, DonorGateReason.DONOR_NOT_DEFINITIVE)
     if donor.sequence_md5 == incumbent.sequence_md5:
         return verdict(False, DonorGateReason.DONOR_IS_INCUMBENT)
-    if float(donor.head_global_risk) < float(incumbent.head_global_risk) - epsilon:
+    # One law, two scalars. Which scalar is compared is the ONLY thing the Dual overlay changes
+    # here; feasibility, self-comparison, protein, length and evaluator identity are unchanged, and
+    # a lineage with no admissible donor still stalls rather than adopting the least-bad endpoint.
+    if joint is None:
+        challenger, held = float(donor.head_global_risk), float(incumbent.head_global_risk)
+    else:
+        challenger, held = joint.donor_value, joint.incumbent_value
+    if challenger < held - compared_epsilon:
         return verdict(True, DonorGateReason.ACCEPTED)
     return verdict(False, DonorGateReason.STALL_NO_BETTER_DONOR)
 

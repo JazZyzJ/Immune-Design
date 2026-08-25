@@ -35,7 +35,7 @@ from ..fusion_v2.state import (
     advance_archive_entry,
 )
 
-__all__ = ["V2ArchiveError", "ExactArchive", "select_family_representatives"]
+__all__ = ["V2ArchiveError", "ExactArchive", "legacy_rank_key", "select_family_representatives"]
 
 #: Ordered weakest to strongest.  Promotion may only move right (PLAN §4.2).
 _ORDER = {
@@ -71,6 +71,15 @@ class _Row:
     structure_outcome: Any
 
 
+def legacy_rank_key(endpoint: CompleteEndpoint) -> tuple[float, str]:
+    """``(head_global_risk, endpoint_id)`` -- the single-Head ordering, unchanged.
+
+    Lower risk is better; the endpoint id resolves exact ties so the ordering is a function of the
+    SET of endpoints rather than their arrival order.
+    """
+    return (float(endpoint.head_global_risk), endpoint.endpoint_id)
+
+
 class ExactArchive:
     """A monotone archive of exact endpoint records.
 
@@ -78,9 +87,18 @@ class ExactArchive:
     look like a value would invite copies that silently diverge from the one true archive.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, rank_key: Any = None) -> None:
+        """``rank_key`` selects the ordering the elite is maintained under.
+
+        Defaults to :func:`legacy_rank_key`, so an archive constructed exactly as before behaves
+        exactly as before. An alternative objective is INJECTED rather than detected: the archive
+        must not decide for itself which scalar the run is optimizing, because a hidden fallback to
+        the raw single-Head risk would silently make a joint run's elite single-allele while every
+        artifact continued to claim otherwise.
+        """
         self._rows: dict[str, _Row] = {}
         self._elite_id: str | None = None
+        self._rank_key = legacy_rank_key if rank_key is None else rank_key
 
     # -- admission -----------------------------------------------------------------------------
 
@@ -201,7 +219,11 @@ class ExactArchive:
         design calls for, and it is only safe because every stored object is frozen -- the fork
         copies the bookkeeping, never the evidence.
         """
-        forked = ExactArchive()
+        # The ORDERING LAW travels with the fork.  A default archive here silently reverted a
+        # joint-ordered archive to ``head_global_risk``, so under Dual every matched arm would fork
+        # an elite chosen by role A while its donor gate compared J -- selection under one law and
+        # gating under another, with no artifact recording that it had happened.
+        forked = ExactArchive(rank_key=self._rank_key)
         forked._rows = {
             endpoint_id: _Row(endpoint=row.endpoint, entry=row.entry,
                               structure_outcome=row.structure_outcome)
@@ -227,13 +249,11 @@ class ExactArchive:
         row = self._rows[endpoint_id]
         if not _is_feasible_definitive(row.entry.feasibility_level, row.structure_outcome):
             return
-        challenger = float(row.endpoint.head_global_risk)
         if self._elite_id is None:
             self._promote_elite(endpoint_id)
             return
-        incumbent = float(self._rows[self._elite_id].endpoint.head_global_risk)
-        # Lower global risk is better.
-        if (challenger, endpoint_id) < (incumbent, self._elite_id):
+        # Lower is better under whichever ordering the run declared.
+        if self._rank_key(row.endpoint) < self._rank_key(self._rows[self._elite_id].endpoint):
             self._promote_elite(endpoint_id)
 
     def _promote_elite(self, endpoint_id: str) -> None:
@@ -252,6 +272,8 @@ class ExactArchive:
 
 def select_family_representatives(
     endpoints: Sequence[CompleteEndpoint],
+    *,
+    rank_key: Any = None,
 ) -> tuple[CompleteEndpoint, ...]:
     """One representative per sequence-equivalence class, best first.
 
@@ -266,6 +288,7 @@ def select_family_representatives(
 
     Order-independent: the input order never changes the output.
     """
+    key_of = legacy_rank_key if rank_key is None else rank_key
     eligible = [
         endpoint for endpoint in endpoints
         if _is_feasible_definitive(endpoint.feasibility_level, endpoint.structure_outcome)
@@ -279,11 +302,6 @@ def select_family_representatives(
             continue
         # Same sequence => same Head score; break the tie on a stable identity so the choice does
         # not depend on which sibling happened to arrive first.
-        if (float(endpoint.head_global_risk), endpoint.endpoint_id) < (
-            float(incumbent.head_global_risk), incumbent.endpoint_id
-        ):
+        if key_of(endpoint) < key_of(incumbent):
             best_by_class[key] = endpoint
-    return tuple(sorted(
-        best_by_class.values(),
-        key=lambda endpoint: (float(endpoint.head_global_risk), endpoint.endpoint_id),
-    ))
+    return tuple(sorted(best_by_class.values(), key=key_of))

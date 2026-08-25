@@ -109,6 +109,34 @@ case "${EXPLORATORY_DEPTH_OVERRIDE}" in
     ;;
 esac
 
+DUAL="${DUAL:-0}"
+DUAL_ARM="${DUAL_ARM:-}"
+DUAL_OVERLAY="${DUAL_OVERLAY:-}"
+DUAL_ARGS=()
+case "${DUAL}" in
+  0)
+    if [[ -n "${DUAL_ARM}" || -n "${DUAL_OVERLAY}" ]]; then
+      echo "DUAL_ARM/DUAL_OVERLAY set but DUAL=0; refusing to run the legacy experiment under a dual command" >&2
+      exit 4
+    fi
+    ;;
+  1)
+    if [[ ! -r "${DUAL_OVERLAY}" ]]; then
+      echo "DUAL=1 requires a readable DUAL_OVERLAY, got '${DUAL_OVERLAY}'" >&2
+      exit 4
+    fi
+    case "${DUAL_ARM}" in
+      joint|a_only|b_only) ;;
+      *) echo "DUAL_ARM must be joint, a_only or b_only, got '${DUAL_ARM}'" >&2; exit 4 ;;
+    esac
+    DUAL_ARGS+=(--dual-overlay "${DUAL_OVERLAY}" --dual-arm "${DUAL_ARM}")
+    ;;
+  *)
+    echo "DUAL must be exactly 0 or 1, got ${DUAL}" >&2
+    exit 4
+    ;;
+esac
+
 # ── Env ──
 module purge
 module load anaconda3/2025.12
@@ -127,19 +155,31 @@ cd "${PROJECT_ROOT}"
 echo "[v2canary] git=$(git rev-parse HEAD) env=${CONDA_ENV} node=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START} qualification=${QUALIFICATION} exploratory_depth_override=${EXPLORATORY_DEPTH_OVERRIDE}"
+echo "[v2canary] mechanism_prefixes=${MECHANISM_PREFIXES} start=${MECHANISM_PREFIX_START} qualification=${QUALIFICATION} exploratory_depth_override=${EXPLORATORY_DEPTH_OVERRIDE} dual=${DUAL} arm=${DUAL_ARM}"
 
 run_cell() (
   set -euo pipefail
   local cell=$1
-  local out_dir="${RUNDIR}/${cell}"
+  # Matched arms of one cell never share a fragment directory: the run signature already refuses
+  # cross-arm reuse, and separate directories keep the two from contending for one fragment file.
+  local out_dir="${RUNDIR}/${cell}${DUAL_ARM:+__${DUAL_ARM}}"
   local args_file="${WORK}/resolved_configs/${cell}.args.sh"
   if [[ ! -r "${args_file}" ]]; then
     echo "[v2canary] unreadable args file: ${args_file}" >&2
     exit 4
   fi
   # shellcheck source=/dev/null
-  source "${args_file}"   # -> V2_CONFIG, V2_COHORT, INPUT_FILES[], SHARD_INPUTS[]
+  source "${args_file}"   # -> V2_CONFIG, V2_COHORT, V2_PROTEIN_ID, DUAL_MODE, INPUT_FILES[], SHARD_INPUTS[]
+  # The cell must have been MATERIALIZED for the mode it is being run in. Without this, a dual
+  # command over legacy cells would run the single-Head experiment and exit 0.
+  if [[ "${DUAL}" == "1" && "${DUAL_MODE:-none}" == "none" ]]; then
+    echo "[v2canary] cell=${cell} carries no dual overlay (DUAL_MODE=none); re-materialize it with --dual-overlay" >&2
+    exit 4
+  fi
+  if [[ "${DUAL}" == "0" && "${DUAL_MODE:-none}" != "none" ]]; then
+    echo "[v2canary] cell=${cell} was materialized dual-capable but DUAL=0" >&2
+    exit 4
+  fi
   mkdir -p "${out_dir}"
   echo "[v2canary] cell=${cell} cohort=${V2_COHORT} config=${V2_CONFIG}"
   python scripts/run_rf_fusion_v2.py \
@@ -150,6 +190,7 @@ run_cell() (
     --mechanism-prefix-start "${MECHANISM_PREFIX_START}" \
     "${QUALIFICATION_ARGS[@]}" \
     "${EXPLORATORY_DEPTH_ARGS[@]}" \
+    "${DUAL_ARGS[@]}" \
     --input-file  "${INPUT_FILES[@]}" \
     --shard-input "${SHARD_INPUTS[@]}" \
                   "journal_dir=${out_dir}/journals" \

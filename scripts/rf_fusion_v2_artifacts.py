@@ -51,9 +51,14 @@ from scripts.rf_fusion_v1_artifacts import (  # noqa: E402,F401
 __all__ = [
     "V2ArtifactError",
     "V2_TABLE_SCHEMAS",
+    "DUAL_TABLE_SCHEMAS",
     "SCORABLE_CONTRAST_VIEWS",
     "POLICY_QUALIFICATION_CONTRAST_VIEWS",
     "V2_COLUMN_TYPES",
+    "DUAL_COLUMN_TYPES",
+    "dual_terminal_summary_rows",
+    "dual_feedback_evidence_rows",
+    "dual_endpoint_evidence_rows",
     "run_manifest",
     "partial_state_rows",
     "complete_endpoint_rows",
@@ -903,9 +908,275 @@ def terminal_validation_rows(records: Iterable[Mapping[str, Any]]) -> list[dict]
 # --------------------------------------------------------------------------------------------
 
 
+#: The Dual overlay's own tables. Kept in a SEPARATE registry, not appended to V2_TABLE_SCHEMAS,
+#: because ``write_v2_bundle`` requires every declared table and writes it even when empty -- so
+#: registering them there would add three empty parquet files to every legacy bundle, which is a
+#: Dual-off change. A run with no overlay passes no ``dual_tables`` and its bundle is unchanged.
+DUAL_TABLE_SCHEMAS: dict[str, TableSchema] = {
+    "dual_endpoint_evidence": _schema(
+        ["endpoint_id", "arm", "protein_id", "sequence_md5", "sequence_length",
+         "window_grid_digest", "allele_a", "allele_b", "raw_risk_a", "raw_risk_b",
+         "raw_density_a", "raw_density_b", "u_a", "u_b", "joint_risk", "joint_density",
+         "active_worst", "objective_mode", "objective_digest", "calibration_digest",
+         "head_binding_digest_a", "head_binding_digest_b",
+         "hotspot_b_max_increase", "hotspot_b_positive_mass", "hotspot_b_positive_count"],
+        ["endpoint_id", "arm"],
+    ),
+    "dual_feedback_evidence": _schema(
+        ["transition_id", "arm", "position", "protein_id", "donor_endpoint_id",
+         "incumbent_id", "donor_joint_value", "incumbent_joint_value", "donor_margin",
+         "counterfactual_sequence_md5", "raw_a", "raw_b", "contribution_a", "contribution_b",
+         "joint_contribution", "write_eligible", "selection_rank", "selected",
+         "reopen_new_hotspot_a", "reopen_new_hotspot_b", "reopen_worsening_a",
+         "reopen_worsening_b", "reopen_residual_a", "reopen_residual_b",
+         "reopen_winning_allele", "objective_digest"],
+        ["transition_id", "arm", "position"],
+    ),
+    "dual_terminal_summary": _schema(
+        ["protein_id", "root_id", "arm", "n_endpoints", "n_definitive",
+         "best_joint_risk", "best_joint_risk_endpoint_id", "best_raw_risk_a", "best_raw_risk_b",
+         "d0_joint_risk", "last_improving_depth", "typed_stop", "objective_digest",
+         "calibration_digest"],
+        ["protein_id", "root_id", "arm"],
+    ),
+}
+
+
+#: Explicit Arrow types for the Dual vocabulary.  A SEPARATE registry for the same reason the
+#: schemas are separate: a Dual name must not be able to retype a legacy column.
+#:
+#: Declared rather than inferred, and asserted complete below.  An untyped numeric column is
+#: inferred from the rows present, so an EMPTY table -- which ``write_v2_bundle`` writes for every
+#: declared table -- types ``raw_risk_a`` as string, and the first real ``-1.2`` then raises
+#: ``ArrowTypeError`` at the point where a shard tries to publish its evidence.
+DUAL_COLUMN_TYPES: dict[str, str] = {
+    **{name: "int" for name in (
+        "sequence_length", "hotspot_b_positive_count", "position", "selection_rank",
+        "n_endpoints", "n_definitive", "last_improving_depth",
+    )},
+    **{name: "float" for name in (
+        "raw_risk_a", "raw_risk_b", "raw_density_a", "raw_density_b", "u_a", "u_b",
+        "joint_risk", "joint_density", "hotspot_b_max_increase", "hotspot_b_positive_mass",
+        "donor_joint_value", "incumbent_joint_value", "donor_margin",
+        "raw_a", "raw_b", "contribution_a", "contribution_b", "joint_contribution",
+        "reopen_residual_a", "reopen_residual_b",
+        "best_joint_risk", "best_raw_risk_a", "best_raw_risk_b", "d0_joint_risk",
+    )},
+    **{name: "bool" for name in ("write_eligible", "selected")},
+    # The reopen conjuncts carry the NORMALIZED VALUE each allele contributed, exactly as the
+    # legacy ``ReopenCandidateEvidence.new_hotspot`` / ``worsening`` are floats -- not flags. They
+    # were declared bool, and the first real ``dual_feedback_evidence`` write raised
+    # ``ArrowInvalid: Could not convert 0.0 with type float: tried to convert to boolean``. The
+    # round-trip test missed it because it passed an EMPTY feedback table.
+    **{name: "float" for name in (
+        "reopen_new_hotspot_a", "reopen_new_hotspot_b",
+        "reopen_worsening_a", "reopen_worsening_b",
+    )},
+    **{name: "str" for name in (
+        "endpoint_id", "arm", "protein_id", "sequence_md5", "window_grid_digest",
+        "allele_a", "allele_b", "active_worst", "objective_mode", "objective_digest",
+        "calibration_digest", "head_binding_digest_a", "head_binding_digest_b",
+        "transition_id", "donor_endpoint_id", "incumbent_id", "counterfactual_sequence_md5",
+        "reopen_winning_allele", "root_id", "best_joint_risk_endpoint_id", "typed_stop",
+    )},
+}
+
+#: Every declared Dual column must have a declared type.  Checked at import so a schema edit that
+#: adds a column cannot ship with that column silently inferred.
+_UNTYPED_DUAL_COLUMNS = sorted(
+    {column for schema in DUAL_TABLE_SCHEMAS.values() for column in schema.columns}
+    - set(DUAL_COLUMN_TYPES)
+)
+if _UNTYPED_DUAL_COLUMNS:
+    raise V2ArtifactError(
+        f"Dual artifact column(s) {_UNTYPED_DUAL_COLUMNS} have no declared Arrow type; an "
+        "inferred column types itself from the rows present, so an empty shard would publish a "
+        "numeric measurement as a string and the first real row would fail to append"
+    )
+
+
+def dual_endpoint_evidence_rows(evidence_by_endpoint: Mapping[str, Any], *, arm: str,
+                                head_binding_digests: Mapping[str, tuple[str, str]] | None = None,
+                                ) -> list[dict]:
+    """One row per exact endpoint both Heads scored.
+
+    This is the table the two-axis return boundary is read off, so it carries BOTH raw risks, both
+    normalized coordinates and the joint value -- not the joint value alone. A front cannot be
+    recovered from a scalar.
+    """
+    bindings = dict(head_binding_digests or {})
+    rows = []
+    for endpoint_id, evidence in sorted(evidence_by_endpoint.items()):
+        risk, density = evidence.risk, evidence.density
+        hotspot = evidence.hotspot_b
+        digest_a, digest_b = bindings.get(
+            endpoint_id, (evidence.a.head_binding_digest, evidence.b.head_binding_digest))
+        rows.append({
+            "endpoint_id": str(endpoint_id), "arm": str(arm),
+            "protein_id": evidence.protein_id, "sequence_md5": evidence.sequence_md5,
+            "sequence_length": int(evidence.sequence_length),
+            "window_grid_digest": evidence.window_grid_digest,
+            "allele_a": evidence.a.allele, "allele_b": evidence.b.allele,
+            "raw_risk_a": float(evidence.a.raw_risk), "raw_risk_b": float(evidence.b.raw_risk),
+            # None, not 0.0: a run that did not build the density axis did not measure zero.
+            "raw_density_a": _optional_float(evidence.a.raw_density),
+            "raw_density_b": _optional_float(evidence.b.raw_density),
+            "u_a": float(risk.u_a), "u_b": float(risk.u_b),
+            "joint_risk": float(risk.value),
+            "joint_density": None if density is None else float(density.value),
+            "active_worst": risk.active_worst.value,
+            "objective_mode": risk.mode.value,
+            "objective_digest": risk.objective_digest,
+            "calibration_digest": evidence.calibration_digest,
+            "head_binding_digest_a": digest_a, "head_binding_digest_b": digest_b,
+            "hotspot_b_max_increase": (
+                None if hotspot is None else float(hotspot.max_increase)),
+            "hotspot_b_positive_mass": (
+                None if hotspot is None else float(hotspot.positive_mass)),
+            "hotspot_b_positive_count": (
+                None if hotspot is None else int(hotspot.positive_count)),
+        })
+    return rows
+
+
+def dual_feedback_evidence_rows(events: Sequence[Mapping[str, Any]], *, arm: str) -> list[dict]:
+    """One row per position the joint law attributed, from the decisions that actually ran.
+
+    Read off the DECISION's own evidence rather than recomputed: a second computation here would be
+    a different measurement of the same cycle, and the two could disagree with nothing to say which
+    one the run acted on.
+    """
+    rows = []
+    for event in events:
+        evidence = event.get("policy_evidence")
+        dual = getattr(evidence, "dual", None)
+        if dual is None:
+            continue
+        transition_id = str(event.get("transition_id") or _transition_of(event))
+        protein_id = str(event.get("protein_id") or _protein_of(event))
+        gate = getattr(evidence, "donor_gate", None)
+        joint = getattr(gate, "joint", None)
+        # Read off the DECISION EVIDENCE's own per-position rows, not off a "decision" key: the
+        # event mappings the shard builds carry no such key, so `selected` was structurally always
+        # False and `selection_rank` always None -- two columns that looked measured and were not.
+        write_by_position = {int(row.position): row
+                             for row in getattr(evidence, "write_candidates", ())}
+        reopen_selection = {int(row.position): row
+                            for row in getattr(evidence, "reopen_candidates", ())}
+        reopen_by_position = {int(row.position): row for row in dual.reopen}
+        contribution_by_position = {int(c.position): c for c in dual.contributions}
+        # The UNION of the two position sets, not the write set alone.  Write candidates are the
+        # source-MASKED positions and reopen candidates the source-RESOLVED ones, so the two are
+        # disjoint by construction: keying rows off the contributions alone emitted a reopen column
+        # that was structurally always empty, and the union reducer's winner -- the one field that
+        # distinguishes a joint reopen table from a single-Head one -- never appeared.
+        for position in sorted(set(contribution_by_position) | set(reopen_by_position)):
+            reopen = reopen_by_position.get(position)
+            contribution = contribution_by_position.get(position)
+            rows.append({
+                "transition_id": transition_id, "arm": str(arm), "position": position,
+                "protein_id": protein_id,
+                "donor_endpoint_id": str(getattr(evidence, "donor_endpoint_id", "")),
+                "incumbent_id": str(getattr(evidence, "incumbent_id", "") or ""),
+                "donor_joint_value": (None if joint is None else float(joint.donor_value)),
+                "incumbent_joint_value": (
+                    None if joint is None else float(joint.incumbent_value)),
+                "donor_margin": (None if joint is None else float(joint.margin)),
+                # None throughout for a REOPEN-only position: it was never a write candidate, so
+                # no counterfactual was scored for it.  Absent, not zero.
+                "counterfactual_sequence_md5": (
+                    "" if contribution is None else contribution.counterfactual_sequence_md5),
+                "raw_a": _optional_float(getattr(contribution, "raw_a", None)),
+                "raw_b": _optional_float(getattr(contribution, "raw_b", None)),
+                "contribution_a": _optional_float(
+                    getattr(contribution, "contribution_a", None)),
+                "contribution_b": _optional_float(
+                    getattr(contribution, "contribution_b", None)),
+                "joint_contribution": (
+                    None if contribution is None else float(contribution.contribution)),
+                # Against the floor the run ACTUALLY applied, carried on the decision evidence.
+                # Recomputing on 0.0 made the table contradict the decision it claims to read off.
+                "write_eligible": (
+                    None if contribution is None
+                    else bool(contribution.contribution > float(dual.write_epsilon))),
+                "selection_rank": _selection_rank(
+                    write_by_position.get(position), reopen_selection.get(position)),
+                "selected": _was_selected(
+                    write_by_position.get(position), reopen_selection.get(position)),
+                "reopen_new_hotspot_a": _conjunct(reopen, "new_hotspot", "value_a"),
+                "reopen_new_hotspot_b": _conjunct(reopen, "new_hotspot", "value_b"),
+                "reopen_worsening_a": _conjunct(reopen, "worsening", "value_a"),
+                "reopen_worsening_b": _conjunct(reopen, "worsening", "value_b"),
+                "reopen_residual_a": _conjunct(reopen, "residual_burden", "value_a"),
+                "reopen_residual_b": _conjunct(reopen, "residual_burden", "value_b"),
+                "reopen_winning_allele": "" if reopen is None else reopen.winning_allele,
+                "objective_digest": str(dual.objective_digest),
+            })
+    return rows
+
+
+def dual_terminal_summary_rows(evidence_by_endpoint: Mapping[str, Any], *, arm: str,
+                               protein_id: str, root_id: str, n_definitive: int,
+                               d0_endpoint_ids: Sequence[str] = (),
+                               last_improving_depth: int | None = None,
+                               typed_stop: str = "") -> list[dict]:
+    """One row per (protein, root, arm): where the joint objective ended up."""
+    if not evidence_by_endpoint:
+        return []
+    best_id = min(evidence_by_endpoint,
+                  key=lambda k: (float(evidence_by_endpoint[k].risk.value), k))
+    best = evidence_by_endpoint[best_id]
+    d0 = [evidence_by_endpoint[k] for k in d0_endpoint_ids if k in evidence_by_endpoint]
+    return [{
+        "protein_id": str(protein_id), "root_id": str(root_id), "arm": str(arm),
+        "n_endpoints": len(evidence_by_endpoint), "n_definitive": int(n_definitive),
+        "best_joint_risk": float(best.risk.value), "best_joint_risk_endpoint_id": str(best_id),
+        "best_raw_risk_a": float(best.a.raw_risk), "best_raw_risk_b": float(best.b.raw_risk),
+        "d0_joint_risk": (None if not d0 else min(float(e.risk.value) for e in d0)),
+        "last_improving_depth": last_improving_depth,
+        "typed_stop": str(typed_stop),
+        "objective_digest": best.risk.objective_digest,
+        "calibration_digest": best.calibration_digest,
+    }]
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _selection_rank(write_row: Any, reopen_row: Any) -> int | None:
+    """The rank this position took in whichever set it belonged to; ``None`` if it never ranked."""
+    for row in (write_row, reopen_row):
+        rank = getattr(row, "selection_rank", None)
+        if rank is not None:
+            return int(rank)
+    return None
+
+
+def _was_selected(write_row: Any, reopen_row: Any) -> bool:
+    return bool(getattr(write_row, "selected", False) or getattr(reopen_row, "selected", False))
+
+
+def _conjunct(reopen: Any, name: str, side: str) -> float | None:
+    if reopen is None:
+        return None
+    return _optional_float(getattr(getattr(reopen, name), side))
+
+
+def _transition_of(event: Mapping[str, Any]) -> str:
+    projected = event.get("projected")
+    return str(getattr(projected, "origin_transition_id", "") or "")
+
+
+def _protein_of(event: Mapping[str, Any]) -> str:
+    source = event.get("source")
+    return str(getattr(getattr(source, "lineage", None), "protein_id", "") or "")
+
+
 def write_v2_bundle(
     out_dir: Any, *, manifest: Mapping[str, Any], tables: Mapping[str, Sequence[Mapping]],
     ledger_events: Sequence[Any] = (),
+    dual_tables: Mapping[str, Sequence[Mapping]] | None = None,
 ) -> None:
     """Write the whole evidence bundle for one shard.
 
@@ -925,6 +1196,17 @@ def write_v2_bundle(
     unknown = sorted(set(tables) - set(V2_TABLE_SCHEMAS))
     if unknown:
         raise V2ArtifactError(f"bundle carries undeclared table(s) {unknown}")
+    if dual_tables is not None:
+        dual_missing = sorted(set(DUAL_TABLE_SCHEMAS) - set(dual_tables))
+        if dual_missing:
+            raise V2ArtifactError(
+                f"a Dual bundle is missing required table(s) {dual_missing}; a run that declared "
+                "an overlay and then omitted one of its tables reads as 'this run produced none of "
+                "that'"
+            )
+        dual_unknown = sorted(set(dual_tables) - set(DUAL_TABLE_SCHEMAS))
+        if dual_unknown:
+            raise V2ArtifactError(f"bundle carries undeclared Dual table(s) {dual_unknown}")
 
     for name, schema in V2_TABLE_SCHEMAS.items():
         rows = list(tables[name])
@@ -940,6 +1222,23 @@ def write_v2_bundle(
             columns=schema.columns, sort_by=schema.sort_by,
             types={c: V2_COLUMN_TYPES[c] for c in schema.columns if c in V2_COLUMN_TYPES},
         )
+
+    if dual_tables is not None:
+        # Same writer, same stable ordering, same duplicate-key refusal -- only the registry
+        # differs, so a Dual table cannot acquire looser guarantees than a legacy one.
+        for name, schema in DUAL_TABLE_SCHEMAS.items():
+            rows = list(dual_tables[name])
+            keys = [tuple(row.get(k) for k in schema.sort_by) for row in rows]
+            if len(set(keys)) != len(keys):
+                duplicated = sorted({key for key in keys if keys.count(key) > 1})
+                raise V2ArtifactError(
+                    f"table {name!r} has duplicate join key(s) {duplicated[:3]}"
+                )
+            write_stable_parquet(
+                out / f"{name}.parquet", rows,
+                columns=schema.columns, sort_by=schema.sort_by,
+                types={c: DUAL_COLUMN_TYPES[c] for c in schema.columns},
+            )
 
     write_manifest(out / "run_manifest.json", manifest)
     # Written even when EMPTY.  An absent file and an empty one are different claims -- "no ledger

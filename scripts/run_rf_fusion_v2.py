@@ -77,6 +77,7 @@ from inverse_folding.reference_flow.fusion_v2.errors import V2Error  # noqa: E40
 from scripts.rf_fusion_v2_artifacts import (  # noqa: E402
     V2_TABLE_SCHEMAS,
     run_manifest,
+    DUAL_TABLE_SCHEMAS,
     write_v2_bundle,
 )
 from scripts.rf_fusion_v2_preflight import (  # noqa: E402
@@ -141,6 +142,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the code revision this run is bound to. Defaults to the config's "
                              "identity.code_revision, which is the authority; a value that "
                              "disagrees with it is refused rather than run as one experiment")
+    parser.add_argument("--dual-overlay", default=None, metavar="PATH",
+                        help="path to the signed dual-allele overlay JSON. Optional and off by "
+                             "default: with no overlay this run is the frozen single-Head V2 in "
+                             "every byte it produces, and the Dual layer is never imported")
+    parser.add_argument("--dual-arm", default=None, metavar="ARM",
+                        help="which arm of the overlay's declared bundle this process runs "
+                             "(joint | a_only | b_only). Required with --dual-overlay and refused "
+                             "without it; the overlay's arm_bundle is the authority for which arms "
+                             "exist, and the executing arm enters the run signature so two arms of "
+                             "one protein can never resume from each other")
     parser.add_argument("--shard-input", nargs="*", default=(), metavar="NAME=PATH",
                         help="runtime paths handed to the execution stage as ShardInputs "
                              "(e.g. journal_dir=..., pdb_root=...). Cluster paths are CLI "
@@ -440,10 +451,59 @@ def realized_cap_verdict(ledger_events, *, caps):
     return check_caps(aggregate_v2_ledger(events), caps)
 
 
+def resolve_dual(args):
+    """Resolve the optional Dual overlay and executing arm, or ``(None, None)``.
+
+    Half a specification is refused: an overlay without an arm cannot say which comparison this
+    process is running, and an arm without an overlay names a bundle nothing declared. The overlay's
+    own ``arm_bundle`` is the authority for which arms exist, exactly as the config is the authority
+    for ``code_revision`` -- a second independently settable source for one fact is how two things
+    get treated as one experiment.
+
+    Nothing Dual is imported unless an overlay was actually supplied, which is what keeps a legacy
+    run from loading the Dual layer at all.
+    """
+    overlay_path = getattr(args, "dual_overlay", None)
+    arm = getattr(args, "dual_arm", None)
+    if overlay_path is None and arm is None:
+        return None, None
+    if overlay_path is None or arm is None:
+        raise V2DriverError(
+            "--dual-overlay and --dual-arm must be supplied together; an overlay without an arm "
+            "cannot say which comparison this process is running, and an arm without an overlay "
+            "names a bundle nothing declared"
+        )
+    from inverse_folding.reference_flow.fusion_v2 import dual_config as _dual_config
+
+    from scripts.rf_fusion_v2_preflight import load_dual_overlay_file
+
+    overlay = load_dual_overlay_file(overlay_path)
+    label = str(arm)
+    if label not in overlay.arms:
+        raise V2DriverError(
+            f"--dual-arm {label!r} is not in the overlay's declared bundle "
+            f"{list(overlay.arms)}; the overlay is the authority for which arms exist"
+        )
+    return overlay, label
+
+
+def _dual_signature(overlay, arm: str) -> str:
+    """The overlay's contribution to the run signature.
+
+    Deliberately NOT the place the resolved Head B is proved against the overlay: nothing has been
+    resolved yet.  That check belongs where the checkpoint is actually opened, and calling it here
+    against the overlay's own declared digests would compare a value with itself and always pass.
+    """
+    from inverse_folding.reference_flow.fusion_v2.dual_config import dual_run_signature_component
+
+    return dual_run_signature_component(overlay, arm=arm)
+
+
 def _signatures(
     config, cohort, *, arm_role, code_revision, inputs,
     production_depth_authorized: bool = False,
     exploratory_depth_override: bool = False,
+    dual_signature: str = "",
 ):
     if not inputs:
         # PLAN §5.2: "Missing content identity fails closed."  A sentinel signature would be shared
@@ -465,6 +525,7 @@ def _signatures(
             code_revision=code_revision,
             production_depth_authorized=bool(production_depth_authorized),
             exploratory_depth_override=bool(exploratory_depth_override),
+            dual_signature=str(dual_signature),
         )
         for protein_id in cohort
     }
@@ -517,6 +578,35 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         print(f"shard input refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
 
+    # Resolved BEFORE the --print-config/--dry-run branch returns, for the same reason the shard
+    # inputs are.  --dry-run answers "may this be submitted", and a gate that never looked at the
+    # Dual overlay it would launch WITH certified a launch it cannot make: a missing or malformed
+    # overlay exited 0 here and failed on the GPU, after the allocation had been paid for.
+    try:
+        dual_overlay, dual_arm = resolve_dual(args)
+        dual_signature = "" if dual_overlay is None else _dual_signature(dual_overlay, dual_arm)
+    except (V2Error, OSError) as exc:
+        print(f"dual overlay refused: {exc}", file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+
+    # A Dual run issues every Head batch twice, once per allele, over the overlay's OWN candidate
+    # domain -- never the legacy per-cycle field, which is a different number by design.
+    n_heads = 1 if dual_overlay is None else 2
+    dual_candidate_ceiling = (
+        None if dual_overlay is None
+        else int(dual_overlay.max_counterfactual_sequences_per_cycle))
+
+    # Refused at the GATE, not on the GPU. The mechanism/qualification path is a within-run matched
+    # contrast between two INTERVENTIONS; allele arms are compared across runs, because the Dual arm
+    # enters no seed and two runs differing only in --dual-arm share their depth-zero pool exactly.
+    if dual_overlay is not None and (
+            getattr(args, "mechanism_prefixes", None) or getattr(args, "dual_qualification", False)
+            or getattr(args, "qualification", False)):
+        print("launch gate refused: --dual-overlay cannot be combined with the mechanism or "
+              "qualification path; run the cohort once per --dual-arm and compare the artifacts",
+              file=sys.stderr)
+        return EXIT_UNLAUNCHABLE
+
     if args.print_config or args.dry_run:
         try:
             payload = print_config_payload(
@@ -524,6 +614,11 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                 code_revision=code_revision, execution_replicates=budget_replicates)
             payload["production_depth_authorized"] = production_depth_authorized
             payload["exploratory_depth_override"] = exploratory_depth_override
+            # The resolved Dual mode is part of what a launch gate certifies, so it is printed
+            # rather than inferred by the reader from the presence of a flag.
+            payload["dual_mode"] = "none" if dual_overlay is None else "dual"
+            payload["dual_arm"] = dual_arm or ""
+            payload["dual_signature"] = dual_signature
         except (V2Error, OSError) as exc:
             print(f"preflight refused: {exc}", file=sys.stderr)
             return EXIT_UNLAUNCHABLE
@@ -540,7 +635,8 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
             try:
                 assert_launch_feasible(project_v2_budget(
                     config, n_proteins=len(cohort),
-                    execution_replicates=budget_replicates))
+                    execution_replicates=budget_replicates, n_heads=n_heads,
+                    counterfactual_sequences_per_cycle=dual_candidate_ceiling))
             except V2PreflightError as exc:
                 print(f"launch gate refused: {exc}", file=sys.stderr)
                 return EXIT_UNLAUNCHABLE
@@ -548,7 +644,9 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
 
     try:
         assert_launch_feasible(project_v2_budget(
-            config, n_proteins=len(cohort), execution_replicates=budget_replicates))
+            config, n_proteins=len(cohort), execution_replicates=budget_replicates,
+            n_heads=n_heads,
+                    counterfactual_sequences_per_cycle=dual_candidate_ceiling))
     except V2PreflightError as exc:
         print(f"launch gate refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
@@ -557,10 +655,17 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         expected = _signatures(config, cohort, arm_role=config.arm.arm_role,
                                code_revision=code_revision, inputs=declared,
                                production_depth_authorized=production_depth_authorized,
-                               exploratory_depth_override=exploratory_depth_override)
+                               exploratory_depth_override=exploratory_depth_override,
+                               dual_signature=dual_signature)
     except (V2Error, OSError) as exc:
         print(f"run signature refused: {exc}", file=sys.stderr)
         return EXIT_UNLAUNCHABLE
+
+    # A Dual run's fragments carry three more tables, and ``aggregate_fragments`` collects
+    # payload keys BY NAME: a name it is not given is silently dropped, which is how every Dual
+    # shard's three tables were built and then discarded. A legacy run's tuple is unchanged.
+    fragment_table_names = tuple(V2_TABLE_SCHEMAS) + (
+        () if dual_overlay is None else tuple(DUAL_TABLE_SCHEMAS))
 
     if not args.aggregate_only:
         if runner is None:
@@ -588,7 +693,7 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                 from scripts.rf_fusion_v2_resume import validate_fragment
 
                 verdict = validate_fragment(fragment_path, expected=signature,
-                                            table_names=tuple(V2_TABLE_SCHEMAS))
+                                            table_names=fragment_table_names)
                 # Only work that actually SUCCEEDED may be skipped.  Skipping on admissibility
                 # alone would freeze a protein as failed for every future invocation -- one
                 # preempted node and the cohort could never be completed by re-running it.
@@ -600,6 +705,12 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                     out_dir=out_dir, inputs=shard_inputs,
                     oracles_factory=oracles_factory,
                 )
+                if dual_overlay is not None:
+                    # The overlay reached the SIGNATURE and stopped there: the shard still ran a
+                    # single Head, so joint / a_only / b_only executed identical A-only V2 under
+                    # three different signatures.  This is where the resolved arm reaches the
+                    # engine that is supposed to differ between them.
+                    runner_kwargs["dual"] = (dual_overlay, dual_arm)
                 # Preserve the long-standing injected-runner surface for ordinary runs while
                 # making the exceptional path explicit all the way into the cohort runner.
                 if production_depth_authorized or exploratory_depth_override:
@@ -614,7 +725,7 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
 
     report = aggregate_fragments(
         fragment_dir, requested_cohort=cohort, expected_by_protein=expected,
-        table_names=tuple(V2_TABLE_SCHEMAS),
+        table_names=fragment_table_names,
     )
 
     # Realized cohort budget, computed from the ledger the run actually wrote.  A breach is a fact
@@ -629,9 +740,13 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         return EXIT_FAILED
 
     tables = {name: list(report.tables.get(name, [])) for name in V2_TABLE_SCHEMAS}
+    # ``None`` on a legacy run, so its bundle gains no file (see DUAL_TABLE_SCHEMAS).
+    dual_tables = None if dual_overlay is None else {
+        name: list(report.tables.get(name, [])) for name in DUAL_TABLE_SCHEMAS}
     provenance = content_provenance(config, declared)
     write_v2_bundle(
         out_dir,
+        dual_tables=dual_tables,
         manifest={
             **run_manifest(
                 config=config, code_revision=code_revision,
@@ -653,6 +768,20 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
                 {"fragment_id": v.fragment_id, "status": v.status, "detail": v.detail}
                 for v in report.rejected
             ],
+            # Dual identity, published or absent -- never null. Without it a joint bundle and an
+            # a_only bundle are indistinguishable on disk, and the arm is the whole experiment.
+            **({} if dual_overlay is None else {
+                "dual_mode": "dual",
+                "dual_arm": dual_arm,
+                "dual_signature": dual_signature,
+                "dual_overlay_digest": dual_overlay.content_digest,
+                "dual_calibration_digest": dual_overlay.calibration.content_digest,
+                "dual_objective_mode": dual_overlay.calibration.law.mode.value,
+                "dual_objective_tau": dual_overlay.calibration.law.tau,
+                "dual_head_b_allele": dual_overlay.head_b_runtime.evaluator.allele,
+                "dual_head_b_checkpoint_digest":
+                    dual_overlay.head_b_runtime.evaluator.head_checkpoint_digest,
+            }),
             "missing_proteins": list(report.missing_proteins),
             "n_ok": report.n_ok,
             # Recorded even when clean: an exit code says a run is unusable, it cannot say WHICH

@@ -139,6 +139,14 @@ class CycleOutcome:
     #: no candidate ranking to record.  Present on a STALL as well as on a decision: PLAN §2.5
     #: requires a typed stall to preserve its rejected-candidate counts rather than vanish.
     policy_evidence: Any = None
+    #: The policy object this cycle ACTUALLY decided with.  Under Dual the kernel rebinds the
+    #: injected policy with this pool's role B donor scores before calling it, so the object that
+    #: decided is not the object the caller handed in -- and the ladder advances the lineage
+    #: incumbent on whatever it holds.  Advancing the un-rebound original looked up the adopted
+    #: donor in an EMPTY role B score map and raised, killing every Dual ladder run at the first
+    #: adopted donor, after the full generation and both Head batches had been paid for.
+    #: ``None`` when no policy was consulted (a null cycle, or the A2 view).
+    support_policy: Any = None
     detail: str = ""
 
     @property
@@ -149,7 +157,7 @@ class CycleOutcome:
 def _score_and_promote(
     *, completions, head_oracle, structure_oracle, evaluator, window_grid_digest,
     archive: ExactArchive, depth: int, safety_gate, hard_anchors,
-    cost_meter, event_prefix: str, screen_event_id: str,
+    cost_meter, event_prefix: str, screen_event_id: str, dual=None,
 ) -> tuple[tuple[CompleteEndpoint, ...], tuple[EndpointAdmission, ...]]:
     """Score a completion pool, record every row, then promote on the ADMISSION conjunction.
 
@@ -188,15 +196,33 @@ def _score_and_promote(
     ) as receipt:
         results = head_oracle.score(requests)
         receipt.observe(physical_forwards=0, head_calls=len(requests))
-    endpoints = bind_head_scores(
-        completions=completions, results=results, evaluator=evaluator,
-        window_grid_digest=window_grid_digest,
-        # PLAN §5.3 lists cost among the load-bearing fields of a complete endpoint.  Without these
-        # the endpoint table and the compute ledger are two unconnected artifacts: nothing can say
-        # which screen forked a design or which Head batch scored it.  Named per POOL rather than
-        # per endpoint because that is the granularity the journal actually charges at.
-        cost_event_ids=(screen_event_id, f"{event_prefix}:head"),
-    )
+    #: PLAN §5.3 lists cost among the load-bearing fields of a complete endpoint.  Without these
+    #: the endpoint table and the compute ledger are two unconnected artifacts: nothing can say
+    #: which screen forked a design or which Head batch scored it.  Named per POOL rather than
+    #: per endpoint because that is the granularity the journal actually charges at.
+    cost_event_ids = (screen_event_id, f"{event_prefix}:head")
+    if dual is None:
+        endpoints = bind_head_scores(
+            completions=completions, results=results, evaluator=evaluator,
+            window_grid_digest=window_grid_digest, cost_event_ids=cost_event_ids)
+    else:
+        # Imported HERE, not at module scope: PLAN §3.1 requires that a run with no Dual overlay
+        # never import the Dual layer, and a module-level import would make that false for every
+        # legacy run.
+        from ..fusion_v2.joint_objective import AlleleRole
+        from .dual_lookahead import dual_stage_event_id
+
+        # The SAME deduplicated request set, asked of the second frozen Head.  Role A's endpoints
+        # are still built by the unchanged single-Head binder, so the endpoint objects a Dual run
+        # produces are the ones a single-Head run would have produced; everything joint lands in
+        # the sidecar the runtime registers.
+        results_b = dual.score_pool(
+            requests=requests, cost_meter=cost_meter, event_prefix=event_prefix, stage="head")
+        endpoints = dual.bind_pool(
+            completions=completions, results_a=results, results_b=results_b,
+            window_grid_digest=window_grid_digest,
+            cost_event_ids=cost_event_ids + (
+                dual_stage_event_id(event_prefix, "head", AlleleRole.B),))
     for endpoint in endpoints:
         archive.admit(endpoint, depth=depth)
     promoted: list[CompleteEndpoint] = []
@@ -296,6 +322,10 @@ def run_one_cycle(
     cost_meter: Any,
     coordinate_law: Any = None,
     struct: Any = None,
+    #: The Dual runtime, or ``None``.  A run with no overlay passes ``None`` and every Dual line in
+    #: this module is unreachable, which is what makes Dual-off equivalence structural rather than
+    #: a tested coincidence (PLAN §3.1).
+    dual: Any = None,
     source_override: Any = None,
     source_endpoints: Any = None,
     archive: Any = None,
@@ -430,7 +460,7 @@ def run_one_cycle(
             depth=int(lineage.depth), safety_gate=safety_gate,
             hard_anchors=source.hard_anchors,
             cost_meter=cost_meter, event_prefix=f"{origin_transition_id}:source",
-            screen_event_id=f"{origin_transition_id}:screen",
+            screen_event_id=f"{origin_transition_id}:screen", dual=dual,
         )
         # Summed over the completions that were REALLY produced, not over the seeds that were
         # requested: a fork that never ran is not a fork that was paid for.
@@ -468,7 +498,11 @@ def run_one_cycle(
             detail="feedback disabled: this is the A2 view of the same run",
         )
 
-    admissible = select_family_representatives(endpoints)
+    # PLAN DUALF3: the family representative, the archive elite, the incumbent and the donor gate
+    # must agree on ONE objective.  Selecting under role A while gating under J would select on a
+    # mixture of two laws, and no artifact would record that it had.
+    admissible = select_family_representatives(
+        endpoints, rank_key=None if dual is None else dual.rank_key())
     if not admissible:
         return _null(
             TransitionOutcome.NULL_NO_ADMISSIBLE_ENDPOINT,
@@ -481,6 +515,20 @@ def run_one_cycle(
             f"endpoint_rank={rank} but only {len(admissible)} admissible endpoint(s) exist",
         )
     selected = admissible[rank]
+
+    if dual is not None:
+        # The policy is immutable and is rebuilt one depth at a time by the ladder, which CLEARS
+        # the donor score map on every advance -- the next depth's donors are different endpoints.
+        # Rebinding here is what supplies this cycle's pool, so a donor role B has not scored
+        # raises instead of silently resolving to a stale entry.
+        rebind = getattr(support_policy, "with_dual_donor_scores", None)
+        if rebind is None:
+            raise V2CycleError(
+                "a Dual cycle was given a support policy that cannot accept role B's donor "
+                "scores; the joint gate would fall back on role A alone while the run's signature "
+                "continued to claim a Dual arm"
+            )
+        support_policy = rebind(dual.donor_scores(admissible))
 
     if support_override is not None:
         decision = support_override
@@ -541,7 +589,7 @@ def run_one_cycle(
             outcome=projection.outcome, source=source, endpoints=endpoints, a2_view=a2_view,
             archive=archive, cost=_cost(), selected_endpoint=selected, detail=projection.detail,
             admissions=admissions, policy_identity=projection.policy,
-            policy_evidence=policy_evidence,
+            policy_evidence=policy_evidence, support_policy=support_policy,
         )
 
     projected = projection.projected
@@ -572,7 +620,7 @@ def run_one_cycle(
             cost=_cost(segment_logical_dfe=segment_dfe),
             selected_endpoint=selected, projected=projected, segment=segment,
             admissions=admissions, policy_identity=policy_identity,
-            policy_evidence=policy_evidence,
+            policy_evidence=policy_evidence, support_policy=support_policy,
             detail=(
                 f"the propagation segment resolved every editable position by step "
                 f"{c_next_step}; the capture is a terminal endpoint, not a live partial state, so "
@@ -609,6 +657,11 @@ def run_one_cycle(
         hard_anchors=propagated.hard_anchors,
         cost_meter=cost_meter, event_prefix=f"{origin_transition_id}:descendant",
         screen_event_id=f"{origin_transition_id}:descendant_screen",
+        # Role B must score the DESCENDANT pool too.  Depth d's descendants are depth d+1's source
+        # pool, so a descendant with no joint evidence would be un-orderable at the next rung --
+        # the joint rank key raises rather than falling back on role A, which is correct, so a
+        # half-wired Dual run would die one depth in instead of quietly steering single-allele.
+        dual=dual,
     )
 
     return CycleOutcome(
@@ -621,5 +674,5 @@ def run_one_cycle(
         projected=projected, segment=segment, propagated=propagated,
         descendant_endpoints=descendants, admissions=admissions,
         descendant_admissions=descendant_admissions, policy_identity=policy_identity,
-        policy_evidence=policy_evidence,
+        policy_evidence=policy_evidence, support_policy=support_policy,
     )

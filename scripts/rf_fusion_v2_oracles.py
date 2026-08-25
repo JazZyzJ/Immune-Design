@@ -57,6 +57,7 @@ __all__ = [
     "resolve_reference",
     "resolve_stratum",
     "resolve_support_policy",
+    "build_dual_stack",
     "bind_lineage_incumbent",
     "build_source_geometry_control",
     "build_v2_oracles",
@@ -137,7 +138,7 @@ def bind_lineage_incumbent(*, config, cumulative_reference, reference_sequence, 
 
 def _build_head_directed_capped(*, band_table, stratum_key, config, head_oracle=None,
                                 incumbent=None, safety_reference_score=None, evaluator=None,
-                                window_grid_digest=None, **_context):
+                                window_grid_digest=None, dual=None, **_context):
     """V2F5A's production policy.  Every scientific input arrives bound; none is derived here."""
     from inverse_folding.reference_flow.fusion_v2.policy import HeadDirectedCappedPolicy
     from inverse_folding.reference_flow.fusion_v2_runtime.contribution import (
@@ -164,6 +165,10 @@ def _build_head_directed_capped(*, band_table, stratum_key, config, head_oracle=
         window_grid_digest=window_grid_digest, calibration=calibration,
         incumbent_update_law=config.projection.head_directed.lineage_incumbent_update_law,
         counterfactual_scorer=CounterfactualHeadScorer(head_oracle=head_oracle),
+        # ``None`` unless a Dual overlay was resolved.  This is the ONLY difference between an
+        # a_only arm and a joint arm: the same policy object, with or without an injected second
+        # authority, which is what makes "Head B present" and "Head B deciding" separable.
+        dual=dual,
         policy_spec_digest=_content_digest(config, "projection_policy_spec"),
         policy_version=config.projection.support_policy_version,
         depth0_incumbent_rule=config.projection.head_directed.lineage_incumbent_depth0_rule,
@@ -757,7 +762,71 @@ def build_production_oracles(
             ) if value is not None},
             walltime_s=time.perf_counter() - started, evaluated=True)
 
+    global _STRUCTURE_STACKS_BUILT
+    _STRUCTURE_STACKS_BUILT += 1
     return head_oracle, structure_oracle
+
+
+#: How many definitive structure/refold stacks this process has constructed. A Dual run must build
+#: exactly the same number as a single-Head run -- PLAN DUALF2's acceptance criterion -- and this
+#: makes that a checkable runtime fact rather than a code-reading argument.
+_STRUCTURE_STACKS_BUILT = 0
+
+
+def build_role_b_head_oracle(
+    *, head_config_dir: Any, head_checkpoint: Any, head_variant_id: str,
+    allele: str, score_scale: str, window_k_min: int, window_k_max: int,
+    head_allele_idx: int, head_window_batch_size: int,
+    evaluator_a: Any, device: str = "cuda", build_head_scorer: Any = None,
+):
+    """Build role B's frozen Head and its counterfactual scorer, and NO structure stack.
+
+    It enters the same Head-construction chain role A uses, at the lowest point that is still that
+    chain and the highest point that touches no structure code -- so the two Heads are built by one
+    implementation rather than by two that could drift.
+
+    ``head_allele_idx`` and ``head_window_batch_size`` are REQUIRED here, deliberately unlike the
+    role-A path which defaults them to 0 and 64. A silently defaulted allele index for a SECOND
+    allele would score B's checkpoint against A's allele-embedding row, which is a wrong number
+    rather than a missing one.
+    """
+    from inverse_folding.reference_flow.fusion_v2_runtime.contribution import (
+        CounterfactualHeadScorer,
+    )
+
+    before = _STRUCTURE_STACKS_BUILT
+    args = _v0_oracle_args(
+        head_config_dir=str(head_config_dir), head_checkpoint=str(head_checkpoint),
+        head_variant_id=str(head_variant_id), head_device=str(device),
+        head_allele_idx=int(head_allele_idx),
+        head_window_batch_size=int(head_window_batch_size),
+        allele=str(allele), window_k_min=int(window_k_min), window_k_max=int(window_k_max),
+    )
+    from scripts.run_if_phase_c1 import build_head_scorer as _default_build
+    from scripts.run_rf_refine_fusion import _build_head_scorer_from_args
+
+    scorer_b = _build_head_scorer_from_args(args, build_head_scorer or _default_build)
+    head_oracle_b = ProductionHeadOracle(
+        scorer_b, allele=str(allele), score_scale=str(score_scale),
+        window_k_min=int(window_k_min), window_k_max=int(window_k_max))
+
+    identity_b = head_oracle_b.evaluator_identity()
+    if evaluator_a is not None:
+        if identity_b == evaluator_a or \
+                identity_b.head_checkpoint_digest == evaluator_a.head_checkpoint_digest:
+            raise V2OracleError(
+                "role B resolved to the same Head as role A; the checkpoint digest is the only "
+                "bit that distinguishes the two production Heads, so this is a Head mixup rather "
+                "than a bookkeeping difference, and it would make the objective reduce one allele "
+                "against itself"
+            )
+    if _STRUCTURE_STACKS_BUILT != before:
+        raise V2OracleError(
+            "building role B constructed a structure stack; Dual evaluates structure exactly once "
+            "per exact sequence and a second stack would double the refold cost the preflight "
+            "budgeted for"
+        )
+    return head_oracle_b, CounterfactualHeadScorer(head_oracle=head_oracle_b)
 
 
 def _scorer_behind(head_fn: Any):
@@ -815,7 +884,86 @@ def _production_oracles_for(config: Any, inputs: Any):
     )
 
 
-def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: OracleSeams | None = None):
+def build_dual_stack(*, overlay: Any, arm: str, inputs: Any, evaluator_a: Any,
+                     reference_sequence: str, reference_head_score: Any, incumbent: Any,
+                     window_grid_digest: str, device: str = "cuda"):
+    """Build role B's Head, prove it is the Head the overlay signed, and bind both Dual objects.
+
+    Returns ``(authority, runtime)`` -- the injected support authority the policy decides with, and
+    the per-shard runtime the cycle scores and ranks with.
+
+    This is where ``assert_observed_head_b`` finally means something. It used to be called in the
+    driver with the overlay's OWN declared digests on both sides, which compares a value with itself
+    and passes for any checkpoint on disk. Here the left-hand side is the identity of a Head that
+    was actually opened.
+
+    Role B's paths arrive as shard inputs, never from the overlay: the overlay is signed scientific
+    identity and is shared across machines, while a checkpoint path is a property of one filesystem.
+    """
+    from inverse_folding.reference_flow.fusion_v2.dual_policy import DualSupportAuthority
+    from inverse_folding.reference_flow.fusion_v2.joint_objective import build_arm_objective
+    from inverse_folding.reference_flow.fusion_v2_runtime.dual_runtime import build_dual_runtime
+    from inverse_folding.reference_flow.fusion_v2_runtime.lookahead import OracleRequest
+
+    binding = overlay.head_b_runtime
+    declared = binding.evaluator
+    head_b, scorer_b = build_role_b_head_oracle(
+        head_config_dir=inputs.require("head_b_config"),
+        head_checkpoint=inputs.require("head_b_checkpoint"),
+        head_variant_id=binding.variant_id, allele=declared.allele,
+        score_scale=declared.score_scale, window_k_min=declared.window_k_min,
+        window_k_max=declared.window_k_max, head_allele_idx=binding.allele_idx,
+        head_window_batch_size=binding.window_batch_size, evaluator_a=evaluator_a, device=device,
+    )
+    observed = head_b.evaluator_identity()
+    overlay.assert_observed_head_b(
+        checkpoint_digest=observed.head_checkpoint_digest,
+        config_hash=observed.head_config_hash)
+
+    # Role B's verdict on the SAME reference sequence role A's incumbent was bound from.  Both Heads
+    # must have scored it, or J(I_0) is a number one instrument never took.
+    from inverse_folding.reference_flow.fusion.state import sequence_md5 as _md5
+
+    reference_b = head_b.score([OracleRequest(
+        protein_id=str(getattr(incumbent, "protein_id")), sequence=reference_sequence,
+        sequence_md5=_md5(reference_sequence), sequence_length=len(reference_sequence),
+    )])[0]
+    reference_score_b = getattr(reference_b, "score", reference_b)
+
+    # THE arm decision. ``joint`` reduces both coordinates; ``a_only`` / ``b_only`` order on one.
+    # Building DualObjective unconditionally here is what made the three arms of a matched
+    # comparison execute the identical law under three different signatures.
+    objective = build_arm_objective(overlay.calibration, arm=arm)
+    if overlay.calibration.window is None:
+        raise V2OracleError(
+            "the Dual calibration declares no window coordinates; the union reopen law compares "
+            "per-window residuals, and the aggregate risk scale does not transfer to them"
+        )
+    authority = DualSupportAuthority(
+        objective=objective, window_coordinates=overlay.calibration.window,
+        evaluator_b=declared, counterfactual_scorer_b=scorer_b,
+        incumbent_score_b=reference_score_b,
+        incumbent_joint_value=float(objective.evaluate(
+            raw_a=float(getattr(incumbent, "head_global_risk")),
+            raw_b=float(getattr(reference_score_b, "global_risk"))).value),
+        safety_reference_score_b=reference_score_b,
+        # Empty at construction: every cycle rebinds it with its own pool, so a donor role B has
+        # not scored raises rather than resolving to a stale entry.
+        donor_score_b_by_endpoint={},
+        max_counterfactual_sequences_per_cycle=int(
+            overlay.max_counterfactual_sequences_per_cycle),
+    )
+    runtime = build_dual_runtime(
+        overlay=overlay, arm=arm, head_b=head_b,
+        # Role B's verdict on the SAME frozen reference role A's cumulative ratchet uses, so its
+        # drift is measured by one instrument against one reference.
+        safety_reference_score_b=reference_score_b,
+        safety_reference_binding_id=str(getattr(incumbent, "incumbent_id", "")))
+    return authority, runtime
+
+
+def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: OracleSeams | None = None,
+                     dual: Any = None):
     """Assemble the ``{gpu_clock, cycle_kwargs}`` contract.
 
     Everything expensive is built through the shared model factory; everything scientific is bound
@@ -912,6 +1060,21 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
             lineage_id=f"{protein_id}:fam0",
         )
 
+    dual_authority = dual_runtime = None
+    if dual is not None:
+        overlay, arm = dual
+        if incumbent is None:
+            raise V2OracleError(
+                "a Dual arm was resolved but the declared policy binds no lineage incumbent; the "
+                "joint donor gate has no reference to compare against"
+            )
+        dual_authority, dual_runtime = build_dual_stack(
+            overlay=overlay, arm=arm, inputs=inputs, evaluator_a=head_identity,
+            reference_sequence=reference_sequence, reference_head_score=reference_head_score,
+            incumbent=incumbent,
+            window_grid_digest=cumulative.binding.head_binding.window_grid_digest,
+            device=inputs.paths.get("device", "cuda"))
+
     return {
         "gpu_clock": resolved["gpu_clock"],
         "cycle_kwargs": dict(
@@ -937,7 +1100,9 @@ def build_v2_oracles(*, protein_id: str, config: Any, inputs: Any, seams: Oracle
                 config, band_table=band_table, stratum_key=stratum_key,
                 head_oracle=resolved["head_scorer"], incumbent=incumbent,
                 safety_reference_score=reference_head_score, evaluator=head_identity,
-                window_grid_digest=cumulative.binding.head_binding.window_grid_digest),
+                window_grid_digest=cumulative.binding.head_binding.window_grid_digest,
+                dual=dual_authority),
+            dual=dual_runtime,
             band_table=band_table, stratum_key=stratum_key,
             declared_band_id=band_table.provenance.calibration_id,
             declared_band_digest=band_table.provenance.calibration_content_digest,
