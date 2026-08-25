@@ -2,8 +2,9 @@
 
 **Task:** `PLAN_RF_FUSION_V2_DUAL_ALLELE.md` §5 DUALF0.
 **Status:** COMPLETE. DUALF0's own stop condition does **not** fire. The live scientific decisions
-are frozen in Appendix I and Appendix J.7; one mandatory panel-sensitivity measurement and the
-runbook-versus-code consistency pass remain before cluster launch.
+are frozen in Appendix I and Appendix J.7. The runbook was reconciled to the implemented execution
+model in Appendix K. The panel sensitivity and signed C1 overlay are complete; only one
+code-generated launch-bundle preflight remains before cluster launch.
 
 ---
 
@@ -15,13 +16,14 @@ runbook-versus-code consistency pass remain before cluster launch.
 | Implementation-base commit | `1bf0fe7b092cc4d990a2267eaa09ea76a2f99c40` |
 | PLAN audited commit | `cdcde74d0b893354426eed035da4b7593b291a3a` — verified ancestor of HEAD |
 | Intervening commits | `6ecfa66` (epi-head-wave3 merge), `28f647e`, `1bf0fe7` (docs) |
+| Current handoff tip before this documentation reconciliation | `5a53cc2b1264212928b00e645697d7f632e8b373` |
 
-`git diff --stat cdcde74 HEAD -- inverse_folding/` and `-- scripts/*fusion_v2*` are both **empty**.
-Every PLAN §1.2 seam was byte-identical to the audited commit AT THAT TIME. That is a
-statement about commit history and it remains true of `HEAD`; it is **no longer true of the
-working tree**, where the whole Dual layer and its edits to those seams live uncommitted.
-Until they are committed nothing in git can restore them — including the objective spec whose
-digest the signed overlay binds to.
+At the initial DUALF0 read, `git diff --stat cdcde74 HEAD -- inverse_folding/` and
+`-- scripts/*fusion_v2*` were both empty, so every PLAN §1.2 seam was byte-identical to the audited
+commit at that time. The Dual implementation subsequently landed in tracked commits beginning at
+`6b9649d`, followed by the calibration/launch fixes recorded in J.8 and the handoff repairs through
+`5a53cc2`. The initial observation is retained as audit history; it no longer describes the live
+branch as uncommitted.
 
 The PLAN's audit set omits `epitope_head/`, which the merge changed by 905 insertions and which
 *defines the frozen objective*. That gap was closed here; see §2.
@@ -99,15 +101,12 @@ after the GPU is allocated).
 > floor with a bootstrap mean; the GO test is $\operatorname{UCB}_{95\%}[\operatorname{mean}(\Delta J)]<0$).
 > **S3, S4, S5 withdrawn with the in-process contrast** (Appendix H: arms are compared ACROSS runs,
 > so there are no `*_with_joint_safety` arm labels, no free-vs-dose-matched question and no arm
-> **S6 (the 80/100 coverage floor) is STILL OPEN.** The single-root expectation has now been
-> derived (Appendix J.8): $84 \times 328/336 = 82.0 \pm 1.4$, so the inherited floor trips on a
-> healthy run **5.05 %** of the time. What remains open is the user decision the number invites —
-> keep 80 and declare its consequence inconclusive-and-rerun, drop to 78, or restore the second
-> root. An earlier revision of this banner named S6 and then gave a status only for S7, while
-> Appendix H struck out "S5-S7" as resolved and accounted for only S5 and S7: both implied S6 was
-> closed and neither said so. **S7** closed in Appendix I by splitting the ceiling.
-> **D1 and D3 are frozen** (Appendix J.7) and **executed** (J.8); **D2's protocol is frozen and the
-> measurement is running**. The decision actually open now is **S6**.
+> **S6 is closed by Appendix K.** The first campaign keeps one campaign-owned root per protein and
+> replaces the four-root-derived 80 floor with a 78-valid-triplet claim floor. Its measured healthy
+> single-root false-stop probability is about 0.4%; lower coverage is
+> `undercovered_unresolved`, not a negative Dual result. **S7** closed in Appendix I by splitting
+> the ceiling. **D1 and D3 are frozen and executed**; **D2 is also executed** in J.8. No scientific
+> decision remains open before the assembly preflight.
 
 | # | Item | Why it blocks |
 |---|---|---|
@@ -1097,8 +1096,8 @@ a hand-edited calibration is refused at signing rather than at the launch gate.
   (`load_dual_overlay_file` → `build_arm_objective`), and the three arms resolve to three different
   ordering laws with three different objective digests and their own decision margins;
 * D1 and D3 are frozen in J.7; D2 has a frozen measurement protocol and remains to be executed;
-* after that artifact exists, the remaining launch gate is the runbook-versus-code consistency
-  pass, which has now been justified twice by finding exactly this class of hole.
+* the scientific runbook is reconciled in Appendix K; its final operational command surface is
+  validated from the code-generated launch bundle rather than duplicated by hand.
 
 ### J.7 Decisions frozen (2026-08-25)
 
@@ -1161,9 +1160,9 @@ natural panel is a later robustness study, not part of the minimal Dual capabili
 
 #### Launch state after these decisions
 
-The science is now frozen. Code execution may proceed immediately with the M1/C1 overlay re-signing
-and the overlap-inclusion sensitivity job. Cluster generation remains closed until that sensitivity
-artifact and the final runbook-versus-code consistency report both exist.
+The science, overlap-inclusion sensitivity, corrected calibration statistics, and signed C1
+overlay are frozen and executed in J.8. Cluster generation now requires only the code-generated
+launch-bundle assembly preflight defined by the concise runbook.
 
 ### J.8 Execution record for J.7 (2026-08-25)
 
@@ -1448,7 +1447,7 @@ Dual roughly doubles Head calls, so that is the price.
 
 The alternatives remain: keep one root and state the floor's consequence as
 inconclusive-and-rerun rather than NO-GO, or keep one root and drop the floor to 78 (0.40 %).
-**This is a user decision and it is not covered by J.7.**
+**This was still a user decision at J.8 and is resolved by Appendix K.**
 
 > A related framing error, corrected here. The Dual campaign does **not** reuse any of the source
 > campaign's roots. `campaign_id` is part of the seed material, so a Dual run derives its own seeds
@@ -1457,3 +1456,51 @@ inconclusive-and-rerun rather than NO-GO, or keep one root and drop the floor to
 > source campaign supplies is the substrate DEFINITION and the 100-protein cohort (all four of its
 > cell lists hold the same 100 proteins and differ only in a name prefix). "Which root" was never
 > the question; "how many" is.
+
+---
+
+## Appendix K. Runbook reconciliation (2026-08-26)
+
+The former runbook mixed executed calibration history, implementation bring-up, a standalone M1
+campaign, and the formal capability test into one operator sequence. It was replaced rather than
+patched. Exact shell commands and volatile paths now belong to the implementation-generated
+`.args.sh`/launch bundle; the runbook freezes only scripts/surfaces, inputs, parameters, order, and
+decision evidence.
+
+The executable scientific DAG is now:
+
+```text
+verify the frozen C1 overlay and calibration identities
+  -> materialize 100 proteins x one new campaign root
+  -> one model-free three-arm assembly/preflight
+  -> first protein's three formal arms as an operational gate
+  -> remaining 99 proteins' three formal arms
+  -> one combined D0-to-D1 mechanism and D4 capability read
+  -> stop
+```
+
+The overlap-inclusion sensitivity, corrected bootstrap statistic, environment-transfer audit, and
+C1 overlay already exist in J.8. They are verified, not rerun or re-signed.
+
+Key consequences:
+
+1. **D0 is not an experiment.** It is the K=12 complete endpoint cloud generated internally for
+   one campaign root before feedback. Pairing compares `source_state_id`, `endpoint_id`, and
+   `sequence_md5`; Head-bound `content_digest` equality is neither required nor expected.
+2. **The Dual campaign creates its own root.** It does not reuse a source-campaign root. One root
+   per protein is frozen for this first objective-law comparison.
+3. **S6 is resolved for the one-root design.** The inherited 80-protein threshold came from a
+   four-root union. The first Dual campaign uses all valid matched triplets and requires 78 for a
+   primary capability statement, whose measured healthy-run false-stop probability is about 0.4%.
+   Fewer than 78 is `undercovered_unresolved`, not evidence that Dual steering failed.
+4. **The standalone M1 campaign is removed.** Its mechanism question is read from the D0→D1
+   transition of the same 100-protein D4 campaign that supplies final capability.
+5. **The first real protein is not a disposable smoke.** It remains in the final denominator and
+   is read only for operational integrity before the remaining 99 proteins are released.
+6. **Three arms remain necessary.** Joint-only execution could show descent from its own D0 but
+   could not distinguish simultaneous Dual coordination from ordinary A steering or a switch to B.
+7. **Withdrawn machinery stays withdrawn.** There is no in-process three-branch engine, no
+   `DUAL_QUALIFICATION`, no $\epsilon_J$, no Role-B safety gate, and no byte-identical endpoint
+   content-digest requirement.
+
+The concise authority is `doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md`.
