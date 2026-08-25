@@ -500,15 +500,25 @@ per-allele raw repeatability floors; the declared $c_u=\tau\log 2$.
   location difference is load-bearing and a shift common in $u$ largely cancels. Both $b_a$ and
   $s_a$ are robust statistics, so a contaminated fraction $f$ moves the median by at most the
   $50\rightarrow(50\pm100f)$ percentile displacement. The producer therefore reports $f_A$, $f_B$,
-  and a **leave-overlap-out recomputation** of the whole calibration, and gates on
+  and an **overlap-inclusion sensitivity** — a second calibration whose panel build is identical
+  except that step 3 keeps what it measured — reporting
 
 $$
-\left\lvert\Delta\left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)\right\rvert \;\ll\; c_u
+\Delta\theta
+=
+\left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)_{\mathrm{overlap\ included}}
+-
+\left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)_{\mathrm{primary}}
 \qquad\text{and}\qquad
-\left\lvert\Delta\log\frac{s_A}{s_B}\right\rvert \;\ll\; 1
+\Delta\log\frac{s_A}{s_B}
 $$
 
-  between the two recomputations. The quantity is $b_A/s_A-b_B/s_B$ and NOT $b_A-b_B$: the
+  and stating whether $\lvert\Delta\theta\rvert$ exceeds $c_u$ as a **panel-sensitivity label**
+  (AUDIT §J.7 D2). It is deliberately NOT a gate that selects between the two panels: the primary
+  panel was chosen by an outcome-independent leakage rule and remains the coordinate authority
+  whatever the sensitivity measures, so a large $\lvert\Delta\theta\rvert$ limits the claim to
+  this frozen reference panel rather than promoting the contaminated one. An integrity or
+  provenance failure of the sensitivity artifact does block launch. The quantity is $b_A/s_A-b_B/s_B$ and NOT $b_A-b_B$: the
   active-worst boundary is $R_A/s_A-R_B/s_B=b_A/s_A-b_B/s_B$, so adding one raw constant to both
   locations leaves $b_A-b_B$ exactly unchanged while moving the boundary by
   $\delta\left(1/s_A-1/s_B\right)$ (see `doc/Dual_Allele_Steering.md` §2.2.3). It is already
@@ -518,22 +528,31 @@ $$
   existing `head_train_overlap_flag` machinery is single-allele and must be extended;
 - length coverage spanning the deployment domain;
 - no single structural family dominating the panel; and
-- large enough that $\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)\ll c_u$, measured by bootstrap
-  over panel proteins and REPORTED. Same coordinate as the gate above, and for the same reason.
+- sized so that $\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)$ is measured by bootstrap over panel
+  proteins and REPORTED, in the same coordinate as the sensitivity above and for the same reason.
 
-  **This one is a reported diagnostic, not a fail-closed gate** — `doc/DUAL_ALLELE_DUALF0_AUDIT.md`
-  Appendix F withdrew the fail-closed form, because a threshold on the calibration's own precision
-  is a second human-chosen number in a calibration whose whole point is that exactly one ($\tau$)
-  is chosen. It is listed here because it must be measured and read, not because a producer may
-  refuse on it. **Measured 2026-08-24: 0.0185 against $c_u=0.10$, i.e. 18.5 % of the credit band**,
-  and it cannot be reduced by enlarging the panel (13,836 homology-independent units is the ceiling
-  the deduplicated Tier-2 pool supports). Accepting that ratio is decision **D3** in Appendix J.4.
+  **RESOLVED (AUDIT §J.7 D3, 2026-08-25): the qualitative launch requirement
+  $\operatorname{SE}\ll c_u$ is retired.** It was never a fail-closed gate — Appendix F had already
+  withdrawn that form, because a threshold on the calibration's own precision is a second
+  human-chosen number in a calibration whose whole point is that exactly one ($\tau$) is chosen —
+  and as a qualitative requirement it had no decidable content either. **Measured 2026-08-24:
+  0.0185 against $c_u=0.10$, i.e. 18.5 % of the credit band**, ACCEPTED for v1. The panel is a
+  deliberately frozen reference coordinate system, so its median/IQR values are exact descriptive
+  constants OF THAT PANEL and this SE measures sensitivity to which homologous families instantiate
+  the broader natural-sequence domain — not runtime measurement noise and not donor/write
+  uncertainty. The SE and its bootstrap method stay in the calibration report and the method claim
+  is scoped to the content-bound panel. It also cannot be reduced by enlarging the panel (13,836
+  homology-independent units is the ceiling the deduplicated Tier-2 pool supports). Reintroducing
+  evaluation proteins, loosening clustering to manufacture nominal sample size, or changing $c_u$
+  after observing this number are all forbidden.
 
 **RED tests:** panel entry shorter than the maximum window $k$; a non-canonical residue; two
-sequences for one protein; a leave-overlap-out recomputation that moves $b_A/s_A-b_B/s_B$ by more
-than the declared fraction of $c_u$, or that moves $\log\left(s_A/s_B\right)$ appreciably; a
-calibration whose stability is asserted on the RAW difference $b_A-b_B$; a panel whose
-bootstrap $\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)$ going unreported; $s_a$ not exceeding that
+sequences for one protein; an overlap-inclusion sensitivity built on a panel that differs from the
+primary in more than step 3, or measured under a different Head identity or objective law, or
+reported without its $\lvert\Delta\theta\rvert$ label; a sensitivity report used to SELECT the
+contaminated panel as the coordinate authority; a calibration whose stability is asserted on the
+RAW difference $b_A-b_B$; a panel whose bootstrap
+$\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)$ going unreported; $s_a$ not exceeding that
 allele's raw noise floor; an attempt to compute $b_a,s_a$ from anything other than the signed panel;
 an attempt to recompute them from a runtime batch.
 

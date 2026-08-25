@@ -32,6 +32,30 @@ Do not submit a GPU job until the coder has closed all of the following:
 - optional Dual modes in the existing driver/materializer/launcher; and
 - updated `doc/SCRIPTS.md`.
 
+> **STATUS (2026-08-25).** Every item above is CLOSED except the reader, with two exceptions the
+> operator must not wait on:
+>
+> * **the Dual reader and the facade's common-$J$ ranking are DEFERRED, deliberately** — see §4.3.
+>   `scripts/analysis/read_v2_mechanism.py` and `scripts/materialize_v2_archive_facade.py` contain
+>   no Dual path and are not expected to. The §4.3 read is DEFINED (formula + GO conditions) and has
+>   no tool; it is built against real bundles once the three arms have run, because join logic
+>   written against a schema no run has emitted acquires errors nobody can see;
+> * `scripts/calibrate_v2_head_policy.py` was NOT extended. The Dual calibration is a different
+>   population (a natural panel, not V2 run bundles) measured on two Heads, so it is
+>   `scripts/calibrate_v2_dual_objective.py` — a separate producer, registered in `doc/SCRIPTS.md`.
+>
+> The three scientific decisions D1/D2/D3 are frozen in `doc/DUAL_ALLELE_DUALF0_AUDIT.md` §J.7 and
+> **executed** in §J.8. The §2.1a sensitivity artifact **exists**
+> (`dual_overlap_sensitivity_v1.json`, $\lvert\Delta\theta\rvert/c_u = 0.0057$, `within_credit`)
+> and both campaign overlays are **signed**. P0's calibration work is therefore complete: your first
+> real action is §2.2, materialization and preflight.
+>
+> **S6's 80/100 coverage floor is still open (AUDIT §4.2, quantified in §J.8) — but it is a READ-TIME
+> input, not a launch input.** It appears only in the §4 GO conditions. Do not block submission on
+> it; do not declare GO or NO-GO on the coverage criterion until the user has settled it. A healthy
+> single-root campaign falls below 80 about **5 % of the time** by chance alone, so a result of 78
+> or 79 is not by itself evidence against Dual.
+
 The implementation must extend these existing surfaces:
 
 - `scripts/calibrate_v2_head_policy.py`
@@ -88,13 +112,25 @@ HEAD_WINDOW_BATCH_SIZE=64
 SCORE_SCALE=raw_logit
 HEAD_WINDOW_K_MIN=12
 HEAD_WINDOW_K_MAX=25
-M1_COUNTERFACTUAL_CEILING=278
+# The per-cycle CANDIDATE domain C, frozen per campaign by AUDIT J.7 D1. It is unique
+# counterfactual sequences / legal candidate positions per cycle; the number of Heads observing
+# each sequence is resource accounting and may NOT shrink this domain. Both values were already
+# signed in POSITION units, so nothing is converted here.
+M1_COUNTERFACTUAL_CEILING=278   # 302 - 24 editable, Q00511 mechanism basis (V2F5A signed ceiling)
+C1_COUNTERFACTUAL_CEILING=454   # measured maximum legal editable domain, basis 6T88_A
+                                # (artifacts/head_policy_v2_eps005_c454.json, unit
+                                #  editable_positions_per_cycle)
 
 DUAL_POLICY_SPEC=${PROJECT_ROOT}/inverse_folding/reference_flow/configs/v2_dual_smoothmax_policy_v1.json
 COHORT_TABLE=${SCRATCH_BASE}/work/immune-design/if_test_set/if_ready/highrisk/highrisk_nod_v1_HLA-DRB1_07_01.parquet
 NOD_NORMALIZATION_ENDPOINTS=${SCRATCH_BASE}/run/inverse_folding/fusion/highrisk_nod_v1_0701/parents/generated.parquet
 BASE_K12_RUN=${SCRATCH_BASE}/run/inverse_folding/v2_highrisk/highrisk_gumbel_d4k12_r40_v2_eps005_4root_0701__21cd73d
 M1_SAFETY_REFERENCE_MANIFEST=${SCRATCH_BASE}/work/immune-design/v2_canary/references.json
+# The ONE frozen calibration directory. Deliberately NOT ${WORK}/calibration: the panel and
+# the signed overlay are campaign-independent artifacts and every campaign reads the same
+# ones. An earlier revision of this runbook pointed the calibration commands at the
+# per-campaign tree, where none of these files exist.
+CALIBRATION_DIR=${SCRATCH_BASE}/work/immune-design/calibration
 
 test -r "${HEAD_A_CHECKPOINT}"
 test -r "${HEAD_B_CHECKPOINT}"
@@ -103,6 +139,7 @@ test -r "${COHORT_TABLE}"
 test -r "${NOD_NORMALIZATION_ENDPOINTS}"
 test -r "${M1_SAFETY_REFERENCE_MANIFEST}"
 test -d "${BASE_K12_RUN}"
+test -r "${CALIBRATION_DIR}/dual_overlay_v1.json"
 ```
 
 Do not substitute a legacy DRB1*04:01 Head or hand-edit a resolved YAML. If either checkpoint or
@@ -139,7 +176,7 @@ python scripts/build_dual_calibration_panel.py \
   --evaluation-protein-ids "${W}/eval_ids_DRB1_04_01.txt" \
   --seen-splits train,val \
   --out-fasta  "${W}/tier2_natural_panel_v1.fasta" \
-  --out-report "${W}/tier2_natural_panel_v1.report.json" \
+  --out-report "${CALIBRATION_DIR}/tier2_natural_panel_v1.report.json" \
   --mmseqs "${MMSEQS}"
 ```
 
@@ -170,14 +207,55 @@ Executed by `scripts/build_dual_calibration_panel.py` (SLURM 12891590). Realized
 > Appendix J and the artifact on disk. The figures above are 12891590's, which is the panel that
 > exists.
 
+> **Order of operations.** §2.1a runs BEFORE this section's re-sign, because the re-sign records
+> §2.1a's `abs_delta_theta`. The section order here is by subject, not by execution order.
+
+**The calibration is MEASURED and frozen, and both campaign overlays are already SIGNED.**
+`dual_overlay_v1.json` (SLURM 12891919, 1 h 26 m on one h200, digest `4bc1e6142e64`) is the primary
+record and the coordinate authority. The two launchable artifacts derived from it are
+
+| file | $C$ | logical Head calls / cycle | digest |
+|---|---:|---:|---|
+| `dual_overlay_m1_v1.json` | 278 | 556 | `f70b96ffe9ad` |
+| `dual_overlay_c1_v1.json` | 454 | 908 | `be53f59fd493` |
+
+Both already carry $f_A$, $f_B$ and the §2.1a $\lvert\Delta\theta\rvert$. **Do not re-measure and
+do not re-sign.** Run the block below only to VERIFY that the shipped files reproduce — it takes
+~0.6 s on a login node and touches no GPU — and compare the printed digests against the table.
+Write to a scratch `--out-overlay` when verifying, so a mistake cannot overwrite a signed artifact.
+
+```bash
+# M1 and C1 share ONE measured calibration and differ only in the candidate ceiling (J.7 D1).
+for CELL in "m1:${M1_COUNTERFACTUAL_CEILING}" "c1:${C1_COUNTERFACTUAL_CEILING}"; do
+  NAME=${CELL%%:*}; C=${CELL##*:}
+  python scripts/calibrate_v2_dual_objective.py \
+    --resign-from "${CALIBRATION_DIR}/dual_overlay_v1.json" \
+    --objective-spec "${DUAL_POLICY_SPEC}" \
+    --panel-report "${CALIBRATION_DIR}/tier2_natural_panel_v1.report.json" \
+    --overlap-inclusion-shift "${OVERLAP_INCLUSION_SHIFT}" \
+    --out-rows    "${CALIBRATION_DIR}/dual_calibration_rows_v1.parquet" \
+    --out-overlay "${CALIBRATION_DIR}/dual_overlay_${NAME}_v1.json" \
+    --max-counterfactual-sequences-per-cycle "${C}"
+done
+```
+
+`--resign-from` carries the Head-B runtime binding forward from the signed artifact; a
+`--head-b-*` value that contradicts it is refused, so the only thing a re-sign chooses is C.
+`--out-rows` must point at the SAME measured rows file, because its sha256 is the overlay's
+`calibration_artifact_digest`. `${OVERLAP_INCLUSION_SHIFT}` is `abs_delta_theta` from §2.1a and
+must be in hand before this runs — re-signing twice would leave two digests per campaign and an
+agent could launch the superseded one.
+
+<details><summary>How the primary calibration was measured (already executed — for the record)</summary>
+
 ```bash
 python scripts/calibrate_v2_dual_objective.py \
-  --panel-fasta "${WORK}/calibration/tier2_natural_panel_v1.fasta" \
+  --panel-fasta "${CALIBRATION_DIR}/tier2_natural_panel_v1.fasta" \
   --panel-id tier2_natural_v1 \
-  --deployment-protein-ids "${WORK}/calibration/deployment_protein_ids.txt" \
+  --deployment-protein-ids "${CALIBRATION_DIR}/deployment_protein_ids.txt" \
   --objective-spec inverse_folding/reference_flow/configs/v2_dual_smoothmax_policy_v1.json \
-  --out-rows    "${WORK}/calibration/dual_calibration_rows.parquet" \
-  --out-overlay "${WORK}/calibration/dual_overlay_v1.json" \
+  --out-rows    "${CALIBRATION_DIR}/dual_calibration_rows_v1.parquet" \
+  --out-overlay "${CALIBRATION_DIR}/dual_overlay_v1.json" \
   --max-counterfactual-sequences-per-cycle "${CANDIDATE_CEILING}" \
   --head-a-config-dir "${HEAD_CONFIG}" --head-a-checkpoint "${HEAD_A_CHECKPOINT}" \
   --head-a-variant-id "${HEAD_VARIANT_ID}" --head-a-allele "${HEAD_A_ALLELE}" \
@@ -189,6 +267,8 @@ python scripts/calibrate_v2_dual_objective.py \
   --head-b-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}" \
   --window-k-min "${HEAD_WINDOW_K_MIN}" --window-k-max "${HEAD_WINDOW_K_MAX}"
 ```
+
+</details>
 
 `--max-counterfactual-sequences-per-cycle` is **C**, the per-cycle CANDIDATE domain in editable
 positions — the same domain a single-Head run has. The logical Head-call budget is `2C` and is
@@ -212,6 +292,99 @@ a raw-logit quantity and may not be copied into the normalized joint objective.
 
 There is no $\epsilon_J$.
 
+### 2.1a Overlap-inclusion sensitivity — MANDATORY before M1/C1 submission
+
+AUDIT §J.7 D2. A second calibration whose panel build is identical to the primary in every filter,
+Head identity, objective law and scoring protocol, and differs ONLY in that step 3 keeps the union
+of both Heads' training homology instead of removing it.
+
+**It is a label, not a candidate.** The overlap-EXCLUDED 13,836-cluster panel was selected by an
+outcome-independent leakage rule and remains the coordinate authority whatever this measures. A
+large drift limits the method claim to that frozen reference panel; it never promotes the
+contaminated one. An integrity or provenance failure of the artifact DOES block launch.
+
+```bash
+# 1. the sensitivity panel (CPU, ~45 s)
+python scripts/build_dual_calibration_panel.py \
+  --candidate-fasta        "${SCRATCH_BASE}/work/immune-design/if_test_set/tier2_candidates_merged.fasta" \
+  --head-a-manifest-dir    "${SCRATCH_BASE}/work/immune-design/manifests/drb0701" \
+  --head-b-manifest-dir    "${SCRATCH_BASE}/work/immune-design/manifests/drb0401" \
+  --deployment-protein-ids "${CALIBRATION_DIR}/deployment_protein_ids.txt" \
+  --evaluation-protein-ids "${CALIBRATION_DIR}/eval_ids_DRB1_07_01.txt" \
+  --evaluation-protein-ids "${CALIBRATION_DIR}/eval_ids_DRB1_04_01.txt" \
+  --seen-splits train,val \
+  --head-overlap include \
+  --out-fasta  "${CALIBRATION_DIR}/tier2_overlap_included_panel_v1.fasta" \
+  --out-report "${CALIBRATION_DIR}/tier2_overlap_included_panel_v1.report.json" \
+  --work-dir   "${CALIBRATION_DIR}/_panel_work_incl" --mmseqs "${MMSEQS}"
+
+# 2. the sensitivity calibration + comparison (ailab h200, ~1 h 35 m; request 02:30:00 -- a
+#    longer wall clock does not get scheduled on this partition)
+python scripts/calibrate_v2_dual_objective.py \
+  --panel-fasta  "${CALIBRATION_DIR}/tier2_overlap_included_panel_v1.fasta" \
+  --panel-id     tier2_overlap_included_v1 \
+  --panel-report "${CALIBRATION_DIR}/tier2_overlap_included_panel_v1.report.json" \
+  --deployment-protein-ids "${CALIBRATION_DIR}/deployment_protein_ids.txt" \
+  --objective-spec "${DUAL_POLICY_SPEC}" \
+  --out-rows       "${CALIBRATION_DIR}/dual_calibration_rows_overlap_included_v1.parquet" \
+  --out-overlay    "${CALIBRATION_DIR}/dual_overlay_overlap_included_v1.json" \
+  --compare-to     "${CALIBRATION_DIR}/dual_overlay_v1.json" \
+  --out-comparison "${CALIBRATION_DIR}/dual_overlap_sensitivity_v1.json" \
+  --max-counterfactual-sequences-per-cycle "${M1_COUNTERFACTUAL_CEILING}" \
+  --bootstrap-resamples 10000 --bootstrap-seed 20260821 --repeat-window-batch-size 32 \
+  --head-a-config-dir "${HEAD_CONFIG}" --head-a-checkpoint "${HEAD_A_CHECKPOINT}" \
+  --head-a-variant-id "${HEAD_VARIANT_ID}" --head-a-allele "${HEAD_A_ALLELE}" \
+  --head-a-allele-idx "${HEAD_A_ALLELE_IDX}" \
+  --head-a-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}" \
+  --head-b-config-dir "${HEAD_CONFIG}" --head-b-checkpoint "${HEAD_B_CHECKPOINT}" \
+  --head-b-variant-id "${HEAD_VARIANT_ID}" --head-b-allele "${HEAD_B_ALLELE}" \
+  --head-b-allele-idx "${HEAD_B_ALLELE_IDX}" \
+  --head-b-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}" \
+  --window-k-min "${HEAD_WINDOW_K_MIN}" --window-k-max "${HEAD_WINDOW_K_MAX}"
+```
+
+The C signed into the sensitivity overlay is immaterial — that artifact is a MEASUREMENT and is
+never launched. Only `dual_overlay_m1_v1.json` and `dual_overlay_c1_v1.json` are launchable.
+
+`dual_overlap_sensitivity_v1.json` (`dual-overlap-sensitivity-1`) reports, for both panels, the
+four coordinate constants `b_A s_A b_B s_B`, the scale ratio, `theta = b_A/s_A - b_B/s_B`,
+cross-allele `r`, the bootstrap SE, panel counts and content digests; then `delta_theta`,
+`abs_delta_theta`, `delta_log_scale_ratio`, `abs_delta_theta_over_credit` and the
+`within_credit` / `exceeds_credit` label. The producer REFUSES two calibrations that share a panel
+digest, or that differ in objective law or evaluator identity — a drift measured across two
+instruments is not a panel sensitivity.
+
+If the report is ever lost, recompute it from the two signed overlays instead of re-running the
+GPU job:
+
+```bash
+python scripts/calibrate_v2_dual_objective.py \
+  --compare-overlays "${CALIBRATION_DIR}/dual_overlay_v1.json" \
+                     "${CALIBRATION_DIR}/dual_overlay_overlap_included_v1.json" \
+  --out-comparison   "${CALIBRATION_DIR}/dual_overlap_sensitivity_v1.json"
+```
+
+**Then feed `abs_delta_theta` into §2.1's re-sign as `${OVERLAP_INCLUSION_SHIFT}`.** The value
+lands on the signed key `leave_overlap_out_shift` (kept under its historical name so the schema
+digest is stable) and the producer refuses to revise an already-measured one.
+
+**EXECUTED 2026-08-25 — this artifact exists; do not re-run it.** The two panels agree on every
+count through `after_canonical` = 56,475 and on `f_A` = 14.12 % / `f_B` = 15.78 %; the include
+build (SLURM 12931496) keeps 56,475 and clusters to **14,937** against the primary's 13,836 —
+11,149 extra pool entries add only 1,101 independent families. The calibration (SLURM 12931501,
+1 h 32 m) measured
+
+$$
+\Delta\theta = -5.6885\times10^{-4},
+\qquad \frac{\lvert\Delta\theta\rvert}{c_u} = 0.0057,
+\qquad \Delta\log\frac{s_A}{s_B} = 3.75\times10^{-3},
+$$
+
+label **`within_credit`**. `OVERLAP_INCLUSION_SHIFT=0.0005688505037048097` is therefore already
+baked into `dual_overlay_{m1,c1}_v1.json`, which are signed and ready; §2.1's re-sign is a
+VERIFICATION step for you, not a production step. See AUDIT §J.8 for what this measurement does and
+does not license.
+
 ### 2.2 Materialize and preflight
 
 Use the ordinary V2 materialization protocol from the executed V2 runbook. Preserve every non-Dual
@@ -226,6 +399,21 @@ argument from its signed source cell and add only:
 Paths only. The role B variant id, allele index and window batch size live in the SIGNED overlay and
 are read from there; the materializer does not accept them, because a knob that reads as a control
 and changes nothing is worse than a missing one.
+
+**`${DUAL_OVERLAY}` is the CAMPAIGN's overlay, and the two campaigns do not share one** (J.7 D1):
+
+```bash
+# M1 mechanism cells
+DUAL_OVERLAY=${CALIBRATION_DIR}/dual_overlay_m1_v1.json   # C = 278, logical Head calls 556
+# C1 high-risk D4/K12 cells
+DUAL_OVERLAY=${CALIBRATION_DIR}/dual_overlay_c1_v1.json   # C = 454, logical Head calls 908
+```
+
+Both carry the SAME measured calibration — identical panel, coordinates, law and objective digest —
+so the two campaigns are steered by one objective and differ only in how much candidate domain a
+cycle may open. They are distinct `content_digest`s and therefore distinct run signatures, which is
+what stops an M1 fragment being reused by a C1 cell. Never launch
+`dual_overlay_overlap_included_v1.json`: it is a MEASUREMENT of panel sensitivity, not a campaign.
 
 **One config per protein.** The arm is a LAUNCH flag (`--dual-arm`), not a materialized bundle:
 there are no per-arm configs, no arm bundles to resolve and no in-cell branching. The same resolved

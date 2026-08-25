@@ -294,7 +294,7 @@ its slope. Two consequences follow, and both are audit requirements rather than 
    criterion written on the raw difference can therefore certify a calibration whose decision
    boundary has moved. The normalized difference is already dimensionless, so it is compared to the
    credit $c_u$ directly, with no further division by a scale that is not defined for a pair.
-2. **Scale drift is part of the same audit.** A leave-overlap-out recomputation that changes $s_A$
+2. **Scale drift is part of the same audit.** An overlap-inclusion recomputation that changes $s_A$
    or $s_B$ changes the boundary's slope, not merely its intercept, so two calibrations can agree on
    the intercept and still disagree about which allele is worst for a whole region of the landscape.
    The producer therefore reports drift in the intercept $b_A/s_A-b_B/s_B$ **and** in the scale
@@ -316,11 +316,28 @@ A shift common to both alleles largely cancels.
 Both location and scale are robust statistics, which bounds the exposure: a contaminated fraction
 $f$ can move a median by at most the displacement from the $50$th to the $(50\pm100f)$th percentile
 of the clean distribution. The requirement is therefore to **measure** $f_A$ and $f_B$ by homology
-rather than by identifier match, to recompute the whole calibration with overlapping entries removed,
-and to require that the normalized location difference $b_A/s_A-b_B/s_B$ move by only a small
-fraction of the frozen credit $c_u$ between the two recomputations -- the raw difference $b_A-b_B$
-is not the invariant, for the reason given in §2.2.3. Zero overlap is neither achievable against immunologically derived training
-pools nor necessary.
+rather than by identifier match; to build the PRIMARY panel with the overlapping entries removed,
+by a leakage rule fixed before any coordinate is measured; and to recompute the whole calibration
+on a second panel that is identical except that it KEEPS them, reporting
+
+$$
+\Delta\theta
+=
+\left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)_{\mathrm{overlap\ included}}
+-
+\left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)_{\mathrm{primary}}
+$$
+
+together with the drift in the scale ratio. The raw difference $b_A-b_B$ is not the invariant, for
+the reason given in §2.2.3.
+
+**$\lvert\Delta\theta\rvert$ against $c_u$ is a panel-sensitivity LABEL, not a selection between
+the two panels** (`doc/DUAL_ALLELE_DUALF0_AUDIT.md` §J.7 D2). The primary panel was selected by an
+outcome-independent leakage rule, so it stays the coordinate authority whatever the sensitivity
+measures; letting a large drift promote the contaminated panel would make the choice of coordinate
+system depend on the outcome it produces. What a large drift does do is limit the method claim to
+this frozen reference panel. Zero overlap is neither achievable against immunologically derived
+training pools nor necessary.
 
 #### 2.2.4 Calibration and stochastic tolerance are different
 
@@ -471,8 +488,15 @@ $\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)=0.0185$ against $c_u=0.10$, i.e. 
 own imprecision occupies about **18.5 %** of the credit band. It cannot be reduced by enlarging the
 panel: 44,021 eligible sequences cluster into only 13,836 homology-independent units and the
 standard error is over those units, so reaching $c_u/10$ would need roughly four times as many
-independent families as the deduplicated Tier-2 pool contains. Whether 18.5 % is acceptable is a
-scientific judgement, recorded as **D3** in `doc/DUAL_ALLELE_DUALF0_AUDIT.md` §J.4.
+independent families as the deduplicated Tier-2 pool contains. **ACCEPTED for v1** (`doc/DUAL_ALLELE_DUALF0_AUDIT.md` §J.7 D3,
+2026-08-25), and the qualitative $\operatorname{SE}\ll c_u$ requirement is retired with it. The
+panel is a deliberately frozen reference coordinate system, so its median/IQR values are exact
+descriptive constants of that panel and this standard error measures sensitivity to which
+homologous families instantiate the broader natural-sequence domain -- not runtime measurement
+noise, and not donor/write uncertainty, which are bounded separately by the repeat drift $e_a$. The
+SE and its bootstrap method remain in the calibration report and the method claim is scoped to the
+content-bound panel. Reintroducing evaluation proteins, loosening clustering to manufacture nominal
+sample size, or moving $c_u$ after seeing this number are all forbidden.
 
 The coordinate is the NORMALIZED difference $b_A/s_A-b_B/s_B$ throughout, including here and in §9's
 reporting list. An earlier revision of those two passages used the raw $\left(b_A-b_B\right)/s$

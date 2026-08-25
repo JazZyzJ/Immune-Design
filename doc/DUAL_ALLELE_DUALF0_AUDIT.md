@@ -99,12 +99,15 @@ after the GPU is allocated).
 > floor with a bootstrap mean; the GO test is $\operatorname{UCB}_{95\%}[\operatorname{mean}(\Delta J)]<0$).
 > **S3, S4, S5 withdrawn with the in-process contrast** (Appendix H: arms are compared ACROSS runs,
 > so there are no `*_with_joint_safety` arm labels, no free-vs-dose-matched question and no arm
-> **S6 (the 80/100 coverage floor) is STILL OPEN** — nothing has re-derived the single-root
-> expectation, and the runbook still carries the floor with its inherited 4-root provenance. An
-> earlier revision of this banner named S6 and then gave a status only for S7, while Appendix H
-> struck out "S5-S7" as resolved and accounted for only S5 and S7: both implied S6 was closed and
-> neither said so. **S7** closed in Appendix I by splitting the ceiling. The decisions actually
-> open now are **S6** and **D1–D3 in Appendix J**.
+> **S6 (the 80/100 coverage floor) is STILL OPEN.** The single-root expectation has now been
+> derived (Appendix J.8): $84 \times 328/336 = 82.0 \pm 1.4$, so the inherited floor trips on a
+> healthy run **5.05 %** of the time. What remains open is the user decision the number invites —
+> keep 80 and declare its consequence inconclusive-and-rerun, drop to 78, or restore the second
+> root. An earlier revision of this banner named S6 and then gave a status only for S7, while
+> Appendix H struck out "S5-S7" as resolved and accounted for only S5 and S7: both implied S6 was
+> closed and neither said so. **S7** closed in Appendix I by splitting the ceiling.
+> **D1 and D3 are frozen** (Appendix J.7) and **executed** (J.8); **D2's protocol is frozen and the
+> measurement is running**. The decision actually open now is **S6**.
 
 | # | Item | Why it blocks |
 |---|---|---|
@@ -1158,3 +1161,183 @@ natural panel is a later robustness study, not part of the minimal Dual capabili
 The science is now frozen. Code execution may proceed immediately with the M1/C1 overlay re-signing
 and the overlap-inclusion sensitivity job. Cluster generation remains closed until that sensitivity
 artifact and the final runbook-versus-code consistency report both exist.
+
+### J.8 Execution record for J.7 (2026-08-25)
+
+#### D1 — both ceilings verified against their signed artifacts, not against this document
+
+`454` was read directly out of
+`v2_highrisk/highrisk_gumbel_d4k12_r40_v2_eps005_4root_0701__21cd73d/artifacts/head_policy_v2_eps005_c454.json`:
+
+```json
+"counterfactual_ceiling_declaration": {
+  "basis": "global maximum sequence length in the frozen unconstrained 100-protein cohort",
+  "protein_id": "6T88_A", "unit": "editable_positions_per_cycle", "value": 454 }
+```
+
+So the value is already in POSITION units and nothing is converted when it becomes $C$. One
+wording note that matters for reuse: the artifact's own basis is the **maximum sequence length** of
+an *unconstrained* cohort, where length and editable domain coincide because there are no hard
+anchors. J.7's phrase "maximum legal editable domain" is correct for THIS cohort and must not be
+re-derived as a length on any cohort that freezes anchors — there the two differ by the anchor
+count, exactly as M1's `278 = 302 − 24` shows.
+
+The projection was verified through the real seam rather than asserted:
+`run_rf_fusion_v2` sets `n_heads = 2` under an overlay and passes
+`counterfactual_sequences_per_cycle` from `dual_overlay.max_counterfactual_sequences_per_cycle`,
+and `project_v2_budget` multiplies by `n_heads` — so $C=278\rightarrow556$ and $C=454\rightarrow908$
+logical Head calls per cycle, matching J.7's table. Re-signing both campaigns from the one measured
+calibration takes **0.6 s** on a login node and yields byte-identical `calibration` blocks under two
+distinct `content_digest`s.
+
+Both re-signed overlays were then loaded through the production seam
+(`load_dual_overlay_file` → `build_arm_objective`), which shows D1's central claim rather than
+asserting it:
+
+| | M1 ($C=278$) | C1 ($C=454$) |
+|---|---|---|
+| overlay `content_digest` | `8d932953e545` | `889c365c6350` |
+| `joint` objective digest | `5cbf477a90a9` | `5cbf477a90a9` |
+| `a_only` / `b_only` | `8774141edebd` / `91d52880e5ed` | identical |
+| `decision_margin` joint / a\_only / b\_only | $4.6386\times10^{-7}$ / $3.0318\times10^{-7}$ / $4.6386\times10^{-7}$ | identical |
+
+The overlay digests differ, so the two campaigns' run signatures differ and no M1 resume fragment
+can be reused by a C1 cell. The objective digests are equal, so the two campaigns are steered by
+ONE objective. `joint` and `b_only` share a margin because role B is the arg-max of $e_a/s_a$;
+`a_only` doubles its own floor, not the pair's.
+
+**A real defect was found and fixed while executing this.** `--resign-from` carried only the
+*evaluator* forward from the signed artifact and re-read `variant_id`, `allele_idx` and
+`window_batch_size` from `argv`. A mistyped batch size would therefore have signed a structurally
+valid overlay whose runtime binding disagreed with the instrument its own coordinates were measured
+on, with nothing downstream able to see the disagreement — and D1 re-signs twice. The binding now
+comes from the artifact and a contradicting `--head-b-*` value is refused, so the only thing a
+re-sign chooses is $C$. The sixteen measure-only inputs also stopped being parse-time required, so a
+re-sign no longer restates by hand the values whose restatement was the hazard.
+
+`f_A`/`f_B` were being measured by the panel builder and then dropped: the signed overlay carried
+`overlap_fraction_a = overlap_fraction_b = null` even though the report beside it held 14.12 % and
+15.78 %. The overlay is the only file a run reads, so a diagnostic that lives only in a neighbouring
+report is one no artifact can cite — and D2's whole subject is that overlap. `--panel-report` now
+carries them in, and refuses a report describing the other panel.
+
+#### D2 — the sensitivity panel is built and differs in exactly one filter
+
+Built by `scripts/build_dual_calibration_panel.py --head-overlap include` (SLURM 12931496). The
+overlap is MEASURED under both policies and against the same pre-removal pool, so the two builds'
+$f_A$/$f_B$ are one measurement reported twice rather than two numbers:
+
+| step | primary (`exclude`) | sensitivity (`include`) |
+|---|---:|---:|
+| raw records | 225,821 | 225,821 |
+| after dedup | 57,127 | 57,127 |
+| after length | 57,127 | 57,127 |
+| after canonical AA20 | 56,475 | 56,475 |
+| head-homology union measured | 11,149 | 11,149 |
+| **after head homology** | **45,326** | **56,475** |
+| after deployment | 45,302 | 56,442 |
+| after evaluation | 44,021 | 54,893 |
+| **clusters = panel** | **13,836** | **14,937** |
+
+$f_A = 14.121\,\%$, $f_B = 15.784\,\%$ in both, as required for the two panels to be comparable on
+the quantity the sensitivity is about.
+
+**The 11,149 extra pool entries add only 1,101 independent families.** The overlap therefore mostly
+enlarges families the primary panel already represents; it does not open a new region of sequence
+space.
+
+**Measured** (SLURM 12931501, 1 h 32 m on one h200):
+
+| quantity | primary (13,836) | overlap-included (14,937) |
+|---|---:|---:|
+| $b_A$ | −6.767638 | −6.766208 |
+| $s_A$ | 6.291118 | 6.342091 |
+| $b_B$ | −2.669693 | −2.642270 |
+| $s_B$ | 4.111919 | 4.129730 |
+| $s_A/s_B$ | 1.529971 | 1.535716 |
+| $\theta = b_A/s_A - b_B/s_B$ | **−0.426488** | **−0.427057** |
+| cross-allele $r$ | 0.096162 | 0.094575 |
+| $\operatorname{SE}(\theta)$ | 0.018471 | 0.017983 |
+
+$$
+\Delta\theta = -5.6885\times10^{-4},
+\qquad
+\frac{\lvert\Delta\theta\rvert}{c_u} = 0.0057,
+\qquad
+\Delta\log\frac{s_A}{s_B} = 3.75\times10^{-3}.
+$$
+
+Label: **`within_credit`**. Including every Head-training homolog moves the equal-risk line by
+**0.57 % of the credit band**, i.e. by about **1/32 of the panel's own bootstrap standard error**.
+The slope moves as little as the intercept.
+
+**How much this is worth, stated honestly.** It is not 32× more precise than the SE — the two
+measure different things. The SE asks how much $\theta$ would move under a different draw of
+homologous families; $\Delta\theta$ asks how much it moves when 11,149 known-contaminated
+sequences are added to the *same* families. Because those sequences add only 1,101 new families,
+the perturbation mostly re-weights families the panel already spans and re-picks representatives
+within them, so a small $\Delta\theta$ is evidence that **memorization does not shift the two
+Heads' medians differentially** — which is the actual hazard §2.2.3 names — and it is NOT evidence
+that the panel generalizes to a different natural pool. That second claim is out of this
+measurement's reach and is not made.
+
+What would have been alarming is the converse: a large $\Delta\theta$ under a perturbation that
+barely changes which families the panel spans. That did not happen.
+
+#### The four artifacts this produced, and which of them may be launched
+
+| file | role | `content_digest` | launchable |
+|---|---|---|---|
+| `dual_overlay_v1.json` | the measured PRIMARY calibration record, $C=278$ | `4bc1e6142e64` | no — record |
+| `dual_overlay_m1_v1.json` | M1 mechanism campaign, $C=278$ / $2C=556$ | `f70b96ffe9ad` | **yes** |
+| `dual_overlay_c1_v1.json` | C1 high-risk campaign, $C=454$ / $2C=908$ | `be53f59fd493` | **yes** |
+| `dual_overlay_overlap_included_v1.json` | the D2 sensitivity MEASUREMENT | `586e7188…` (panel) | no — measurement |
+
+Both launchable overlays carry $f_A$, $f_B$ and $\lvert\Delta\theta\rvert$, have byte-identical
+`calibration` blocks, and resolve to the same three arm objectives
+(`fab070d27238` / `3928c36074ab` / `4c168fa7c156`) under two different overlay digests — one
+objective, two candidate domains, two run signatures.
+
+The primary record was re-signed once to attach its own build report's $f_A$/$f_B$, which had been
+measured and then dropped because the flag that carries them did not exist when it was first
+signed; the GPU-written original is kept beside it as `.dual_overlay_v1.json.gpu_original` and its
+digest was pinned by nothing.
+
+**A second defect surfaced here.** The comparison emitted at the end of the sensitivity run reported
+`overlap_fraction_a = overlap_fraction_b = null` on BOTH sides, while the overlay signed by the same
+process carried 0.1412 and 0.1578. `--panel-report` enriches the panel binding inside
+`sign_overlay`, and the report was being built from the caller's own pre-enrichment local — so it
+described an artifact that was never written. Fixed, and the shipped report was regenerated offline
+from the two signed overlays in ~2 s using the new `--compare-overlays` mode, which exists because
+there was otherwise no way to rebuild a lost sensitivity report short of another 90-minute GPU run.
+
+#### D3 — where the retired gate actually lived
+
+`PLAN_RF_FUSION_V2_DUAL_ALLELE.md` §5 DUALF1a's "large enough that $\operatorname{SE}\ll c_u$"
+bullet and its RED-test line, and `doc/Dual_Allele_Steering.md` §2.2's closing judgement, were the
+only two places the qualitative gate had force. Both now record the accepted 0.185 with the reason
+the ratio is not a runtime uncertainty, and both name the three forbidden repairs. Appendix F's
+withdrawal of the fail-closed form stands unchanged; what J.7 D3 removes is the qualitative
+remainder, which had no decidable content either.
+
+#### S6 — the one decision J.7 did not cover, now quantified
+
+The 80/100 floor is inherited from a **4-root** 84/100 surface, and the Dual campaign runs **one**
+root per protein. Taking the per-root success rate among proteins that succeeded at all,
+$p = 328/336 = 0.9762$, a healthy single-root campaign yields $84p = 82.0 \pm 1.4$ successes:
+
+| floor | $\Pr[\text{a healthy run falls below it}]$ |
+|---:|---:|
+| 78 | 0.40 % |
+| 79 | 1.53 % |
+| **80 (current)** | **5.05 %** |
+| 81 | 14.07 % |
+| 82 | 32.33 % |
+
+So the floor as written sits almost exactly at the one-sided 5 % level: **a perfectly healthy Dual
+campaign trips it about one launch in twenty.** That is defensible for a *validity* guard whose
+consequence is "this comparison is not readable" and indefensible for one whose consequence is
+"Dual is rejected", and the runbook does not currently say which it is. The options are to keep 80
+and state the consequence as inconclusive-and-rerun, to drop the floor to 78 (0.40 %), or to spend
+compute on a second root and restore the surface the floor was derived from. **This is a user
+decision and it is not covered by J.7.**

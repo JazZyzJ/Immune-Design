@@ -17,7 +17,9 @@ Six filters, in order, each reported:
 1. deduplicate by exact sequence;
 2. keep 100-500 aa (the deployment domain, and long enough to carry a window), and canonical
    AA20 only;
-3. drop the union of BOTH Heads' training homology. Not the intersection: the hazard is ASYMMETRIC
+3. drop the union of BOTH Heads' training homology (``--head-overlap exclude``, the default; the
+   overlap is measured either way and ``include`` keeps it, which is the AUDIT J.7 D2 sensitivity
+   panel and not a second coordinate authority). Not the intersection: the hazard is ASYMMETRIC
    overlap, because a Head that memorized part of the panel has a shifted median and spread, and
    the normalized location difference ``b_A/s_A - b_B/s_B`` -- the equal-risk line -- is biased by
    exactly that shift;
@@ -175,7 +177,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     report["head_homology_union"] = len(union)
     report["head_homology_asymmetry"] = abs(
         report["head_homology_fraction"]["a"] - report["head_homology_fraction"]["b"])
-    pool = {p: s for p, s in pool.items() if p not in union}
+    # The overlap is MEASURED in both policies and REMOVED in only one. A sensitivity panel that
+    # skipped the measurement could not be compared against the primary panel on the quantity the
+    # sensitivity is about, and `head_homology_fraction` is computed against the same pre-removal
+    # pool in both, so the two reports' f_A/f_B are the same number measured twice, not two
+    # different numbers.
+    report["head_overlap_policy"] = str(args.head_overlap)
+    if args.head_overlap == "exclude":
+        pool = {p: s for p, s in pool.items() if p not in union}
     report["after_head_homology"] = len(pool)
 
     # 4. the deployment cohort -- a protein must not normalize against itself
@@ -222,6 +231,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deployment-protein-ids", required=True, type=Path)
     parser.add_argument("--evaluation-protein-ids", action="append", type=Path, default=None,
                         help="repeatable; the per-allele test-set protein id lists")
+    # AUDIT J.7 D2. `include` builds the overlap-inclusion SENSITIVITY panel: identical in every
+    # other filter, Head identity, objective law and scoring protocol, differing only in whether
+    # step 3 removes what it measured. It is a sensitivity label on the primary panel, never a
+    # competing coordinate authority -- the primary panel was selected by an outcome-independent
+    # leakage rule and stays authoritative whatever this measures.
+    parser.add_argument("--head-overlap", choices=("exclude", "include"), default="exclude",
+                        help="exclude (default, the primary panel) or include the union of both "
+                             "Heads' training homology; the overlap is measured either way")
     parser.add_argument("--seen-splits", default="train,val",
                         help="which splits count as SEEN by a Head. train fits the weights and val "
                              "selects them, so both are seen; the held-out test split is not")

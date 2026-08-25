@@ -274,3 +274,296 @@ def test_a_repeat_batch_size_equal_to_the_first_is_refused(tmp_path, monkeypatch
     # rather than loading a model here.
     import inspect
     assert "would then differ only in panel order" in inspect.getsource(cal.main)
+
+
+# -- re-signing binds the instrument, not the command line ------------------------------------
+#
+# AUDIT J.7 D1 re-signs the ONE measured calibration into two campaign overlays (M1 C=278,
+# C1 C=454). Everything about the instrument must come from the signed artifact; the only thing
+# the operator gets to choose on a re-sign is C.
+
+def _primary_overlay_file(tmp_path, **over):
+    import sys
+
+    sys.path.insert(0, str(REPO))
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay
+    from tests.inverse_folding.test_fusion_v2_dual_off_compatibility import _authoring_mapping
+
+    built = overlay(**over)
+    path = tmp_path / "primary_overlay.json"
+    path.write_text(json.dumps(_authoring_mapping(built), indent=2, sort_keys=True) + "\n")
+    return path, built
+
+
+def _resign_argv(tmp_path, primary, *, c, extra=()):
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text('{"protein_id": "P1"}\n')
+    return ["--resign-from", str(primary),
+            "--objective-spec", str(REPO / "inverse_folding/reference_flow/configs"
+                                          "/v2_dual_smoothmax_policy_v1.json"),
+            "--out-rows", str(rows), "--out-overlay", str(tmp_path / "out.json"),
+            "--max-counterfactual-sequences-per-cycle", str(c), *extra]
+
+
+def test_a_resign_needs_only_the_signed_artifact_and_the_new_ceiling(tmp_path):
+    """Re-signing must not force the operator to restate fifteen instrument values by hand."""
+    primary, _ = _primary_overlay_file(tmp_path)
+    assert cal.main(_resign_argv(tmp_path, primary, c=454)) == 0
+    out = json.loads((tmp_path / "out.json").read_text())
+    assert out["max_counterfactual_sequences_per_cycle"] == 454
+
+
+def test_a_resign_carries_head_b_runtime_from_the_overlay_it_was_signed_from(tmp_path):
+    """The binding is a property of the measured calibration, not of this command line.
+
+    Before this, ``variant_id``/``allele_idx``/``window_batch_size`` were re-read from argv while
+    only the evaluator came from the artifact -- so one mistyped batch size produced a perfectly
+    valid overlay whose runtime binding disagreed with the instrument its coordinates were
+    measured on, and nothing downstream could tell.
+    """
+    primary, built = _primary_overlay_file(tmp_path)
+    assert cal.main(_resign_argv(tmp_path, primary, c=454)) == 0
+    out = json.loads((tmp_path / "out.json").read_text())
+    assert out["head_b_runtime"]["variant_id"] == built.head_b_runtime.variant_id
+    assert out["head_b_runtime"]["allele_idx"] == built.head_b_runtime.allele_idx
+    assert out["head_b_runtime"]["window_batch_size"] == built.head_b_runtime.window_batch_size
+
+
+def test_a_resign_refuses_a_head_b_value_that_contradicts_the_artifact(tmp_path):
+    primary, _ = _primary_overlay_file(tmp_path)
+    argv = _resign_argv(tmp_path, primary, c=454,
+                        extra=["--head-b-window-batch-size", "32"])
+    with pytest.raises(cal.DualCalibrationError, match="window_batch_size"):
+        cal.main(argv)
+
+
+def test_two_campaign_overlays_share_one_calibration_and_differ_only_in_the_ceiling(tmp_path):
+    """D1: the science is one measurement; C is campaign-specific resource accounting."""
+    primary, _ = _primary_overlay_file(tmp_path)
+    signed = {}
+    for name, c in (("m1", 278), ("c1", 454)):
+        out = tmp_path / f"{name}.json"
+        assert cal.main(_resign_argv(tmp_path, primary, c=c)
+                        + ["--out-overlay", str(out)]) == 0
+        signed[name] = json.loads(out.read_text())
+    assert signed["m1"]["calibration"] == signed["c1"]["calibration"]
+    assert (signed["m1"]["max_counterfactual_sequences_per_cycle"],
+            signed["c1"]["max_counterfactual_sequences_per_cycle"]) == (278, 454)
+
+
+# -- the overlap-inclusion sensitivity (D2) ----------------------------------------------------
+
+def test_the_measured_shift_can_be_recorded_on_a_resign(tmp_path):
+    primary, _ = _primary_overlay_file(tmp_path)
+    from inverse_folding.reference_flow.fusion_v2 import joint_objective as jo
+    import dataclasses
+
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay as _ov
+    unmeasured = _ov(calibration=dataclasses.replace(
+        _ov().calibration,
+        panel=dataclasses.replace(_ov().calibration.panel, leave_overlap_out_shift=None)))
+    path, _ = _primary_overlay_file(tmp_path, calibration=unmeasured.calibration)
+    assert cal.main(_resign_argv(tmp_path, path, c=278,
+                                 extra=["--overlap-inclusion-shift", "0.0042"])) == 0
+    out = json.loads((tmp_path / "out.json").read_text())
+    assert out["calibration"]["panel"]["leave_overlap_out_shift"] == pytest.approx(0.0042)
+    assert isinstance(jo.PanelBinding, type)
+
+
+def test_recording_a_shift_over_a_different_measured_one_is_refused(tmp_path):
+    """The fixture already carries 0.004; contradicting it silently would rewrite a measurement."""
+    primary, _ = _primary_overlay_file(tmp_path)
+    with pytest.raises(cal.DualCalibrationError, match="leave_overlap_out_shift"):
+        cal.main(_resign_argv(tmp_path, primary, c=278,
+                              extra=["--overlap-inclusion-shift", "0.09"]))
+
+
+def _two_calibrations(**sensitivity_over):
+    import dataclasses
+
+    from tests.inverse_folding.test_fusion_v2_dual_evidence import calibration
+
+    primary = calibration()
+    risk = primary.risk
+    b = dataclasses.replace(risk.b, location=risk.b.location + 0.05)
+    sens = dataclasses.replace(
+        primary,
+        panel=dataclasses.replace(primary.panel, panel_id="tier2_overlap_included_v1",
+                                  panel_digest="b" * 64, n_proteins=16000),
+        risk=dataclasses.replace(risk, b=b))
+    if sensitivity_over:
+        sens = dataclasses.replace(sens, **sensitivity_over)
+    return primary, sens
+
+
+def test_the_sensitivity_report_states_the_normalized_intercept_drift_and_its_label():
+    primary, sens = _two_calibrations()
+    report = cal.overlap_sensitivity_report(primary=primary, sensitivity=sens)
+    theta = lambda c: (c.risk.a.location / c.risk.a.scale
+                       - c.risk.b.location / c.risk.b.scale)
+    assert report["delta_theta"] == pytest.approx(theta(sens) - theta(primary))
+    assert report["abs_delta_theta"] == pytest.approx(abs(theta(sens) - theta(primary)))
+    # the label is a LABEL, never a switch to the contaminated panel
+    assert report["exceeds_credit"] is (report["abs_delta_theta"] > report["credit_normalized"])
+    assert report["primary"]["panel_id"] == "tier2_natural_v1"
+    assert report["sensitivity"]["panel_id"] == "tier2_overlap_included_v1"
+    for side in ("primary", "sensitivity"):
+        for key in ("b_a", "s_a", "b_b", "s_b", "theta", "log_scale_ratio",
+                    "cross_allele_pearson", "equal_risk_line_stderr", "n_proteins",
+                    "panel_digest", "overlap_fraction_a", "overlap_fraction_b"):
+            assert key in report[side], (side, key)
+
+
+def test_the_sensitivity_report_refuses_two_panels_that_are_the_same_panel():
+    from tests.inverse_folding.test_fusion_v2_dual_evidence import calibration
+
+    with pytest.raises(cal.DualCalibrationError, match="same panel"):
+        cal.overlap_sensitivity_report(primary=calibration(), sensitivity=calibration())
+
+
+def test_the_sensitivity_report_refuses_a_different_instrument_or_a_different_law():
+    import dataclasses
+
+    primary, sens = _two_calibrations()
+    other_law = dataclasses.replace(sens, law=dataclasses.replace(sens.law, tau=0.20))
+    with pytest.raises(cal.DualCalibrationError, match="law"):
+        cal.overlap_sensitivity_report(primary=primary, sensitivity=other_law)
+
+    moved = dataclasses.replace(
+        sens, risk=dataclasses.replace(
+            sens.risk, a=dataclasses.replace(
+                sens.risk.a, evaluator=dataclasses.replace(
+                    sens.risk.a.evaluator, head_checkpoint_digest="c" * 64))))
+    with pytest.raises(cal.DualCalibrationError, match="instrument|evaluator"):
+        cal.overlap_sensitivity_report(primary=primary, sensitivity=moved)
+
+
+# -- the measured overlap fractions belong IN the signed artifact -------------------------------
+
+def _report(tmp_path, **over):
+    node = {"head_homology_fraction": {"a": 0.14121292607348385, "b": 0.15783975210270032},
+            "head_overlap_policy": "exclude", "panel_size": 53184, "n_clusters": 53184}
+    node.update(over)
+    path = tmp_path / "panel.report.json"
+    path.write_text(json.dumps(node, indent=2))
+    return path
+
+
+def test_the_panel_report_supplies_the_overlap_fractions_the_artifact_must_carry(tmp_path):
+    """f_A and f_B are measured by the builder and were being dropped on the floor.
+
+    The overlay is the only thing a run reads, so a diagnostic that lives solely in a report file
+    beside it is a diagnostic no run can cite -- and D2's whole subject is the overlap.
+    """
+    import dataclasses
+
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay as _ov
+
+    base = _ov()
+    bare = dataclasses.replace(
+        base.calibration,
+        panel=dataclasses.replace(base.calibration.panel, overlap_fraction_a=None,
+                                  overlap_fraction_b=None))
+    path, _ = _primary_overlay_file(tmp_path, calibration=bare)
+    assert cal.main(_resign_argv(tmp_path, path, c=278,
+                                 extra=["--panel-report", str(_report(tmp_path))])) == 0
+    panel = json.loads((tmp_path / "out.json").read_text())["calibration"]["panel"]
+    assert panel["overlap_fraction_a"] == pytest.approx(0.14121292607348385)
+    assert panel["overlap_fraction_b"] == pytest.approx(0.15783975210270032)
+
+
+def test_a_panel_report_that_describes_a_different_panel_is_refused(tmp_path):
+    primary, _ = _primary_overlay_file(tmp_path)
+    with pytest.raises(cal.DualCalibrationError, match="panel_size|n_proteins"):
+        cal.main(_resign_argv(tmp_path, primary, c=278,
+                              extra=["--panel-report", str(_report(tmp_path, panel_size=99))]))
+
+
+def test_a_report_from_the_sensitivity_build_may_not_qualify_the_primary_artifact(tmp_path):
+    """`--head-overlap include` measures the same fractions but describes the OTHER panel."""
+    primary, _ = _primary_overlay_file(tmp_path)
+    with pytest.raises(cal.DualCalibrationError, match="head_overlap_policy"):
+        cal.main(_resign_argv(tmp_path, primary, c=278, extra=[
+            "--panel-report", str(_report(tmp_path, head_overlap_policy="include"))]))
+
+
+def test_the_sensitivity_run_records_its_own_overlap_fractions():
+    """The include-panel's own report qualifies the include-panel's own artifact.
+
+    Hardcoding "exclude" refused this, which would have left the sensitivity artifact unable to
+    state the very overlap it exists to measure.
+    """
+    import argparse
+    import dataclasses
+
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay as _ov
+
+    bare = dataclasses.replace(
+        _ov().calibration,
+        panel=dataclasses.replace(_ov().calibration.panel, overlap_fraction_a=None,
+                                  overlap_fraction_b=None))
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        report = _report(Path(d), head_overlap_policy="include")
+        out = cal.with_panel_report(bare, report, expected_policy="include")
+        assert out.panel.overlap_fraction_a == pytest.approx(0.14121292607348385)
+        with pytest.raises(cal.DualCalibrationError, match="head_overlap_policy"):
+            cal.with_panel_report(bare, report, expected_policy="exclude")
+    assert isinstance(argparse.Namespace(), argparse.Namespace)
+
+
+def test_a_comparison_can_be_recomputed_from_two_signed_artifacts_without_a_gpu(tmp_path):
+    """Otherwise the only way to regenerate a lost sensitivity report is a 90-minute GPU job.
+
+    It also lets the report be re-emitted against an ENRICHED primary: the shipped primary overlay
+    predates `--panel-report` and carries null overlap fractions, so a comparison made during the
+    sensitivity run reports f_A/f_B on one side only.
+    """
+    import dataclasses
+
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay as _ov
+
+    primary, _ = _primary_overlay_file(tmp_path)
+    base = _ov().calibration
+    other = dataclasses.replace(
+        base,
+        panel=dataclasses.replace(base.panel, panel_id="incl", panel_digest="b" * 64,
+                                  n_proteins=14937),
+        risk=dataclasses.replace(base.risk,
+                                 b=dataclasses.replace(base.risk.b,
+                                                       location=base.risk.b.location + 0.02)))
+    sens_path = tmp_path / "sens_overlay.json"
+    import sys
+    sys.path.insert(0, str(REPO))
+    from tests.inverse_folding.test_fusion_v2_dual_off_compatibility import _authoring_mapping
+    sens_path.write_text(json.dumps(_authoring_mapping(_ov(calibration=other)), indent=2))
+
+    out = tmp_path / "comparison.json"
+    assert cal.main(["--compare-overlays", str(primary), str(sens_path),
+                     "--out-comparison", str(out)]) == 0
+    report = json.loads(out.read_text())
+    assert report["schema"] == "dual-overlap-sensitivity-1"
+    assert report["sensitivity"]["n_proteins"] == 14937
+    assert report["label"] in ("within_credit", "exceeds_credit")
+
+
+def test_comparing_overlays_needs_its_output_path(tmp_path):
+    primary, _ = _primary_overlay_file(tmp_path)
+    with pytest.raises(SystemExit):
+        cal.main(["--compare-overlays", str(primary), str(primary)])
+
+
+def test_the_comparison_describes_the_calibration_that_was_actually_signed(tmp_path):
+    """The report must not be built from a pre-enrichment copy of the calibration.
+
+    `--panel-report` enriches the calibration INSIDE `sign_overlay`, so a report built from the
+    caller's own local variable describes an artifact that was never written: the shipped
+    sensitivity overlay carried f_A = 0.1412 / f_B = 0.1578 while the comparison beside it reported
+    both as null.
+    """
+    import inspect
+
+    src = inspect.getsource(cal.main)
+    body = src[src.index("if args.compare_to is not None:"):]
+    assert "sensitivity=overlay.calibration" in body, (
+        "the comparison must read the SIGNED overlay's calibration, not the pre-enrichment local")

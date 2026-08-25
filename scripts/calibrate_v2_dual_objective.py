@@ -415,15 +415,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="calibrate_v2_dual_objective",
         description="measure the frozen dual-allele calibration on a natural panel and sign it")
-    parser.add_argument("--panel-fasta", required=True, type=Path,
+    parser.add_argument("--panel-fasta", type=Path, default=None,
                         help="the FROZEN natural panel; built upstream, never built here")
-    parser.add_argument("--panel-id", required=True)
+    parser.add_argument("--panel-id", default=None)
     parser.add_argument("--deployment-protein-ids", type=Path, default=None,
                         help="one id per line; refused if any appears in the panel")
-    parser.add_argument("--objective-spec", required=True, type=Path,
+    parser.add_argument("--objective-spec", type=Path, default=None,
                         help="the tracked objective-law spec; tau is VALIDATED, never selected")
-    parser.add_argument("--out-rows", required=True, type=Path)
-    parser.add_argument("--out-overlay", required=True, type=Path)
+    parser.add_argument("--out-rows", type=Path, default=None)
+    parser.add_argument("--out-overlay", type=Path, default=None)
     # No --out-calibration. It was declared here and read nowhere -- an inert knob, which is the
     # exact defect this project removed from the materializer. The signed OVERLAY already carries
     # the whole measured calibration, and --resign-from reads it back, so a separate artifact would
@@ -431,10 +431,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resign-from", type=Path, default=None,
                         help="re-emit an overlay from an already-measured calibration. Loads no "
                              "model, opens no Head, and re-measures nothing")
-    parser.add_argument("--max-counterfactual-sequences-per-cycle", required=True, type=int,
+    parser.add_argument("--max-counterfactual-sequences-per-cycle", type=int, default=None,
                         help="C: the per-cycle CANDIDATE domain. The logical Head-call budget is "
                              "2*C and is projected by the preflight, never enforced by the policy")
     parser.add_argument("--arm-bundle", default="joint,a_only,b_only")
+    # AUDIT J.7 D2. RECORDS a measurement made by a second calibration run; it never performs one.
+    parser.add_argument("--overlap-inclusion-shift", type=float, default=None,
+                        help="|dtheta| from the overlap-inclusion sensitivity, in normalized "
+                             "units; recorded on the panel binding as leave_overlap_out_shift")
+    parser.add_argument("--panel-report", type=Path, default=None,
+                        help="the build report from scripts/build_dual_calibration_panel.py; "
+                             "supplies the measured overlap fractions f_A/f_B")
+    parser.add_argument("--compare-overlays", type=Path, nargs=2, default=None,
+                        metavar=("PRIMARY", "SENSITIVITY"),
+                        help="recompute the sensitivity report from two SIGNED overlays; pure, no "
+                             "GPU, no re-measurement. Without it the only way to regenerate a lost "
+                             "report is to re-run the 90-minute calibration")
+    parser.add_argument("--compare-to", type=Path, default=None,
+                        help="a signed PRIMARY overlay; this run is then the overlap-inclusion "
+                             "sensitivity and emits the comparison to --out-comparison")
+    parser.add_argument("--out-comparison", type=Path, default=None,
+                        help="where the --compare-to sensitivity report is written")
     parser.add_argument("--repeat-shuffle-seed", type=int, default=20260824,
                         help="orders the second pass")
     parser.add_argument("--repeat-window-batch-size", type=int, default=None,
@@ -447,37 +464,209 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda")
     for role in ("a", "b"):
         group = parser.add_argument_group(f"head {role.upper()}")
-        group.add_argument(f"--head-{role}-config-dir", required=True, type=Path)
-        group.add_argument(f"--head-{role}-checkpoint", required=True, type=Path)
-        group.add_argument(f"--head-{role}-variant-id", required=True)
-        group.add_argument(f"--head-{role}-allele", required=True)
-        group.add_argument(f"--head-{role}-allele-idx", required=True, type=int,
+        group.add_argument(f"--head-{role}-config-dir", type=Path, default=None)
+        group.add_argument(f"--head-{role}-checkpoint", type=Path, default=None)
+        group.add_argument(f"--head-{role}-variant-id", default=None)
+        group.add_argument(f"--head-{role}-allele", default=None)
+        group.add_argument(f"--head-{role}-allele-idx", type=int, default=None,
                            help="never defaulted: a silent 0 for the second allele would score "
                                 "its checkpoint against the first allele's embedding row")
-        group.add_argument(f"--head-{role}-window-batch-size", required=True, type=int)
+        group.add_argument(f"--head-{role}-window-batch-size", type=int, default=None)
     parser.add_argument("--score-scale", default="raw_logit")
-    parser.add_argument("--window-k-min", required=True, type=int)
-    parser.add_argument("--window-k-max", required=True, type=int)
+    parser.add_argument("--window-k-min", type=int, default=None)
+    parser.add_argument("--window-k-max", type=int, default=None)
     return parser
 
 
-def sign_overlay(calibration: Any, *, args: argparse.Namespace, evaluator_b: Any,
+def with_overlap_inclusion_shift(calibration: Any, shift: float | None) -> Any:
+    """Record the AUDIT J.7 D2 measurement |dtheta| on the panel binding.
+
+    The field is named ``leave_overlap_out_shift`` because it is a SIGNED schema key and renaming
+    it would move the digest of an artifact whose whole purpose is to be stable. What it carries is
+    the magnitude of
+
+        dtheta = (b_A/s_A - b_B/s_B)_{overlap included} - (b_A/s_A - b_B/s_B)_{primary},
+
+    the primary panel being the overlap-EXCLUDED one. Overwriting a different measured value is
+    refused: two numbers for one measurement means one of them was never measured.
+    """
+    import dataclasses
+
+    if shift is None:
+        return calibration
+    value = float(shift)
+    existing = calibration.panel.leave_overlap_out_shift
+    if existing is not None and abs(float(existing) - value) > 1e-12:
+        raise DualCalibrationError(
+            f"the artifact already carries leave_overlap_out_shift={existing!r} and this re-sign "
+            f"declares {value!r}; a re-sign may RECORD an unmeasured sensitivity, never revise a "
+            "measured one -- re-measure and sign from that calibration instead")
+    return dataclasses.replace(
+        calibration,
+        panel=dataclasses.replace(calibration.panel, leave_overlap_out_shift=value))
+
+
+#: What the measure path needs and the re-sign path does not. Enforced in ``main`` rather than by
+#: ``required=True`` so a re-sign does not have to restate sixteen instrument values by hand -- the
+#: exact restatement that let a mistyped one through in the first place.
+MEASURE_ONLY_INPUTS = (
+    "panel_fasta", "panel_id", "window_k_min", "window_k_max",
+    *(f"head_{role}_{name}" for role in ("a", "b")
+      for name in ("config_dir", "checkpoint", "variant_id", "allele", "allele_idx",
+                   "window_batch_size")),
+)
+
+
+def normalized_intercept(calibration: Any) -> float:
+    """The equal-risk line ``b_A/s_A - b_B/s_B``. NOT ``b_A - b_B``, which is a different quantity.
+
+    Adding one raw constant to both locations leaves ``b_A - b_B`` exactly unchanged while moving
+    the boundary by ``delta*(1/s_A - 1/s_B)``, so the raw difference cannot be the invariant.
+    """
+    risk = calibration.risk
+    return (float(risk.a.location) / float(risk.a.scale)
+            - float(risk.b.location) / float(risk.b.scale))
+
+
+def _side(calibration: Any) -> dict[str, Any]:
+    panel, risk = calibration.panel, calibration.risk
+    return {
+        "panel_id": panel.panel_id, "panel_digest": panel.panel_digest,
+        "n_proteins": int(panel.n_proteins),
+        "overlap_fraction_a": panel.overlap_fraction_a,
+        "overlap_fraction_b": panel.overlap_fraction_b,
+        "equal_risk_line_stderr": panel.equal_risk_line_stderr,
+        "cross_allele_pearson": panel.cross_allele_pearson,
+        "b_a": float(risk.a.location), "s_a": float(risk.a.scale),
+        "b_b": float(risk.b.location), "s_b": float(risk.b.scale),
+        "scale_ratio": float(risk.a.scale) / float(risk.b.scale),
+        "log_scale_ratio": math.log(float(risk.a.scale) / float(risk.b.scale)),
+        "theta": normalized_intercept(calibration),
+    }
+
+
+def overlap_sensitivity_report(*, primary: Any, sensitivity: Any) -> dict[str, Any]:
+    """AUDIT J.7 D2: how far including the Heads' training homology moves the equal-risk line.
+
+    A LABEL on the primary panel, never a selection between two panels. The primary panel was
+    chosen by an outcome-independent leakage rule, so it stays the coordinate authority whatever
+    this measures; a large ``|dtheta|`` limits the claim to that frozen reference panel and does
+    not retroactively appoint the contaminated one.
+
+    The two runs must differ in the panel and in NOTHING else -- same Head identities, same law.
+    Otherwise the drift reported here is attributable to whatever else moved.
+    """
+    if primary.panel.panel_digest == sensitivity.panel.panel_digest:
+        raise DualCalibrationError(
+            "the two calibrations were measured on the same panel (identical panel_digest); an "
+            "overlap-inclusion sensitivity needs the overlap-INCLUDED build as its second panel")
+    if primary.law.canonical_payload() != sensitivity.law.canonical_payload():
+        raise DualCalibrationError(
+            "the two calibrations do not share one objective law; a drift measured across two "
+            "laws is not a panel sensitivity")
+    for role in ("a", "b"):
+        one = getattr(primary.risk, role).evaluator.canonical_payload()
+        two = getattr(sensitivity.risk, role).evaluator.canonical_payload()
+        if one != two:
+            raise DualCalibrationError(
+                f"role {role.upper()} was scored by a different instrument in the two runs "
+                "(evaluator identity differs); the sensitivity must vary the panel alone")
+
+    left, right = _side(primary), _side(sensitivity)
+    delta = right["theta"] - left["theta"]
+    credit = float(primary.law.credit)
+    return {
+        "schema": "dual-overlap-sensitivity-1",
+        "primary": left, "sensitivity": right,
+        "delta_theta": delta, "abs_delta_theta": abs(delta),
+        "delta_log_scale_ratio": right["log_scale_ratio"] - left["log_scale_ratio"],
+        "credit_normalized": credit,
+        "abs_delta_theta_over_credit": abs(delta) / credit,
+        "exceeds_credit": bool(abs(delta) > credit),
+        # Stated as a label so no reader has to decide what the number means, and so nothing
+        # downstream can mistake it for a gate that selects a panel.
+        "label": "exceeds_credit" if abs(delta) > credit else "within_credit",
+        "authority": "the overlap-EXCLUDED primary panel remains the coordinate authority "
+                     "regardless of this result",
+    }
+
+
+def with_panel_report(calibration: Any, report_path: Any, *,
+                      expected_policy: str = "exclude") -> Any:
+    """Carry the builder's measured ``f_A``/``f_B`` into the signed artifact.
+
+    The overlay is the only file a run reads. A diagnostic that lives beside it in a report the run
+    never opens is a diagnostic no artifact can cite -- and the overlap fractions are the subject of
+    the D2 sensitivity, not a footnote to it.
+
+    The report must describe THIS panel. The sensitivity build measures the same two fractions
+    against the same pre-removal pool, so its report is numerically plausible on the primary
+    artifact and would be accepted by anything that only checked the numbers were floats. Which
+    panel this run IS is not guessed: a run carrying ``--compare-to`` is the overlap-INCLUSION
+    sensitivity and any other run is the primary.
+    """
+    import dataclasses
+
+    if report_path is None:
+        return calibration
+    node = json.loads(Path(report_path).read_text())
+    policy = node.get("head_overlap_policy", "exclude")
+    if str(policy) != expected_policy:
+        raise DualCalibrationError(
+            f"head_overlap_policy={policy!r} but this artifact is the {expected_policy!r} panel; "
+            "qualifying one panel's coordinates with the other panel's provenance would attach a "
+            "measured overlap to the build that does not have it")
+    fractions = node.get("head_homology_fraction") or {}
+    size = node.get("panel_size")
+    if size is not None and int(size) != int(calibration.panel.n_proteins):
+        raise DualCalibrationError(
+            f"the report describes a panel of panel_size={size} and the calibration was measured "
+            f"on n_proteins={calibration.panel.n_proteins}; they are not the same panel")
+    for role in ("a", "b"):
+        if role not in fractions:
+            raise DualCalibrationError(
+                f"the report carries no head_homology_fraction[{role!r}]")
+        existing = getattr(calibration.panel, f"overlap_fraction_{role}")
+        if existing is not None and abs(float(existing) - float(fractions[role])) > 1e-12:
+            raise DualCalibrationError(
+                f"the artifact already carries overlap_fraction_{role}={existing!r} and the "
+                f"report says {fractions[role]!r}")
+    panel = dataclasses.replace(
+        calibration.panel,
+        overlap_fraction_a=float(fractions["a"]), overlap_fraction_b=float(fractions["b"]))
+    return dataclasses.replace(calibration, panel=panel)
+
+
+def sign_overlay(calibration: Any, *, args: argparse.Namespace, head_b_runtime: Any,
                  rows_path: Path) -> Any:
     """Turn a measured calibration into one signed overlay. No model, no scoring."""
     from inverse_folding.reference_flow.fusion_v2.dual_config import (
-        DUAL_OVERLAY_SCHEMA_VERSION, DualOverlay, HeadRuntimeBinding,
+        DUAL_OVERLAY_SCHEMA_VERSION, DualOverlay,
     )
 
     return DualOverlay(
-        schema_version=DUAL_OVERLAY_SCHEMA_VERSION, calibration=calibration,
-        head_b_runtime=HeadRuntimeBinding(
-            evaluator=evaluator_b, variant_id=str(args.head_b_variant_id),
-            allele_idx=int(args.head_b_allele_idx),
-            window_batch_size=int(args.head_b_window_batch_size)),
+        schema_version=DUAL_OVERLAY_SCHEMA_VERSION,
+        calibration=with_overlap_inclusion_shift(
+            with_panel_report(
+                calibration, getattr(args, "panel_report", None),
+                # A run that compares itself AGAINST a primary overlay is the sensitivity build.
+                expected_policy=("include" if getattr(args, "compare_to", None) is not None
+                                 else "exclude")),
+            getattr(args, "overlap_inclusion_shift", None)),
+        head_b_runtime=head_b_runtime,
         arm_bundle=tuple(a.strip() for a in str(args.arm_bundle).split(",") if a.strip()),
         max_counterfactual_sequences_per_cycle=int(args.max_counterfactual_sequences_per_cycle),
         objective_spec_digest=hashlib.sha256(args.objective_spec.read_bytes()).hexdigest(),
         calibration_artifact_digest=hashlib.sha256(Path(rows_path).read_bytes()).hexdigest())
+
+
+def head_b_runtime_from_args(args: argparse.Namespace, evaluator_b: Any) -> Any:
+    from inverse_folding.reference_flow.fusion_v2.dual_config import HeadRuntimeBinding
+
+    return HeadRuntimeBinding(
+        evaluator=evaluator_b, variant_id=str(args.head_b_variant_id),
+        allele_idx=int(args.head_b_allele_idx),
+        window_batch_size=int(args.head_b_window_batch_size))
 
 
 def _resign(args: argparse.Namespace) -> int:
@@ -485,16 +674,29 @@ def _resign(args: argparse.Namespace) -> int:
     from inverse_folding.reference_flow.fusion_v2.dual_config import (
         dual_overlay_payload, load_dual_overlay,
     )
-    from inverse_folding.reference_flow.fusion_v2.joint_objective import AlleleRole
-
     node = json.loads(Path(args.resign_from).read_text())
     # Round-tripped through the overlay's own strict loader so a hand-edited calibration is refused
     # here rather than at the launch gate.
     previous = load_dual_overlay(_typed_overlay(node))
+    # The instrument comes from the ARTIFACT. Previously only the evaluator did, while variant_id,
+    # allele_idx and window_batch_size were re-read from argv -- so one mistyped batch size signed
+    # a valid overlay whose runtime binding disagreed with the instrument its own coordinates were
+    # measured on, and nothing downstream could see the disagreement. On a re-sign the only thing
+    # the operator chooses is C.
+    binding = previous.head_b_runtime
+    for flag, attr, cast in (("--head-b-variant-id", "variant_id", str),
+                             ("--head-b-allele-idx", "allele_idx", int),
+                             ("--head-b-window-batch-size", "window_batch_size", int)):
+        supplied = getattr(args, f"head_b_{attr}", None)
+        if supplied is None:
+            continue
+        if cast(supplied) != cast(getattr(binding, attr)):
+            raise DualCalibrationError(
+                f"{flag}={supplied!r} contradicts the signed artifact's {attr}="
+                f"{getattr(binding, attr)!r}. A re-sign carries the measured instrument forward; "
+                "changing it here would sign coordinates against a Head that did not produce them")
     overlay = sign_overlay(
-        previous.calibration, args=args,
-        evaluator_b=previous.calibration.risk.coordinate(AlleleRole.B).evaluator,
-        rows_path=args.out_rows)
+        previous.calibration, args=args, head_b_runtime=binding, rows_path=args.out_rows)
     args.out_overlay.parent.mkdir(parents=True, exist_ok=True)
     args.out_overlay.write_text(
         json.dumps(dual_overlay_payload(overlay), indent=2, sort_keys=True) + "\n")
@@ -522,10 +724,46 @@ def _typed_overlay(node: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _calibration_of(path: Any) -> Any:
+    """The measured calibration inside a signed overlay file, through its own strict loader."""
+    from inverse_folding.reference_flow.fusion_v2.dual_config import load_dual_overlay
+
+    return load_dual_overlay(_typed_overlay(json.loads(Path(path).read_text()))).calibration
+
+
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    #: What SIGNING needs, on either the measure or the re-sign path. A pure comparison signs
+    #: nothing, so requiring these at parse time would have made the offline mode unreachable.
+    signing = [f"--{n.replace('_', '-')}" for n in
+               ("objective_spec", "out_rows", "out_overlay",
+                "max_counterfactual_sequences_per_cycle")
+               if getattr(args, n, None) is None]
+    if args.compare_overlays is not None:
+        if args.out_comparison is None:
+            parser.error("--compare-overlays needs --out-comparison")
+        left, right = (_calibration_of(path) for path in args.compare_overlays)
+        report = overlap_sensitivity_report(primary=left, sensitivity=right)
+        args.out_comparison.parent.mkdir(parents=True, exist_ok=True)
+        args.out_comparison.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        print(f"[dualcal] theta primary={report['primary']['theta']:.6g} "
+              f"sensitivity={report['sensitivity']['theta']:.6g} "
+              f"delta={report['delta_theta']:+.6g} "
+              f"|delta|/c_u={report['abs_delta_theta_over_credit']:.4f} -> {report['label']}",
+              flush=True)
+        print(f"[dualcal] comparison -> {args.out_comparison}", flush=True)
+        return 0
+    if signing:
+        parser.error("signing an overlay requires " + ", ".join(signing))
     if args.resign_from is not None:
         return _resign(args)
+    missing = [f"--{name.replace('_', '-')}" for name in MEASURE_ONLY_INPUTS
+               if getattr(args, name, None) is None]
+    if missing:
+        parser.error("measuring a calibration requires " + ", ".join(missing))
+    if (args.compare_to is None) != (args.out_comparison is None):
+        parser.error("--compare-to and --out-comparison are one feature; supply both or neither")
     from scripts.rf_fusion_v2_oracles import build_role_b_head_oracle
 
     deployment = frozenset()
@@ -638,7 +876,8 @@ def main(argv=None) -> int:
     args.out_rows.parent.mkdir(parents=True, exist_ok=True)
     _write_rows(args.out_rows, rows_payload)
 
-    overlay = sign_overlay(calibration, args=args, evaluator_b=evaluator_b,
+    overlay = sign_overlay(calibration, args=args,
+                           head_b_runtime=head_b_runtime_from_args(args, evaluator_b),
                            rows_path=args.out_rows)
     args.out_overlay.parent.mkdir(parents=True, exist_ok=True)
     args.out_overlay.write_text(
@@ -658,6 +897,22 @@ def main(argv=None) -> int:
           flush=True)
     print(f"[dualcal] overlay -> {args.out_overlay} (digest {overlay.content_digest[:12]})",
           flush=True)
+
+    if args.compare_to is not None:
+        primary = _calibration_of(args.compare_to)
+        # ``overlay.calibration``, not the local ``calibration``: ``--panel-report`` enriches the
+        # panel binding inside ``sign_overlay``, so the local copy is the one that was NOT written.
+        # A report describing an artifact nobody has is worse than no report.
+        report = overlap_sensitivity_report(primary=primary,
+                                            sensitivity=overlay.calibration)
+        args.out_comparison.parent.mkdir(parents=True, exist_ok=True)
+        args.out_comparison.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        print(f"[dualcal] theta primary={report['primary']['theta']:.6g} "
+              f"sensitivity={report['sensitivity']['theta']:.6g} "
+              f"delta={report['delta_theta']:+.6g} "
+              f"|delta|/c_u={report['abs_delta_theta_over_credit']:.3f} "
+              f"-> {report['label']}", flush=True)
+        print(f"[dualcal] comparison -> {args.out_comparison}", flush=True)
     return 0
 
 
