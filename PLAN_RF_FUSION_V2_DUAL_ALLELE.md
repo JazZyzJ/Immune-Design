@@ -535,8 +535,8 @@ $$
   $\operatorname{SE}\ll c_u$ is retired.** It was never a fail-closed gate — Appendix F had already
   withdrawn that form, because a threshold on the calibration's own precision is a second
   human-chosen number in a calibration whose whole point is that exactly one ($\tau$) is chosen —
-  and as a qualitative requirement it had no decidable content either. **Measured 2026-08-24:
-  0.0185 against $c_u=0.10$, i.e. 18.5 % of the credit band**, ACCEPTED for v1. The panel is a
+  and as a qualitative requirement it had no decidable content either. **Measured 2026-08-24, corrected 2026-08-25:
+  0.024044 against $c_u=0.10$, i.e. 24.0 % of the credit band**, ACCEPTED for v1. The panel is a
   deliberately frozen reference coordinate system, so its median/IQR values are exact descriptive
   constants OF THAT PANEL and this SE measures sensitivity to which homologous families instantiate
   the broader natural-sequence domain — not runtime measurement noise and not donor/write

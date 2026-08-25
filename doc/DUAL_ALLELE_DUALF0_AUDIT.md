@@ -1051,10 +1051,13 @@ the two Heads are. At half the assumed correlation, it cancels about half as muc
 invalidate the calibration; it means the argument it rests on is weaker than when it was written,
 and the number it rests on is now measured rather than borrowed.
 
-**Bootstrap SE of the normalized intercept $b_A/s_A - b_B/s_B$ is 0.0185**, against $c_u = 0.10$:
+**Bootstrap SE of the normalized intercept $b_A/s_A - b_B/s_B$ is 0.024044**, against $c_u = 0.10$:
+
+> **CORRECTED 2026-08-25 (SLURM 12946466).** The originally published 0.0185 came from a bootstrap whose protein-equal weighting collapsed its own resampling multiplicity: a protein drawn three times contributed the weight of one, so only ~63.2 % of proteins survived each draw and the re-weighting a bootstrap uses to simulate sampling variability was erased. Corrected and recomputed from the same signed evidence table, $\operatorname{SE} = 0.024044$, i.e. $\operatorname{SE}/c_u = 0.240$. The coordinates themselves were never affected -- each protein appears once in the full-panel estimate.
+
 
 $$
-\frac{\operatorname{SE}}{c_u} = 0.185.
+\frac{\operatorname{SE}}{c_u} = 0.240.
 $$
 
 PLAN §5 DUALF1a requires $\operatorname{SE} \ll c_u$. One fifth is not obviously "much less than".
@@ -1068,7 +1071,7 @@ roughly four times as many independent families than the deduplicated Tier-2 poo
 |---|---|---|---|
 | **D1** | **$C$**, the per-cycle candidate domain | It is signed into the overlay and therefore into the run signature. The current artifact carries the placeholder **278** (M1's historical value). `doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md` §2.1 says it is derived from the cohort's maximum legal editable domain, which is measurable — but signing it is a decision. (An earlier revision cited PLAN §7 for this; §7 is the experiment boundary and says nothing about the ceiling.) | All three arms are invalidated and must be re-run. Re-signing itself is cheap: `--resign-from` loads no model and returns before any oracle import (measured at ~2 s wall on the login node; not a logged artifact) |
 | **D2** | **Overlap-inclusion sensitivity: run it or declare it unmeasured** | The calibration contract requires a measured sensitivity to including Head-training homologs and a bound on the drift in $b_A/s_A - b_B/s_B$. Only the overlap-excluded panel exists. At 14–16 % overlap this is not a formality | The intercept is −0.4265, i.e. $4.3\,c_u$. A drift of even a few percent of it consumes the whole credit band. Recommend running it: ~90 min GPU, one more panel build |
-| **D3** | **Accept $\operatorname{SE}/c_u = 0.185$, or change the panel** | The PLAN's own gate is qualitative ("$\ll$") and this is the first time it has had a number to face | The only levers all cost something real: keep the evaluation proteins (contaminates the eval set), loosen clustering (admits correlated units as independent), or accept a wider uncertainty on the equal-risk line |
+| **D3** | **Accept $\operatorname{SE}/c_u$ (0.185 as published then, 0.240 corrected), or change the panel** | The PLAN's own gate is qualitative ("$\ll$") and this is the first time it has had a number to face | The only levers all cost something real: keep the evaluation proteins (contaminates the eval set), loosen clustering (admits correlated units as independent), or accept a wider uncertainty on the equal-risk line |
 
 None of these blocked code completion. Their frozen resolutions and the one remaining measurement
 are in J.7.
@@ -1145,7 +1148,7 @@ submission.
 
 #### D3 — accept the measured precision and retire the qualitative gate
 
-Accept $\operatorname{SE}/c_u=0.185$ for v1. The 13,836-cluster panel is a deliberately frozen
+Accept $\operatorname{SE}/c_u$ for v1 (frozen against the then-published 0.185; corrected to 0.240 the same day, see J.8). The 13,836-cluster panel is a deliberately frozen
 reference coordinate system, so its median/IQR values are exact descriptive constants of that
 panel; the bootstrap SE measures sensitivity to which homologous families instantiate the broader
 natural-sequence domain, not runtime measurement noise and not donor/write uncertainty.
@@ -1196,10 +1199,14 @@ asserting it:
 
 | | M1 ($C=278$) | C1 ($C=454$) |
 |---|---|---|
-| overlay `content_digest` | `8d932953e545` | `889c365c6350` |
-| `joint` objective digest | `5cbf477a90a9` | `5cbf477a90a9` |
-| `a_only` / `b_only` | `8774141edebd` / `91d52880e5ed` | identical |
+| overlay `content_digest` | `7b8f66ee14ea` | `fb428357287e` |
 | `decision_margin` joint / a\_only / b\_only | $4.6386\times10^{-7}$ / $3.0318\times10^{-7}$ / $4.6386\times10^{-7}$ | identical |
+
+> **These are the FINAL digests**, after the corrected bootstrap standard error was recomputed and
+> both campaign overlays re-signed (SLURM 12946466). An earlier revision of this table published the
+> digests of the bring-up PROBE re-signs, which no artifact on disk ever had — while the runbook
+> told the operator to "compare the printed digests against the table". Verify against
+> `MANIFEST.md` in the calibration directory, which is generated from the files themselves.
 
 The overlay digests differ, so the two campaigns' run signatures differ and no M1 resume fragment
 can be reused by a C1 cell. The objective digests are equal, so the two campaigns are steered by
@@ -1257,7 +1264,7 @@ space.
 | $s_A/s_B$ | 1.529971 | 1.535716 |
 | $\theta = b_A/s_A - b_B/s_B$ | **−0.426488** | **−0.427057** |
 | cross-allele $r$ | 0.096162 | 0.094575 |
-| $\operatorname{SE}(\theta)$ | 0.018471 | 0.017983 |
+| $\operatorname{SE}(\theta)$ | 0.024044 | 0.023444 |
 
 $$
 \Delta\theta = -5.6885\times10^{-4},
@@ -1288,10 +1295,15 @@ barely changes which families the panel spans. That did not happen.
 
 | file | role | `content_digest` | launchable |
 |---|---|---|---|
-| `dual_overlay_v1.json` | the measured PRIMARY calibration record, $C=278$ | `4bc1e6142e64` | no — record |
-| `dual_overlay_m1_v1.json` | M1 mechanism campaign, $C=278$ / $2C=556$ | `f70b96ffe9ad` | **yes** |
-| `dual_overlay_c1_v1.json` | C1 high-risk campaign, $C=454$ / $2C=908$ | `be53f59fd493` | **yes** |
-| `dual_overlay_overlap_included_v1.json` | the D2 sensitivity MEASUREMENT | `586e7188…` (panel) | no — measurement |
+| `dual_overlay_v1.json` | the measured PRIMARY calibration record, $C=278$ | `82fbb45ea1e5` | no — record |
+| `dual_overlay_m1_v1.json` | M1 mechanism campaign, $C=278$ / $2C=556$ | `7b8f66ee14ea` | **yes** |
+| `dual_overlay_c1_v1.json` | C1 high-risk campaign, $C=454$ / $2C=908$ | `fb428357287e` | **yes** |
+| `dual_overlay_overlap_included_v1.json` | the D2 sensitivity MEASUREMENT | `ce863e510392` | no — measurement |
+
+"Launchable" is now enforced in code, not merely declared: `run_rf_fusion_v2.resolve_dual` refuses
+any overlay whose panel carries no measured overlap-inclusion sensitivity, which is exactly the two
+records above. Re-signing FROM a contaminated source drops that field too, so the same guard closes
+that route as well.
 
 Both launchable overlays carry $f_A$, $f_B$ and $\lvert\Delta\theta\rvert$, have byte-identical
 `calibration` blocks, and resolve to the same three arm objectives
@@ -1311,11 +1323,95 @@ described an artifact that was never written. Fixed, and the shipped report was 
 from the two signed overlays in ~2 s using the new `--compare-overlays` mode, which exists because
 there was otherwise no way to rebuild a lost sensitivity report short of another 90-minute GPU run.
 
+#### The published standard error was 24 % low, and the defect was in the bootstrap itself
+
+`equal_risk_line_stderr` resamples PROTEINS with replacement — correctly — and then hands the
+resampled rows to `location_and_scale`, whose weighting makes each `protein_id` total to weight
+one. A protein drawn three times therefore contributed the weight of one. Since a draw of $n$ from
+$n$ retains only $1-e^{-1}\approx63.2\,\%$ distinct items (measured: 8,754 / 8,757 / 8,795 of
+13,836 over three draws), the estimator was reporting the spread of *a median over a random 63 %
+subset* rather than the spread the bootstrap is meant to simulate — and the re-weighting that
+carries most of that spread was being erased.
+
+The direction is not the intuitive one. Fewer effective points suggests MORE variance, and that was
+this author's first prediction; it is wrong, because the loss of weight variability dominates the
+loss of sample size. Measured on the real panel:
+
+| estimator | SE | $\operatorname{SE}/c_u$ |
+|---|---:|---:|
+| as originally signed | 0.018471 | 0.185 |
+| multiplicity-respecting | **0.024044** | **0.240** |
+
+**The coordinates were never affected.** $b_a$ and $s_a$ are computed once over the full panel where
+each protein appears exactly once, so protein-equal weighting is exactly right there; only the
+resampled statistic was wrong. Nor is any gate affected — D3 had already retired the only
+requirement that read this number.
+
+Recomputation cost nothing scientific: the per-sequence evidence table is signed and on disk, so the
+statistic was re-derived from it on CPU in ~7 minutes per panel rather than by re-running 1.5 GPU-
+hours of scoring. `--recompute-equal-risk-stderr` refuses unless the rows file's sha256 equals the
+artifact's own `calibration_artifact_digest`, because recomputing a published statistic from a
+different evidence table is a new claim wearing the old artifact's provenance.
+
+**What this obliges the user to revisit.** J.7 D3 was frozen against 0.185. The ACCEPTANCE ARGUMENT
+is untouched — the panel is a frozen reference coordinate system, so its median and IQR are exact
+descriptive constants of it, and this SE measures sensitivity to which homologous families
+instantiate the broader natural-sequence domain rather than runtime measurement noise or
+donor/write uncertainty. But the number the decision was taken against has moved from 18.5 % to
+24.0 % of the credit band, and confirming that the decision stands at the corrected value is the
+user's call, not this document's.
+
+#### The instrument the coordinates were measured on is not the instrument that will steer
+
+Found by the pre-handoff adversarial review, and it is not a documentation gap. The frozen V2
+substrate runs under `immune-design-blackwell` — `doc/RF_Fusion_v2_Cluster_Runbook.md` says the
+launcher "must run under `immune-design-blackwell` ... the env the band scan and the hotspot
+calibration ran under", and `submit_rf_fusion_v2_canary.slurm:59` defaults to it. **Both Dual
+calibrations were measured under `immune-design`** (torch 2.5.1+cu121 against 2.7.1+cu128).
+
+MEASURED rather than argued (SLURM 12946592): 200 panel sequences scored end to end under each
+environment through the identical construction chain.
+
+| | role A | role B |
+|---|---:|---:|
+| bit-identical raw risks | 42 / 200 | 40 / 200 |
+| mean $\lvert\Delta R\rvert$ | $2.97\times10^{-4}$ | $1.89\times10^{-4}$ |
+| max $\lvert\Delta R\rvert$ | $3.30\times10^{-3}$ | $1.60\times10^{-3}$ |
+
+Against the within-environment same-sequence drift $e_a\approx1.5\times10^{-6}$ that
+$\epsilon_{\rm donor}=\epsilon_{\rm write}=2\max_a(e_a/s_a)$ is derived from, that is **200x on the
+mean and 2200x on the maximum**. So the first conclusion is a hard rule: **one environment per
+campaign, and a stored score from one environment may never be compared against a live score from
+another** — neither margin bounds that difference, and V2 already has a stored-versus-live
+comparison path.
+
+The second conclusion is the one that decides whether anything must be re-measured, and it is not
+the same question. The gates never consume $R_a$ or $b_a$ alone; they consume differences of
+$J_\tau$, and $J_\tau$ is translation-equivariant, so a shift common to both alleles cancels
+exactly. What survives is the equal-risk line. Its PAIRED shift across the two environments is
+
+$$
+\Delta\theta_{\rm env}
+= \left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)_{\rm blackwell}
+- \left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)_{\rm immune\text{-}design}
+= +1.45\times10^{-4},
+$$
+
+which is **0.15 % of the credit band** and **0.26x** the overlap-inclusion sensitivity that J.7 D2
+already labelled `within_credit`. $b_A$ itself was bit-identical between the two; the shift is
+carried entirely by $s_A$ ($+5.5\times10^{-4}$) and $b_B$ ($-1.5\times10^{-4}$).
+
+**So the calibration transfers, and re-measurement is optional.** Re-measuring both panels under
+`immune-design-blackwell` costs ~3 GPU-hours and would move the equal-risk line by less than a
+perturbation already accepted as immaterial. The runbook now pins `CONDA_ENV` explicitly at the
+launch block and records these numbers, so the decision is on the record rather than inherited from
+a launcher default nobody read.
+
 #### D3 — where the retired gate actually lived
 
 `PLAN_RF_FUSION_V2_DUAL_ALLELE.md` §5 DUALF1a's "large enough that $\operatorname{SE}\ll c_u$"
 bullet and its RED-test line, and `doc/Dual_Allele_Steering.md` §2.2's closing judgement, were the
-only two places the qualitative gate had force. Both now record the accepted 0.185 with the reason
+only two places the qualitative gate had force. Both now record the accepted ratio with the reason
 the ratio is not a runtime uncertainty, and both name the three forbidden repairs. Appendix F's
 withdrawal of the fail-closed form stands unchanged; what J.7 D3 removes is the qualitative
 remainder, which had no decidable content either.

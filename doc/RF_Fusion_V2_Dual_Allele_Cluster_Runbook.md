@@ -131,6 +131,7 @@ M1_SAFETY_REFERENCE_MANIFEST=${SCRATCH_BASE}/work/immune-design/v2_canary/refere
 # ones. An earlier revision of this runbook pointed the calibration commands at the
 # per-campaign tree, where none of these files exist.
 CALIBRATION_DIR=${SCRATCH_BASE}/work/immune-design/calibration
+MMSEQS=/home/zc1519/.conda/envs/immune-design/bin/mmseqs
 
 test -r "${HEAD_A_CHECKPOINT}"
 test -r "${HEAD_B_CHECKPOINT}"
@@ -140,6 +141,7 @@ test -r "${NOD_NORMALIZATION_ENDPOINTS}"
 test -r "${M1_SAFETY_REFERENCE_MANIFEST}"
 test -d "${BASE_K12_RUN}"
 test -r "${CALIBRATION_DIR}/dual_overlay_v1.json"
+test -x "${MMSEQS}"
 ```
 
 Do not substitute a legacy DRB1*04:01 Head or hand-edit a resolved YAML. If either checkpoint or
@@ -168,14 +170,14 @@ VALIDATES this and signs it; it may never select or sweep it from P0/M1/C1 outco
 
 ```bash
 python scripts/build_dual_calibration_panel.py \
-  --candidate-fasta        "${B}/if_test_set/tier2_candidates_merged.fasta" \
-  --head-a-manifest-dir    "${B}/manifests/drb0701" \
-  --head-b-manifest-dir    "${B}/manifests/drb0401" \
-  --deployment-protein-ids "${W}/deployment_protein_ids.txt" \
-  --evaluation-protein-ids "${W}/eval_ids_DRB1_07_01.txt" \
-  --evaluation-protein-ids "${W}/eval_ids_DRB1_04_01.txt" \
+  --candidate-fasta        "${SCRATCH_BASE}/work/immune-design/if_test_set/tier2_candidates_merged.fasta" \
+  --head-a-manifest-dir    "${SCRATCH_BASE}/work/immune-design/manifests/drb0701" \
+  --head-b-manifest-dir    "${SCRATCH_BASE}/work/immune-design/manifests/drb0401" \
+  --deployment-protein-ids "${CALIBRATION_DIR}/deployment_protein_ids.txt" \
+  --evaluation-protein-ids "${CALIBRATION_DIR}/eval_ids_DRB1_07_01.txt" \
+  --evaluation-protein-ids "${CALIBRATION_DIR}/eval_ids_DRB1_04_01.txt" \
   --seen-splits train,val \
-  --out-fasta  "${W}/tier2_natural_panel_v1.fasta" \
+  --out-fasta  "${CALIBRATION_DIR}/tier2_natural_panel_v1.fasta" \
   --out-report "${CALIBRATION_DIR}/tier2_natural_panel_v1.report.json" \
   --mmseqs "${MMSEQS}"
 ```
@@ -211,32 +213,52 @@ Executed by `scripts/build_dual_calibration_panel.py` (SLURM 12891590). Realized
 > §2.1a's `abs_delta_theta`. The section order here is by subject, not by execution order.
 
 **The calibration is MEASURED and frozen, and both campaign overlays are already SIGNED.**
-`dual_overlay_v1.json` (SLURM 12891919, 1 h 26 m on one h200, digest `4bc1e6142e64`) is the primary
+`dual_overlay_v1.json` (SLURM 12891919, 1 h 26 m on one h200, digest `82fbb45ea1e5`) is the primary
 record and the coordinate authority. The two launchable artifacts derived from it are
 
 | file | $C$ | logical Head calls / cycle | digest |
 |---|---:|---:|---|
-| `dual_overlay_m1_v1.json` | 278 | 556 | `f70b96ffe9ad` |
-| `dual_overlay_c1_v1.json` | 454 | 908 | `be53f59fd493` |
+| `dual_overlay_m1_v1.json` | 278 | 556 | `7b8f66ee14ea` |
+| `dual_overlay_c1_v1.json` | 454 | 908 | `fb428357287e` |
 
-Both already carry $f_A$, $f_B$ and the §2.1a $\lvert\Delta\theta\rvert$. **Do not re-measure and
+`${CALIBRATION_DIR}/MANIFEST.md` lists every file in that directory, its sha256, and — for the
+overlays — whether it may be launched at all. **Read it before passing anything to
+`--dual-overlay`.** Two of the files there are structurally valid, signed, launchable overlays that
+must never be launched: the primary record, and the deliberately contaminated D2 sensitivity
+calibration. A third lives in `_probe_scratch/` and was measured on 200 sequences, giving an
+equal-risk line of the opposite sign; nothing in the file itself would object to being launched.
+
+Both campaign overlays already carry $f_A$, $f_B$ and the §2.1a $\lvert\Delta\theta\rvert$. **Do not re-measure and
 do not re-sign.** Run the block below only to VERIFY that the shipped files reproduce — it takes
 ~0.6 s on a login node and touches no GPU — and compare the printed digests against the table.
 Write to a scratch `--out-overlay` when verifying, so a mistake cannot overwrite a signed artifact.
 
 ```bash
 # M1 and C1 share ONE measured calibration and differ only in the candidate ceiling (J.7 D1).
-for CELL in "m1:${M1_COUNTERFACTUAL_CEILING}" "c1:${C1_COUNTERFACTUAL_CEILING}"; do
-  NAME=${CELL%%:*}; C=${CELL##*:}
+# VERIFY ONLY. Writes to a scratch directory -- never over the signed artifacts, and never
+# into ${CALIBRATION_DIR}. A re-sign whose inputs differ by one digit still exits 0 and still
+# produces a structurally valid overlay, so pointing --out-overlay at the real filename would
+# make a typo indistinguishable from a successful verification.
+VERIFY_DIR=$(mktemp -d)
+OVERLAP_INCLUSION_SHIFT=0.0005688505037048097   # abs_delta_theta, AUDIT J.8 / section 2.1a
+for CELL in "m1:${M1_COUNTERFACTUAL_CEILING}:7b8f66ee14ea" \
+            "c1:${C1_COUNTERFACTUAL_CEILING}:fb428357287e"; do
+  NAME=${CELL%%:*}; REST=${CELL#*:}; C=${REST%%:*}; WANT=${REST##*:}
   python scripts/calibrate_v2_dual_objective.py \
     --resign-from "${CALIBRATION_DIR}/dual_overlay_v1.json" \
     --objective-spec "${DUAL_POLICY_SPEC}" \
-    --panel-report "${CALIBRATION_DIR}/tier2_natural_panel_v1.report.json" \
     --overlap-inclusion-shift "${OVERLAP_INCLUSION_SHIFT}" \
     --out-rows    "${CALIBRATION_DIR}/dual_calibration_rows_v1.parquet" \
-    --out-overlay "${CALIBRATION_DIR}/dual_overlay_${NAME}_v1.json" \
+    --out-overlay "${VERIFY_DIR}/${NAME}.json" \
     --max-counterfactual-sequences-per-cycle "${C}"
+  # byte-compare against the artifact you are about to launch
+  if ! cmp -s "${VERIFY_DIR}/${NAME}.json" "${CALIBRATION_DIR}/dual_overlay_${NAME}_v1.json"; then
+    echo "REFUSING: ${NAME} does not reproduce; expected content_digest ${WANT}" >&2
+    exit 1
+  fi
+  echo "${NAME} reproduces byte for byte (expected digest ${WANT})"
 done
+rm -rf "${VERIFY_DIR}"
 ```
 
 `--resign-from` carries the Head-B runtime binding forward from the signed artifact; a
@@ -256,7 +278,7 @@ python scripts/calibrate_v2_dual_objective.py \
   --objective-spec inverse_folding/reference_flow/configs/v2_dual_smoothmax_policy_v1.json \
   --out-rows    "${CALIBRATION_DIR}/dual_calibration_rows_v1.parquet" \
   --out-overlay "${CALIBRATION_DIR}/dual_overlay_v1.json" \
-  --max-counterfactual-sequences-per-cycle "${CANDIDATE_CEILING}" \
+  --max-counterfactual-sequences-per-cycle "${M1_COUNTERFACTUAL_CEILING}" \
   --head-a-config-dir "${HEAD_CONFIG}" --head-a-checkpoint "${HEAD_A_CHECKPOINT}" \
   --head-a-variant-id "${HEAD_VARIANT_ID}" --head-a-allele "${HEAD_A_ALLELE}" \
   --head-a-allele-idx "${HEAD_A_ALLELE_IDX}" \
@@ -387,14 +409,109 @@ does not license.
 
 ### 2.2 Materialize and preflight
 
-Use the ordinary V2 materialization protocol from the executed V2 runbook. Preserve every non-Dual
-argument from its signed source cell and add only:
+The Dual campaign reuses the frozen high-risk D4/K12 substrate by REPRODUCING its resolved config
+and adding three flags. The command below was reconstructed from the source campaign's own artifacts
+and then CHECKED: run without the three Dual flags (and with the source's `--code-revision` and
+`--campaign-id`) it reproduces
+`v2_highrisk/highrisk_gumbel_d4k12_r40_v2_eps005_4root_0701__21cd73d/resolved_configs/root0_10PA_A.yaml`
+and its `.structure_runtime.json` **byte-identically** — verified three times independently
+(2026-08-25). The Dual flags touch `_args_script` only, never `fill_config`, which is *why* the
+resolved YAML is unchanged: they add `dual_overlay` / `head_b_config` / `head_b_checkpoint` to
+`SHARD_INPUTS` and set `DUAL_MODE=dual`.
 
-```text
---dual-overlay      ${DUAL_OVERLAY}
---head-b-config-dir ${HEAD_CONFIG}
---head-b-checkpoint ${HEAD_B_CHECKPOINT}
+An earlier revision of this section said only "use the ordinary V2 materialization protocol from the
+executed V2 runbook" and listed three flag names. That pointed nowhere: no runbook in this
+repository contains a runnable invocation of the materializer, the resolved YAML records no argv, and
+the launcher cannot start without `resolved_configs/<cell>.args.sh` and a cell list that only this
+step produces. §2.2 was the first action an operator was told to take, and it could not be taken.
+
+```bash
+set -euo pipefail
+: "${PS1:=}"; export PS1        # conda activate reads PS1; set -u aborts on it otherwise
+
+# ---- the frozen substrate. These are the SOURCE campaign's own values; do not vary them. ----
+SRC=${SCRATCH_BASE}/work/immune-design/v2_highrisk/highrisk_gumbel_d4k12_r40_v2_eps005_4root_0701__21cd73d
+# The cohort-level artifacts live under the d8k32 tree -- that is where they were produced and where
+# all 400 source cells point. Reading this as a typo and "fixing" it changes the substrate.
+SUB=${SCRATCH_BASE}/work/immune-design/v2_highrisk/highrisk_ceiling_global_d8k32_v1_0701
+PDB_ROOT=${SCRATCH_BASE}/work/immune-design/if_test_set/pdbs_if_ready/HLA-DRB1_07_01
+
+ROOT=root0                      # see "one decision this section cannot make for you", below
+MASTER_SEED=20260811            # root0's seed in the source campaign
+
+materialize_cell () {
+  local cell=$1 protein_id=$2
+  python scripts/materialize_v2_canary_config.py \
+    --template "${PROJECT_ROOT}/inverse_folding/reference_flow/configs/v2_canary_state_transition.yaml" \
+    --out "${WORK}/resolved_configs/${cell}.yaml" \
+    --protein-id "${protein_id}" --r-step 40 --stratum-key highrisk_global_unconstrained \
+    --code-revision "${GIT_SHA}" --campaign-id "${CAMPAIGN}" --master-seed "${MASTER_SEED}" \
+    --band-json "${SUB}/artifacts/global_B_r40.json" \
+    --hotspot-json "${SUB}/artifacts/global_relaxed_hotspot.json" \
+    --reference-manifest "${SUB}/references.json" --stratum-manifest "${SUB}/strata.json" \
+    --reference-sequence "${SUB}/references/${protein_id}.seq" \
+    --projection-policy-spec "${PROJECT_ROOT}/inverse_folding/reference_flow/configs/v2_head_directed_capped_policy_v2.json" \
+    --policy-calibration-json "${SRC}/artifacts/head_policy_v2_eps005_c454.json" \
+    --exploratory-profile highrisk_d4_k12_r40 --run-max-head-calls 6000 \
+    --head-config-dir "${HEAD_CONFIG}" --head-checkpoint "${HEAD_A_CHECKPOINT}" \
+    --head-variant-id "${HEAD_VARIANT_ID}" \
+    --dual-overlay "${DUAL_OVERLAY}" \
+    --head-b-config-dir "${HEAD_CONFIG}" --head-b-checkpoint "${HEAD_B_CHECKPOINT}" \
+    --structure-backend "${SCRATCH_BASE}/model_cache/hf/hub/models--biohub--ESMFold2/snapshots/1ebf0e3481a5184eb6171d40615c79e384b48796/model.safetensors" \
+    --esmfold2-model biohub/ESMFold2 --esmfold2-num-loops 3 \
+    --esmfold2-num-sampling-steps 50 --esmfold2-num-diffusion-samples 1 --esmfold2-seed 0 \
+    --esmfold2-site-packages /home/zc1519/.conda/envs/esmfold2/lib/python3.12/site-packages \
+    --refold-cache-dir "${WORK}/refold_cache" \
+    --pdb-root "${PDB_ROOT}" --backbone "${PDB_ROOT}/${protein_id}.pdb" \
+    --cohort-table "${COHORT_TABLE}" \
+    --dplm-checkpoint "${SCRATCH_BASE}/run/inverse_folding/dplm_v1_adapter/seed42_20260319_094244/checkpoints/best.ckpt" \
+    --rf-sampler-config "${PROJECT_ROOT}/inverse_folding/reference_flow/configs/c1_constant_clean_no_remask.yaml" \
+    --structure-config "${PROJECT_ROOT}/inverse_folding/reference_flow/configs/rf_refine_fusion_highrisk_sctm070.yaml" \
+    --v0-structure-gate-config "${PROJECT_ROOT}/inverse_folding/reference_flow/configs/rf_refine_fusion_highrisk_sctm070.yaml"
+}
+
+mkdir -p "${WORK}"/{resolved_configs,cell_lists,refold_cache}
+CELL_LIST=${WORK}/cell_lists/${ROOT}.txt
+: > "${CELL_LIST}"
+while read -r cell; do
+  protein_id=${cell#${ROOT}_}
+  materialize_cell "${cell}" "${protein_id}"
+  echo "${cell}" >> "${CELL_LIST}"
+done < "${SRC}/cell_lists/${ROOT}.txt"
+export CELL_LIST
+wc -l "${CELL_LIST}"
 ```
+
+Then the assembly preflight — the gate `--dry-run` cannot be, and the reason §0 forbids substituting
+a one-prefix GPU smoke for it:
+
+```bash
+while read -r cell; do
+  python scripts/preflight_v2_canary_assembly.py \
+    --cell "${WORK}/resolved_configs/${cell}.yaml=${cell#${ROOT}_}" \
+    --dual-overlay "${DUAL_OVERLAY}" --dual-arm joint
+done < "${CELL_LIST}"
+```
+
+**Cross-check the overlay you materialized against the overlay you will launch.** Nothing reads the
+`dual_overlay` shard input — it is provenance only, and the driver takes its overlay from
+`--dual-overlay` alone. A cell materialized for C1 launched with the M1 overlay exits 0 and differs
+only in `dual_signature`:
+
+```bash
+grep -q "dual_overlay=${DUAL_OVERLAY}$" "${WORK}/resolved_configs/$(head -1 "${CELL_LIST}").args.sh" \
+  || { echo "REFUSING: materialized overlay != launch overlay" >&2; exit 1; }
+```
+
+> **One decision this section cannot make for you.** §4 says "one source root per protein" and never
+> names the root. The source campaign has four (`root0`–`root3`, master seeds 20260811–20260814).
+> `root0` / 20260811 is used above because AUDIT §6 quotes 20260811 as the frozen operating point and
+> the sibling d4k24 campaign uses it for root0 — **a defensible default, not an evidenced choice.**
+> Confirm it before spending three arms x 100 cells. Note also that `campaign_id` becomes the Dual
+> campaign's, and seeds derive from `(campaign_id, split_role, master_seed, protein_id)`: all three
+> Dual arms share all four and therefore pair by construction, and none of them reproduces the SOURCE
+> campaign's depth-0 roots. That is correct for this design — the `a_only` arm is the single-allele
+> baseline, not the source campaign's executed run.
 
 Paths only. The role B variant id, allele index and window batch size live in the SIGNED overlay and
 are read from there; the materializer does not accept them, because a knob that reads as a control
@@ -402,11 +519,27 @@ and changes nothing is worse than a missing one.
 
 **`${DUAL_OVERLAY}` is the CAMPAIGN's overlay, and the two campaigns do not share one** (J.7 D1):
 
+Pick ONE and export it. These are alternatives, not a sequence — a block that assigns the variable
+twice leaves whichever came last, and both files are valid signed overlays that the driver accepts
+without complaint, so the mistake surfaces only as the wrong `max_counterfactual_sequences_per_cycle`
+in a finished run's manifest.
+
 ```bash
-# M1 mechanism cells
-DUAL_OVERLAY=${CALIBRATION_DIR}/dual_overlay_m1_v1.json   # C = 278, logical Head calls 556
-# C1 high-risk D4/K12 cells
-DUAL_OVERLAY=${CALIBRATION_DIR}/dual_overlay_c1_v1.json   # C = 454, logical Head calls 908
+# EXACTLY ONE of the following, matching the campaign you are launching:
+CAMPAIGN=m1        # M1 mechanism cells: C = 278, logical Head calls 556
+# CAMPAIGN=c1      # C1 high-risk D4/K12 cells: C = 454, logical Head calls 908
+
+DUAL_OVERLAY=${CALIBRATION_DIR}/dual_overlay_${CAMPAIGN}_v1.json
+test -r "${DUAL_OVERLAY}"
+# fail loudly if the file's own C disagrees with the campaign you named
+python - "$DUAL_OVERLAY" "$CAMPAIGN" <<'PYCHECK'
+import json, sys
+want = {"m1": 278, "c1": 454}[sys.argv[2]]
+got = json.load(open(sys.argv[1]))["max_counterfactual_sequences_per_cycle"]
+if got != want:
+    sys.exit(f"REFUSING: {sys.argv[2]} expects C={want}, this overlay declares C={got}")
+print(f"{sys.argv[2]}: C={got}, logical Head calls per cycle={2*got}")
+PYCHECK
 ```
 
 Both carry the SAME measured calibration — identical panel, coordinates, law and objective digest —
@@ -439,6 +572,12 @@ test_separate_runs_of_two_arms_share_their_pool_by_determinism_alone` asserts th
 silently stop being true.
 
 ```bash
+# ONE environment for the whole campaign, and it is the environment the COORDINATES were measured
+# under. The launcher DEFAULTS to `immune-design-blackwell` (submit_rf_fusion_v2_canary.slurm:59),
+# so this line is not decoration -- without it the run scores under a different torch than the
+# calibration it is steering by.
+export CONDA_ENV=immune-design
+
 for ARM in joint a_only; do
   python scripts/run_rf_fusion_v2.py \
     --v2-config "${V2_CONFIG}" --cohort "${V2_COHORT}" \
@@ -447,6 +586,39 @@ for ARM in joint a_only; do
     --input-file "${INPUT_FILES[@]}" --shard-input "${SHARD_INPUTS[@]}"
 done
 ```
+
+> **Never mix environments inside one campaign, and never compare a stored score from one against
+> a live score from another.** MEASURED 2026-08-25 (SLURM 12946592) on 200 panel sequences scored
+> end to end under both: only 42/200 (role A) and 40/200 (role B) raw risks are bit-identical
+> between `immune-design` (torch 2.5.1+cu121) and `immune-design-blackwell` (2.7.1+cu128); the mean
+> absolute difference is $3.0\times10^{-4}$ (A) / $1.9\times10^{-4}$ (B) and the maximum is
+> $3.3\times10^{-3}$. That is **200 to 2000 times** the within-environment same-sequence drift
+> $e_a\approx1.5\times10^{-6}$ from which $\epsilon_{\rm donor}=\epsilon_{\rm write}$ are derived,
+> so a cross-environment comparison is not bounded by either margin.
+>
+> **Why `immune-design` and not the launcher's default.** Both calibrations were measured under
+> `immune-design`, and both ran on ailab h200 — so this env is proven on the target hardware, not a
+> guess. Pinning it makes the coordinate-to-runtime transfer error exactly zero instead of merely
+> small. Had the run used `immune-design-blackwell` the error would still have been tolerable: the
+> paired shift in the equal-risk line across the two environments is
+>
+> $$
+> \Delta\theta_{\rm env} = +1.45\times10^{-4},
+> $$
+>
+> **0.15 % of the credit band** and **0.26x** the overlap-inclusion sensitivity already accepted as
+> `within_credit`. That is the cost of the alternative, measured; it is not a reason to pay it.
+>
+> **What could NOT be established:** which environment the frozen single-Head D4/K12 campaign
+> itself ran under. Its `run_manifest.json` records no torch or env, and its SLURM logs are no
+> longer on disk. `doc/RF_Fusion_v2_Cluster_Runbook.md`'s "must run under
+> `immune-design-blackwell`" sentence is in the section about the **band-scan / Canary** cells
+> (rtx6000, ~2 min), not about this H200 campaign, so it does not settle the question. The
+> consequence is a claim this runbook does NOT make: **no number produced by the source campaign's
+> executed run may be compared numerically against a Dual arm.** Only the substrate DEFINITION
+> transfers — which is all §2.2 reuses, and it is reused by byte-identical reproduction of the
+> resolved config, not by reusing its outputs. The `a_only` arm is what supplies the single-allele
+> baseline, and it runs here, under this pin, alongside the others.
 
 **Verify the pairing held**, on the artifacts rather than on trust -- for each protein, the depth-0
 rows of `complete_endpoints.parquet` must agree between the two runs on `endpoint_id`,
@@ -471,16 +643,39 @@ Use the existing frozen high-risk 100-protein cohort, progressive D4/K12/r40, on
 protein. Launch the whole cohort once per arm:
 
 ```bash
+# CELL_LIST comes from §2.2, which exports it. An earlier revision read "${PART}" here -- a variable
+# assigned nowhere in this runbook, so the block aborted on `PART: unbound variable` under set -u.
+test -r "${CELL_LIST}"
+
 for ARM in joint a_only b_only; do
-  CELL_LIST="${PART}" WORK="${WORK}" RUNDIR="${RUN}/${ARM}" \
+  CELL_LIST="${CELL_LIST}" WORK="${WORK}" RUNDIR="${RUN}/${ARM}" \
+  CONDA_ENV="${CONDA_ENV}" \
   DUAL=1 DUAL_ARM="${ARM}" DUAL_OVERLAY="${DUAL_OVERLAY}" \
   EXPLORATORY_DEPTH_OVERRIDE=1 \
-  sbatch --job-name="dual_${ARM}_$(basename "${PART}")" \
+  sbatch --job-name="dual_${ARM}_$(basename "${CELL_LIST}" .txt)" \
     --account=kaiyijiang --partition=ailab --constraint=h200 --gres=gpu:1 \
-    --time=08:00:00 --mem=64G \
+    --time=16:00:00 --mem=96G \
     scripts/submit_rf_fusion_v2_canary.slurm
 done
 ```
+
+Four of those variables are load-bearing in ways that fail quietly rather than loudly:
+
+* **`RUNDIR`, not `RUN`.** The launcher reads `RUNDIR` and defaults it to
+  `${SCRATCH_BASE}/run/inverse_folding/v2_canary`. Unset, the run does not fail — it lands in the
+  wrong tree.
+* **`EXPLORATORY_DEPTH_OVERRIDE=1` is mandatory and the launch gate does not check it.** MEASURED:
+  the identical `--dry-run` without it exits 0 with `exploratory_depth_override: false`; the refusal
+  happens per-cell inside the shard (`ladder.py`, `plan.depth_cap > 1 and not (production or
+  exploratory)`), where it becomes `status="failed"`. Omitting it burns the whole allocation and
+  fails all 100 cells.
+* **`CONDA_ENV`** — §3's pin, forwarded explicitly because the launcher's own default is a
+  different environment.
+* **`--time` and `--mem`.** The source campaign's single-Head root0 job over this same 100-cell list
+  (SLURM 12275741) ran **4 h 45 m** at **41.1 GiB** peak RSS. Dual doubles the Head calls
+  (3752 against 1876 per cell) and holds a second Head resident, so the previous `08:00:00 / 64G`
+  was tight on both axes. `sinfo -p ailab` reports `MaxTime=15-00:00:00`, so a longer wall clock
+  costs queue position and nothing else.
 
 Every non-arm argument must be byte-identical across the three launches -- same config, same
 `campaign_id`, same `split_role`, same `master_seed`, same cohort, same inputs. That is what makes

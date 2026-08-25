@@ -143,3 +143,33 @@ def test_half_a_dual_specification_is_refused_by_the_cli():
         preflight.main(["--cell", "x.yaml=P", "--dual-arm", "joint"])
     with pytest.raises(SystemExit, match="together"):
         preflight.main(["--cell", "x.yaml=P", "--dual-overlay", "o.json"])
+
+
+# -- what --dry-run REPORTS must be what the gate ENFORCES --------------------------------------
+
+def test_the_printed_budget_counts_both_heads_for_a_dual_run():
+    """The launch gate already multiplied by n_heads; the payload an operator records did not.
+
+    ``run_rf_fusion_v2`` calls ``project_v2_budget(..., n_heads=2, counterfactual_sequences_per_cycle
+    =C)`` for ``assert_launch_feasible`` but called ``print_config_payload`` with neither. So the
+    gate was right and the evidence printed beside it understated Head spend by exactly one allele
+    -- and §4.3's GO criterion compares realized Head calls against that printed projection.
+    """
+    import inspect
+
+    from scripts import rf_fusion_v2_preflight as pf
+
+    sig = inspect.signature(pf.print_config_payload)
+    assert "n_heads" in sig.parameters, "the payload must be able to price a two-Head run"
+    assert "counterfactual_sequences_per_cycle" in sig.parameters
+
+    src = inspect.getsource(pf.print_config_payload)
+    assert "n_heads=n_heads" in src.replace(" ", "").replace("\n", "") or \
+           "n_heads=int(n_heads)" in src.replace(" ", "").replace("\n", ""), \
+        "print_config_payload must forward n_heads into project_v2_budget"
+
+    from scripts import run_rf_fusion_v2 as drv
+    call = inspect.getsource(drv.main)
+    idx = call.index("print_config_payload(")
+    assert "n_heads=n_heads" in call[idx:idx + 400], \
+        "the driver must pass the resolved n_heads into the payload it prints"

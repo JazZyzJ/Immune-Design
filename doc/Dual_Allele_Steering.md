@@ -228,10 +228,18 @@ and in the shared coordinate a typical natural protein sits more than one calibr
 the two axes. The project's own historical records agree from another direction: WT exact-core
 Jaccard between the two alleles is $0.133$, and head top-decile hotspot Jaccard is near zero.
 
+> **MEASURED (2026-08-24), superseding the estimate above.** On the frozen 13,836-protein natural
+> panel the realized correlation is $r = 0.0962$ (Spearman-equivalent probe agreed at 0.094), and the
+> overlap-inclusion panel gives 0.0946. The $r\approx0.19$ above is a WITHIN-family (uricase)
+> estimate and does not transfer: **on natural sequences the two Heads are very nearly
+> uncorrelated.** Everything below follows a fortiori — the cancellation is worth about half of what
+> the paragraph already called "very little", so the panel-domain requirement it derives is
+> STRONGER, not weaker. See `doc/DUAL_ALLELE_DUALF0_AUDIT.md` §J.3.
+
 That number decides panel policy, because the cancellation of 2.2.3 protects only against panel
 effects **common** to both alleles, and its protective value is worth exactly as much as the two
-Heads are correlated. At $r\approx0.19$ it is worth very little: which proteins are in the panel
-largely determines $b_A-b_B$. Splitting one panel into its $A$-leaning and $B$-leaning halves moves
+Heads are correlated. At $r\approx0.19$ it is worth very little — and at the measured $r=0.096$,
+less still: which proteins are in the panel largely determines $b_A-b_B$. Splitting one panel into its $A$-leaning and $B$-leaning halves moves
 $b_A-b_B$ by roughly two orders of magnitude more than random-sampling noise at any realistic panel
 size.
 
@@ -484,8 +492,8 @@ sized generously, and the realized $\operatorname{SE}(b_A/s_A-b_B/s_B)$ is repor
 reader can see how much of the credit band the calibration's own imprecision occupies.
 
 **Measured 2026-08-24** on the frozen 13,836-protein Tier-2 natural panel:
-$\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)=0.0185$ against $c_u=0.10$, i.e. the calibration's
-own imprecision occupies about **18.5 %** of the credit band. It cannot be reduced by enlarging the
+$\operatorname{SE}\left(b_A/s_A-b_B/s_B\right)=0.024044$ against $c_u=0.10$, i.e. the
+calibration's own imprecision occupies about **24.0 %** of the credit band. It cannot be reduced by enlarging the
 panel: 44,021 eligible sequences cluster into only 13,836 homology-independent units and the
 standard error is over those units, so reaching $c_u/10$ would need roughly four times as many
 independent families as the deduplicated Tier-2 pool contains. **ACCEPTED for v1** (`doc/DUAL_ALLELE_DUALF0_AUDIT.md` §J.7 D3,

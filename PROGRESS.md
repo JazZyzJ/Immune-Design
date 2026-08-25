@@ -618,6 +618,64 @@ runbook §9 additionally demonstrates reward directionality on both predeclared 
 integrity. Local success and offline replay validate wiring/executability only; neither is the
 directionality verdict.
 
+## RF Fusion V2 Dual-Allele — optional two-allele steering (PLAN_RF_FUSION_V2_DUAL_ALLELE.md)
+
+**Status (2026-08-25): code complete, calibrated, both campaign overlays signed. Generation not yet
+submitted.** An execution agent starts at runbook §2.2 (materialize + preflight); P0 is done.
+
+**What it is.** An OPTIONAL second-allele mode on the frozen V2 substrate. Role A = `DRB1*07:01`
+(the current objective), role B = `DRB1*04:01`. Two Heads on incomparable raw scales map through
+frozen affine coordinates $u_a=(R_a-b_a)/s_a$ and reduce by a bounded smooth worst-residual scalar
+$J_\tau$. Exactly ONE human-chosen number: the credit $c_u=\tau\log 2=0.10$ normalized risk units,
+hence $\tau=0.14426950408889636$. Without an overlay the Dual layer is never imported and the run is
+the frozen single-Head V2 in every byte — pinned to digest literals, not asserted.
+
+Arms name the objective and nothing else (`joint` reduces both; `a_only`/`b_only` order on one).
+Both Heads are scored in EVERY arm, and arms are compared ACROSS runs because the arm enters no seed
+derivation — so two launches differing only in `--dual-arm` share root capture and depth-zero pool
+exactly. There is no in-run matched-arm engine and none is needed.
+
+**Calibration (measured on Della).** Frozen 13,836-protein allele-neutral natural panel from the
+deduplicated Tier-2 pool (SLURM 12891590), calibrated on one h200 in 1 h 26 m (SLURM 12891919):
+
+| quantity | value |
+|---|---|
+| normalized intercept $b_A/s_A-b_B/s_B$ | −0.426488 |
+| bootstrap SE of that intercept | 0.024044 (24.0 % of $c_u$) — corrected 2026-08-25, see AUDIT J.8 |
+| cross-allele Pearson $r$ | **0.0962** — vs the 0.19 within-family estimate the domain-transfer argument assumed |
+| Head-training overlap $f_A$ / $f_B$ | 14.12 % / 15.78 %, asymmetry 1.66 pp (never computed before) |
+| derived margins $\epsilon_{\rm donor}=\epsilon_{\rm write}$ | $4.6386\times10^{-7}$ (joint / b_only), $3.0318\times10^{-7}$ (a_only) |
+
+**Frozen decisions (AUDIT §J.7, executed §J.8).**
+
+- **D1** — $C$ is per-campaign: M1 $C=278$ ($2C=556$), C1 $C=454$ ($2C=908$), both read out of their
+  own signed artifacts in `editable_positions_per_cycle`. Two launchable overlays,
+  byte-identical calibration blocks, identical arm-objective digests, distinct run signatures.
+- **D2** — overlap-inclusion sensitivity MEASURED (SLURM 12931496 + 12931501, 1 h 32 m):
+  $\Delta\theta=-5.69\times10^{-4}$, $\lvert\Delta\theta\rvert/c_u=0.0057$,
+  $\Delta\log(s_A/s_B)=3.75\times10^{-3}$ — **`within_credit`**. Evidence that memorization does not
+  shift the two Heads' medians differentially; NOT evidence of generalization to another pool
+  (the 11,149 contaminated sequences add only 1,101 new families).
+- **D3** — $\operatorname{SE}/c_u=0.240$ ACCEPTED (frozen at the then-published 0.185; the
+  corrected value is 0.240 and the acceptance rationale is unchanged); the qualitative $\operatorname{SE}\ll c_u$ gate
+  is retired.
+
+**Open — user decision.** **S6**: the 80/100 coverage floor is inherited from a 4-root 84/100
+surface while Dual runs ONE root. With $p=328/336$ the healthy single-root expectation is
+$82.0\pm1.4$, so the floor trips **5.05 %** of the time by chance. It is a READ-TIME input (GO
+conditions only) and does not block submission. Options: keep 80 with the consequence defined as
+inconclusive-and-rerun, drop to 78 (0.40 %), or fund a second root.
+
+**Deliberately deferred.** The Dual reader (`read_v2_mechanism.py`) and the facade's common-$J$
+ranking. The §4.3 read is DEFINED (formula + GO conditions) but has no tool: join logic written
+against a schema no run has emitted acquires errors nobody can see. Build it against real bundles
+once the three arms have run.
+
+**Artifacts.** `work/immune-design/calibration/` — see `MANIFEST.md` there, which marks which
+overlays may be launched. Three signed overlays in that tree are valid and launchable but MUST NOT
+be launched (the primary record, the contaminated sensitivity calibration, and a 200-sequence probe
+whose equal-risk line has the opposite sign).
+
 ## Active-15 uricase core-release v2 — 44-cell B1Aopen generation (2026-08-03)
 
 15 experimentally active single-domain uricases × 3 DR alleles. Search space = the union of every

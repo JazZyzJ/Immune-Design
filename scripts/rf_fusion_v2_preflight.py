@@ -313,6 +313,7 @@ def _head_directed_payload(config: Any) -> dict | None:
 def print_config_payload(
     config: Any, *, n_proteins: int, declared_inputs: Sequence[Any] = (),
     code_revision: str = "unknown", execution_replicates: int = 1,
+    n_heads: int = 1, counterfactual_sequences_per_cycle: int | None = None,
 ) -> dict:
     """Everything ``--print-config`` and ``--dry-run`` report, with no model loaded.
 
@@ -320,8 +321,13 @@ def print_config_payload(
     answer the question an operator actually has -- "what will this run do, and can it" -- rather
     than echoing the file back.
     """
+    # The SAME projection the launch gate asserts on. Reporting a single-Head budget beside a
+    # two-Head gate gives the operator launch evidence that understates Head spend by one allele,
+    # and it is that printed number the cost-parity GO check is read against.
     projection = project_v2_budget(
-        config, n_proteins=n_proteins, execution_replicates=execution_replicates)
+        config, n_proteins=n_proteins, execution_replicates=execution_replicates,
+        n_heads=n_heads,
+        counterfactual_sequences_per_cycle=counterfactual_sequences_per_cycle)
     return {
         "config_digest": config.config_digest(),
         "schema_version": config.schema_version,

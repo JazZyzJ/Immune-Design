@@ -478,6 +478,20 @@ def resolve_dual(args):
     from scripts.rf_fusion_v2_preflight import load_dual_overlay_file
 
     overlay = load_dual_overlay_file(overlay_path)
+    # AUDIT J.7 D2 expressed as a gate. Four structurally valid signed overlays exist in the
+    # calibration tree and only the two campaign artifacts may be launched; the primary RECORD, the
+    # deliberately contaminated sensitivity calibration, and the bring-up probe are all loadable and
+    # all carry a plausible C, so a glob or a mis-resolved variable reaches one of them with nothing
+    # to object. What separates them needs no schema change: only an artifact whose panel
+    # sensitivity has been MEASURED and recorded may steer, and re-signing from a contaminated
+    # source drops that record too, which closes the same hole from the other side.
+    if overlay.calibration.panel.leave_overlap_out_shift is None:
+        raise V2DriverError(
+            f"{overlay_path} carries no measured overlap-inclusion sensitivity "
+            "(leave_overlap_out_shift is absent), so it is a calibration RECORD or a MEASUREMENT, "
+            "not a launchable campaign artifact. The launchable overlays are the ones signed with "
+            "--overlap-inclusion-shift; see MANIFEST.md in the calibration directory"
+        )
     label = str(arm)
     if label not in overlay.arms:
         raise V2DriverError(
@@ -611,7 +625,9 @@ def main(argv=None, *, runner=None, oracles_factory=None) -> int:
         try:
             payload = print_config_payload(
                 config, n_proteins=len(cohort), declared_inputs=declared,
-                code_revision=code_revision, execution_replicates=budget_replicates)
+                code_revision=code_revision, execution_replicates=budget_replicates,
+                n_heads=n_heads,
+                counterfactual_sequences_per_cycle=dual_candidate_ceiling)
             payload["production_depth_authorized"] = production_depth_authorized
             payload["exploratory_depth_override"] = exploratory_depth_override
             # The resolved Dual mode is part of what a launch gate certifies, so it is printed

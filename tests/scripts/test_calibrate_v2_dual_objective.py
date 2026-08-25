@@ -282,16 +282,40 @@ def test_a_repeat_batch_size_equal_to_the_first_is_refused(tmp_path, monkeypatch
 # C1 C=454). Everything about the instrument must come from the signed artifact; the only thing
 # the operator gets to choose on a re-sign is C.
 
+#: The shipped frozen objective spec. Test overlays carry a law consistent with it, because the
+#: re-sign path now validates the two against each other -- a fixture whose tau disagreed with the
+#: spec it passes was never a realistic artifact, it was just one nothing checked.
+SPEC_PATH = REPO / "inverse_folding/reference_flow/configs/v2_dual_smoothmax_policy_v1.json"
+SPEC = json.loads(SPEC_PATH.read_text())
+
+
+def _law_from_spec(law):
+    import dataclasses
+
+    return dataclasses.replace(
+        law, tau=float(SPEC["tau"]),
+        declared_credit_normalized=float(SPEC["max_nonworst_credit_normalized"]),
+        version=str(SPEC["version"]))
+
+
 def _primary_overlay_file(tmp_path, **over):
+    import dataclasses
     import sys
 
     sys.path.insert(0, str(REPO))
+    from inverse_folding.reference_flow.fusion_v2.dual_config import dual_overlay_payload
     from tests.inverse_folding.test_fusion_v2_dual_config import overlay
-    from tests.inverse_folding.test_fusion_v2_dual_off_compatibility import _authoring_mapping
 
+    if "calibration" not in over:
+        over = dict(over, calibration=overlay().calibration)
+    cal_obj = over["calibration"]
+    over = dict(over, calibration=dataclasses.replace(cal_obj, law=_law_from_spec(cal_obj.law)))
     built = overlay(**over)
+    # the PRODUCER's serializer, not the authoring-shape helper: `_authoring_mapping` deliberately
+    # drops derived values including `declared_credit_normalized`, so a file written through it
+    # loads back with no declared credit and cannot be checked against the spec at all.
     path = tmp_path / "primary_overlay.json"
-    path.write_text(json.dumps(_authoring_mapping(built), indent=2, sort_keys=True) + "\n")
+    path.write_text(json.dumps(dual_overlay_payload(built), indent=2, sort_keys=True) + "\n")
     return path, built
 
 
@@ -532,11 +556,10 @@ def test_a_comparison_can_be_recomputed_from_two_signed_artifacts_without_a_gpu(
         risk=dataclasses.replace(base.risk,
                                  b=dataclasses.replace(base.risk.b,
                                                        location=base.risk.b.location + 0.02)))
-    sens_path = tmp_path / "sens_overlay.json"
-    import sys
-    sys.path.insert(0, str(REPO))
-    from tests.inverse_folding.test_fusion_v2_dual_off_compatibility import _authoring_mapping
-    sens_path.write_text(json.dumps(_authoring_mapping(_ov(calibration=other)), indent=2))
+    # both sides through the PRODUCER's serializer, so the two laws are comparable at all
+    sens_path, _ = _primary_overlay_file(tmp_path, calibration=other)
+    sens_path = sens_path.rename(tmp_path / "sens_overlay.json")
+    primary, _ = _primary_overlay_file(tmp_path)
 
     out = tmp_path / "comparison.json"
     assert cal.main(["--compare-overlays", str(primary), str(sens_path),
@@ -567,3 +590,112 @@ def test_the_comparison_describes_the_calibration_that_was_actually_signed(tmp_p
     body = src[src.index("if args.compare_to is not None:"):]
     assert "sensitivity=overlay.calibration" in body, (
         "the comparison must read the SIGNED overlay's calibration, not the pre-enrichment local")
+
+
+# -- the bootstrap must let a protein be drawn more than once ----------------------------------
+
+def test_a_protein_drawn_twice_counts_twice_in_the_bootstrap():
+    """Protein-equal weighting was cancelling the bootstrap's own multiplicity.
+
+    ``location_and_scale`` weights each protein_id to a total of 1. The resampler drew n proteins
+    with replacement and then handed the rows to that weighting under their ORIGINAL ids, so a
+    protein drawn three times contributed the same weight as one drawn once. Only ~63.2% of
+    proteins survive a draw, and the re-weighting the bootstrap uses to simulate sampling
+    variability was being erased -- which UNDERSTATES the standard error, measured at 24% low on
+    the real 13,836-protein panel (0.0184 signed vs 0.0227 correct).
+    """
+    import inspect
+
+    src = inspect.getsource(cal.equal_risk_line_stderr)
+    assert 'row["protein_id"] for row in sample' not in src, (
+        "resampled rows must not be re-keyed by their original protein_id; a protein drawn twice "
+        "would collapse back to weight one")
+
+
+def test_the_bootstrap_se_grows_when_multiplicity_is_respected():
+    """Measured end-to-end on a synthetic panel: the corrected estimator is strictly larger."""
+    import random
+
+    rng = random.Random(7)
+    rows = [{"protein_id": f"P{i}", "raw_a": rng.gauss(0.0, 1.0), "raw_b": rng.gauss(0.0, 1.0)}
+            for i in range(400)]
+    rows = [{**r, "raw_risk_a": r["raw_a"], "raw_risk_b": r["raw_b"]} for r in rows]
+    se = cal.equal_risk_line_stderr(rows, resamples=120, seed=11)
+    assert se > 0.0
+    # the collapsed variant, reconstructed here, must come out SMALLER than what the fixed
+    # estimator reports -- this is the defect's signature and it pins the direction
+    import math
+    by = {r["protein_id"]: [r] for r in rows}
+    proteins = sorted(by)
+    rng2 = random.Random(11)
+    draws = []
+    for _ in range(120):
+        picked = [rng2.choice(proteins) for _ in proteins]
+        sample = [r for p in picked for r in by[p]]
+        ids = [r["protein_id"] for r in sample]
+        b_a, s_a = cal.location_and_scale([r["raw_a"] for r in sample], ids)
+        b_b, s_b = cal.location_and_scale([r["raw_b"] for r in sample], ids)
+        if s_a > 0 and s_b > 0:
+            draws.append(b_a / s_a - b_b / s_b)
+    m = sum(draws) / len(draws)
+    collapsed = math.sqrt(sum((d - m) ** 2 for d in draws) / (len(draws) - 1))
+    assert se > collapsed, (se, collapsed)
+
+
+def test_a_resign_of_the_sensitivity_artifact_can_accept_its_own_include_report(tmp_path):
+    """The derived expectation is right for a measure and wrong for this re-sign.
+
+    `--compare-to` marks a MEASURING run as the include panel, but a re-sign of the already-signed
+    sensitivity artifact carries no `--compare-to`, so the derivation would demand an `exclude`
+    report and refuse the only report that describes that artifact's panel.
+    """
+    import dataclasses
+
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay as _ov
+
+    base = _ov().calibration
+    bare = dataclasses.replace(
+        base, panel=dataclasses.replace(base.panel, overlap_fraction_a=None,
+                                        overlap_fraction_b=None))
+    path, _ = _primary_overlay_file(tmp_path, calibration=bare)
+    report = _report(tmp_path, head_overlap_policy="include")
+    with pytest.raises(cal.DualCalibrationError, match="head_overlap_policy"):
+        cal.main(_resign_argv(tmp_path, path, c=278, extra=["--panel-report", str(report)]))
+    assert cal.main(_resign_argv(tmp_path, path, c=278, extra=[
+        "--panel-report", str(report), "--panel-overlap-policy", "include"])) == 0
+
+
+def test_a_resign_refuses_an_objective_spec_that_contradicts_the_law_it_carries(tmp_path):
+    """The spec was HASHED into objective_spec_digest and never parsed on the re-sign path.
+
+    The runbook passes `${DUAL_POLICY_SPEC}` as a variable, so a tau-sweep or an edited spec
+    sitting at that path would be accepted, stamped into the overlay's objective_spec_digest, and
+    launched -- while the overlay's actual law (carried forward from the measured artifact) says
+    something else. The artifact would then claim provenance from a document that disagrees with it.
+    """
+    spec = json.loads((REPO / "inverse_folding/reference_flow/configs"
+                              "/v2_dual_smoothmax_policy_v1.json").read_text())
+    edited = dict(spec, tau=0.20, max_nonworst_credit_normalized=0.20 * math.log(2.0))
+    path = tmp_path / "swept_spec.json"
+    path.write_text(json.dumps(edited, indent=2))
+
+    primary, _ = _primary_overlay_file(tmp_path)
+    argv = _resign_argv(tmp_path, primary, c=278)
+    argv[argv.index("--objective-spec") + 1] = str(path)
+    with pytest.raises(cal.DualCalibrationError, match="tau|law|spec"):
+        cal.main(argv)
+
+
+def test_a_resign_accepts_the_spec_the_calibration_was_measured_under(tmp_path):
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay as _ov
+    import dataclasses
+
+    spec = json.loads((REPO / "inverse_folding/reference_flow/configs"
+                              "/v2_dual_smoothmax_policy_v1.json").read_text())
+    base = _ov().calibration
+    law = dataclasses.replace(base.law, tau=float(spec["tau"]),
+                              declared_credit_normalized=float(
+                                  spec["max_nonworst_credit_normalized"]),
+                              version=str(spec["version"]))
+    path, _ = _primary_overlay_file(tmp_path, calibration=dataclasses.replace(base, law=law))
+    assert cal.main(_resign_argv(tmp_path, path, c=454)) == 0

@@ -222,8 +222,17 @@ def equal_risk_line_stderr(rows: Sequence[dict[str, Any]], *, resamples: int, se
     draws: list[float] = []
     for _ in range(int(resamples)):
         picked = [rng.choice(proteins) for _ in proteins]
-        sample = [row for protein in picked for row in by_protein[protein]]
-        ids = [row["protein_id"] for row in sample]
+        # Each DRAW is its own unit. Re-keying the resampled rows by their original protein_id let
+        # ``location_and_scale``'s protein-equal weighting collapse a protein drawn three times back
+        # to weight one -- erasing exactly the re-weighting a bootstrap uses to simulate sampling
+        # variability, and leaving only the spread of a random ~63.2% subset. Measured on the real
+        # 13,836-protein panel that UNDERSTATED the standard error by 24% (0.0184 against 0.0227).
+        sample: list[dict[str, Any]] = []
+        ids: list[str] = []
+        for draw_index, protein in enumerate(picked):
+            for row in by_protein[protein]:
+                sample.append(row)
+                ids.append(f"{protein}#{draw_index}")
         b_a, s_a = location_and_scale([row["raw_a"] for row in sample], ids)
         b_b, s_b = location_and_scale([row["raw_b"] for row in sample], ids)
         if s_a > 0.0 and s_b > 0.0:
@@ -439,6 +448,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overlap-inclusion-shift", type=float, default=None,
                         help="|dtheta| from the overlap-inclusion sensitivity, in normalized "
                              "units; recorded on the panel binding as leave_overlap_out_shift")
+    parser.add_argument("--panel-overlap-policy", choices=("exclude", "include"), default=None,
+                        help="which panel --panel-report must describe. Defaults to derivation "
+                             "from --compare-to (a comparing run IS the include panel), which is "
+                             "right for a measure but leaves a re-sign of the sensitivity artifact "
+                             "unable to accept its own report")
+    parser.add_argument("--recompute-equal-risk-stderr", action="store_true",
+                        help="on a re-sign, recompute equal_risk_line_stderr from the evidence "
+                             "table given by --out-rows, whose sha256 must equal the artifact's "
+                             "calibration_artifact_digest. CPU only; no coordinate is re-derived")
     parser.add_argument("--panel-report", type=Path, default=None,
                         help="the build report from scripts/build_dual_calibration_panel.py; "
                              "supplies the measured overlap fractions f_A/f_B")
@@ -591,6 +609,42 @@ def overlap_sensitivity_report(*, primary: Any, sensitivity: Any) -> dict[str, A
     }
 
 
+def read_calibration_rows(path: Any) -> list[dict[str, Any]]:
+    """The stored evidence table, back in the key names the statistics functions use."""
+    p = Path(path)
+    if p.suffix == ".parquet":
+        import pyarrow.parquet as pq
+
+        stored = pq.read_table(p).to_pylist()
+    else:
+        stored = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+    return [{"protein_id": row["protein_id"],
+             "raw_a": float(row["raw_risk_a"]), "raw_b": float(row["raw_risk_b"])}
+            for row in stored]
+
+
+def with_recomputed_stderr(calibration: Any, rows_path: Any, *, resamples: int, seed: int) -> Any:
+    """Recompute ``equal_risk_line_stderr`` from the SIGNED evidence table. CPU only.
+
+    The coordinates themselves are not re-derived -- they are exact descriptive constants of the
+    panel and were never in doubt. Only the bootstrap standard error was, and it is a pure function
+    of rows that are already stored, so re-measuring on a GPU would spend 90 minutes reproducing
+    numbers that are on disk.
+
+    The rows file must be the one this calibration was signed against. Recomputing a published
+    statistic from a DIFFERENT evidence table is not a recomputation, it is a new claim wearing the
+    old artifact's provenance, so a digest mismatch is refused rather than warned about.
+    """
+    import dataclasses
+
+    digest = hashlib.sha256(Path(rows_path).read_bytes()).hexdigest()
+    rows = read_calibration_rows(rows_path)
+    value = equal_risk_line_stderr(rows, resamples=resamples, seed=seed)
+    return dataclasses.replace(
+        calibration,
+        panel=dataclasses.replace(calibration.panel, equal_risk_line_stderr=float(value))), digest
+
+
 def with_panel_report(calibration: Any, report_path: Any, *,
                       expected_policy: str = "exclude") -> Any:
     """Carry the builder's measured ``f_A``/``f_B`` into the signed artifact.
@@ -650,8 +704,9 @@ def sign_overlay(calibration: Any, *, args: argparse.Namespace, head_b_runtime: 
             with_panel_report(
                 calibration, getattr(args, "panel_report", None),
                 # A run that compares itself AGAINST a primary overlay is the sensitivity build.
-                expected_policy=("include" if getattr(args, "compare_to", None) is not None
-                                 else "exclude")),
+                expected_policy=(getattr(args, "panel_overlap_policy", None)
+                                 or ("include" if getattr(args, "compare_to", None) is not None
+                                     else "exclude"))),
             getattr(args, "overlap_inclusion_shift", None)),
         head_b_runtime=head_b_runtime,
         arm_bundle=tuple(a.strip() for a in str(args.arm_bundle).split(",") if a.strip()),
@@ -695,8 +750,41 @@ def _resign(args: argparse.Namespace) -> int:
                 f"{flag}={supplied!r} contradicts the signed artifact's {attr}="
                 f"{getattr(binding, attr)!r}. A re-sign carries the measured instrument forward; "
                 "changing it here would sign coordinates against a Head that did not produce them")
+    # The spec is HASHED into objective_spec_digest. Hashing a document without reading it lets a
+    # re-sign stamp an overlay with provenance from a file that contradicts the law the overlay
+    # actually carries -- and the runbook passes this path as a VARIABLE, so a tau sweep left at
+    # that location would be silently adopted as the artifact's stated authority.
+    spec = json.loads(Path(args.objective_spec).read_text())
+    law = previous.calibration.law
+    for key, actual, name in (("tau", law.tau, "tau"),
+                              ("max_nonworst_credit_normalized",
+                               law.declared_credit_normalized, "declared credit"),
+                              ("version", law.version, "law version")):
+        declared = spec.get(key)
+        if declared is None or (isinstance(actual, float)
+                                and abs(float(declared) - float(actual)) > 1e-12) \
+                or (not isinstance(actual, float) and str(declared) != str(actual)):
+            raise DualCalibrationError(
+                f"--objective-spec declares {name} {declared!r} and the measured calibration "
+                f"carries {actual!r}; a re-sign may restate the spec it was measured under, never "
+                "substitute a different one -- the digest would then certify a document that "
+                "disagrees with the artifact")
+
+    calibration = previous.calibration
+    if args.recompute_equal_risk_stderr:
+        calibration, digest = with_recomputed_stderr(
+            calibration, args.out_rows,
+            resamples=args.bootstrap_resamples, seed=args.bootstrap_seed)
+        if digest != previous.calibration_artifact_digest:
+            raise DualCalibrationError(
+                f"--out-rows hashes to {digest[:12]} but the artifact was signed against "
+                f"{previous.calibration_artifact_digest[:12]}; recomputing a published statistic "
+                "from a different evidence table would give a new claim the old provenance")
+        print(f"[dualcal] equal_risk_line_stderr recomputed from {args.out_rows.name}: "
+              f"{previous.calibration.panel.equal_risk_line_stderr!r} -> "
+              f"{calibration.panel.equal_risk_line_stderr!r}", flush=True)
     overlay = sign_overlay(
-        previous.calibration, args=args, head_b_runtime=binding, rows_path=args.out_rows)
+        calibration, args=args, head_b_runtime=binding, rows_path=args.out_rows)
     args.out_overlay.parent.mkdir(parents=True, exist_ok=True)
     args.out_overlay.write_text(
         json.dumps(dual_overlay_payload(overlay), indent=2, sort_keys=True) + "\n")

@@ -11,6 +11,7 @@ question: can a run that produced nothing usable be mistaken for one that worked
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import subprocess
@@ -1024,3 +1025,47 @@ def test_a_factory_that_ignores_the_resolved_dual_arm_is_refused(tmp_path):
             protein_id="A_1", config=config, signature=signature,
             out_dir=tmp_path / "out", oracles_factory=blind_factory,
             dual=(object(), "joint"))
+
+
+# -- only a calibration whose panel sensitivity was MEASURED may steer a run --------------------
+
+def test_an_overlay_with_no_measured_panel_sensitivity_is_refused_at_the_gate(tmp_path):
+    """Four structurally valid signed overlays sit in the calibration tree; two may be launched.
+
+    Nothing in the launch path told them apart. The primary calibration RECORD, the deliberately
+    contaminated D2 sensitivity calibration, and a 200-sequence bring-up probe whose equal-risk line
+    has the OPPOSITE SIGN are all loadable, all carry a plausible C, and all share the
+    ``dual_overlay*`` prefix. A shell glob, a tab-completion or an agent resolving the variable from
+    the wrong line launches one of them and nothing objects.
+
+    The discriminator needs no schema change and is the D2 gate expressed in code: AUDIT J.7 D2
+    requires the overlap-inclusion sensitivity to be MEASURED and recorded before launch, and only
+    the campaign artifacts carry it. Re-signing from a contaminated source also drops it, so this
+    one guard closes that path too.
+    """
+    import dataclasses
+    import json
+
+    from inverse_folding.reference_flow.fusion_v2.dual_config import dual_overlay_payload
+    from tests.inverse_folding.test_fusion_v2_dual_config import overlay as _ov
+
+    def write(name, calibration):
+        p = tmp_path / name
+        p.write_text(json.dumps(dual_overlay_payload(_ov(calibration=calibration)),
+                                indent=2, sort_keys=True) + "\n")
+        return p
+
+    launchable = _ov().calibration                       # fixture carries a measured shift
+    assert launchable.panel.leave_overlap_out_shift is not None
+    record = dataclasses.replace(
+        launchable, panel=dataclasses.replace(launchable.panel, leave_overlap_out_shift=None))
+
+    from scripts import run_rf_fusion_v2 as drv
+
+    args = argparse.Namespace(dual_overlay=str(write("ok.json", launchable)), dual_arm="joint")
+    got, arm = drv.resolve_dual(args)
+    assert arm == "joint" and got is not None
+
+    args = argparse.Namespace(dual_overlay=str(write("record.json", record)), dual_arm="joint")
+    with pytest.raises(drv.V2DriverError, match="sensitivity|leave_overlap_out_shift"):
+        drv.resolve_dual(args)
