@@ -1,8 +1,9 @@
 # DUALF0 — Authority Reconciliation and Seam Audit
 
 **Task:** `PLAN_RF_FUSION_V2_DUAL_ALLELE.md` §5 DUALF0.
-**Status:** COMPLETE. DUALF0's own stop condition does **not** fire; several downstream tasks are
-blocked on decisions recorded in §4 below.
+**Status:** COMPLETE. DUALF0's own stop condition does **not** fire. The live scientific decisions
+are frozen in Appendix I and Appendix J.7; one mandatory panel-sensitivity measurement and the
+runbook-versus-code consistency pass remain before cluster launch.
 
 ---
 
@@ -508,9 +509,11 @@ ids are present. Build recipe:
 6. cluster by homology and keep one representative per cluster, so no family dominates — raw PDB
    determination bias is severe (top duplicate multiplicities 1731, 1404, 1091).
 
-Executed by `scripts/build_dual_calibration_panel.py`, which reports every step. Realized:
-57,127 → 45,911 (head homology) → 45,887 (deployment) → 44,585 (evaluation) → **13,872 clusters =
-the panel**.
+Executed by `scripts/build_dual_calibration_panel.py`, which reports every step. The final realized
+counts, after the canonical-AA20 gate that this earlier recipe omitted, are recorded in Appendix
+J.1 and supersede the intermediate counts previously printed here: 57,127 → 56,475 (AA20) →
+45,326 (head homology) → 45,302 (deployment) → 44,021 (evaluation) → **13,836 clusters = the
+panel**.
 
 > **Correction (2026-08-24).** An earlier revision of this recipe cited "4.16 % / 4.91 % published
 > pool figures" for step 3. Those numbers appear in no code, artifact or other document in this
@@ -519,7 +522,7 @@ the panel**.
 > **3.4x larger**. The direction of the old claim was right — `cov-mode 0` under-detects — but the
 > magnitudes were not, and they should never have carried the word "published". Separately, that
 > revision had no step 5 at all: it would have calibrated on the evaluation set.
-Report on the built panel: $f_A$, $f_B$, the leave-overlap-out shift in $b_A-b_B$, the realized
+Report on the built panel: $f_A$, $f_B$, the overlap-inclusion sensitivity of $b_A-b_B$, the realized
 $\operatorname{SE}(b_A-b_B)/s$, and the **realized cross-allele correlation** — the last because the
 existing $r\approx0.19$ estimates are within-family (uricase) and the whole domain-transfer argument
 is calibrated against that number.
@@ -886,14 +889,13 @@ $$
 \epsilon_{\mathrm{donor}} = \epsilon_{\mathrm{write}} = 2\max\left(d_A, d_B\right).
 $$
 
-The factor of two is not conservatism: the donor gate compares $J(I_d)$ against $J(Y^*_d)$ and the
-write filter compares $J(y^{(-i)})$ against $J(y)$, so each side is its own measurement and their
-difference can drift by $2d$. The implementation had been using the single-measurement bound
-$\max_a d_a$ — too permissive by exactly a factor of two, which is the difference between a gate
-that admits instrument noise and one that does not. `QuantityCoordinates.joint_margin` keeps its
-meaning (the 1-Lipschitz propagation of ONE reading) and the objective gained `decision_margin`,
-which is what both gates now compare against. A single-allele arm doubles its OWN floor, not the
-pair's.
+The factor of two is the conservative worst-case propagation for a paired difference: the donor
+gate compares $J(I_d)$ against $J(Y^*_d)$ and the write filter compares $J(y^{(-i)})$ against
+$J(y)$, so the two readings may drift in opposite directions by at most $d$ each. It is not an
+estimate of the variance of the paired difference. The previous single-measurement bound
+$\max_a d_a$ did not cover that worst case. `QuantityCoordinates.joint_margin` keeps its meaning
+(the 1-Lipschitz propagation of ONE reading) and the objective gained `decision_margin`, which is
+what both gates now compare against. A single-allele arm doubles its OWN floor, not the pair's.
 
 The frozen raw figure `0.017012596130371094` is a RAW-logit quantity and may not be copied into the
 normalized joint objective; it has to be re-measured per allele on the panel and divided by $s_a$.
@@ -913,8 +915,9 @@ max_counterfactual_sequences_per_cycle = C      # candidate/sequence domain, unc
 logical_head_calls_per_cycle           = 2 * C  # projected by the preflight, never enforced in the policy
 ```
 
-All three arms bill $2C$: every arm scores both Heads and executes joint safety, so cost and
-candidate domain are identical across the comparison. Overlay schema bumped to `dualcfg-2`.
+All three arms bill $2C$: every arm scores both Heads, preserves the inherited role-A admission
+gate, and emits role-B hotspot telemetry, so cost and candidate domain are identical across the
+comparison. Role-B safety is not a gate in v1 (Appendix E). Overlay schema bumped to `dualcfg-2`.
 
 ### The resulting chain
 
@@ -927,7 +930,8 @@ fixed Tier-2 natural panel
   -> unchanged candidate domain, doubled logical Head-call budget
 ```
 
-Remaining before launch: **DUALF1a**, the producer that turns the panel into the signed calibration.
+DUALF1a is now closed: the producer, panel, measured calibration and re-signing seam are recorded in
+Appendix J.
 
 ---
 
@@ -1002,10 +1006,11 @@ $$
 part in 2.6 million. The donor gate and the write filter are, in practice, *strict improvement past
 float noise*. This is the freeze rule applied faithfully and it is defensible — the Head is
 reproducible to float32, so any difference above that floor is a real difference of instrument
-opinion. It is also five orders of magnitude below V2's legacy raw figure `0.017012596130371094`,
-and the two measure different things: that one is a design-to-design matched difference through the
-whole pipeline; this one is same-sequence repeat drift. Anyone reading both numbers side by side
-will assume the gate was loosened. It was not; a different quantity is being bounded.
+opinion. It is also five orders of magnitude below V2's legacy raw figure `0.017012596130371094`.
+Both originate from same-sequence repeatability, but under different populations and scoring-path
+comparisons: the legacy number is twice the maximum stored-versus-live raw-logit drift on the V2F5A
+mechanism population, while this number is the normalized two-Head bound measured by changing the
+production window-batch reduction shape on the natural panel. Neither is a design effect size.
 
 **How the first measurement of this was wrong.** The producer originally varied only the panel
 ORDER between passes. `ProductionHeadOracle.score` groups requests by `protein_id` and every natural
@@ -1035,15 +1040,16 @@ And it **cannot be improved by enlarging the panel**: 44,021 eligible sequences 
 13,836 homology-independent units, and the SE is over those units. Reaching $c_u/10$ would need
 roughly four times as many independent families than the deduplicated Tier-2 pool contains.
 
-### J.4 Decisions this now needs — user only
+### J.4 Decisions requested during execution — resolved in J.7
 
 | # | Decision | Why it cannot be defaulted | Cost of getting it wrong |
 |---|---|---|---|
 | **D1** | **$C$**, the per-cycle candidate domain | It is signed into the overlay and therefore into the run signature. The current artifact carries the placeholder **278** (M1's historical value). PLAN §7 says it comes from the frozen cohort's maximum legal editable domain, which is measurable — but signing it is a decision | All three arms are invalidated and must be re-run. Re-signing itself is cheap: `--resign-from` is a 1.7 s CPU operation |
-| **D2** | **Leave-overlap-out: run it or declare it unmeasured** | `doc/Dual_Allele_Steering.md` §2.2.3 requires recomputing the calibration WITH the homologous entries and bounding the drift in $b_A/s_A - b_B/s_B$. Only the without-overlap panel exists. At 14–16 % overlap this is not a formality | The intercept is −0.4265, i.e. $4.3\,c_u$. A drift of even a few percent of it consumes the whole credit band. Recommend running it: ~90 min GPU, one more panel build |
+| **D2** | **Overlap-inclusion sensitivity: run it or declare it unmeasured** | The calibration contract requires a measured sensitivity to including Head-training homologs and a bound on the drift in $b_A/s_A - b_B/s_B$. Only the overlap-excluded panel exists. At 14–16 % overlap this is not a formality | The intercept is −0.4265, i.e. $4.3\,c_u$. A drift of even a few percent of it consumes the whole credit band. Recommend running it: ~90 min GPU, one more panel build |
 | **D3** | **Accept $\operatorname{SE}/c_u = 0.185$, or change the panel** | The PLAN's own gate is qualitative ("$\ll$") and this is the first time it has had a number to face | The only levers all cost something real: keep the evaluation proteins (contaminates the eval set), loosen clustering (admits correlated units as independent), or accept a wider uncertainty on the equal-risk line |
 
-None of these blocks the code. All three block a defensible launch.
+None of these blocked code completion. Their frozen resolutions and the one remaining measurement
+are in J.7.
 
 ### J.5 Two defects found while verifying the artifact
 
@@ -1065,5 +1071,71 @@ a hand-edited calibration is refused at signing rather than at the launch gate.
 * the calibration exists and loads through the production seam
   (`load_dual_overlay_file` → `build_arm_objective`), and the three arms resolve to three different
   ordering laws with three different objective digests and their own decision margins;
-* what remains is D1, D2, D3 above — and the runbook-versus-code consistency pass, which has now
-  been justified twice by finding exactly this class of hole.
+* D1 and D3 are frozen in J.7; D2 has a frozen measurement protocol and remains to be executed;
+* after that artifact exists, the remaining launch gate is the runbook-versus-code consistency
+  pass, which has now been justified twice by finding exactly this class of hole.
+
+### J.7 Decisions frozen (2026-08-25)
+
+#### D1 — the candidate ceiling is substrate-specific, not one global scalar
+
+Freeze the scientific unit as **unique counterfactual sequences / legal candidate positions per
+cycle**. The number of Heads observing each sequence is resource accounting and may not shrink this
+domain.
+
+| Campaign | Frozen $C$ | Maximum logical Head calls per Dual cycle | Source |
+|---|---:|---:|---|
+| M1 one-cycle mechanism | **278** | **556** | historical signed V2F5A mechanism ceiling |
+| C1 high-risk D4/K12 | **454** | **908** | measured maximum legal editable domain, signed artifact basis `6T88_A` |
+
+The measured objective calibration is shared, but the two campaigns receive separately signed
+overlays whose run signatures bind their own $C$. Every objective arm within one campaign uses the
+same $C$ and scores both Heads, so neither candidate coverage nor Head cost is confounded with the
+objective law. Re-signing from the measured calibration is the authorized path; no GPU calibration
+rerun and no hand edit are allowed.
+
+#### D2 — run the homology-inclusion sensitivity, but never select the primary panel from it
+
+Run one additional calibration in which the panel build is identical to J.1 except that the union
+of Head-A/Head-B training homologs is **not** removed. Canonical-AA20, deployment exclusion,
+evaluation-set exclusion, homology clustering, representative selection, Head identities,
+objective law and scoring protocol remain identical. This is more precisely an
+**overlap-inclusion sensitivity** than a new calibration candidate.
+
+The overlap-excluded 13,836-cluster panel remains the primary coordinate authority regardless of
+the sensitivity outcome; it was selected by an outcome-independent leakage rule. The sensitivity
+artifact must report at least
+
+$$
+\Delta\theta
+=
+\left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)_{\mathrm{overlap\ included}}
+-
+\left(\frac{b_A}{s_A}-\frac{b_B}{s_B}\right)_{\mathrm{primary}},
+$$
+
+the four coordinate constants, $s_A/s_B$, cross-allele correlation, panel/cluster counts and
+content digests. Report whether $|\Delta\theta|$ exceeds $c_u=0.10$ as a **panel-sensitivity
+label**, not as an outcome-dependent switch to the contaminated panel. An integrity/provenance
+failure blocks launch; the measured magnitude limits the claim to this frozen reference panel but
+does not retroactively choose another coordinate system. This measurement must finish before M1/C1
+submission.
+
+#### D3 — accept the measured precision and retire the qualitative gate
+
+Accept $\operatorname{SE}/c_u=0.185$ for v1. The 13,836-cluster panel is a deliberately frozen
+reference coordinate system, so its median/IQR values are exact descriptive constants of that
+panel; the bootstrap SE measures sensitivity to which homologous families instantiate the broader
+natural-sequence domain, not runtime measurement noise and not donor/write uncertainty.
+
+Delete the qualitative launch requirement $\operatorname{SE}\ll c_u$. Preserve the SE and its
+bootstrap method in the calibration report, and scope the method claim to the content-bound panel.
+Do **not** reintroduce evaluation proteins, loosen clustering to manufacture nominal sample size,
+or change $c_u$ after observing this number. Generalization of the coordinate law to a different
+natural panel is a later robustness study, not part of the minimal Dual capability gate.
+
+#### Launch state after these decisions
+
+The science is now frozen. Code execution may proceed immediately with the M1/C1 overlay re-signing
+and the overlap-inclusion sensitivity job. Cluster generation remains closed until that sensitivity
+artifact and the final runbook-versus-code consistency report both exist.
