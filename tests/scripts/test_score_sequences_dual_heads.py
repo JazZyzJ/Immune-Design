@@ -60,10 +60,16 @@ class _Overlay:
 
 
 class _Head:
-    """Scores by a fixed per-sequence table, keyed by md5, and declares one identity."""
+    """Scores by a fixed per-sequence table, keyed by md5, and declares one identity.
 
-    def __init__(self, identity, values):
-        self.identity, self.values = identity, values
+    Shaped like the REAL ``ProductionHeadOracle``: the window-grid digest lives on ``.binding``,
+    not on the result.  An earlier fake put it on the result itself, every test passed, and the
+    first cluster run died on the real object -- a fake that is easier to satisfy than the thing it
+    stands for tests nothing.
+    """
+
+    def __init__(self, identity, values, *, grid="w" * 64):
+        self.identity, self.values, self.grid = identity, values, grid
 
     def evaluator_identity(self):
         return self.identity
@@ -74,7 +80,8 @@ class _Head:
             out.append(types.SimpleNamespace(
                 sequence_md5=request.sequence_md5, sequence_length=request.sequence_length,
                 protein_id=request.protein_id, allele=self.identity.allele,
-                score_scale=self.identity.score_scale, window_grid_digest="w" * 64,
+                score_scale=self.identity.score_scale,
+                binding=types.SimpleNamespace(window_grid_digest=self.grid),
                 evaluator=self.identity,
                 global_risk=self.values[request.sequence_md5]))
         return out
@@ -167,3 +174,36 @@ def test_a_sequence_table_missing_a_required_column_is_refused(tmp_path):
     pd.DataFrame([{"protein_id": "P1", "sequence": "AAAA"}]).to_parquet(path, index=False)
     with pytest.raises(DualScoringError, match="design_idx"):
         read_sequences([f"wt={path}"])
+
+
+def test_the_window_grid_digest_is_read_off_the_binding_like_the_real_oracle():
+    """`ProductionHeadOracle` returns a V2HeadResult carrying its grid digest on `.binding`.
+
+    `DualObjective.evaluate_scores` reads it off the score itself, so the pairing needs a view.
+    """
+    from scripts.score_sequences_dual_heads import _ScoreView
+    result = types.SimpleNamespace(
+        protein_id="P1", sequence_md5="a" * 32, sequence_length=10, allele="DRB1_0701",
+        score_scale="raw_logit", global_risk=-7.0,
+        binding=types.SimpleNamespace(window_grid_digest="g" * 64))
+    assert _ScoreView(result).window_grid_digest == "g" * 64
+
+
+def test_a_result_with_no_grid_digest_anywhere_is_refused():
+    from scripts.score_sequences_dual_heads import _ScoreView
+    result = types.SimpleNamespace(
+        protein_id="P1", sequence_md5="a" * 32, sequence_length=10, allele="DRB1_0701",
+        score_scale="raw_logit", global_risk=-7.0, binding=types.SimpleNamespace())
+    with pytest.raises(DualScoringError, match="window\ngrid digest|window grid digest"):
+        _ScoreView(result)
+
+
+def test_two_heads_on_different_window_grids_cannot_be_paired():
+    sequences = ["ACDEFGHIKL"]
+    with pytest.raises(Exception, match="one window|window_grid_digest"):
+        score_table(_table(sequences),
+                    head_a=_Head(_evaluator("DRB1_0701", "a" * 64), _values(sequences, -7.0),
+                                 grid="1" * 64),
+                    head_b=_Head(_evaluator("DRB1_0401", "b" * 64), _values(sequences, -3.0),
+                                 grid="2" * 64),
+                    objective=DualObjective(_calibration(), quantity="global_risk"))

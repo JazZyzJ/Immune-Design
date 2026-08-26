@@ -85,6 +85,39 @@ def assert_overlay_binds(overlay: Any, *, evaluator_a: Any, evaluator_b: Any) ->
                 "never measured on")
 
 
+class _ScoreView:
+    """A field view of one Head result, in the shape ``DualObjective.evaluate_scores`` reads.
+
+    ``ProductionHeadOracle`` returns a ``V2HeadResult`` that carries its window-grid digest on
+    ``.binding`` (the runtime matches results to completions by that binding rather than by
+    position).  ``evaluate_scores`` reads ``window_grid_digest`` off the score itself and refuses a
+    pair without it -- correctly, since two grids are two landscapes.  This surfaces the field the
+    oracle already computed; it recomputes nothing, because a second scoring path is how a
+    calibration and the gate it feeds start measuring different quantities.
+    """
+
+    __slots__ = ("protein_id", "sequence_md5", "sequence_length", "window_grid_digest",
+                 "allele", "score_scale", "global_risk")
+
+    def __init__(self, result: Any) -> None:
+        binding = getattr(result, "binding", None)
+        digest = getattr(result, "window_grid_digest", None)
+        if digest is None:
+            digest = getattr(binding, "window_grid_digest", None)
+        if digest is None:
+            raise DualScoringError(
+                f"the Head result for {getattr(result, 'sequence_md5', '?')} carries no window "
+                "grid digest, on itself or on its binding; without it a pair cannot be proved to "
+                "describe one landscape")
+        self.protein_id = str(result.protein_id)
+        self.sequence_md5 = str(result.sequence_md5)
+        self.sequence_length = int(result.sequence_length)
+        self.window_grid_digest = str(digest)
+        self.allele = str(result.allele)
+        self.score_scale = str(result.score_scale)
+        self.global_risk = float(result.global_risk)
+
+
 def _require_finite(record: dict[str, Any], digest: str, **values: float) -> None:
     import math
 
@@ -131,11 +164,12 @@ def score_table(
     rows: list[dict[str, Any]] = []
     for record in records:
         digest = record["sequence_md5"]
-        score_a, score_b = scores_a.get(digest), scores_b.get(digest)
-        if score_a is None or score_b is None:
+        result_a, result_b = scores_a.get(digest), scores_b.get(digest)
+        if result_a is None or result_b is None:
             raise DualScoringError(
                 f"{record['protein_id']}:{digest} was not returned by both Heads")
-        raw_a, raw_b = float(score_a.global_risk), float(score_b.global_risk)
+        score_a, score_b = _ScoreView(result_a), _ScoreView(result_b)
+        raw_a, raw_b = score_a.global_risk, score_b.global_risk
         # Checked BEFORE the reduction: a non-finite raw risk should be reported as the instrument
         # failure it is, not as whatever the objective happens to raise downstream of it.
         _require_finite(record, digest, R_A=raw_a, R_B=raw_b)
