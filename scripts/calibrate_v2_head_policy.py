@@ -10,6 +10,16 @@ margin and the leave-one-out local-contribution floor use the conservative diffe
 No denoiser or structure backend is loaded.  The input bundles, Head paths, policy spec and outputs
 are CLI arguments; the selected rows and their canonical digest are persisted so the scalar can be
 audited rather than reconstructed from a log line.
+
+``--sequence-bundle`` measures the same bound for a Head that NO bundle on this cluster was ever
+scored by -- a newly promoted production checkpoint.  The stored-vs-live path refuses such a
+bundle, and rightly: a difference between two checkpoints' scores measures the checkpoint change,
+not the instrument's own repeatability.  So this mode reads only the bytes and scores them TWICE
+with the live Head, in shuffled order and at a different window batch size, exactly as
+``calibrate_v2_dual_objective.score_panel_twice`` does.  Order alone is not enough -- it can leave
+every batch the Head forms unchanged, and then the measured drift is a tautology.  The artifact
+records which method produced it, and the method is inside the calibration digest, so one row
+table can never wear two provenances.
 """
 
 from __future__ import annotations
@@ -17,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import random
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -45,6 +56,8 @@ from inverse_folding.reference_flow.fusion_v2.policy import (  # noqa: E402
 from inverse_folding.reference_flow.fusion_v2_runtime.lookahead import OracleRequest  # noqa: E402
 
 CALIBRATION_BUNDLE_SCHEMA = "v2-head-policy-calibration-bundle/1"
+STORED_VS_LIVE = "stored_vs_live_global_risk_max_abs"
+LIVE_VS_LIVE = "live_vs_live_shuffled_global_risk_max_abs"
 
 
 class HeadPolicyCalibrationError(RuntimeError):
@@ -129,10 +142,57 @@ def endpoint_population(
     return selected
 
 
+def _score_all(oracle: Any, records: list[dict[str, Any]]) -> dict[str, Any]:
+    """One pass over the whole population, keyed by ``sequence_md5``."""
+    results = oracle.score([
+        OracleRequest(protein_id=row["protein_id"], sequence=row["sequence"],
+                      sequence_md5=row["sequence_md5"], sequence_length=len(row["sequence"]))
+        for row in records])
+    scored = {str(result.sequence_md5): float(result.global_risk) for result in results}
+    if len(scored) != len(records):
+        raise HeadPolicyCalibrationError(
+            f"the Head returned {len(scored)} distinct results for {len(records)} requests")
+    return scored
+
+
+def score_live_vs_live(
+    records: list[dict[str, Any]], *, head_oracle: Any, repeat_oracle: Any, shuffle_seed: int,
+) -> list[dict[str, Any]]:
+    """Score the same bytes twice with the SAME checkpoint and pair the two passes.
+
+    The second pass is shuffled AND handed a differently batched build of the same checkpoint.
+    Either alone can leave every batch the Head forms identical, and a repeat that forms the same
+    batches returns the same numbers whether or not the instrument drifts.
+    """
+    first = _score_all(head_oracle, list(records))
+    shuffled = list(records)
+    random.Random(shuffle_seed).shuffle(shuffled)
+    second = _score_all(repeat_oracle if repeat_oracle is not None else head_oracle, shuffled)
+    missing = sorted(set(first) - set(second))
+    if missing:
+        raise HeadPolicyCalibrationError(
+            f"the second pass did not return {len(missing)} sequence(s)")
+    rows = [{
+        "protein_id": record["protein_id"],
+        "sequence_md5": record["sequence_md5"],
+        "first_pass_global_risk": first[record["sequence_md5"]],
+        "second_pass_global_risk": second[record["sequence_md5"]],
+        "abs_repeat_drift": abs(second[record["sequence_md5"]] - first[record["sequence_md5"]]),
+        "source_bundle": record["bundle"],
+    } for record in records]
+    rows.sort(key=lambda row: (row["protein_id"], row["sequence_md5"]))
+    return rows
+
+
 def score_repeatability(
     records: list[dict[str, Any]], *, head_oracle: Any, min_observations_per_protein: int,
+    repeat_oracle: Any = None, shuffle_seed: int | None = None,
 ) -> tuple[list[dict[str, Any]], Any]:
-    """Re-score every stored sequence once and return auditable paired rows."""
+    """Return auditable paired rows and the evaluator they were measured on.
+
+    ``shuffle_seed`` selects the live-vs-live mode: the stored scores are the bytes' provenance,
+    not the comparator, so the stored-instrument gate below does not apply and is not run.
+    """
     if min_observations_per_protein < 1:
         raise HeadPolicyCalibrationError("min_observations_per_protein must be >= 1")
     evaluator = head_oracle.evaluator_identity()
@@ -146,6 +206,10 @@ def score_repeatability(
             f"too few unique stored sequences for {short}; need at least "
             f"{min_observations_per_protein} per protein"
         )
+    if shuffle_seed is not None:
+        return score_live_vs_live(
+            records, head_oracle=head_oracle, repeat_oracle=repeat_oracle,
+            shuffle_seed=int(shuffle_seed)), evaluator
 
     rows: list[dict[str, Any]] = []
     for protein_id in sorted(by_protein):
@@ -218,7 +282,8 @@ def _scalar(
 
 def build_calibration_bundle(
     rows: list[dict[str, Any]], *, evaluator: Any, policy_spec: Path,
-    max_counterfactual_head_calls_per_cycle: int,
+    max_counterfactual_head_calls_per_cycle: int, method: str = STORED_VS_LIVE,
+    sequence_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind the measured difference floor and the frozen 5% cap into one config block."""
     if not rows:
@@ -230,15 +295,18 @@ def build_calibration_bundle(
         )
     spec_path = Path(policy_spec)
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    # v1 AND v2: the materializer requires `policy_spec_sha256` to equal the digest of the spec the
+    # CELL supplies, and every executed V2 campaign supplies the v2 spec.  A producer that admits
+    # only v1 cannot produce the artifact production consumes -- it refuses the real one and accepts
+    # only a spec no campaign passes.  The enum stays closed; it is simply the declared set.
     if (spec.get("policy_id") != HEAD_DIRECTED_CAPPED_POLICY_ID
-            or spec.get("policy_version") != "v1"):
+            or spec.get("policy_version") not in ("v1", "v2")):
         raise HeadPolicyCalibrationError(
-            f"{spec_path} is not the frozen {HEAD_DIRECTED_CAPPED_POLICY_ID!r} v1 spec"
+            f"{spec_path} is not a frozen {HEAD_DIRECTED_CAPPED_POLICY_ID!r} v1/v2 spec"
         )
-    calibration_data_digest = canonical_digest({
-        "method": "stored_vs_live_global_risk_max_abs",
-        "rows": rows,
-    })
+    if method not in (STORED_VS_LIVE, LIVE_VS_LIVE):
+        raise HeadPolicyCalibrationError(f"unknown repeatability method {method!r}")
+    calibration_data_digest = canonical_digest({"method": method, "rows": rows})
     measurement = PolicyCalibrationArtifact(
         schema_version=V2_POLICY_CALIBRATION_SCHEMA_VERSION,
         measurement_kind="frozen_head_repeatability",
@@ -284,9 +352,9 @@ def build_calibration_bundle(
         "max_counterfactual_head_calls_per_cycle":
             int(max_counterfactual_head_calls_per_cycle),
     }
-    return {
+    payload = {
         "schema_version": CALIBRATION_BUNDLE_SCHEMA,
-        "method": "stored_vs_live_global_risk_max_abs",
+        "method": method,
         "head": evaluator.canonical_payload(),
         "n_observations": len(rows),
         "calibration_data_digest": calibration_data_digest,
@@ -296,12 +364,27 @@ def build_calibration_bundle(
         "policy_spec_sha256": policy_spec_sha256,
         "head_directed": head_directed,
     }
+    if sequence_source is not None:
+        # The bytes came from runs of a DIFFERENT instrument.  That is the point of this mode, and
+        # recording whose runs they were is what keeps it auditable rather than merely permitted.
+        payload["sequence_source"] = sequence_source
+    return payload
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--bundle", action="append", required=True, type=Path,
-                        help="existing V2 bundle directory (repeatable)")
+    parser.add_argument("--bundle", action="append", default=None, type=Path,
+                        help="existing V2 bundle directory scored by THIS Head (repeatable); "
+                             "stored-vs-live mode")
+    parser.add_argument("--sequence-bundle", action="append", default=None, type=Path,
+                        help="V2 bundle directory used only as a byte population (repeatable); "
+                             "live-vs-live mode, for a Head no bundle was ever scored by")
+    parser.add_argument("--repeat-shuffle-seed", type=int, default=20260826,
+                        help="live-vs-live only: the declared order of the second pass")
+    parser.add_argument("--repeat-window-batch-size", type=int, default=None,
+                        help="live-vs-live only: the second pass's window batch size; defaults to "
+                             "half the first pass's, because a repeat that forms the same batches "
+                             "measures nothing")
     parser.add_argument("--policy-spec", required=True, type=Path)
     parser.add_argument("--out-rows", required=True, type=Path)
     parser.add_argument("--out-json", required=True, type=Path)
@@ -325,17 +408,52 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    import copy
+
     from scripts.analysis.replay_v2_head_directed_policy import _load_head
 
+    if bool(args.bundle) == bool(args.sequence_bundle):
+        raise HeadPolicyCalibrationError(
+            "pass exactly one of --bundle (stored-vs-live, this Head produced the bundle) or "
+            "--sequence-bundle (live-vs-live, the bundle is only a byte population)")
+    live = bool(args.sequence_bundle)
+    bundles = args.sequence_bundle if live else args.bundle
     records = endpoint_population(
-        args.bundle, max_sequences_per_protein=int(args.max_sequences_per_protein))
+        bundles, max_sequences_per_protein=int(args.max_sequences_per_protein))
+
+    head_oracle = _load_head(args)
+    repeat_oracle = None
+    sequence_source = None
+    if live:
+        repeat_args = copy.copy(args)
+        repeat_args.head_window_batch_size = int(
+            args.repeat_window_batch_size or max(1, int(args.head_window_batch_size) // 2))
+        if repeat_args.head_window_batch_size == int(args.head_window_batch_size):
+            raise HeadPolicyCalibrationError(
+                "the repeat pass must use a different window batch size; an identically batched "
+                "repeat returns identical numbers whether or not the instrument drifts")
+        repeat_oracle = _load_head(repeat_args)
+        sequence_source = {
+            "bundles": sorted(str(Path(path).resolve()) for path in bundles),
+            "stored_head_config_hash": sorted(
+                {str(record["manifest_head_config_hash"]) for record in records}),
+            "stored_head_checkpoint_digest": sorted(
+                {str(record["manifest_head_checkpoint_digest"]) for record in records}),
+            "stored_scores_used": False,
+            "repeat_shuffle_seed": int(args.repeat_shuffle_seed),
+            "window_batch_sizes": [int(args.head_window_batch_size),
+                                   repeat_args.head_window_batch_size],
+        }
     rows, evaluator = score_repeatability(
-        records, head_oracle=_load_head(args),
+        records, head_oracle=head_oracle, repeat_oracle=repeat_oracle,
+        shuffle_seed=int(args.repeat_shuffle_seed) if live else None,
         min_observations_per_protein=int(args.min_observations_per_protein))
     payload = build_calibration_bundle(
         rows, evaluator=evaluator, policy_spec=args.policy_spec,
         max_counterfactual_head_calls_per_cycle=int(
             args.max_counterfactual_head_calls_per_cycle),
+        method=LIVE_VS_LIVE if live else STORED_VS_LIVE,
+        sequence_source=sequence_source,
     )
     args.out_rows.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_parquet(args.out_rows, index=False)
@@ -343,6 +461,7 @@ def main(argv=None) -> int:
     args.out_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps({
         "out_rows": str(args.out_rows), "out_json": str(args.out_json),
+        "method": payload["method"],
         "n_observations": payload["n_observations"],
         "max_abs_repeat_drift": payload["max_abs_repeat_drift"],
         "difference_noise_bound": payload["difference_noise_bound"],
