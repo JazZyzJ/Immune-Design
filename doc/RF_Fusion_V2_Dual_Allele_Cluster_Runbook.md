@@ -1,6 +1,7 @@
 # RF Fusion V2 Dual-Allele — Concise Cluster Runbook
 
-**Status:** ready for cluster-agent execution after one code-generated assembly preflight.
+**Status:** the original three-arm high-risk diagnostic is executed and closed (§6). A separate
+paper-facing full-data Dual capability campaign is authorized in §7.
 
 **Scientific authority:** `doc/Dual_Allele_Steering.md`.
 
@@ -12,13 +13,16 @@ This runbook asks one question:
 > Under the same Fusion V2 generation authority, does simultaneous Dual steering reach a lower
 > frozen joint objective than either single-allele steering law?
 
-The execution has one assembly gate, one formal three-arm campaign, and one combined analysis.
-There is no separate calibration campaign, opportunity probe, two-protein M1 experiment, D0
-experiment, root sweep, temperature sweep, NMP run, or new structure study.
+Sections 0–6 preserve the executed diagnostic and its claim boundary. Section 7 asks a different,
+paper-facing question on a common Head-blind cohort and is the only active execution authority.
 
 ---
 
 ## 0. Already frozen and completed
+
+This section describes the executed eval-split-Head diagnostic only. Its calibration, overlay,
+cohort, root count, and three-arm comparison must not be reused as the §7 full-data campaign
+identity.
 
 Do not rerun or tune the following:
 
@@ -278,6 +282,10 @@ asymmetry.
 
 ## 5. Stop and return
 
+This stop closes the original high-risk three-arm diagnostic. Section 7 is a separately authorized
+paper-facing campaign with new full-data Head and cohort identities; it is not a continuation or
+parameter sweep of the diagnostic.
+
 After the combined read, stop. Do not automatically run:
 
 - the old P0 opportunity probe;
@@ -418,3 +426,260 @@ objective value, equal to `u_a` exactly in `a_only` bundles and `u_b` exactly in
 so the common frontier must be recomputed as $J=\mathrm{smoothmax}(u_A,u_B)$ — which §4.3 already
 says — rather than read from that column. Reading it made joint lose by construction. No seed,
 criterion, contrast definition, floor, or admission law changed.
+
+---
+
+## 7. AUTHORIZED: full-data Dual capability campaign for the paper
+
+### 7.1 Scientific question and scope
+
+The §6 campaign answered an internal ablation question on a 0701-selected high-risk cohort. It did
+not answer the paper-facing question below:
+
+> On one common cohort selected without either Head, can one structure-feasible Dual-Fusion design reduce
+> both DRB1*07:01 and DRB1*04:01 production-Head risk relative to WT and ProteinMPNN?
+
+This campaign tests capability, not whether the joint law beats two variants of itself. Run only
+the `joint` arm. Do not run `a_only`, `b_only`, NoD, M1, a temperature sweep, a root sweep, NMP, or
+a separate structure experiment.
+
+The §6 result remains valid as a mechanism diagnostic: Head B entered the actuator, but the
+0701-high-risk cohort supplied little incremental trade-off beyond A-only steering. It is not the
+paper comparator.
+
+### 7.2 Frozen production Heads
+
+Every runtime decision, calibration row, WT score, ProteinMPNN score, Fusion endpoint, and final
+analysis row must use the following fixed-epoch full-data checkpoints:
+
+| Role | Checkpoint | SHA-256 |
+|---|---|---|
+| A, DRB1*07:01 | `/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head_fulldata/drb0701/epoch_29.pt` | `144ae7c808e9c69aa9efad523957a16579045017d1f8192bd97720947cbdc163` |
+| B, DRB1*04:01 | `/scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head_fulldata/drb0401/epoch_34.pt` | `12e8018fed5a9255e5e467811cd8c8b4520fd1ab7cdad281d93c75472b6ffb23` |
+
+Use `epitope_head/configs/` with the production `cnn_himp_a1_res03`/LC1 inference contract and the
+same score scale and window grid for all sequence sources. Never use either full-data run's
+`best.pt`: it is selected on a training-contaminated validation curve. The fixed epochs above are
+the only production deliverables.
+
+These Heads have no held-out performance estimate by construction. Their scientific validity is
+supported by the separate five-fold CV results; this campaign uses them as deployment-consistent
+optimization oracles and does not claim to re-evaluate Head generalization.
+
+The old `dual_overlay_c1_v1.json` is invalid for this campaign because it binds different
+checkpoint digests. Reusing it or mixing old endpoint scores with the full-data Heads is a hard
+failure.
+
+### 7.3 Task DP0 — freeze the common Head-blind cohort and exact comparator sequences
+
+Build `dual_common_fast_v1.parquet` from the exact intersection of:
+
+- `if_ready/main/test_proteins_if_ready_HLA-DRB1_07_01.parquet`; and
+- `if_ready/main/test_proteins_if_ready_HLA-DRB1_04_01.parquet`.
+
+Join by `protein_id` and require exact agreement on reference sequence, sequence length, and the
+resolved target-backbone digest. Exclude the 100 proteins used by the §6 high-risk diagnostic.
+Before sampling, also require that the canonical ProteinMPNN source contains exactly eight complete
+design sequences for the protein; this is an availability requirement and must not inspect scores.
+
+Select exactly 100 proteins with a deterministic, protein-equal uniform allocation over sequence
+length and IF sequence-coverage strata. No Head, NMP, WT risk, ProteinMPNN risk, or previous Fusion
+outcome may enter cohort selection. Record the eligible intersection, bin counts, seed, selected
+IDs, source hashes, and backbone hashes in a cohort manifest before any Head scoring.
+
+The resulting cohort is symmetric and Head-blind, but its two source parquets inherit the project's
+historical allele-specific NMP prescreen. Record that provenance and do not call the cohort fully
+allele-neutral; no additional NMP value may influence the 100-protein sample.
+
+Prepare three exact sequence surfaces for those same 100 proteins:
+
+1. **WT:** one target sequence per protein from the frozen cohort.
+2. **ProteinMPNN:** the existing canonical eight-design generation. Choose one exact sequence
+   source and retain all eight original designs; do not combine A scores from one generated panel
+   with B scores from another unless `(protein_id, sequence_md5)` matches exactly.
+3. **Fusion:** generated later by DP3.
+
+After the cohort and its hard-anchor manifests are frozen, measure
+
+$$
+C_{\mathrm{common}}
+=
+\max_p
+\left|
+\mathcal A_{\mathrm{editable}}(p)
+\right|.
+$$
+
+**DP0 acceptance:** the frozen manifest contains 100 proteins with one common reference/backbone,
+one WT sequence, eight exact ProteinMPNN sequences, complete source hashes, and the measured
+$C_{\mathrm{common}}$. No immune score has influenced membership.
+
+### 7.4 Task DP1 — build the full-data-clean panels, sign the overlay, and score comparators
+
+Use the existing panel builder and retain the frozen scalarization law:
+
+- `scripts/build_dual_calibration_panel.py`;
+- `inverse_folding/reference_flow/configs/v2_dual_smoothmax_policy_v1.json`.
+
+Keep $c_u=0.10$ and
+
+$$
+\tau = \frac{0.10}{\log 2}.
+$$
+
+Do not tune either quantity from the new cohort or campaign outcomes.
+
+Build a new primary natural panel for the full-data Heads. The panel recipe remains canonical
+AA20, length 100–500, exact deduplication, homology clustering, one representative per cluster,
+and deployment-cohort exclusion. Because the production Heads were trained on train+val+test,
+exclude the union of homology to **all three splits** for both alleles; the previous train/val-only
+panel cannot be relabelled as full-data-clean.
+
+Produce the required overlap-included companion measurement with the same full-data Heads so the
+production loader's panel-sensitivity contract remains satisfied. This is provenance calibration,
+not a parameter sweep: the overlap-excluded panel remains primary regardless of the measured
+shift.
+
+Run `scripts/calibrate_v2_dual_objective.py` on the primary and sensitivity panels with the two
+§7.2 full-data Heads. Produce signed calibration rows and
+`dual_overlay_fulldata_common_v1.json`, binding:
+
+- both full-data checkpoint paths and exact SHA-256 values;
+- newly measured $b_A,s_A,b_B,s_B$ and repeatability-derived donor/write margins;
+- the frozen smooth-max policy and $\tau$;
+- both panel identities, the measured sensitivity, and all content digests;
+- the DP0 $C_{\mathrm{common}}$ in candidate-sequence units; and
+- a projected two-Head ceiling of $2C_{\mathrm{common}}$ logical Head evaluations per cycle.
+
+Do not halve the editable domain because there are two Heads, and do not reuse `454` unless DP0
+independently measures that exact value.
+
+Score every DP0 WT and ProteinMPNN sequence with both full-data Heads. Existing evaluation rows may
+be reused only after exact checkpoint, config, score-scale, window-grid, protein, and sequence-MD5
+validation. Missing cross-allele scores are computed; sequences are never regenerated to fill a
+scoring gap.
+
+**DP1 acceptance:** both panels reproduce from their manifests; all WT and ProteinMPNN rows carry
+finite $R_A,R_B,u_A,u_B,J_\tau$; and the overlay loads through the production path, resolves
+`joint`, binds both checkpoint digests and $C_{\mathrm{common}}$, carries panel sensitivity, and
+reproduces from its signed row table.
+
+### 7.5 Task DP2 — materialize and preflight the formal joint campaign
+
+Use the existing V2 surfaces registered in `doc/SCRIPTS.md`:
+
+- `scripts/materialize_v2_canary_config.py`;
+- `scripts/preflight_v2_canary_assembly.py`;
+- `scripts/run_rf_fusion_v2.py`; and
+- `scripts/submit_rf_fusion_v2_canary.slurm`.
+
+Freeze the production search contract:
+
+| Item | Value |
+|---|---|
+| Cohort | `dual_common_fast_v1.parquet`, 100 proteins |
+| Objective arm | `joint` only |
+| Heads | the two full-data checkpoints in §7.2 |
+| Overlay | `dual_overlay_fulldata_common_v1.json` from DP1 |
+| Search | D4/K12/r40, checkpoints 50→60→70→80→90 |
+| Roots | four independent roots per protein |
+| Cells | 400 |
+| Candidate domain | measured $C_{\mathrm{common}}$ per cycle; two-Head accounting $2C_{\mathrm{common}}$ |
+| Structure/anchors | the frozen V2 production contract, unchanged |
+| Runtime | `immune-design` for calibration, generation, and all Head rescoring |
+
+The four-root choice restores the search scale used by the formal V2 K12 results. It is not a
+root ablation, and no one-root arm is run.
+
+Run one model-free materialization/assembly preflight over all 400 cells. It must verify cohort and
+backbone identities, root seeds, D4/K12/r40, full-data Head digests, overlay digest,
+$C_{\mathrm{common}}/2C_{\mathrm{common}}$ budget,
+structure config, generated `.args.sh`, and absence of NMP. There is no separate GPU smoke or
+first-protein decision gate: the Dual runtime has already executed 300 cells in §6.
+
+### 7.6 Task DP3 — execute the 400-cell joint campaign
+
+Submit all four roots for all 100 proteins under one campaign identity. Preserve every typed cell
+failure, carried incumbent, endpoint/archive table, structure verdict, Dual evidence table, cost
+ledger, and resolved launch bundle. Do not replace failed proteins, add roots selectively, or
+inspect outcomes before all requested cells finish.
+
+Per protein, merge the four roots, exact-sequence deduplicate, and retain only inherited-V2
+structure-feasible endpoints. Materialize:
+
+- one **primary design**: minimum frozen $J_\tau$, deterministic tie by endpoint ID; and
+- one **reported panel**: the first up-to-eight unique feasible sequences under the same frozen
+  `(J_\tau, endpoint_id)` order.
+
+Both raw allele risks reported for a design must come from that same exact sequence. Do not select
+one sequence for A and another for B.
+
+### 7.7 Task DP4 — common full-data evaluation against WT and ProteinMPNN
+
+Apply the same DP1 calibration and full-data Head scorers to all three methods.
+
+For ProteinMPNN, define its primary design as the minimum-$J_\tau$ sequence among its original
+eight designs, with the same deterministic tie law. WT has one sequence. The primary comparison is
+therefore one exact selected design per method and protein. Also report the full Fusion up-to-eight
+panel and all eight ProteinMPNN designs as an output-distribution sensitivity.
+
+Primary paired quantities, lower is better:
+
+1. Fusion minus WT for raw $R_A$;
+2. Fusion minus WT for raw $R_B$;
+3. Fusion minus ProteinMPNN for raw $R_A$;
+4. Fusion minus ProteinMPNN for raw $R_B$; and
+5. the corresponding frozen $J_\tau$ contrasts.
+
+Use protein-equal summaries and 10,000 protein bootstrap draws with one predeclared analysis seed.
+The paper-facing Dual capability claim requires the one-sided 95% upper bound to be below zero for
+all four raw-risk contrasts:
+
+$$
+\operatorname{UCB}_{95\%}
+\left[
+\operatorname{mean}
+\left(
+R_a^{\mathrm{Fusion}}-R_a^{\mathrm{comparator}}
+\right)
+\right] < 0,
+\qquad
+a\in\{A,B\},
+\quad
+\mathrm{comparator}\in\{\mathrm{WT},\mathrm{ProteinMPNN}\}.
+$$
+
+Also report, without turning them into new gates:
+
+- fraction of proteins on which the Fusion primary design improves both raw allele risks relative
+  to each comparator;
+- two-dimensional Pareto dominance/tie/incomparability counts;
+- WT-risk-stratified readout, with strata defined only after the cohort is frozen;
+- per-depth $J_\tau$, $R_A$, and $R_B$ frontiers;
+- output uniqueness/diversity and realized candidate/refold cost; and
+- scTM, recovery, and structure-feasible coverage as do-no-harm evidence.
+
+Do not independently optimize or select on the two raw allele columns during analysis. The frozen
+joint objective selects membership; raw $R_A$ and $R_B$ test whether that one selection actually
+improves both biological directions.
+
+### 7.8 Verdict, evidence return, and stop
+
+| Result | Verdict |
+|---|---|
+| all four raw-risk UCBs are below zero; integrity and structure gates pass | `dual_fulldata_capability_supported` |
+| both alleles beat WT but one does not beat ProteinMPNN | `dual_biological_descent_supported_comparator_gain_partial` |
+| only one raw allele improves | `single_axis_only`; no Dual capability claim |
+| fewer than 80 proteins have complete WT/ProteinMPNN/Fusion evidence | `undercovered_unresolved` |
+| Head/checkpoint/cohort/backbone/objective identity mismatch | invalid campaign |
+
+Return the cohort manifest, full-data calibration rows/overlays, all requested cell bundles,
+materialized Fusion/WT/ProteinMPNN panels, paired protein table, structure/cost tables, and resolved
+configs through the standard RF/RAR path. Register one RAR containing the deterministic analysis
+program, exact inputs and hashes, primary results, raw per-allele evidence, and claim boundary.
+
+After DP4, stop. Do not automatically add single-allele arms, extra roots, a tau sweep, NMP,
+conflict-selected cohorts, or compute-matched ProteinMPNN generation. The primary comparison is
+one selected exact design per method and protein. The up-to-eight sensitivity reports its actual
+row coverage and is called eight-vs-eight only on complete cases. Neither read claims equal
+upstream search compute.

@@ -55,14 +55,14 @@
   - NMP (NetMHCIIpan): pp_auc=0.9802, pp_ap=0.3450, recall@50=0.777, recall@100=0.833
   - NMP > head on this checkpoint; npoff variant (pp_ap=0.3497) now exceeds NMP — re-run NMP comparison on npoff before claiming
 - **Artifacts**: `InferencePredictor` verified, `predict_protein()` API stable
-- **Multi-allele a1res03 deliverables (Wave-4, unified config `epitope_head/configs/cnn_himp_a1_res03.yaml`)**: a1res03 is the unified best across all 3 alleles. **All three are EVAL-SPLIT-trained** (held out val+test for honest NMP comparison) — **none is trained on full data** (see Full-data status). Reported test metrics ↔ the exact ckpt below:
+- **Multi-allele a1res03 deliverables (Wave-4, unified config `epitope_head/configs/cnn_himp_a1_res03.yaml`)**: a1res03 is the unified best across all 3 alleles. The checkpoints carrying reported generalization metrics are the EVAL-SPLIT/CV models below; separate fixed-epoch full-data production checkpoints exist for downstream optimization and carry no held-out metric.
   - DRB1*07:01: 5-fold cluster CV — now on **Della** `run/epitope_head/cnn_himp_a1_res03_drb0701_seed42_cv5_fold{0..4}/runs/LC1/seed_42/` (each fold: goal-epoch ckpt + best.pt + configs/logs; also on Modal `immune-design-runs`). Per-fold goal epochs (argmax val IoU50, reproduce the reported mean exactly): **f0=e29, f1=e24, f2=e39, f3=e29, f4=e34**; best.pt = val-pp_ap-selected (downstream-leaning). No single full-data model (CV by construction; each fold trains on 4/5). Test mean: IoU50 **0.581**, ExAP 0.262, Pearson **0.508**.
   - DRB1*04:01: **5-fold cluster CV** (mean±std, goal-selected epoch/fold: f0=e9,f1=e34,f2=e24,f3=e39,f4=e44) — 5 fold ckpts on **Della** `run/epitope_head/cnn_himp_a1_res03_drb0401_seed42_cv5_fold{0..4}/runs/LC1/seed_42/`. Test mean: IoU50 **0.513±0.012**, IoU70 0.487±0.014, ExAP 0.239±0.014, **Pearson 0.429±0.036**, ResAUC 0.851±0.009, ResAP 0.528±0.015 (NMP 0.556/0.533/0.280/0.146/0.870/0.562). Aggregate: `run/benchmark/w4_drb0401_cv/cv_summary_w4.json`; NMP reused from full-pool cache `run/benchmark/epi_himp_sweep/cache_0401_all1865.parquet`. *(The earlier single-split epoch_34 ckpt at `cnn_himp_a1_res03_drb0401_seed42/` is retained but the CV supersedes it as the reported basis.)*
   - DRB1*15:01: **5-fold cluster CV** (mean±std, goal-selected epoch/fold: f0=e9, f1=e29, f2=e24, f3=e24, f4=e19) — 5 fold ckpts on **Modal** `immune-design-runs:/epitope_head/cnn_himp_a1_res03_drb1501_seed42_cv5_fold{0..4}/runs/LC1/seed_42/`. Test mean: IoU50 **0.468±0.044**, IoU70 0.425±0.043, ExAP 0.179±0.026, **Pearson 0.354±0.048**, ResAUC 0.807±0.018, ResAP 0.477±0.047 (NMP 0.544/0.500/0.240/0.143/0.841/0.550). Aggregate: `run/benchmark/w4_drb1501_cv/cv_summary_w4.json`; NMP reused from full-pool cache `run/benchmark/epi_himp_sweep/cache_1501_all1536.parquet`. *(The earlier single-split best.pt at `cnn_himp_a1_res03_drb1501_seed42/` is retained but the CV supersedes it as the reported basis.)*
   - **Production heads (full-data refit, 2026-08-19)** — all three alleles retrained on the WHOLE pool (train+val+test) with `cnn_himp_a1_res03`, seed 42, fixed epoch budget = median CV goal epoch (0701 e29 / 0401 e34 / 1501 e24), early stopping off. Modal `immune-design-runs:/epitope_head/cnn_himp_a1_res03_drb{0701,0401,1501}_seed42_full/`, deliverables `epoch_{29,34,24}.pt`; Della mirror `run/epitope_head_fulldata/`. **No held-out metrics by construction** — val ⊂ train (curve only, pp_auc≈0.999), so `best.pt` from these runs is leaky and must not be used; the reported numbers stay the 5-fold CV ones. Splits: `splits/strict/full/` + `full_config.json`.
   - manifests: `work/immune-design/manifests/{drb0701,drb0401,drb1501}/splits/strict/`.
 - **0401 full 5-fold CV — DONE** (2026-07-07). cv5 splits generated; 5 folds trained on Modal then pulled to Della; full-pool NMP cache `cache_0401_all1865.parquet` built on Della (16h41m); **eval + aggregate run LOCALLY on Della** (ailab GPU, reuse cache, no NetMHCIIpan). Result: landscape Pearson **0.429±0.036 ≫ NMP 0.146**; region/exact/ResAP trail NMP (see blockquote). Single-split 0401 was optimistic → CV is the reported basis now. report + this file backfilled. (Fixed a `cv_select_and_aggregate.py` single-arm IndexError along the way.)
-- **Full-data (production) checkpoints**: **NONE trained yet** for a1res03 on any allele. Every a1res03 ckpt holds out ~20% (val+test). A full-data refit (train on train+val+test at the goal epoch) would be the downstream-deployment checkpoint — not built (a1res03 downstream deployment not yet requested; for the paper, eval-split is the correct basis).
+- **Full-data production checkpoints — DONE (2026-08-19):** 0701 `run/epitope_head_fulldata/drb0701/epoch_29.pt` (SHA256 `144ae7c808e9c69aa9efad523957a16579045017d1f8192bd97720947cbdc163`); 0401 `run/epitope_head_fulldata/drb0401/epoch_34.pt` (SHA256 `12e8018fed5a9255e5e467811cd8c8b4520fd1ab7cdad281d93c75472b6ffb23`); 1501 `run/epitope_head_fulldata/drb1501/epoch_24.pt`. These fixed-epoch files, never the leaky `best.pt`, are the downstream objective oracles; five-fold CV remains the Head-performance evidence.
 - **Prior production heads (npoff/aug — superseded by a1res03 on span+landscape goal, retained; these are what RF downstream currently points to)**: 0701 `cnn_himp_v1_npoff_drb0701_seed42` (pp_ap 0.3497); 0401 `cnn_himp_v1_npoff_drb0401_seed42` (pp_ap 0.3165); 1501 `LC1_drb1501_aug` (pp_ap 0.1721).
 - **final_scripts**: `scripts/submit_cnn_enhance.slurm`, `scripts/submit_train_v2_cnn.slurm`, `scripts/submit_mutation_augmentation.slurm`
 
@@ -621,11 +621,12 @@ directionality verdict.
 
 ## RF Fusion V2 Dual-Allele — optional two-allele steering (PLAN_RF_FUSION_V2_DUAL_ALLELE.md)
 
-**Status (2026-08-25): EXECUTED, READ, CLOSED.** Verdict
-**`no_demonstrated_gain_over_either_single_allele_arm`**. Simultaneous Dual steering does not reach
-a lower frozen joint objective than steering on allele A alone; the mechanism is nonetheless
-positive (the second Head does enter the actuator). Runbook §5 stops here — no further Dual
-experiment is authorized.
+**Status (2026-08-26): internal diagnostic CLOSED; paper-facing capability campaign AUTHORIZED.**
+The executed one-root, three-arm 0701-high-risk experiment remains
+**`no_demonstrated_gain_over_either_single_allele_arm`** while confirming that Head B enters the
+actuator. It does not test the paper claim on a common Head-blind cohort. Runbook §7 now authorizes a
+separate full-data-Head campaign: common Head-blind 100-protein cohort, `joint` only, four-root D4/K12/r40,
+and direct comparison with WT and ProteinMPNN on both raw allele axes.
 
 **What it is.** An OPTIONAL second-allele mode on the frozen V2 substrate. Role A = `DRB1*07:01`,
 role B = `DRB1*04:01`. Two Heads on incomparable raw scales map through frozen affine coordinates
@@ -653,9 +654,12 @@ $r = 0.0962$, Head-training overlap $f_A/f_B$ = 14.12 % / 15.78 %, derived margi
 $\epsilon_{\rm donor}=\epsilon_{\rm write}$ = `4.6386e-7` (joint / b_only), `3.0318e-7` (a_only).
 Overlap-inclusion sensitivity `within_credit` ($\lvert\Delta\theta\rvert/c_u = 0.0057$).
 
-**Open follow-ups, none authorized by the runbook.** Driver-side `--dual-overlay` cross-check;
-the `objective_digest` and `typed_stop` labelling defects; and AUDIT Appendix L route A if the
-null is later judged underpowered.
+**Active next tasks:** runbook §7 DP0–DP4 — freeze the common Head-blind cohort and exact
+WT/ProteinMPNN sequence surfaces, rebuild/sign the Dual calibration for the two full-data Heads and
+the measured cohort candidate ceiling, materialize and preflight 400 joint cells, execute the
+four-root campaign, and return one full-data paired RAR.
+The old high-risk three-arm campaign is not rerun. Driver-side overlay/digest/typed-stop cleanups
+remain non-blocking unless the new preflight shows they affect the single joint run.
 
 ## Active-15 uricase core-release v2 — 44-cell B1Aopen generation (2026-08-03)
 
