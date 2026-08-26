@@ -280,6 +280,25 @@ def _scalar(
     ).canonical_payload()
 
 
+DEPTH0_RULE_BY_VERSION = {"v1": "cumulative_safety_reference", "v2": "best_admissible_depth0"}
+
+
+def _depth0_rule(spec: dict[str, Any], spec_path: Path) -> str:
+    """The D0 incumbent rule this spec declares, cross-checked against its policy version.
+
+    ``HeadDirectedCappedPolicy`` binds the two together in both directions, so the pairing is not
+    a preference: a v2 spec whose artifact carries the v1 rule raises at runtime.
+    """
+    version = str(spec.get("policy_version"))
+    expected = DEPTH0_RULE_BY_VERSION[version]
+    declared = (spec.get("artifact_contract") or {}).get("d0_gate_kind")
+    if declared is not None and str(declared) != expected:
+        raise HeadPolicyCalibrationError(
+            f"{spec_path} declares policy_version={version!r} and d0_gate_kind={declared!r}, but "
+            f"the runtime reserves {version!r} for {expected!r}; the artifact cannot bind both")
+    return expected
+
+
 def build_calibration_bundle(
     rows: list[dict[str, Any]], *, evaluator: Any, policy_spec: Path,
     max_counterfactual_head_calls_per_cycle: int, method: str = STORED_VS_LIVE,
@@ -342,7 +361,13 @@ def build_calibration_bundle(
             source_id="v2f5a-local-contribution-repeatability-difference-bound-v1",
             artifact=measurement),
         "band_center_rule": "midpoint_tie_low",
-        "lineage_incumbent_depth0_rule": "cumulative_safety_reference",
+        # READ from the spec being bound, not restated as a constant.  `HeadDirectedCappedPolicy`
+        # pairs the two: `best_admissible_depth0` requires policy_version v2, and v2 is RESERVED
+        # for it, so a v2 spec carrying the v1 default `cumulative_safety_reference` fails at
+        # runtime -- once per cell, after the GPU is allocated.  The v2 spec names the value
+        # itself in `artifact_contract.d0_gate_kind`; hardcoding it here is how the producer and
+        # the spec drift apart.
+        "lineage_incumbent_depth0_rule": _depth0_rule(spec, spec_path),
         "lineage_incumbent_update_law": "strict_improvement_by_epsilon",
         "write_candidate_window_rule": WRITE_WINDOW_RULE,
         "reopen_count_law": REOPEN_COUNT_LAW,

@@ -261,3 +261,45 @@ def test_the_production_v2_spec_this_campaign_uses_is_accepted():
         max_counterfactual_head_calls_per_cycle=483)
     assert payload["policy_spec_sha256"] == \
         "454f3000cea1387c4da1309198083d6fa3809b29dbbbe197f34e31bbfacab53f"
+
+
+@pytest.mark.parametrize("version,expected", [
+    ("v1", "cumulative_safety_reference"),
+    ("v2", "best_admissible_depth0"),
+])
+def test_the_depth0_rule_follows_the_spec_version_not_a_constant(tmp_path, version, expected):
+    """`HeadDirectedCappedPolicy` binds the two in BOTH directions.
+
+    `best_admissible_depth0` requires policy_version v2, and v2 is RESERVED for it. A producer that
+    hardcodes the v1 rule emits a v2 artifact the runtime refuses -- once per cell, after the GPU
+    is allocated. Every V2 campaign supplies the v2 spec.
+    """
+    spec = tmp_path / f"policy_{version}.json"
+    spec.write_text(json.dumps({"policy_id": "head_directed_capped", "policy_version": version}))
+    payload = build_calibration_bundle(
+        [{"protein_id": "P1", "sequence_md5": "a" * 32, "abs_repeat_drift": 0.01}],
+        evaluator=_identity(), policy_spec=spec, max_counterfactual_head_calls_per_cycle=483)
+    assert payload["head_directed"]["lineage_incumbent_depth0_rule"] == expected
+
+
+def test_a_spec_whose_declared_d0_gate_contradicts_its_version_is_refused(tmp_path):
+    spec = tmp_path / "policy_bad.json"
+    spec.write_text(json.dumps({
+        "policy_id": "head_directed_capped", "policy_version": "v2",
+        "artifact_contract": {"d0_gate_kind": "cumulative_safety_reference"}}))
+    with pytest.raises(Exception, match="reserves"):
+        build_calibration_bundle(
+            [{"protein_id": "P1", "sequence_md5": "a" * 32, "abs_repeat_drift": 0.01}],
+            evaluator=_identity(), policy_spec=spec,
+            max_counterfactual_head_calls_per_cycle=483)
+
+
+def test_the_production_v2_spec_yields_the_rule_the_runtime_requires():
+    """The exact file every V2 campaign passes as --projection-policy-spec."""
+    from pathlib import Path as _Path
+    spec = (_Path(__file__).resolve().parents[2]
+            / "inverse_folding/reference_flow/configs/v2_head_directed_capped_policy_v2.json")
+    payload = build_calibration_bundle(
+        [{"protein_id": "P1", "sequence_md5": "a" * 32, "abs_repeat_drift": 0.01}],
+        evaluator=_identity(), policy_spec=spec, max_counterfactual_head_calls_per_cycle=483)
+    assert payload["head_directed"]["lineage_incumbent_depth0_rule"] == "best_admissible_depth0"
