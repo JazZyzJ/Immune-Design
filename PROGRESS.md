@@ -246,6 +246,7 @@
   - shared Phase C SLURM: `scripts/submit_if_phase_c.slurm` (`MODE=native|reference_flow`); MAX_ITER default 100 (was 50)
   - h_maps schema includes `sequence_md5` column (2026-05-08); old h_map parquets must be regenerated
   - **Standard RF refinement structure contract (2026-07-13)**: `scripts/refine_rf_designs.py` / `submit_refine.slurm` now default to the persistent isolated `esmfold2_live` worker (final metrics read the same normalized ESMFold2 cache). The standard gate is the protocol trio `scTM`, direct-functional `cat_max_scRMSD`, and `predicted_active_site_min_pLDDT`; all three thresholds are required per-run inputs with no repository defaults. The previous seed-relative/whole-anchor gate is available only via explicit `structure_gate_profile=legacy`.
+  - **Standard RF refinement Head target mode (2026-08-21)**: `TARGET_SOURCE=head` is a separate NMP-free path. Each parent/round reads the complete residue landscape, keeps editable `residue_hotspot >= 0.15` local maxima, and caps them at 12 positions. On the frozen 656-seed table this yields median 5 / p90 10 / p95 12 local maxima (max 16; 2.59% exceed the cap), versus median 48 / p90 102 raw residues above 0.15. Head scores all singles in one batch, retains two per-position Pareto AA representatives, then scores at most 200 full doubles per parent in position round-robin order; singles and doubles both enter the multi-round beam. Candidates must improve without worsening either `global_risk` or `positive_mass_density=sum(max(residue_hotspot,0))/L`; the existing structure/anchor gate is unchanged. Head-mode final evaluation omits NMP artifacts, and shard merging emits the complete per-seed two-axis first front instead of count-0/top-k outputs. `TARGET_SOURCE=nmp` retains the legacy behavior.
   - **D1 monitor-only controller (2026-05-21, L0092)**:
     - `inverse_folding/reference_flow/controller_config.py` — strict D1 YAML schema with `controller_config_hash` provenance helper; preset `configs/d1_monitor.yaml`
     - `inverse_folding/reference_flow/head_scoring.py` — `OnlineHeadScorer` + `StaticWindowCache` (parquet + sidecar meta), fail-fast on `(seq_md5, allele, checkpoint_digest, head_config_hash, score_scale, window_k_min, window_k_max)` drift
@@ -620,61 +621,41 @@ directionality verdict.
 
 ## RF Fusion V2 Dual-Allele — optional two-allele steering (PLAN_RF_FUSION_V2_DUAL_ALLELE.md)
 
-**Status (2026-08-25): code complete, calibrated, both campaign overlays signed. Generation not yet
-submitted.** An execution agent starts at runbook §2.2 (materialize + preflight); P0 is done.
+**Status (2026-08-25): EXECUTED, READ, CLOSED.** Verdict
+**`no_demonstrated_gain_over_either_single_allele_arm`**. Simultaneous Dual steering does not reach
+a lower frozen joint objective than steering on allele A alone; the mechanism is nonetheless
+positive (the second Head does enter the actuator). Runbook §5 stops here — no further Dual
+experiment is authorized.
 
-**What it is.** An OPTIONAL second-allele mode on the frozen V2 substrate. Role A = `DRB1*07:01`
-(the current objective), role B = `DRB1*04:01`. Two Heads on incomparable raw scales map through
-frozen affine coordinates $u_a=(R_a-b_a)/s_a$ and reduce by a bounded smooth worst-residual scalar
-$J_\tau$. Exactly ONE human-chosen number: the credit $c_u=\tau\log 2=0.10$ normalized risk units,
-hence $\tau=0.14426950408889636$. Without an overlay the Dual layer is never imported and the run is
-the frozen single-Head V2 in every byte — pinned to digest literals, not asserted.
+**What it is.** An OPTIONAL second-allele mode on the frozen V2 substrate. Role A = `DRB1*07:01`,
+role B = `DRB1*04:01`. Two Heads on incomparable raw scales map through frozen affine coordinates
+$u_a=(R_a-b_a)/s_a$ and reduce by a bounded smooth worst-residual scalar $J_\tau$. Exactly ONE
+human-chosen number: the credit $c_u=\tau\log 2=0.10$ normalized risk units. Without an overlay the
+Dual layer is never imported and the run is the frozen single-Head V2 in every byte.
 
-Arms name the objective and nothing else (`joint` reduces both; `a_only`/`b_only` order on one).
-Both Heads are scored in EVERY arm, and arms are compared ACROSS runs because the arm enters no seed
-derivation — so two launches differing only in `--dual-arm` share root capture and depth-zero pool
-exactly. There is no in-run matched-arm engine and none is needed.
-
-**Calibration (measured on Della).** Frozen 13,836-protein allele-neutral natural panel from the
-deduplicated Tier-2 pool (SLURM 12891590), calibrated on one h200 in 1 h 26 m (SLURM 12891919):
-
-| quantity | value |
+| item | value |
 |---|---|
-| normalized intercept $b_A/s_A-b_B/s_B$ | −0.426488 |
-| bootstrap SE of that intercept | 0.024044 (24.0 % of $c_u$) — corrected 2026-08-25, see AUDIT J.8 |
-| cross-allele Pearson $r$ | **0.0962** — vs the 0.19 within-family estimate the domain-transfer argument assumed |
-| Head-training overlap $f_A$ / $f_B$ | 14.12 % / 15.78 %, asymmetry 1.66 pp (never computed before) |
-| derived margins $\epsilon_{\rm donor}=\epsilon_{\rm write}$ | $4.6386\times10^{-7}$ (joint / b_only), $3.0318\times10^{-7}$ (a_only) |
+| campaign / seed / code | `dual_c1_smoothmax_d4k12_r40_0701x0401` / `20260825` / `58b3007` |
+| overlay | `dual_overlay_c1_v1.json`, `fb428357287e`, $C=454$ |
+| cells | 100 proteins × 1 root × 3 arms = 300, all executed |
+| jobs | gate `12958829`–`31`, release `12970199`–`12970213` (ailab H200, `immune-design`) |
+| coverage | **80 valid triplets** vs the 78 floor; 17 proteins infeasible in all arms |
+| bundle | `work/immune-design/v2_dual/dual_c1_smoothmax_d4k12_r40_0701x0401__58b3007/` |
 
-**Frozen decisions (AUDIT §J.7, executed §J.8).**
+**Numbers, evidence, defects, and claim boundary: `doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md`
+§6.** Diagnosis of the depth-0 pairing failure and its repair routes: `doc/DUAL_ALLELE_DUALF0_AUDIT.md`
+Appendices L and M.
 
-- **D1** — $C$ is per-campaign: M1 $C=278$ ($2C=556$), C1 $C=454$ ($2C=908$), both read out of their
-  own signed artifacts in `editable_positions_per_cycle`. Two launchable overlays,
-  byte-identical calibration blocks, identical arm-objective digests, distinct run signatures.
-- **D2** — overlap-inclusion sensitivity MEASURED (SLURM 12931496 + 12931501, 1 h 32 m):
-  $\Delta\theta=-5.69\times10^{-4}$, $\lvert\Delta\theta\rvert/c_u=0.0057$,
-  $\Delta\log(s_A/s_B)=3.75\times10^{-3}$ — **`within_credit`**. Evidence that memorization does not
-  shift the two Heads' medians differentially; NOT evidence of generalization to another pool
-  (the 11,149 contaminated sequences add only 1,101 new families).
-- **D3** — $\operatorname{SE}/c_u=0.240$ ACCEPTED (frozen at the then-published 0.185; the
-  corrected value is 0.240 and the acceptance rationale is unchanged); the qualitative $\operatorname{SE}\ll c_u$ gate
-  is retired.
+**Calibration (frozen, measured on Della).** 13,836-protein allele-neutral natural panel
+(SLURM 12891590), calibrated on one h200 in 1 h 26 m (SLURM 12891919): normalized intercept
+$b_A/s_A-b_B/s_B = -0.426488$, bootstrap SE `0.024044` (24.0 % of $c_u$), cross-allele Pearson
+$r = 0.0962$, Head-training overlap $f_A/f_B$ = 14.12 % / 15.78 %, derived margins
+$\epsilon_{\rm donor}=\epsilon_{\rm write}$ = `4.6386e-7` (joint / b_only), `3.0318e-7` (a_only).
+Overlap-inclusion sensitivity `within_credit` ($\lvert\Delta\theta\rvert/c_u = 0.0057$).
 
-**Open — user decision.** **S6**: the 80/100 coverage floor is inherited from a 4-root 84/100
-surface while Dual runs ONE root. With $p=328/336$ the healthy single-root expectation is
-$82.0\pm1.4$, so the floor trips **5.05 %** of the time by chance. It is a READ-TIME input (GO
-conditions only) and does not block submission. Options: keep 80 with the consequence defined as
-inconclusive-and-rerun, drop to 78 (0.40 %), or fund a second root.
-
-**Deliberately deferred.** The Dual reader (`read_v2_mechanism.py`) and the facade's common-$J$
-ranking. The §4.3 read is DEFINED (formula + GO conditions) but has no tool: join logic written
-against a schema no run has emitted acquires errors nobody can see. Build it against real bundles
-once the three arms have run.
-
-**Artifacts.** `work/immune-design/calibration/` — see `MANIFEST.md` there, which marks which
-overlays may be launched. Three signed overlays in that tree are valid and launchable but MUST NOT
-be launched (the primary record, the contaminated sensitivity calibration, and a 200-sequence probe
-whose equal-risk line has the opposite sign).
+**Open follow-ups, none authorized by the runbook.** Driver-side `--dual-overlay` cross-check;
+the `objective_digest` and `typed_stop` labelling defects; and AUDIT Appendix L route A if the
+null is later judged underpowered.
 
 ## Active-15 uricase core-release v2 — 44-cell B1Aopen generation (2026-08-03)
 

@@ -1306,8 +1306,19 @@ that route as well.
 
 Both launchable overlays carry $f_A$, $f_B$ and $\lvert\Delta\theta\rvert$, have byte-identical
 `calibration` blocks, and resolve to the same three arm objectives
-(`fab070d27238` / `3928c36074ab` / `4c168fa7c156`) under two different overlay digests — one
+(`2fe167e4e1a9` / `89cdc0e4ad91` / `722fbef78d79`) under two different overlay digests — one
 objective, two candidate domains, two run signatures.
+
+> **Corrected 2026-08-25 by the executing cluster agent.** This line previously published
+> `fab070d27238` / `3928c36074ab` / `4c168fa7c156`, which belong to the pre-correction re-sign.
+> The arm objective digest is derived from the `calibration` block, so recomputing
+> `equal_risk_line_stderr` from `0.018471` to `0.024044` and re-signing both campaigns
+> (SLURM 12946466) moved the arm digests exactly as it moved the overlay digests — and only the
+> overlay row of the table above was updated at the time. The values shown now are what
+> `load_dual_overlay_file` → `arm_objective_digest` returns for both artifacts currently on disk.
+> The runbook's preflight bullet asks only that the three arms be DISTINCT, which held under
+> either set; the hazard was an operator told to "compare the printed digests against the table"
+> stopping a valid launch.
 
 The primary record was re-signed once to attach its own build report's $f_A$/$f_B$, which had been
 measured and then dropped because the flag that carries them did not exist when it was first
@@ -1504,3 +1515,250 @@ Key consequences:
    content-digest requirement.
 
 The concise authority is `doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md`.
+
+---
+
+## Appendix L. C1 campaign execution: the gate found the pairing is not reproducible (2026-08-25)
+
+The C1 campaign was materialized and preflighted, and its runbook §3.2 operational gate — the
+first cohort protein's three arms — **did not pass**. The blocker is not the Dual layer. It is
+that the depth-zero pairing the whole three-arm comparison rests on is not reproducible on this
+stack, and the failure is silent.
+
+The campaign nevertheless proceeds, unpaired at D0, under the frozen deviation in §L.5.
+
+Campaign identity: `dual_c1_smoothmax_d4k12_r40_0701x0401`, `master_seed=20260825`,
+`code_revision=58b30072f1fca96a30d77e9c49decd80bac9cd0d`. Every resolved cell's frozen
+content-role digest is byte-identical to the executed D4/K12 campaign's; only `campaign_id`,
+`master_seed`, and `code_revision` differ. Bundle:
+`work/immune-design/v2_dual/dual_c1_smoothmax_d4k12_r40_0701x0401__58b3007/`.
+
+### L.1 The blocker: depth-0 identity is not reproducible
+
+PLAN §7 states that two launches differing only in `--dual-arm` "produce the same root, the same
+lookahead pool and the same role A raw risks, and diverge only at selection. The comparison is
+therefore paired by construction." Measured on the real stack, that is **false**.
+
+Six real runs of the same cell (`10PA_A`) under the same config, seed, cohort and inputs — the
+campaign's three arms, a plain repeat of `joint`, and a `joint` pair run with
+`CUBLAS_WORKSPACE_CONFIG=:4096:8`. Over all 15 pairs:
+
+| quantity | result |
+|---|---|
+| depth-0 `tokens` | **identical in every pair** |
+| `conditioning_digest`, `safety_reference_id`, realized maturity | identical in every pair |
+| `active_sampler_score_by_pos` | **identical in no pair**; 113–124 of 157 scored positions differ |
+| max absolute score difference | `1.81e-05` |
+| depth-0 `state_id` | identical in no pair |
+| depth-0 `sequence_md5` set | identical in no pair; overlap **zero** |
+| `CUBLAS_WORKSPACE_CONFIG=:4096:8` sufficient | **no** |
+
+Evidence: `preflight/depth0_reproducibility_probe.json` in the campaign bundle; Slurm jobs
+`12958829`–`31` (campaign arms) and `12959411`–`13` (probe).
+
+**Mechanism.** `LivePartialState.canonical_payload` carries `active_sampler_score_by_pos` and
+`provenance_by_pos` (which embeds `evidence_logprob`). Those are raw float32 log-probabilities
+from the denoiser forward, and they are the *only* payload fields that vary between runs.
+`content_digest = canonical_digest(payload)`, so `state_id` moves; `V2SeedContext.lookahead_seed`
+hashes `source_state_id`, so the `K=12` lookahead pool is drawn from a different stream. A
+`~1e-5` wobble in a **recorded diagnostic** is amplified by a content-addressed identity into a
+completely disjoint endpoint pool.
+
+**What is not the cause**, each ruled out by measurement rather than argument:
+
+- *the Dual arm* — `V2SeedContext` has no arm field, and a plain repeat of ONE arm diverges by the
+  same magnitude (`1.29e-05`) as two different arms (`1.38e-05`);
+- *campaign identity, master seed, cohort, config, inputs* — byte-identical, verified by digest;
+- *the sampler's token output* — bit-identical in every pair, so the science is reproducible;
+- *cuBLAS split-k reduction order* — the deterministic-workspace pair still diverges.
+
+`tests/inverse_folding/test_fusion_v2_dual_arms.py` passes because it exercises the seed law
+against a deterministic stub. The seed law is correct. What it hashes is not reproducible.
+
+### L.2 Why this is a decision and not a repair
+
+Four routes exist and they are not equivalent:
+
+| Route | What it changes | Cost / risk |
+|---|---|---|
+| **A. Identity excludes the recorded scores** | drop or quantize `active_sampler_score_by_pos` / `evidence_logprob` in the canonical payload | smallest change that addresses the actual cause; but it moves every `state_id` and `endpoint_id` in the project, which PLAN §2.5 already flagged as expensive |
+| **B. Share the depth-0 root across arms** | compute the arm-independent root once per protein and have all three arms adopt it | faithful to what the design already asserts, and ~17 % cheaper; needs a root handoff plus a narrow relaxation of the cross-arm resume refusal, restricted to the pre-feedback root |
+| **C. Chase full bitwise determinism** | `use_deterministic_algorithms(True)`, pinned SDPA backend, workspace config | may not be attainable; costs speed; stays fragile — a node, driver, or PyTorch change silently re-breaks pairing, and silent divergence is the failure mode |
+| **D. In-run three-arm engine** | one process emits all three arms | contradicts PLAN §7's explicit refusal of an in-run matched-arm engine |
+
+**Route A's sufficiency is measured, not assumed.** Offline and GPU-free, over the same six runs:
+the only depth-0 fields that disagree are `active_sampler_score_json`, `provenance_json`, and the
+three digest-derived fields; `provenance_json` becomes identical across all six once
+`evidence_logprob` alone is blanked; and a surrogate digest over the payload with those recorded
+scores removed is **identical across all six runs** (`84e65b62c24fcc31`). So the recorded scores
+are the *only* reason depth-0 identity is irreproducible, and excluding them restores pairing
+across processes, nodes, and arms. Recorded in the same probe artifact under
+`route_a_offline_simulation`.
+
+Route **B** is still the lighter recommendation for *this campaign*: the root capture is
+arm-independent by construction, so computing it once is not a shortcut but the truth the contract
+already claims, and it leaves every existing identity untouched. Route **A** is the deeper
+cleanup and is now known to work, because letting float noise in a diagnostic define a state's
+identity — and therefore its entire downstream random stream — is a fragility nobody chose. They
+compose: A fixes the cause, B removes the need to recompute an arm-independent root three times.
+
+**No route may be taken by the executing agent.** Each changes either a frozen contract or the
+meaning of a campaign, so the choice belongs to the user.
+
+### L.3 Three further defects, recorded, none of them fixed mid-flight
+
+None was repaired while cells were in flight: every fix would move the executed bytes the campaign
+pinned in `preflight/campaign_contract.json`.
+
+1. **A D>1 ladder needs a second launch key.** The driver refuses `depth_cap=4` unless the launch
+   itself passes `--exploratory-depth-override`, so an exploratory artifact can never read as
+   production authorization. The first gate submission (`12958548`–`50`) died with
+   `ProductionDepthDisabledError` at `EXIT=2`, writing empty-but-well-formed bundles. The executed
+   source campaign carries the same pair (`production_depth_authorized=false`,
+   `exploratory_depth_override=true`). A config-only preflight cannot see a launch flag, so the
+   campaign contract check now reads the launcher too.
+2. **`--dual-overlay` is not cross-checked against the cell's declared `dual_overlay`.** Handing
+   the C1 cells the M1 overlay dry-runs to `exit 0` with `C=278` instead of `454` and a different
+   run signature; nothing refuses. The runbook §2.2 bullet "the generated `.args.sh` binds the same
+   overlay that the launcher will pass" is not enforced in code.
+3. **`objective_digest` cannot separate the arms.** `joint` writes the *calibration* content digest
+   into `dual_endpoint_evidence.objective_digest`; `a_only`/`b_only` write theirs correctly; and
+   `dual_feedback_evidence.objective_digest` is the calibration digest for all three.
+   `joint_objective.py` has two constructors, one filling the field from
+   `calibration.content_digest` and one from `arm_objective_digest`. The runbook's "objective
+   digests differ as declared" check therefore fails on a *correct* run.
+
+   The executed law is nonetheless correct, and this is provable without the label: each arm's
+   recorded `donor_gate_margin` reproduces **exactly** (`abs_diff = 0.0`) from that arm's own
+   coordinate — `joint`→`joint_risk`, `a_only`→`u_a`, `b_only`→`u_b`. The gate reader decides arm
+   identity on that arithmetic, the `arm` column, and the three distinct `dual_signature`s, and
+   reports the digest column as an anomaly.
+
+Also: `dual_terminal_summary.typed_stop` is lossy. `StoppingReason` maps every non-committed
+outcome that is neither `NO_ADMISSIBLE_ENDPOINT` nor `NO_NOVEL_DESCENDANT` onto
+`invalid_projection`, so a donor stall — the dominant, expected greedy-plateau stop — is published
+under the same label as a genuine maturity-band failure. `feedback_events` keeps both fields, so
+the readers derive the typed stop from there.
+
+And PLAN §3.4 requires the manifest to record `nmp_runtime_absent=true`; no such field exists. It
+was not added: a self-asserted constant is the weaker form of the evidence the campaign contract
+already carries, which is that no NetMHCIIpan runner is imported anywhere the driver reaches.
+
+### L.4 What the gate DID establish
+
+Read only for operational integrity, as §3.2 requires — no performance quantity was inspected:
+
+- all three arms produced complete bundles with every V2 and Dual table, manifest, and ledger;
+- both Heads scored every endpoint with finite risks, and role-B hotspot telemetry is present on
+  every endpoint (36/36, 24/24, and the `a_only` set);
+- no declared hard cap was breached; the two-Head budget landed inside `1990/2200` logical DFE,
+  `3752/6000` Head calls, and `60/64` definitive refolds;
+- endpoint, archive, feedback, Dual, and lineage joins are complete;
+- each arm gated donors by its own declared objective, verified arithmetically; and
+- the second Head does reach the actuator on this protein — 12 of 36 `joint` endpoints carry
+  `active_worst = B`, including the lineage incumbent. This is a **wiring observation on one
+  protein**, not a result, and §3.2 forbids reading it as one.
+
+The 100-cell three-arm model-free assembly preflight passed **100/100 on all three arms**, so
+runbook §2 is closed.
+
+### L.5 Frozen deviation: the campaign runs unpaired at D0
+
+User direction, 2026-08-25: minimise complexity and analyse what the run produces rather than
+re-engineer first. The D0-pairing check is therefore recorded as a **known deviation** rather than
+repaired before the run, and the §4 read must carry it in its claim boundary.
+
+This is defensible because the cost is bounded and is **variance, not bias**:
+
+- the three arms' depth-0 root partial states are **bit-identical in tokens**, so every arm draws
+  its own `K=12` cloud from the *same* partial state rather than from a different one;
+- the float wobble that reassigns the lookahead seeds is **arm-independent** — a plain repeat of
+  one arm diverges by the same magnitude as two different arms — so which cloud an arm receives is
+  effectively randomised, not confounded with the objective law; and
+- the objective law therefore remains the only systematic difference between arms.
+
+What is lost is molecule-level pairing, and with it statistical power, plus the literal "shared
+D0" framing of §4.3 contrast 1 — which becomes "joint final versus joint's own D0", a descent
+statement that on its own cannot separate simultaneous coordination from ordinary A steering.
+Contrasts 2 and 3 carry that separation and remain protein-level comparisons over the same cohort.
+
+If the read returns `undercovered_unresolved` or an inconclusive UCB, route A is measured to fix
+the cause and the campaign can be repeated under a repaired identity law.
+
+---
+
+## Appendix M. C1 campaign executed and read (2026-08-25) — `no_demonstrated_gain`
+
+All 300 cells ran on ailab H200 under `immune-design`: 15 shard jobs `12970199`–`12970213`,
+1 h 15 m – 1 h 34 m each, every shard `EXIT=3` (partial — the expected mixture of usable cells and
+structure-gate rejections). Read: `analysis/dual_c1_combined_read.json`.
+
+### M.1 Integrity
+
+100/100 requested proteins retained. **80 valid triplets** against the 78 floor, so the primary
+capability statement is authorized and the outcome is not `undercovered_unresolved`. 17 proteins
+were structure-rejected in all three arms (intrinsically infeasible under any design) and 3 were
+scattered — the measured E7 denominator cost, against the 2–3 the running coverage projected. Zero
+cells with uncertified caps; one overlay digest `fb428357287e`; three distinct run signatures.
+
+### M.2 Mechanism — positive
+
+The three selection laws were replayed offline on each arm's own depth-0 cloud (240 clouds), which
+is matched by construction and therefore immune to E7. The joint law selects a **different donor
+from A-only in 30.8 %** of clouds and from B-only in 80 %, and its own pick is B-limited in
+**50/240 = 21 %**. The second Head demonstrably enters the actuator; the joint objective does not
+degenerate to A-only.
+
+### M.3 Capability — null
+
+Protein-mean $\Delta J$ over 80 valid triplets, 10,000-draw protein bootstrap, seed `20260821`,
+criterion $\mathrm{UCB}_{95\%}\left[\operatorname{mean}(\Delta J)\right]<0$:
+
+| contrast | mean | UCB95 | passes |
+|---|---:|---:|---|
+| joint final vs joint's own D0 | −0.574 | −0.474 | yes |
+| joint final vs `a_only` final | +0.046 | +0.117 | no |
+| joint final vs `b_only` final | −0.043 | +0.030 | no |
+
+Per-arm final frontier (protein mean): `a_only` −0.308, `joint` −0.262, `b_only` −0.219. Joint wins
+35/80 proteins against `a_only` and 44/80 against `b_only`. The dominant terminal stop is
+`stall_no_better_donor` (212/240) — the greedy plateau, exactly as in the source campaign.
+
+Verdict: **`no_demonstrated_gain_over_either_single_allele_arm`**. Neither single-allele contrast
+excludes zero in either direction, so this is no demonstrated gain rather than a demonstrated
+loss. Two caveats bound the claim: E7 cost molecule-level pairing so the contrasts carry less
+power than designed; and the frontier is a minimum over pools whose size is itself
+objective-determined (41.1 / 39.4 / 37.2 admissible endpoints per protein for
+`a_only` / `joint` / `b_only`), so the arms are not matched on pool size.
+
+An unexplored explanation consistent with everything measured: the cohort is high-risk under
+allele A, A is the binding coordinate in ~79 % of joint's own selections, and $J\approx u_A$ most
+of the time — which would make the joint law close to a noisier `a_only`. Testing it is not
+authorized; runbook §5 stops after the read.
+
+### M.4 An analysis defect found after the first read
+
+Recorded as amendment A1 in `preflight/analysis_preregistration.json`, whose digests were frozen
+before the campaign finished precisely so that a post-hoc edit would be visible. The superseded
+output is kept as `analysis/SUPERSEDED_read_v1_wrong_objective_column.json`.
+
+`joint_risk` in the Dual artifacts is the **arm's own** objective value, not the joint one. Measured
+on the artifacts, independently of any outcome: $\lvert\texttt{joint\_risk}-u_a\rvert=0$ exactly in
+`a_only` bundles, $\lvert\texttt{joint\_risk}-u_b\rvert=0$ exactly in `b_only` bundles, and only the
+`joint` arm's column holds true $J$ (agreement to $1.1\times10^{-16}$). Since
+$J\ge\max(u_A,u_B)-\tau\log 2$, reading that column compares joint's true $J$ against the other
+arms' single coordinates and joint loses **by construction**: the v1 read had joint losing to
+`b_only` by +0.784 with 0/80 protein wins, versus −0.043 and 44/80 after recomputing
+$J=\mathrm{smoothmax}(u_A,u_B)$ from the arm-independent calibrated coordinates — which is what
+runbook §4.3 specifies ("**recompute** one common smooth-max frontier"). No seed, criterion,
+contrast definition, floor, or admission law changed. `active_worst` is arm-dependent in the same
+way and is likewise recomputed.
+
+A second, harmless defect surfaced at the same time: the uncertified-caps counter compared a
+`numpy.bool_` with `is not True`, which is never the Python singleton, so it reported all 300 cells
+as uncertified while `dual_progress.py`, reading the raw JSON, always reported 0. The two tools
+disagreeing is what exposed it.
+
+**Follow-ups this campaign leaves open**, none of them authorized by the runbook: the driver-side
+`--dual-overlay` cross-check, the `objective_digest` and `typed_stop` labelling defects, and route
+A if the null is later judged underpowered.

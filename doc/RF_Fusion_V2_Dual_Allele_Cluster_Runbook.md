@@ -303,3 +303,118 @@ Return through the standard RF/RAR path:
   readout, coverage, and claim boundary.
 
 Experiment submission and result return do not modify `LOG.md`.
+
+---
+
+## 6. EXECUTED (2026-08-25) — `no_demonstrated_gain_over_either_single_allele_arm`
+
+Campaign `dual_c1_smoothmax_d4k12_r40_0701x0401`, `master_seed=20260825`,
+code revision `58b30072f1fca96a30d77e9c49decd80bac9cd0d`, signed C1 overlay `fb428357287e`.
+300 cells on ailab H200 under `immune-design`: gate `12958829`–`31`, release `12970199`–`12970213`
+(15 shards, 1 h 15 m – 1 h 34 m each, every shard `EXIT=3`). Bundle
+`work/immune-design/v2_dual/dual_c1_smoothmax_d4k12_r40_0701x0401__58b3007/`, read
+`analysis/dual_c1_combined_read.json`.
+
+### 6.1 Integrity (§4.1)
+
+100/100 requested proteins retained. **80 valid triplets** against the 78 floor, so the primary
+capability statement is authorized. 17 proteins were structure-rejected in all three arms
+(intrinsically infeasible), 3 were scattered. Zero cells with uncertified caps; one overlay digest;
+three distinct run signatures; role-B hotspot drift was telemetry throughout and never a gate.
+
+**One §3.2 gate condition failed and was accepted as a frozen deviation.** The three arms do not
+share a depth-0 cloud: the depth-0 root partial states are bit-identical in tokens, but the
+recorded per-position log-probabilities are irreproducible at `~1e-5`, they sit inside the state's
+content digest, and `lookahead_seed` hashes `source_state_id`. The wobble is arm-independent — a
+plain repeat of one arm diverges by the same magnitude — so the design is randomised rather than
+confounded, but molecule-level pairing is lost. Full diagnosis, the four repair routes, and the
+measured sufficiency of route A are in `doc/DUAL_ALLELE_DUALF0_AUDIT.md` Appendix L.
+
+### 6.2 Mechanism, D0→D1 (§4.2) — POSITIVE
+
+Because the arms do not share a cloud, the donor question is answered exactly and offline instead:
+every endpoint carries `u_A` and `u_B`, so all three selection laws are replayed on **one** cloud,
+matched by construction. Over 240 clouds the joint law selects a **different donor from A-only in
+30.8 %** of them and from B-only in 80 %, and its own pick is B-limited in **50/240 = 21 %**.
+
+The second Head demonstrably enters the actuator; the joint objective is not degenerate to A-only.
+The dominant terminal stop is `stall_no_better_donor` (212/240) — the greedy plateau, as in the
+source campaign.
+
+### 6.3 Capability (§4.3) — NULL
+
+Protein-mean $\Delta$ over 80 valid triplets, 10,000-draw protein bootstrap, seed `20260821`:
+
+| contrast | mean $\Delta J$ | UCB95 | passes |
+|---|---:|---:|---|
+| joint final vs joint's own D0 | −0.574 | −0.474 | **yes** |
+| joint final vs `a_only` final | +0.046 | +0.117 | no |
+| joint final vs `b_only` final | −0.043 | +0.030 | no |
+
+Contrast 1 is *not* the runbook's "shared D0" form; under the deviation it reads as descent under
+joint's own objective from its own D0, which alone cannot separate coordination from A steering.
+
+**Raw Head risk at each arm's best common-$J$ endpoint** (`raw_logit`, protein means; every
+D0→final movement has UCB95 < 0, so all six are real descents):
+
+| arm | $R_A$ D0 | $R_A$ final | $\Delta R_A$ | $R_B$ D0 | $R_B$ final | $\Delta R_B$ |
+|---|---:|---:|---:|---:|---:|---:|
+| `joint` | −4.665 | −7.963 | **−3.298** | −3.589 | −5.764 | **−2.174** |
+| `a_only` | −4.417 | −8.382 | **−3.965** | −3.891 | −6.058 | **−2.167** |
+| `b_only` | −5.287 | −7.692 | **−2.405** | −3.457 | −5.744 | **−2.286** |
+
+This is the informative table, and it says more than the scalar does. Each single-allele arm drives
+its own allele hardest, and **joint sits between them on both axes** — the signature of a
+compromise objective behaving as designed. But two readings matter:
+
+1. **`a_only` improves role B as much as `joint` does** (−2.167 vs −2.174). Steering on A alone
+   already delivers joint's entire B benefit on this cohort, which leaves the joint objective
+   nothing to add. Note this is compatible with the panel's near-zero cross-allele level
+   correlation ($r = 0.0962$): that measures risk *levels* across natural sequences, not whether
+   *improvements* co-move under the same sequence edits.
+2. **Joint is worse than `a_only` on both raw alleles**, not only on the reduced scalar:
+
+| cross-arm raw contrast (lower is better) | mean | UCB95 | passes |
+|---|---:|---:|---|
+| joint − `a_only`, $R_A$ | +0.419 | +0.892 | no |
+| joint − `a_only`, $R_B$ | +0.294 | +0.698 | no |
+| joint − `b_only`, $R_A$ | −0.271 | +0.184 | no |
+| joint − `b_only`, $R_B$ | −0.020 | +0.327 | no |
+
+Per-depth common-$J$ frontier (protein mean) — most of the gain is D0→D1 and all arms are flat by
+D3:
+
+| arm | d0 | d1 | d2 | d3 | d4 |
+|---|---:|---:|---:|---:|---:|
+| `joint` | 0.3119 | −0.1164 | −0.2397 | −0.2618 | −0.2623 |
+| `a_only` | 0.3567 | −0.1715 | −0.2719 | −0.3079 | −0.3081 |
+| `b_only` | 0.2549 | −0.1173 | −0.1948 | −0.2111 | −0.2191 |
+
+Admissible endpoints per protein: `a_only` 41.1, `joint` 39.4, `b_only` 37.2. Role-B hotspot
+telemetry is indistinguishable across arms (mean max-increase 15.0 / 15.0 / 14.8) and was never an
+admission gate.
+
+### 6.4 Verdict and claim boundary
+
+**`no_demonstrated_gain_over_either_single_allele_arm`.** Simultaneous Dual steering does not reach
+a lower frozen joint objective than either single-allele law on this cohort. Neither single-allele
+contrast excludes zero in either direction, so this is *no demonstrated gain*, not a demonstrated
+loss.
+
+Three things bound the claim:
+
+- the arms are unpaired at depth zero, so the contrasts carry less power than designed and a small
+  true effect could be hidden;
+- the frontier is a minimum over pools whose size is itself objective-determined, so the arms are
+  not matched on endpoint count; and
+- the cohort is high-risk under allele **A**, and A is the binding coordinate in ~79 % of joint's
+  own selections, so $J\approx u_A$ most of the time. A cohort where the two alleles genuinely
+  conflict is the condition under which simultaneous steering could pay, and this campaign did not
+  test one. That is a hypothesis this result raises, not a result it establishes, and §5 stops here.
+
+An analysis defect found after the first read is recorded as amendment A1 in the bundle's
+`preflight/analysis_preregistration.json`: `joint_risk` in the artifacts is the **arm's own**
+objective value, equal to `u_a` exactly in `a_only` bundles and `u_b` exactly in `b_only` bundles,
+so the common frontier must be recomputed as $J=\mathrm{smoothmax}(u_A,u_B)$ — which §4.3 already
+says — rather than read from that column. Reading it made joint lose by construction. No seed,
+criterion, contrast definition, floor, or admission law changed.
