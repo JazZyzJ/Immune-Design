@@ -237,7 +237,10 @@ def test_every_downstream_substrate_is_emitted_for_every_selected_protein(tmp_pa
     cohort = pd.read_parquet(manifest["outputs"]["cohort_parquet"]["path"]).set_index("protein_id")
     for protein_id in selected:
         path = Path(references[protein_id]["path"])
-        assert path.read_text().strip() == cohort.loc[protein_id, "sequence"]
+        # EXACT bytes, never `.strip()`.  The oracle reads this file with no normalization and
+        # digests it verbatim, so a test that strips is easier to satisfy than the consumer: a
+        # trailing newline passed every assertion here and then killed all 400 cells at runtime.
+        assert path.read_bytes() == cohort.loc[protein_id, "sequence"].encode("ascii")
         assert hashlib.sha256(path.read_bytes()).hexdigest() == references[protein_id]["sha256"]
     ids = (out / "deployment_protein_ids.txt").read_text().split()
     assert ids == selected
@@ -264,3 +267,23 @@ def test_exclusion_lists_are_recorded_by_name(tmp_path):
     assert reasons["P001_A"] == "excluded:section6"
     assert reasons["P002_A"] == "excluded:section6"
     assert not {"P001_A", "P002_A"} & set(manifest["selected_protein_ids"])
+
+
+def test_reference_files_contain_only_canonical_residues_and_no_terminator(tmp_path):
+    """The consumer's actual contract, asserted on bytes.
+
+    `rf_fusion_v2_oracles.load_complete_reference` reads these files "as ASCII with NO
+    normalization" and `bind_cumulative_reference` digests the exact bytes, so anything that is not
+    a residue IS a residue as far as the oracle is concerned. A trailing newline reaches the run as
+    `V2LookaheadError: sequence carries non-canonical character(s) ['\\n']`, once per cell, after
+    the GPU has already been allocated.
+    """
+    from scripts.freeze_dual_common_cohort import CANONICAL_AA20
+    fixture = cohort_fixture(tmp_path)
+    manifest = run(tmp_path, fixture)
+    for protein_id in manifest["selected_protein_ids"]:
+        raw = (tmp_path / "out" / "references" / f"{protein_id}.seq").read_bytes()
+        assert raw == raw.strip(), f"{protein_id}.seq carries leading/trailing whitespace"
+        text = raw.decode("ascii")
+        assert not (set(text) - CANONICAL_AA20), \
+            f"{protein_id}.seq carries {sorted(set(text) - CANONICAL_AA20)}"

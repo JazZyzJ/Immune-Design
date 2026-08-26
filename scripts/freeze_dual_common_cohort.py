@@ -290,7 +290,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     references: dict[str, dict[str, str]] = {}
     for row in cohort.itertuples():
         reference = out_dir / "references" / f"{row.protein_id}.seq"
-        reference.write_text(str(row.sequence) + "\n", encoding="utf-8")
+        # EXACTLY the sequence bytes and nothing else.  `rf_fusion_v2_oracles` reads this file "as
+        # ASCII with NO normalization" and `bind_cumulative_reference` digests these exact bytes,
+        # so a trailing newline becomes a residue: the run dies with
+        # `V2LookaheadError: sequence carries non-canonical character(s) ['\n']` -- after the GPU
+        # is allocated, once per cell.  The inherited §6 reference files carry no terminator.
+        reference.write_text(str(row.sequence), encoding="utf-8")
         references[str(row.protein_id)] = {
             "path": str(reference.resolve()), "sha256": sha256_file(reference)}
     (out_dir / "references.json").write_text(
