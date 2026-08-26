@@ -621,12 +621,11 @@ directionality verdict.
 
 ## RF Fusion V2 Dual-Allele — optional two-allele steering (PLAN_RF_FUSION_V2_DUAL_ALLELE.md)
 
-**Status (2026-08-26): internal diagnostic CLOSED; paper-facing capability campaign AUTHORIZED.**
-The executed one-root, three-arm 0701-high-risk experiment remains
-**`no_demonstrated_gain_over_either_single_allele_arm`** while confirming that Head B enters the
-actuator. It does not test the paper claim on a common Head-blind cohort. Runbook §7 now authorizes a
-separate full-data-Head campaign: common Head-blind 100-protein cohort, `joint` only, four-root D4/K12/r40,
-and direct comparison with WT and ProteinMPNN on both raw allele axes.
+**Status (2026-08-26): BOTH campaigns executed and read.** The internal three-arm diagnostic is
+closed at **`no_demonstrated_gain_over_either_single_allele_arm`** (§6). The paper-facing full-data
+capability campaign is closed at **`dual_fulldata_capability_supported`** (§7.9): on a common
+Head-blind cohort, one structure-feasible Dual-Fusion design lowers BOTH alleles' production-Head
+risk relative to WT and to ProteinMPNN, all four one-sided 95 % bounds below zero.
 
 **What it is.** An OPTIONAL second-allele mode on the frozen V2 substrate. Role A = `DRB1*07:01`,
 role B = `DRB1*04:01`. Two Heads on incomparable raw scales map through frozen affine coordinates
@@ -634,32 +633,44 @@ $u_a=(R_a-b_a)/s_a$ and reduce by a bounded smooth worst-residual scalar $J_\tau
 human-chosen number: the credit $c_u=\tau\log 2=0.10$ normalized risk units. Without an overlay the
 Dual layer is never imported and the run is the frozen single-Head V2 in every byte.
 
-| item | value |
-|---|---|
-| campaign / seed / code | `dual_c1_smoothmax_d4k12_r40_0701x0401` / `20260825` / `58b3007` |
-| overlay | `dual_overlay_c1_v1.json`, `fb428357287e`, $C=454$ |
-| cells | 100 proteins × 1 root × 3 arms = 300, all executed |
-| jobs | gate `12958829`–`31`, release `12970199`–`12970213` (ailab H200, `immune-design`) |
-| coverage | **80 valid triplets** vs the 78 floor; 17 proteins infeasible in all arms |
-| bundle | `work/immune-design/v2_dual/dual_c1_smoothmax_d4k12_r40_0701x0401__58b3007/` |
+| | §6 diagnostic | §7 capability |
+|---|---|---|
+| campaign | `dual_c1_smoothmax_d4k12_r40_0701x0401__58b3007` | `dual_fulldata_joint_d4k12_r40_4root_0701x0401__4315531` |
+| Heads | eval-split CV fold-0 | **full-data** `epoch_29` / `epoch_34` |
+| cohort | 100 0701-high-risk | 100 **Head-blind**, `cohort_sha256 b0921a6d` |
+| overlay | `fb428357287e`, $C=454$ | `852a98360e66`, $C=483$ |
+| cells | 100 × 1 root × 3 arms = 300 | 100 × 4 roots × `joint` = **400** |
+| coverage | 80 valid triplets (floor 78) | **89/100** proteins (floor 80) |
+| verdict | no gain over either single arm | **capability supported** |
 
-**Numbers, evidence, defects, and claim boundary: `doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md`
-§6.** Diagnosis of the depth-0 pairing failure and its repair routes: `doc/DUAL_ALLELE_DUALF0_AUDIT.md`
-Appendices L and M.
+**§7 headline** (protein-equal, 10 k bootstrap, seed 20260826, n=89): Fusion − WT $R_A$ −4.76
+(UCB −3.80) / $R_B$ −5.45 (UCB −4.40); Fusion − ProteinMPNN $R_A$ −1.11 (UCB −0.50) / $R_B$ −1.13
+(UCB −0.52). Both-improved on 82/89 vs WT and 75/89 vs ProteinMPNN. Stable under a
+pre-registered ProteinMPNN redraw sharing zero sequences (−1.07 / −1.03).
 
-**Calibration (frozen, measured on Della).** 13,836-protein allele-neutral natural panel
-(SLURM 12891590), calibrated on one h200 in 1 h 26 m (SLURM 12891919): normalized intercept
-$b_A/s_A-b_B/s_B = -0.426488$, bootstrap SE `0.024044` (24.0 % of $c_u$), cross-allele Pearson
-$r = 0.0962$, Head-training overlap $f_A/f_B$ = 14.12 % / 15.78 %, derived margins
-$\epsilon_{\rm donor}=\epsilon_{\rm write}$ = `4.6386e-7` (joint / b_only), `3.0318e-7` (a_only).
-Overlap-inclusion sensitivity `within_credit` ($\lvert\Delta\theta\rvert/c_u = 0.0057$).
+**Full numbers, integrity, execution defects and the claim boundary:
+`doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md` §6 (diagnostic) and §7.9 (capability).** The
+depth-0 pairing failure and its repair routes: `doc/DUAL_ALLELE_DUALF0_AUDIT.md` Appendices L, M.
 
-**Active next tasks:** runbook §7 DP0–DP4 — freeze the common Head-blind cohort and exact
-WT/ProteinMPNN sequence surfaces, rebuild/sign the Dual calibration for the two full-data Heads and
-the measured cohort candidate ceiling, materialize and preflight 400 joint cells, execute the
-four-root campaign, and return one full-data paired RAR.
-The old high-risk three-arm campaign is not rerun. Driver-side overlay/digest/typed-stop cleanups
-remain non-blocking unless the new preflight shows they affect the single joint run.
+**Full-data calibration (frozen).** 13,757-family panel excluding homology to all three splits of
+both alleles; $b_A/s_A - b_B/s_B = +0.3719$ (sign-flipped vs the eval-split −0.4265, almost all of
+it role B), SE $= 0.0524$ (**52.4 %** of $c_u$, vs 24.0 % before), cross-allele $r = 0.0925$,
+overlap-inclusion $\lvert\Delta\theta\rvert/c_u = 0.503$ (`within_credit`, vs 0.0057 before),
+decision margin `1.256e-6`. **§6's $J$ and §7's $J$ are different coordinate systems and are not
+comparable.**
+
+**Standing caveats on the §7 claim.** Not compute-matched — Fusion selects from a median of 153
+feasible candidates over four roots, ProteinMPNN from 8. Median margin over ProteinMPNN is modest
+(−0.24 / −0.40 raw logit; Fusion worse on 15 % / 10 % of proteins) though the sign holds by sign
+test at $p<10^{-11}$. Not uniform: the low-WT-risk third's $R_A$ bound does not clear zero. The
+production Heads have no held-out estimate by construction; DP0 measured zero exact-sequence
+overlap between the cohort and either Head's full fitting pool.
+
+**Open, not authorized by the runbook.** Sequence recovery has no source in the v0 gate's
+`metrics_json` (pLDDT/scRMSD/scTM only), so §7.7's recovery line is unfilled. Driver-side
+`--dual-overlay` cross-check and the `objective_digest`/`typed_stop` labelling defects remain.
+`active_worst` is 50/50 on WT but 81/89 role A on the Fusion primary — the two alleles look
+unequally steerable, which this run generates as a hypothesis and does not test.
 
 ## Active-15 uricase core-release v2 — 44-cell B1Aopen generation (2026-08-03)
 

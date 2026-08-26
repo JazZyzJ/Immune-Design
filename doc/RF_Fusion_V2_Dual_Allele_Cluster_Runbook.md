@@ -1,7 +1,9 @@
 # RF Fusion V2 Dual-Allele — Concise Cluster Runbook
 
-**Status:** the original three-arm high-risk diagnostic is executed and closed (§6). A separate
-paper-facing full-data Dual capability campaign is authorized in §7.
+**Status:** the original three-arm high-risk diagnostic is executed and closed (§6). The
+paper-facing full-data Dual capability campaign authorized in §7 is **executed and read** (§7.9):
+verdict `dual_fulldata_capability_supported` on 89 of 100 proteins, with the claim boundary in
+§7.9.7.
 
 **Scientific authority:** `doc/Dual_Allele_Steering.md`.
 
@@ -683,3 +685,277 @@ conflict-selected cohorts, or compute-matched ProteinMPNN generation. The primar
 one selected exact design per method and protein. The up-to-eight sensitivity reports its actual
 row coverage and is called eight-vs-eight only on complete cases. Neither read claims equal
 upstream search compute.
+---
+
+## 7.9 EXECUTED (2026-08-26)
+
+### 7.9.1 Identity
+
+| Item | Value |
+|---|---|
+| Campaign | `dual_fulldata_joint_d4k12_r40_4root_0701x0401__4315531` |
+| Cells | 400 = 100 Head-blind proteins × 4 roots, `joint` only |
+| Root seeds | 20260826 / 27 / 28 / 29 (a root IS a `master_seed` offset) |
+| Cohort | `dual_common_fast_v1`, `cohort_sha256 = b0921a6dd159e86c…` |
+| Overlay | `dual_overlay_fulldata_common_v1.json`, `content_digest = 852a98360e66…` |
+| Objective digest (`joint`) | `0d8414bdeeee` |
+| $C_{\mathrm{common}}$ | **483** (`4QQQ_A`), $2C = 966$ |
+| Head A / B | `epoch_29.pt` `144ae7c808e9…` / `epoch_34.pt` `12e8018fed5a…` |
+| Environment | `immune-design`, ailab H200, one environment throughout |
+| Preflight | 26/26 checks pass; 35 executed modules pinned by digest |
+
+### 7.9.2 The cohort (DP0)
+
+Funnel, every step measured:
+
+```
+2879 / 2829   the two alleles' IF-ready tables
+  →    221    protein_id intersection
+  →    206    identical on sequence, length, if_sequence_sha1, if_source_structure,
+              if_chain_id and pdb_path — a protein the two tables describe differently
+              is not one common target but two
+  →    198    minus the 100 §6 high-risk proteins (only 8 were in the intersection:
+              §6's cohort was 0701-specific)
+  →    198    ProteinMPNN panel complete: exactly 8 designs, each the target length,
+              canonical AA20 — availability only, no score read
+  →    177    one representative per exact reference sequence
+  →    100    protein-equal uniform allocation over 5 length quantiles × 2 coverage
+              halves; all ten strata filled exactly, minimum eligible 12
+```
+
+Two facts the §7.2 claim boundary needs:
+
+* **Zero exact-sequence overlap** between this cohort and either production Head's complete
+  fitting pool (train ∪ val ∪ test, 1308 and 1865 proteins). The full-data Heads have no
+  held-out estimate by construction, but they have not seen these proteins.
+* Backbones are byte-identical under both alleles' PDB roots, so "one common target" is proved
+  rather than assumed, and re-proved at the preflight against the digests DP0 froze.
+
+**Deviation, recorded:** exact-sequence duplicates were collapsed to one representative. §6 carried
+eight id groups sharing one reference sequence and could only report it, because that cohort was
+inherited. This one is built here and the primary read is a protein-equal bootstrap, in which two
+ids carrying one molecule are one draw wearing two names on the outcome axis — their WT risk is
+identical by construction. The collapse is Head-blind and outcome-blind; the full 198-protein pool
+and all 21 dropped ids are in the manifest.
+
+### 7.9.3 The calibration (DP1), and what got worse
+
+| Quantity | eval-split (§6) | **full-data (§7)** |
+|---|---|---|
+| $b_A$ / $s_A$ | −6.768 / 6.291 | **−8.834 / 6.074** |
+| $b_B$ / $s_B$ | −2.670 / 4.112 | **−9.164 / 5.018** |
+| $\theta = b_A/s_A - b_B/s_B$ | −0.4265 | **+0.3719** |
+| $\operatorname{SE}(\theta)/c_u$ | 0.240 | **0.524** |
+| $\lvert\Delta\theta\rvert/c_u$ (overlap inclusion) | 0.0057 | **0.503** (`within_credit`) |
+| cross-allele $r$ | 0.0962 | **0.0925** |
+| decision margin | 4.639e-07 (role B) | **1.256e-06** (role A) |
+| panel families | 13,836 (train∪val) | **13,757** (train∪val∪test) |
+
+$\theta$ changes sign, and almost all of the movement is role B: $b_B$ goes from −2.670 to −9.164
+while $b_A$ moves −6.768 → −8.834. The full-data 0401 Head calls natural background much less
+risky than the eval-split fold-0 Head did. This is the re-measurement §7.4 requires, not an error —
+but it means **§6's $J$ and §7's $J$ live in different coordinate systems and their values are not
+comparable.**
+
+Two calibration statistics are materially worse than §6's and both must travel with the result:
+
+* $\operatorname{SE}(\theta)/c_u = 0.524$. §6's AUDIT J.4 already recorded 0.240 as decision D3
+  ("PLAN §5 requires $\operatorname{SE}\ll c_u$; one fifth is not obviously much less than") and
+  resolved it by accepting. This is one half. It is not a panel-size effect — 13,757 vs 13,836 is
+  a 0.6 % change — and J.3 established that it cannot be improved by enlarging the panel: 44,021
+  eligible sequences cluster into ~13.8 k homology-independent units, and reaching $c_u/10$ would
+  need roughly four times as many independent families as the deduplicated Tier-2 pool contains.
+* $\lvert\Delta\theta\rvert/c_u = 0.503$, against §6's 0.0057. Putting the two Heads' training
+  homologs back into the panel moves the equal-risk line by half the credit band. The label is
+  still `within_credit`, but the margin is now thin where it used to be three orders clear.
+
+**Why this does not enter the primary claim.** $R_A$ and $R_B$ are raw Head outputs. The affine
+coordinates decide only WHICH design the frozen rule selects; they do not enter the paired contrast
+that design is then tested by. What $\theta$'s uncertainty widens is the band in which "which
+allele is limiting" is a calibration statement rather than a measurement — a mechanism reading, not
+a capability gate. This is recorded in the read's own `claim_boundary` (amendment A1, made before
+any comparator score and before any campaign cell existed).
+
+### 7.9.4 Two mechanical prerequisites §7 did not name
+
+Both are consequences of §7.2's checkpoint change, not scientific choices, and both are hard
+blockers measured against the code rather than argued:
+
+1. **The single-Head V2 policy calibration had to be rebuilt.**
+   `materialize_v2_canary_config.py:488` refuses a `--policy-calibration-json` whose
+   `head.head_checkpoint_digest` differs from the cell's Head, and `--exploratory-profile` — frozen
+   by §7.5 — requires that artifact. The inherited `head_policy_v2_eps005_c454.json` binds the CV
+   fold-0 `best.pt`. `calibrate_v2_head_policy.py:154` then refuses to rebuild it against existing
+   bundles for the same reason, so a **live-vs-live** mode was added: the bundle supplies only the
+   bytes, both passes are the live Head, shuffled and at a different window batch size. AUDIT J.2
+   records that varying only the ORDER measures a drift of exactly zero, so an identically batched
+   repeat is refused with that reason. Measured on the SAME 1644-observation byte population the
+   inherited artifact used, so old and new differ only by the instrument.
+
+   Its two scalars are **inert in a Dual campaign** — verified at both decision sites:
+   `reward.py:519` sets `compared_epsilon = joint.epsilon` under an overlay, and `policy.py:1574`
+   sets the write tolerance to `dual.objective.decision_margin`. The artifact must still bind them.
+
+2. **§7.5's preflight lists no producer for the per-protein substrate** the materializer needs:
+   `references/<pid>.seq`, `references.json`, `strata.json`. All are derivable from DP0's frozen
+   cohort with no GPU, and are now emitted by the cohort freezer.
+
+### 7.9.5 What was inherited, and what it cost
+
+* `global_relaxed_hotspot.json` declares `cohort_independent: true` with value 1e6 — the
+  whole-landscape hotspot gate is effectively disabled, so it carries across cohorts by
+  construction.
+* `global_B_r40.json`, the step-indexed maturity band, was measured on the 0701 high-risk cohort
+  and is reused deliberately: `materialize_v2_canary_config.py` checks only that a cell exists at
+  `(step=40, stratum_key)`, and re-measuring means a fresh D8/K32 ceiling campaign, far outside
+  §7.5's "frozen V2 production contract, unchanged". §7.5 also forbids a separate GPU smoke gate,
+  so the transfer was measured after the fact instead of assumed. **Realized cost: ZERO** --
+  `null_band_incompatible` on 0 of 400 cells. The r=40 maturity clock transfers to this cohort.
+
+### 7.9.6 Integrity
+
+| | |
+|---|---|
+| Cells requested / executed | 400 / 400 |
+| Cells producing a usable lineage | 339 `ok`, 61 `null` |
+| Cells whose realized caps were not certified within | **0** |
+| Distinct overlay digests across all 400 manifests | **1** (`852a98360e66`) |
+| Distinct master seeds | 4, one per root |
+| `null_band_incompatible` | **0** |
+| Proteins with a structure-feasible Fusion design | **89 / 100** (floor for a resolved verdict: 80) |
+| Proteins with complete WT + ProteinMPNN + Fusion evidence | **89** |
+
+Typed outcomes over 400 cells: `committed` 785, `invalid_projection` / `null_invalid_policy_result`
+291, `no_admissible_endpoint` / `null_no_admissible_endpoint` 69, `depth_cap` 40. Per cell these
+are 1.96 / 0.73 / 0.17 / 0.10 against §6's 1.95 / 0.68 / 0.20 / 0.12 -- the runtime behaved as it
+did in the executed diagnostic.
+
+Structure, as do-no-harm evidence: 14,220 endpoints evaluated, **87.96 % structure-feasible**,
+scTM mean **0.873** (§6: 0.87). Sequence recovery is NOT reported: the v0 structure gate's
+`metrics_json` carries `pLDDT`, `scRMSD` and `scTM` only, so §7.7's recovery line has no source in
+this bundle. It is a gap in the requested evidence, not a value withheld.
+
+The eleven proteins with no feasible design are the campaign's own attrition: every one of their
+four roots produced endpoints that failed the inherited scTM >= 0.70 gate. §6 lost 17 of 100 the
+same way with a single root; four roots recover part of that.
+
+### 7.9.7 Result
+
+**Verdict: `dual_fulldata_capability_supported`.** All four pre-registered raw-risk upper bounds
+are below zero.
+
+| contrast (lower is better) | mean | median | UCB95 | improved | gate |
+|---|---:|---:|---:|---:|:--:|
+| Fusion − WT, $R_A$ | −4.763 | −1.089 | **−3.803** | 86/89 | pass |
+| Fusion − WT, $R_B$ | −5.454 | −2.015 | **−4.402** | 84/89 | pass |
+| Fusion − ProteinMPNN, $R_A$ | −1.111 | −0.237 | **−0.499** | 76/89 | pass |
+| Fusion − ProteinMPNN, $R_B$ | −1.126 | −0.403 | **−0.520** | 80/89 | pass |
+| Fusion − WT, $J_\tau$ | −1.375 | −1.579 | −1.177 | 96 % | — |
+| Fusion − ProteinMPNN, $J_\tau$ | −0.265 | −0.060 | −0.137 | 89 % | — |
+
+Raw levels, protein-equal means over the 89:
+
+| | $R_A$ | $R_B$ | $J_\tau$ |
+|---|---:|---:|---:|
+| WT | −4.353 | −3.988 | +1.351 |
+| ProteinMPNN (min-$J$ of 8) | −8.005 | −8.316 | +0.240 |
+| ProteinMPNN redraw (min-$J$ of 8) | −8.043 | −8.411 | +0.228 |
+| **Fusion primary** | **−9.116** | **−9.442** | **−0.024** |
+
+Two-dimensional Pareto counts: against WT **82 both-improved**, 1 dominated, 6 incomparable;
+against ProteinMPNN **75 both-improved**, 8 dominated, 6 incomparable.
+
+**The gate is on the mean, and the conclusion does not depend on that choice.** The mean is more
+negative than the median in every contrast -- a heavy left tail of large wins -- but the sign is
+carried by the majority of proteins, not by the tail: a sign test on the same pairs gives
+$p = 1.9\times10^{-22}$ / $7.1\times10^{-20}$ against WT and $2.7\times10^{-12}$ /
+$1.2\times10^{-15}$ against ProteinMPNN. Both statistics agree.
+
+**The pre-registered comparator redraw holds.** Scored against a ProteinMPNN panel that shares
+**zero** sequences with the primary one on this cohort, the contrast is −1.073 ($R_A$, UCB −0.439)
+and −1.031 ($R_B$, UCB −0.502), against −1.111 / −1.126. Per-protein the comparator moves a lot
+(sd ≈ 2.2--2.5 raw logit, a quarter of proteins by more than 0.5), and this is exactly why it was
+registered before any Head scored anything: the mean contrast is stable under a re-draw, so the
+comparator's own sampling noise did not manufacture the result.
+
+#### What this does NOT establish
+
+* **Not equal search.** Fusion's primary design is the minimum-$J$ of a median of **153**
+  structure-feasible unique candidates merged over four roots (q1 122, q3 168, max 216);
+  ProteinMPNN's is the minimum-$J$ of **8**. That is ~19× the selection pool. §7.8 declares this
+  and it is not repaired by the data: this is a comparison of two deployed pipelines at their own
+  operating points, not a compute-matched contest.
+* **The margin over ProteinMPNN is modest at the typical protein.** Median −0.24 ($R_A$) and −0.40
+  ($R_B$) raw logit, and Fusion is *worse* on 15 % / 10 % of proteins. Against WT the same
+  medians are −1.09 and −2.01.
+* **It is not uniform across risk.** On the WT-risk-stratified read (strata defined after the
+  cohort was frozen, from the WT axis only), the high-risk third improves by −8.10 / −11.92 and the
+  middle third by −5.73 / −3.61, but the **low-risk third's $R_A$ bound does not clear zero**
+  (mean −0.49, UCB +0.34). On proteins that already carry little role-A risk, this campaign does
+  not demonstrate role-A improvement.
+* **The Heads have no held-out estimate**, by construction (§7.2). What DP0 established is weaker
+  and worth stating exactly: zero exact-sequence overlap between this cohort and either Head's
+  complete fitting pool.
+* **The equal-risk line is loosely measured** on the full-data panel ($\operatorname{SE}/c_u$
+  0.524, overlap-inclusion $\lvert\Delta\theta\rvert/c_u$ 0.503). This does not enter the four
+  raw-risk gates, which never touch the coordinates; it widens the band around any statement about
+  *which* allele is limiting.
+
+#### One mechanism observation, reported not claimed
+
+`active_worst` -- which allele the smooth-max is currently binding on -- is **50/50 on WT** and
+47/53 on the ProteinMPNN primary, but **81/89 role A** on the Fusion primary. In normalized units
+the campaign moved role B by 1.087 and role A by 0.784. The joint law drives down whichever
+coordinate is worse, so an end state this asymmetric says role A stopped yielding first: on this
+cohort the two alleles are **not equally steerable**, and the objective spent its remaining effort
+where it could still move. That is a hypothesis this run generates, not one it tests -- it is also
+the cleanest available contrast with §6, where the cohort was A-selected and A was limiting from
+the start.
+
+### 7.9.8 Execution defects found and fixed
+
+Three, all of one kind: **a producer emitting something the runtime refuses**, and in two cases a
+test that was easier to satisfy than the consumer.
+
+| # | Defect | How it surfaced | Cost |
+|---|---|---|---|
+| 1 | DP0 wrote the reference file as `sequence + "\n"`. `load_complete_reference` reads it "as ASCII with NO normalization" and digests the exact bytes, so the newline IS a residue. | `V2LookaheadError: sequence carries non-canonical character(s) ['\n']`, once per cell, after the GPU was allocated. 160 cells finished with `n_ok=0` before the campaign was cancelled. | ~10 GPU-hours |
+| 2 | `calibrate_v2_head_policy` hardcoded the v1 `lineage_incumbent_depth0_rule`. `HeadDirectedCappedPolicy` binds version and rule in both directions: v2 is RESERVED for `best_admissible_depth0`. | `V2PolicyError: policy_version='v2' is reserved for best_admissible_depth0` | ~10 min (a single probe shard caught it) |
+| 3 | The same producer's policy-spec enum admitted only `v1`, while every executed V2 campaign supplies the v2 spec. | Refused the real spec at materialization time. | none (caught locally) |
+
+Defect 1's test asserted `path.read_text().strip() == sequence`; the `.strip()` let a one-character
+defect pass twenty assertions and then fail every cell. It now compares bytes, and a second test
+asserts the downstream contract directly — no terminator, nothing outside canonical AA20. The
+earlier comparator-scorer defect had the same shape: a test fake carried `window_grid_digest` on
+the result object, while the real `V2HeadResult` carries it on `.binding`.
+
+Defect 2 was found in one round rather than several by diffing the generated artifact field by
+field against the executed K12 one instead of chasing runtime errors: the `head_directed` key sets
+matched exactly and that rule was the ONLY structural difference. The same technique applied to the
+resolved configs showed zero structural difference from §6 — same key set, and only five expected
+value differences (head-call cap 6000→6400 scaled by $C$, $C$ itself, the two inert margins, and
+the epsilon's provenance label).
+
+### 7.9.9 Runtime behaviour matched §6
+
+Before the full launch, one probe shard was run and its aggregate compared with the executed §6
+joint arm. This is an operational check, not the first-protein decision gate §7.5 forbids: no risk
+value or contrast was read.
+
+| | §6 joint (100 cells) | §7 probe (34 cells) |
+|---|---|---|
+| `n_ok > 0` | 82 % | 82 % |
+| scTM mean / median | 0.87 / 0.94 | 0.880 / 0.948 |
+| scTM ≥ 0.70 | 89 % | 85 % |
+| `committed` per cell | 1.95 | 1.85 |
+| `null_invalid_policy_result` per cell | 0.68 | 0.65 |
+| `invalid_projection` per cell | 0.68 | 0.65 |
+| `null_no_admissible_endpoint` per cell | 0.20 | 0.24 |
+| `depth_cap` per cell | 0.12 | 0.12 |
+
+One caution this run earned: the probe's FIRST cell (`1QFH_A`, 212 aa, coverage 1.00) had all
+twelve depth-0 endpoints rejected at scTM 0.50–0.56 against a 0.70 gate, with pLDDT ≈ 83. Length
+was checked and ruled out — §6 passes 83–96 % in every length bin including <120 aa — as were the
+backbone path convention, backbone coverage, and the resolved config. It was simply a hard protein:
+§6 itself had 17 of 100 proteins infeasible in every arm. The aggregate is the readable quantity;
+`n = 1` is not.

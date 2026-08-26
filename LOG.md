@@ -4396,3 +4396,27 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.95
 - status: fixes landed and artifacts re-signed. Cluster generation still not submitted.
 - next_action: TWO user decisions are open and neither blocks code. (a) J.7 D3 was frozen against SE/c_u = 0.185; the corrected value is 0.240 and the acceptance rationale is unchanged, so confirm the decision stands. (b) S6's 80/100 coverage floor trips ~5.05% of the time on a healthy single-root campaign; it is READ-TIME only. Also outstanding: the runbook's section 2.2 still contains no runnable materialization command, tracked separately.
+
+### L0167
+- timestamp: 2026-08-26T17:20:00-04:00
+- type: VERIFICATION
+- module: GLOBAL
+- trigger: Runbook §7 authorized a paper-facing full-data Dual capability campaign (DP0–DP4); §7.3/§7.4 named five tasks but omitted two mechanical prerequisites of §7.2's checkpoint change, and executing them required two new producers plus a new mode on an existing calibration instrument.
+- change_summary: Added `scripts/freeze_dual_common_cohort.py` (DP0) and `scripts/score_sequences_dual_heads.py` (DP1/DP4), gave `scripts/calibrate_v2_head_policy.py` a live-vs-live source mode and a spec-derived D0 rule, and executed the 400-cell `joint` campaign to verdict `dual_fulldata_capability_supported`.
+- rationale: `materialize_v2_canary_config.py:488` refuses a policy calibration whose Head digest differs from the cell's, and `--exploratory-profile` (frozen by §7.5) requires that artifact, so the inherited `head_policy_v2_eps005_c454.json` made all 400 cells unmaterializable; `calibrate_v2_head_policy.py:154` then refuses to rebuild it against bundles scored by another instrument, which is correct — a difference between two checkpoints' scores measures the checkpoint change, not repeatability — so the bytes are reused while BOTH passes are the live Head, shuffled and at a different window batch size (AUDIT J.2: order alone measures exactly zero drift). Separately §7.5 lists no producer for the per-protein substrate (`references/<pid>.seq`, `references.json`, `strata.json`), all derivable from the frozen cohort with no GPU. Both policy scalars are inert under a Dual overlay — `reward.py:519` compares `joint.epsilon` and `policy.py:1574` compares `dual.objective.decision_margin` — but the artifact must still bind them.
+- artifacts:
+  - scripts/freeze_dual_common_cohort.py, tests/scripts/test_freeze_dual_common_cohort.py
+  - scripts/score_sequences_dual_heads.py, tests/scripts/test_score_sequences_dual_heads.py
+  - scripts/calibrate_v2_head_policy.py, tests/scripts/test_calibrate_v2_head_policy.py
+  - /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_dual_fulldata/{cohort,calibration,campaign,analysis}/
+  - doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md §7.9
+- evidence: 400/400 cells executed (jobs 13008339, 13009764–13009782), 339 ok / 61 null, 0 uncertified caps, 1 overlay digest, 0 `null_band_incompatible`; verdict `dual_fulldata_capability_supported` on 89/100 proteins (floor 80) with all four raw-risk UCB95 below zero (WT: −3.80 / −4.40; ProteinMPNN: −0.50 / −0.52), stable under a pre-registered comparator redraw sharing zero sequences. Analysis program and comparator scorer digests frozen before any outcome existed; amendments A1/A2 recorded with digest before/after. `pytest tests/scripts/` 1219 passed.
+- impact:
+  - scope: two new production scripts, one new mode + one bug fix on the V2 policy calibration instrument, and the executed §7 campaign artifacts
+  - risk: medium
+  - confidence: 0.90
+- status: done
+- next_action: return the campaign bundle and analysis through the RAR path; the §7.7 recovery line has no source in the v0 gate's `metrics_json` and stays unfilled.
+- refs:
+  - doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md §7, §7.9
+  - doc/DUAL_ALLELE_DUALF0_AUDIT.md J.2, J.3, J.4
