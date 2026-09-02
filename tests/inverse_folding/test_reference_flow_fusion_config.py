@@ -87,6 +87,15 @@ def test_active_site_gate_optional_none_when_absent():
     assert cfg.structure.active_site_RMSD_max is None  # no fabricated numeric default
 
 
+def test_explicit_none_disables_active_site_geometry():
+    m = _smoke()
+    st = m["fusion"]["structure"]
+    st["active_site_metric"] = "none"
+    st["active_site_RMSD_max"] = None
+    cfg = fc.load_fusion_config(m)
+    assert cfg.structure.active_site_metric == "none"
+
+
 def test_sidechain_active_site_mode_requires_its_own_threshold():
     m = _smoke()
     st = m["fusion"]["structure"]

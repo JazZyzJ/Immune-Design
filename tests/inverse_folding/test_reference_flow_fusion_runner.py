@@ -422,6 +422,12 @@ def test_nan_active_site_rmsd_fails_closed_when_anchored():
     assert ok is False
 
 
+def test_none_active_site_metric_keeps_only_the_sctm_gate_for_anchored_proteins():
+    cfg = _cfg(scTM_min=0.70, active_site_metric="none", active_site_max=None)
+    metrics = SimpleNamespace(scTM=0.70, scRMSD=None)
+    assert orc.structure_feasible(metrics, cfg, has_active_site=True) == (True, "ok")
+
+
 def test_sidechain_active_site_gate_uses_complete_max_anchor_metric():
     cfg = _cfg(
         active_site_metric="sidechain_max_anchor",

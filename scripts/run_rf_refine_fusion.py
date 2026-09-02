@@ -527,7 +527,7 @@ def build_oracles(args, config):
                     config.structure.active_site_shell_radius,
                 )
             return shell_cache[pid]
-    else:
+    elif config.structure.active_site_metric == "sidechain_max_anchor":
         from inverse_folding.evaluation.structural_metrics_v2 import (
             METRIC_GLOBAL_CA_RMSD,
             METRIC_PLDDT,
@@ -574,7 +574,7 @@ def build_oracles(args, config):
                     ref_sequence=str(test_lookup[protein_id]["sequence"]),
                     refold_backend=backend)
                 asr = sm.shell_rmsd_from_rows(per_res, shell)
-        else:
+        elif config.structure.active_site_metric == "sidechain_max_anchor":
             v2 = evaluate_prediction_fn(
                 reference_context_fn(protein_id),
                 str(pred["pdb_path"]),

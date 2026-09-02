@@ -247,6 +247,44 @@ def test_highrisk_d4_k24_profile_changes_only_breadth_identity_and_caps(tmp_path
     assert projection.feasible
 
 
+@pytest.mark.parametrize(
+    ("profile", "depth", "width", "logical_dfe", "refolds"),
+    [
+        ("uricase_core0_pilot_d2_k6_r40", 2, 6, 820, 18),
+        ("uricase_core0_pilot_d3_k12_r40", 3, 12, 1820, 48),
+    ],
+)
+def test_uricase_core0_pilot_profiles_match_frozen_budget(
+    tmp_path, profile, depth, width, logical_dfe, refolds,
+):
+    template, args, frozen = _case(tmp_path)
+    args.run_max_head_calls = 6000
+    args.esmfold2_model = "biohub/ESMFold2"
+    args.esmfold2_num_loops = 3
+    args.esmfold2_num_sampling_steps = 50
+    args.esmfold2_num_diffusion_samples = 1
+    args.esmfold2_seed = 0
+    payload = json.loads(args.policy_calibration_json.read_text())
+    payload["head_directed"]["lineage_incumbent_depth0_rule"] = "best_admissible_depth0"
+    spec = tmp_path / "policy-v2.json"
+    spec.write_text(json.dumps({
+        "policy_id": "head_directed_capped", "policy_version": "v2",
+    }))
+    payload["policy_spec_sha256"] = hashlib.sha256(spec.read_bytes()).hexdigest()
+    args.policy_calibration_json.write_text(json.dumps(payload))
+    frozen["projection_policy_spec"] = payload["policy_spec_sha256"]
+    args.exploratory_profile = profile
+
+    config = fill_config(template, args=args, frozen=frozen, runtime={})
+    projection = project_v2_budget(load_v2_config(config), n_proteins=1)
+
+    assert config["schedule"]["depth_cap"] == depth
+    assert {point["n_lookaheads"] for point in config["schedule"]["points"]} == {width}
+    assert projection.per_protein_logical_dfe == logical_dfe
+    assert projection.total_definitive_refolds == refolds
+    assert projection.feasible
+
+
 def test_recursive_profile_is_never_inferred_from_an_ordinary_calibrated_call(tmp_path):
     template, args, frozen = _case(tmp_path)
 

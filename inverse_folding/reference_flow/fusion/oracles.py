@@ -62,9 +62,9 @@ class StructureCache:
 def structure_feasible(metrics, config: "FusionConfig", *, has_active_site: bool) -> tuple[bool, str]:
     """Absolute target-backbone gate (§1.4). NOT the refiner's seed-relative gate.
 
-    scTM floor is always enforced. An anchored protein uses exactly the configured
-    active-site metric: the legacy C-alpha shell or the all-heavy-side-chain maximum across
-    anchors. Missing/incomplete values fail closed. A no-anchor protein skips this gate (N/A).
+    scTM floor is always enforced. Unless the active-site metric is explicitly ``none``, an
+    anchored protein also uses the configured legacy C-alpha shell or all-heavy-side-chain gate.
+    Missing/incomplete enabled metrics fail closed. A no-anchor protein skips that gate (N/A).
     """
     st = config.structure
     scTM = getattr(metrics, "scTM", None)
@@ -72,7 +72,7 @@ def structure_feasible(metrics, config: "FusionConfig", *, has_active_site: bool
         return False, f"scTM not finite: {scTM}"
     if float(scTM) < st.scTM_min:
         return False, f"scTM {scTM} < scTM_min {st.scTM_min}"
-    if has_active_site:
+    if has_active_site and st.active_site_metric != "none":
         if st.active_site_metric == "legacy_ca_shell":
             if st.active_site_RMSD_max is None:
                 return False, (

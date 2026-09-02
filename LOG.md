@@ -4420,3 +4420,25 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - refs:
   - doc/RF_Fusion_V2_Dual_Allele_Cluster_Runbook.md §7, §7.9
   - doc/DUAL_ALLELE_DUALF0_AUDIT.md J.2, J.3, J.4
+
+### L0168
+- timestamp: 2026-09-02T13:30:00-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: The uricase core0 pilot uses near-whole-sequence hard-anchor manifests. The high-risk structure preset claimed an scTM-only gate but configured `sidechain_max_anchor`, so every fixed residue was incorrectly treated as active-site geometry and could reject an otherwise scTM-feasible endpoint.
+- change_summary: Added explicit `active_site_metric: none`, made the feasibility gate skip active-site geometry in that mode, and prevented the structure producer from computing unused anchor metrics. Updated `rf_refine_fusion_highrisk_sctm070.yaml` to enforce only `scTM >= 0.70`; hard anchors remain unchanged sequence-identity constraints. Added the closed uricase D2/K6 and D3/K12 pilot profiles.
+- rationale: Constraint manifests define immutable sequence positions, not a catalytic-site annotation. Conflating the two turns the near-WT search-space complement into a near-global 2 Å side-chain structure gate. An explicit mode is safer than a numeric sentinel and preserves fail-closed behavior for both existing active-site metrics.
+- artifacts:
+  - `inverse_folding/reference_flow/fusion/{config,oracles}.py`
+  - `scripts/run_rf_refine_fusion.py`
+  - `inverse_folding/reference_flow/configs/rf_refine_fusion_highrisk_sctm070.yaml`
+  - `scripts/materialize_v2_canary_config.py`
+  - `tests/inverse_folding/test_reference_flow_fusion_{config,runner}.py`
+  - `tests/scripts/test_materialize_v2_policy_qualification.py`
+- evidence: 152 targeted config, gate, V2-oracle, and materializer tests passed; real-driver dry-run remains required on the re-materialized pilot configs before resubmission.
+- impact:
+  - scope: Only configs that explicitly select `active_site_metric: none` skip active-site geometry. Existing legacy and side-chain active-site presets retain their prior fail-closed behavior.
+  - risk: low
+  - confidence: 0.98
+- status: implemented and locally validated; cluster pilot rerun pending.
+- next_action: Re-materialize the 54 uricase pilot cells under a new campaign/run root and submit the 18 four-hour ailab jobs.

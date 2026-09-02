@@ -1,4 +1,5 @@
-# V2 high-risk capability structure gate. Only scTM >= 0.70 is used online; all evaluated
+# V2 high-risk capability structure gate. Only scTM >= 0.70 is used online; hard anchors remain
+# sequence-identity constraints and are not reinterpreted as active-site geometry. All evaluated
 # endpoints remain in the V2 evidence bundle and scTM >= 0.85 is a post-hoc reporting subset.
 fusion:
   enabled: true
@@ -39,8 +40,8 @@ fusion:
     backend: esmfold2_live
     surrogate_mode: none
     scTM_min: 0.70
-    active_site_metric: sidechain_max_anchor
-    max_anchor_sidechain_RMSD_max: 2.0
+    active_site_metric: none
+    max_anchor_sidechain_RMSD_max: null
     active_site_RMSD_max: null
     active_site_shell_radius: 6.0
     scRMSD_max: null

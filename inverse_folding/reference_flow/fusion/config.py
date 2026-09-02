@@ -26,7 +26,7 @@ def _finite_pos(value: float) -> bool:
     return math.isfinite(value) and value > 0.0
 
 _SELECTION_MODES = frozenset({"greedy", "beam", "fk"})
-_ACTIVE_SITE_METRICS = frozenset({"legacy_ca_shell", "sidechain_max_anchor"})
+_ACTIVE_SITE_METRICS = frozenset({"none", "legacy_ca_shell", "sidechain_max_anchor"})
 _STRUCTURE_BACKENDS = frozenset({"esmfold", "esmfold2_live"})
 
 

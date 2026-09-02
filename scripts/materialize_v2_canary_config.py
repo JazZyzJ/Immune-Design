@@ -111,6 +111,44 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
             "max_definitive_refolds": 64,
         },
     },
+    "uricase_core0_pilot_d2_k6_r40": {
+        "phase": "capability_ladder",
+        "split_role": "exploratory_uricase_core0_pilot_v1",
+        "support_policy_version": "v2",
+        "schedule": {
+            "schedule_id": "uricase-core0-pilot-d2-k6-r40-v1",
+            "coordinate_law": "progressive_checkpoint",
+            "depth_cap": 2,
+            "active_population_width": 1,
+            "min_lookahead_tail_steps": 10,
+            "points": [
+                {"depth": depth, "r_step": 40, "c_source_step": 50 + 10 * depth,
+                 "c_next_step": 60 + 10 * depth, "n_lookaheads": 6,
+                 "band_key": "step40"}
+                for depth in range(2)
+            ],
+        },
+        "caps": {"max_logical_dfe": 910, "max_definitive_refolds": 20},
+    },
+    "uricase_core0_pilot_d3_k12_r40": {
+        "phase": "capability_ladder",
+        "split_role": "exploratory_uricase_core0_pilot_v1",
+        "support_policy_version": "v2",
+        "schedule": {
+            "schedule_id": "uricase-core0-pilot-d3-k12-r40-v1",
+            "coordinate_law": "progressive_checkpoint",
+            "depth_cap": 3,
+            "active_population_width": 1,
+            "min_lookahead_tail_steps": 10,
+            "points": [
+                {"depth": depth, "r_step": 40, "c_source_step": 50 + 10 * depth,
+                 "c_next_step": 60 + 10 * depth, "n_lookaheads": 12,
+                 "band_key": "step40"}
+                for depth in range(3)
+            ],
+        },
+        "caps": {"max_logical_dfe": 2010, "max_definitive_refolds": 53},
+    },
     "highrisk_d4_k24_r40": {
         "phase": "capability_ladder",
         "split_role": "exploratory_highrisk_breadth_ceiling_v1",
