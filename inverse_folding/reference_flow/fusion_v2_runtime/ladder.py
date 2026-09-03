@@ -31,11 +31,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..config import with_reference_flow_overrides
 from ..fusion_v2.errors import V2Error
 from ..fusion_v2.identity import canonical_digest
 from ..fusion_v2.reward import DEPTH0_BOOTSTRAP_RULE
 from ..fusion_v2.schedule import CoordinateLaw, make_cycle
 from ..fusion_v2.seeds import (
+    ROOT_CAPTURE_MAX_ATTEMPTS,
     V2_SEED_ENCODING_VERSION,
     FeedbackPairSeedContext,
     V2SeedContext,
@@ -44,7 +46,7 @@ from ..fusion_v2.state import CompleteEndpoint, TransitionOutcome
 from .archive import ExactArchive
 from ..fusion_v2.safety import advance_lineage, bind_immediate_parent
 from .admission import SafetyGate
-from .capture import capture_depth_zero
+from .capture import FullyResolvedRootError, capture_depth_zero
 
 __all__ = [
     "V2LadderError",
@@ -84,6 +86,8 @@ class StoppingReason(str, enum.Enum):
     FRONTIER_PLATEAU = "frontier_plateau"
     DIVERSITY_COLLAPSE = "diversity_collapse"
     OPERATIONAL_CEILING = "operational_ceiling"
+    NO_PRETERMINAL_ROOT = "no_preterminal_root"
+    TERMINAL_BEST_LOOKAHEAD = "terminal_best_lookahead"
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,12 @@ class LadderOutcome:
     final_safety_ledger: Any = None
     segment_executor_id: str = SEGMENT_EXECUTOR_ID
     detail: str = ""
+    root_capture_attempts_used: int = 0
+    root_capture_seed: int | None = None
+    root_capture_status: str = "not_attempted"
+    root_capture_detail: str = ""
+    root_capture_n_unresolved_editable: int | None = None
+    root_capture_rho_edit: float | None = None
 
 
 def _substrate_digest(config: Any) -> str:
@@ -311,29 +321,76 @@ def run_depth_ladder(
     # cannot name a state that does not exist yet.  Every rung then receives an explicit source,
     # which also makes depth 0 and depth d>0 the same code path.
     #: The prefix the capture below actually runs.  No rung is charged for it (see CycleCost).
-    root_capture_dfe = int(plan.cycles[0][1])
+    root_prefix_dfe = int(plan.cycles[0][1])
+    root_capture_dfe = 0
+    root_capture_attempts = 0
+    root_capture_seed = None
+    root_capture_status = "fully_resolved"
+    root_capture_detail = ""
+    root_capture_n_unresolved = 0
+    root_capture_rho = 1.0
+    source_override = None
     cost_meter = cycle_kwargs["cost_meter"]
     # Journaled here for the same reason the cycle journals its own capture: this prefix is real
     # forward passes, and a process that dies inside it must leave a record that it was started.
-    with cost_meter.attempt(
-        event_id=f"{protein_id}:{lineage.family_id}:ladder_root", phase="root_capture",
-        request_kind="prefix_capture",
-        request_digest=canonical_digest(
-            {"length": int(cycle_kwargs["sequence_length"]), "at_step": root_capture_dfe}),
-        logical_dfe=root_capture_dfe,
-    ) as receipt:
-        source_override = capture_depth_zero(
-            sampler=cycle_kwargs["sampler"], denoiser=cycle_kwargs["denoiser"], config=config,
-            sequence_length=int(cycle_kwargs["sequence_length"]),
-            h_values=cycle_kwargs["h_values"],
-            residue_token_ids=cycle_kwargs["residue_token_ids"], at_step=root_capture_dfe,
-            fixed_tokens=cycle_kwargs["fixed_tokens"], lineage=lineage,
-            mask_token_id=int(cycle_kwargs["mask_token_id"]),
-            aa_token_ids=cycle_kwargs["aa_token_ids"], conditioning=cycle_kwargs["conditioning"],
-            safety_reference=cycle_kwargs["safety_reference"], cost_event_ids=("evt:root",),
-            struct=cycle_kwargs.get("struct"),
+    root_event = f"{protein_id}:{lineage.family_id}:ladder_root"
+    for attempt_index in range(ROOT_CAPTURE_MAX_ATTEMPTS):
+        seed = int(config.sampler.seed) if attempt_index == 0 else run_seeds.depth0_root_seed(
+            checkpoint_step=root_prefix_dfe, root_index=attempt_index)
+        seed = _claim((seed,))[0]
+        root_capture_seed = seed
+        attempt_config = config if attempt_index == 0 else with_reference_flow_overrides(
+            config, seed=seed)
+        event_id = root_event if attempt_index == 0 else f"{root_event}:retry{attempt_index}"
+        root_capture_attempts += 1
+        root_capture_dfe += root_prefix_dfe
+        with cost_meter.attempt(
+            event_id=event_id, phase="root_capture", request_kind="prefix_capture",
+            request_digest=canonical_digest({
+                "length": int(cycle_kwargs["sequence_length"]),
+                "at_step": root_prefix_dfe, "seed": seed,
+            }),
+            logical_dfe=root_prefix_dfe,
+        ) as receipt:
+            try:
+                source_override = capture_depth_zero(
+                    sampler=cycle_kwargs["sampler"], denoiser=cycle_kwargs["denoiser"],
+                    config=attempt_config,
+                    sequence_length=int(cycle_kwargs["sequence_length"]),
+                    h_values=cycle_kwargs["h_values"],
+                    residue_token_ids=cycle_kwargs["residue_token_ids"], at_step=root_prefix_dfe,
+                    fixed_tokens=cycle_kwargs["fixed_tokens"], lineage=lineage,
+                    mask_token_id=int(cycle_kwargs["mask_token_id"]),
+                    aa_token_ids=cycle_kwargs["aa_token_ids"],
+                    conditioning=cycle_kwargs["conditioning"],
+                    safety_reference=cycle_kwargs["safety_reference"],
+                    cost_event_ids=("evt:root",), struct=cycle_kwargs.get("struct"),
+                )
+            except FullyResolvedRootError as exc:
+                root_capture_detail = str(exc)
+                receipt.observe(physical_forwards=root_prefix_dfe)
+                continue
+            receipt.observe(physical_forwards=root_prefix_dfe)
+        root_capture_status = "captured"
+        root_capture_detail = ""
+        root_capture_n_unresolved = source_override.realized_maturity.n_unresolved_editable
+        root_capture_rho = source_override.realized_maturity.rho_edit
+        break
+
+    if source_override is None:
+        return LadderOutcome(
+            stopping_reason=StoppingReason.NO_PRETERMINAL_ROOT, depth_reached=0, cycles=(),
+            archive=archive, best_definitive=None, total_logical_dfe=root_capture_dfe,
+            substrate_digest=substrate, production_depth_authorized=production,
+            exploratory_depth_override=exploratory, root_capture_logical_dfe=root_capture_dfe,
+            final_safety_ledger=safety_gate.ledger,
+            detail=(f"no pre-terminal root after {root_capture_attempts} deterministic attempts: "
+                    f"{root_capture_detail}"),
+            root_capture_attempts_used=root_capture_attempts, root_capture_seed=root_capture_seed,
+            root_capture_status=root_capture_status, root_capture_detail=root_capture_detail,
+            root_capture_n_unresolved_editable=root_capture_n_unresolved,
+            root_capture_rho_edit=root_capture_rho,
         )
-        receipt.observe(physical_forwards=root_capture_dfe)
     inherited_endpoints = None
     #: Every sequence-equivalence class the ladder has already produced.  PLAN §4.5 types
     #: ``no novel descendant`` as a stopping reason but does not define novelty; the predicate is
@@ -381,6 +438,9 @@ def run_depth_ladder(
             substrate_digest=substrate,
         ))
 
+        if cycle.outcome is TransitionOutcome.TERMINAL_BEST_LOOKAHEAD:
+            reason, detail = StoppingReason.TERMINAL_BEST_LOOKAHEAD, cycle.detail
+            break
         if cycle.outcome is TransitionOutcome.NULL_NO_ADMISSIBLE_ENDPOINT:
             reason, detail = StoppingReason.NO_ADMISSIBLE_ENDPOINT, cycle.detail
             break
@@ -504,4 +564,8 @@ def run_depth_ladder(
         exploratory_depth_override=exploratory,
         final_safety_ledger=safety_gate.ledger, detail=detail,
         root_capture_logical_dfe=root_capture_dfe,
+        root_capture_attempts_used=root_capture_attempts, root_capture_seed=root_capture_seed,
+        root_capture_status=root_capture_status, root_capture_detail=root_capture_detail,
+        root_capture_n_unresolved_editable=root_capture_n_unresolved,
+        root_capture_rho_edit=root_capture_rho,
     )

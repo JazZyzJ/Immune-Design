@@ -38,6 +38,7 @@ from inverse_folding.reference_flow.fusion_v2_runtime.ladder import (
     V2LadderError,
     run_depth_ladder,
 )
+from inverse_folding.reference_flow.fusion_v2_runtime.capture import FullyResolvedRootError
 from inverse_folding.reference_flow.sampler import PositionDependentDFMSampler
 from tests.inverse_folding import _v2_fixtures as F
 from tests.inverse_folding.test_fusion_v2_cycle import (
@@ -550,7 +551,8 @@ def test_reaching_the_declared_depth_stops_on_the_depth_cap():
 def test_every_stopping_reason_is_typed():
     """PLAN §4.5 names them; an untyped stop cannot be aggregated across a cohort."""
     assert {"DEPTH_CAP", "NO_ADMISSIBLE_ENDPOINT", "INVALID_PROJECTION", "NO_NOVEL_DESCENDANT",
-            "FRONTIER_PLATEAU", "DIVERSITY_COLLAPSE", "OPERATIONAL_CEILING"} <= \
+            "NO_PRETERMINAL_ROOT", "TERMINAL_BEST_LOOKAHEAD", "FRONTIER_PLATEAU",
+            "DIVERSITY_COLLAPSE", "OPERATIONAL_CEILING"} <= \
         {member.name for member in StoppingReason}
 
 
@@ -612,6 +614,51 @@ def test_the_ladder_reports_the_total_logical_dfe():
     total = outcome.root_capture_logical_dfe + sum(
         r.cycle.cost.total_logical_dfe for r in outcome.cycles)
     assert outcome.total_logical_dfe == total
+
+
+def test_a_fully_resolved_root_is_retried_with_a_new_seed():
+    class RetryOnce(PositionDependentDFMSampler):
+        def __init__(self):
+            super().__init__(mask_token_id=F.MASK, vocab_size=VOCAB)
+            self.seeds = []
+
+        def sample(self, **kwargs):
+            if kwargs.get("continuation") is not None:
+                self.seeds.append(int(kwargs["config"].sampler.seed))
+            if kwargs.get("continuation") is not None and len(self.seeds) == 1:
+                raise FullyResolvedRootError("rho_edit == 1.0")
+            return super().sample(**kwargs)
+
+    sampler = RetryOnce()
+    outcome = _run(sampler=sampler)
+
+    assert outcome.root_capture_attempts_used == 2
+    assert outcome.root_capture_logical_dfe == 2 * C0
+    assert outcome.root_capture_status == "captured"
+    assert outcome.root_capture_seed == sampler.seeds[-1]
+    assert outcome.root_capture_n_unresolved_editable > 0
+    assert outcome.root_capture_rho_edit < 1.0
+    assert sampler.seeds[0] != sampler.seeds[1]
+
+
+def test_exhausted_root_retries_return_one_small_typed_failure_record():
+    from inverse_folding.reference_flow.fusion_v2.seeds import ROOT_CAPTURE_MAX_ATTEMPTS
+
+    class AlwaysResolved:
+        def sample(self, **kwargs):
+            del kwargs
+            raise FullyResolvedRootError("rho_edit == 1.0")
+
+    outcome = _run(sampler=AlwaysResolved())
+
+    assert outcome.stopping_reason is StoppingReason.NO_PRETERMINAL_ROOT
+    assert outcome.root_capture_attempts_used == ROOT_CAPTURE_MAX_ATTEMPTS
+    assert outcome.root_capture_status == "fully_resolved"
+    assert outcome.root_capture_detail == "rho_edit == 1.0"
+    assert outcome.root_capture_n_unresolved_editable == 0
+    assert outcome.root_capture_rho_edit == 1.0
+    assert outcome.root_capture_seed is not None
+    assert outcome.cycles == () and outcome.best_definitive is None
 
 
 def test_the_source_prefix_is_charged_once_per_depth_not_once_per_lookahead():

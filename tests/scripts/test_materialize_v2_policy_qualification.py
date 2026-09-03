@@ -248,14 +248,14 @@ def test_highrisk_d4_k24_profile_changes_only_breadth_identity_and_caps(tmp_path
 
 
 @pytest.mark.parametrize(
-    ("profile", "depth", "width", "logical_dfe", "refolds"),
+    ("profile", "depth", "width", "logical_dfe", "max_dfe", "cap", "refolds"),
     [
-        ("uricase_core0_pilot_d2_k6_r40", 2, 6, 820, 18),
-        ("uricase_core0_pilot_d3_k12_r40", 3, 12, 1820, 48),
+        ("uricase_core0_pilot_d2_k6_r40", 2, 6, 820, 1170, 1290, 18),
+        ("uricase_core0_pilot_d3_k12_r40", 3, 12, 1820, 2170, 2390, 48),
     ],
 )
 def test_uricase_core0_pilot_profiles_match_frozen_budget(
-    tmp_path, profile, depth, width, logical_dfe, refolds,
+    tmp_path, profile, depth, width, logical_dfe, max_dfe, cap, refolds,
 ):
     template, args, frozen = _case(tmp_path)
     args.run_max_head_calls = 6000
@@ -281,6 +281,8 @@ def test_uricase_core0_pilot_profiles_match_frozen_budget(
     assert config["schedule"]["depth_cap"] == depth
     assert {point["n_lookaheads"] for point in config["schedule"]["points"]} == {width}
     assert projection.per_protein_logical_dfe == logical_dfe
+    assert projection.max_total_logical_dfe == max_dfe
+    assert config["caps"]["max_logical_dfe"] == cap
     assert projection.total_definitive_refolds == refolds
     assert projection.feasible
 

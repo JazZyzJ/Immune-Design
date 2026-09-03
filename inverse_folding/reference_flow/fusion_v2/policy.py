@@ -684,7 +684,13 @@ class StateDerivedProbePolicy:
         # Latest-committed first: the most future-bearing identities relative to r_d, and it
         # preserves the older carry class the fixed-support ablation needs.
         ordered = sorted(resolved, key=lambda p: (-_commit_step(p), p))
-        reopen = sorted(ordered[:load.min_newly_masked])
+        n_reopen = max(1, load.min_newly_masked)
+        if n_reopen > load.max_newly_masked:
+            return self._decline(
+                f"B(r_d={r_step}) permits zero reopen only; this historical diagnostic policy "
+                "requires one and does not implement the terminal one-position fallback"
+            )
+        reopen = sorted(ordered[:n_reopen])
         reopened = set(reopen)
 
         inject = sorted(p for p in resolved
@@ -1092,7 +1098,7 @@ def _band_compatible_write_interval(
     ``m_reopen = u_target - u_src + m``.  Substituting that into the exact solver's own bounds turns
     four inequalities into an interval in ``m``:
 
-    * ``m_reopen >= 1``            (the kernel refuses an empty reopen)  ->  ``m >= 1 - u_target + u_src``
+    * ``m_reopen >= 0``            ->  ``m >= u_src - u_target``
     * ``m_reopen <= n_editable - u_src`` (only resolved positions can be newly masked)
       ->  ``m <= n_editable - u_target``
     * ``m_reopen <= n_legal_reopen``  ->  ``m <= n_legal_reopen + u_src - u_target``
@@ -1103,7 +1109,7 @@ def _band_compatible_write_interval(
     band rather than chosen.  Returned as an interval rather than a single number so the caller can
     distinguish "the cap bound the write count" from "the schedule did".
     """
-    lower = max(0, 1 - int(u_target) + int(n_unresolved_source))
+    lower = max(0, int(n_unresolved_source) - int(u_target))
     upper = min(
         int(n_unresolved_source),
         int(n_editable) - int(u_target),
@@ -1646,7 +1652,7 @@ class HeadDirectedCappedPolicy:
         m_reopen = required_reopen_count(
             u_target=centre.u_target, n_unresolved_source=len(masked), n_writes=m_d)
         common.update(realized_writes=m_d, required_reopen=m_reopen)
-        if m_reopen < 1 or m_reopen > len(resolved):
+        if m_reopen < 0 or m_reopen > len(resolved):
             return stall(
                 StallReason.REOPEN_INFEASIBLE,
                 f"the reopen equation demands {m_reopen} position(s) (u_target={centre.u_target}, "

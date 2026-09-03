@@ -325,15 +325,21 @@ events at the same sampler step.
 For a non-null feedback event:
 
 - source and endpoint lineage must be compatible;
-- `write_from_endpoint` and `reopen` must both be non-empty;
+- `write_from_endpoint` must be non-empty;
 - `write_from_endpoint` must change at least one source byte or establish distinct bound endpoint
   provenance;
-- `reopen` must newly mask at least one previously resolved editable position;
+- `reopen` may be empty only when the exact mask-load equation admits zero; every member, when
+  present, must newly mask a previously resolved editable position;
 - the four editable sets must be disjoint and exhaustive;
 - all hard anchors must match before and after projection;
 - the projected state must contain at least one unresolved editable position;
 - the complete endpoint remains byte-identical in the archive; and
 - an invalid policy result creates an explicit null/stalled event rather than an invented state.
+
+A live source with exactly one editable position is the typed exception to recursion: after the
+shared K-lookahead Head/structure screen it returns the best definitive endpoint directly with
+`terminal_best_lookahead`. It does not call the support policy, construct a projected state, claim a
+feedback depth, or require a meaningless reopen action.
 
 ### 2.5 Policy boundary
 

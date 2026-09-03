@@ -600,12 +600,36 @@ def test_reopen_must_newly_mask_a_previously_resolved_position():
     assert "newly masks nothing" in out.detail
 
 
-def test_reopen_may_not_be_empty():
+def test_reopen_may_be_empty_when_the_state_stays_partial():
     sets = dict(REF_SETS)
     sets["reopen"] = ()
     sets["carry_from_source"] = (2, 3, 5)
     out = _project(decision=_decision(**sets))
+    assert out.outcome is st.TransitionOutcome.COMMITTED
+    assert out.projected.support.reopen == ()
+    assert out.projected.realized_maturity.n_unresolved_editable == 1
+
+
+def test_q_phi_refuses_a_fully_resolved_state_owned_by_the_cycle_fallback():
+    endpoint_tokens = (10, 11, 12, 13, 14, 15)
+    decision = _decision(
+        write_from_endpoint=(5,), inject_from_source_feedback=(4,), reopen=(),
+        carry_from_source=(1, 2, 3),
+        reason_by_pos={
+            1: pol.SupportReason.TEMPORALLY_VALID,
+            2: pol.SupportReason.TEMPORALLY_VALID,
+            3: pol.SupportReason.TEMPORALLY_VALID,
+            4: pol.SupportReason.FUTURE_SOURCE_IDENTITY,
+            5: pol.SupportReason.IMPROVEMENT_ASSOCIATED,
+        },
+    )
+    out = _project(
+        endpoint=_endpoint(tokens=endpoint_tokens), endpoint_tokens=endpoint_tokens,
+        decision=decision,
+    )
     assert out.outcome is st.TransitionOutcome.NULL_INVALID_POLICY_RESULT
+    assert out.projected is None
+    assert "terminal best-lookahead fallback is owned by the cycle" in out.detail
 
 
 def test_write_from_endpoint_may_not_be_empty():

@@ -378,9 +378,8 @@ def test_a_rejection_is_a_value_not_an_exception():
     assert isinstance(v, sch.BandVerdict)
 
 
-def test_reopen_cardinality_is_pinned_by_the_band_and_floors_at_one():
-    """PLAN §5.1's coupled mask-load contract, and PLAN §2.4's 'reopen must newly mask at least
-    one previously resolved editable position'.
+def test_reopen_cardinality_is_pinned_by_the_band_and_can_include_zero():
+    """PLAN §5.1's coupled mask-load contract permits zero when writes already hit the band.
 
     Reopen size is not a free parameter: choosing ``r_d`` pins how much mass the projected state
     must carry, and the policy may only choose *which* residues occupy that cardinality.
@@ -394,6 +393,19 @@ def test_reopen_cardinality_is_pinned_by_the_band_and_floors_at_one():
     assert load.min_newly_masked <= load.max_newly_masked
     # u_proj = u_src - a + b_new must land inside the pinned interval
     assert load.pinned.min_unresolved <= 100 + load.min_newly_masked <= load.pinned.max_unresolved
+
+    zero = sch.admissible_reopen_cardinality(
+        band=sch.make_band(
+            step=40, stratum_key="tiny", levels=sch.QuantileLevels(levels=(0.1, 0.5, 0.9)),
+            rho_quantiles=(0.0, 0.25, 0.5), unresolved_quantiles=(2, 1, 1),
+            rho_accept=sch.BandInterval(lo=0.0, hi=0.5, lo_level=0.1, hi_level=0.9),
+            unresolved_accept=sch.BandInterval(lo=1.0, hi=2.0, lo_level=0.9, hi_level=0.1),
+            combination_rule="both_axes", n_attempts=4, n_captured=4,
+            n_editable_min=1, n_editable_max=2,
+        ),
+        n_editable=2, n_unresolved_source=2, n_endpoint_writes_over_masked=1,
+    )
+    assert zero.feasible and (zero.min_newly_masked, zero.max_newly_masked) == (0, 0)
 
 
 def test_reopen_cardinality_reports_infeasible_instead_of_clamping():

@@ -605,16 +605,18 @@ def test_a_hard_anchor_can_never_enter_the_partition():
             reason_by_pos={0: "x", 1: "a", 2: "b", 3: "c", 4: "d", 5: "e"}))
 
 
-def test_both_write_from_endpoint_and_reopen_must_be_non_empty():
-    """PLAN §2.4: a transition that writes nothing or opens nothing is not a feedback event."""
+def test_write_is_required_but_reopen_may_be_empty():
+    """A write-only transition is legal when the exact mask-load equation needs no reopen."""
     with pytest.raises(V2Error):
         st.SupportPartition(write_from_endpoint=(), inject_from_source_feedback=(2,), reopen=(3,),
                             carry_from_source=(1, 4, 5),
                             reason_by_pos={1: "a", 2: "b", 3: "c", 4: "d", 5: "e"})
-    with pytest.raises(V2Error):
-        st.SupportPartition(write_from_endpoint=(1,), inject_from_source_feedback=(2,), reopen=(),
-                            carry_from_source=(3, 4, 5),
-                            reason_by_pos={1: "a", 2: "b", 3: "c", 4: "d", 5: "e"})
+    support = st.SupportPartition(
+        write_from_endpoint=(1,), inject_from_source_feedback=(2,), reopen=(),
+        carry_from_source=(3, 4, 5),
+        reason_by_pos={1: "a", 2: "b", 3: "c", 4: "d", 5: "e"},
+    )
+    assert support.reopen == ()
 
 
 def test_every_partitioned_position_carries_a_policy_reason():

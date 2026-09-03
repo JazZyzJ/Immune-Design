@@ -516,6 +516,15 @@ def run_one_cycle(
         )
     selected = admissible[rank]
 
+    if source.realized_maturity.n_editable == 1:
+        return CycleOutcome(
+            outcome=TransitionOutcome.TERMINAL_BEST_LOOKAHEAD, source=source,
+            endpoints=endpoints, a2_view=a2_view, archive=archive, cost=_cost(),
+            selected_endpoint=selected, admissions=admissions,
+            detail=("the source has one editable position; return the best definitive Head-ranked "
+                    "lookahead directly because no recursive reopen action exists"),
+        )
+
     if dual is not None:
         # The policy is immutable and is rebuilt one depth at a time by the ladder, which CLEARS
         # the donor score map on every advance -- the next depth's donors are different endpoints.

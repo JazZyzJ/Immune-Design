@@ -55,7 +55,7 @@ def _config(**over):
 
 
 def test_the_root_prefix_is_projected_once_for_the_whole_ladder():
-    """PLAN §3.4: the source prefix is charged ONCE.
+    """PLAN §3.4: the nominal source prefix is charged once; retries are a separate reserve.
 
     Only depth 0 captures a root; every deeper rung inherits the previous rung's propagated state,
     so a projection that charged ``c_d`` per depth would bound a run with a prefix per rung that no
@@ -63,6 +63,16 @@ def test_the_root_prefix_is_projected_once_for_the_whole_ladder():
     """
     projection = project_v2_budget(_config(), n_proteins=1)
     assert projection.root_capture_logical_dfe == C0
+
+
+def test_preflight_reserves_the_bounded_root_recapture_ceiling():
+    from inverse_folding.reference_flow.fusion_v2.seeds import ROOT_CAPTURE_MAX_ATTEMPTS
+
+    projection = project_v2_budget(_config(), n_proteins=1)
+    assert projection.root_capture_retry_reserve_logical_dfe == \
+        (ROOT_CAPTURE_MAX_ATTEMPTS - 1) * C0
+    assert projection.max_total_logical_dfe == (
+        projection.total_logical_dfe + projection.root_capture_retry_reserve_logical_dfe)
 
 
 def test_only_depth_zero_forks_a_source_pool():

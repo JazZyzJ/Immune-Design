@@ -499,7 +499,10 @@ def run_v2_shard(
     # BEFORE the ladder: it pays a root prefix of real forward passes before its first cycle.
     assert_runtime_substrate_matches(config, oracles["cycle_kwargs"].get("config"))
 
-    from inverse_folding.reference_flow.fusion_v2_runtime.ladder import run_depth_ladder
+    from inverse_folding.reference_flow.fusion_v2_runtime.ladder import (
+        StoppingReason,
+        run_depth_ladder,
+    )
 
     outcome = run_depth_ladder(
         plan=plan,
@@ -588,6 +591,15 @@ def run_v2_shard(
         "substrate_digest": outcome.substrate_digest,
         "production_depth_authorized": bool(outcome.production_depth_authorized),
         "exploratory_depth_override": bool(outcome.exploratory_depth_override),
+        "root_capture": {
+            "attempts_used": int(getattr(outcome, "root_capture_attempts_used", 0)),
+            "final_seed": getattr(outcome, "root_capture_seed", None),
+            "status": str(getattr(outcome, "root_capture_status", "unknown")),
+            "n_unresolved_editable": getattr(
+                outcome, "root_capture_n_unresolved_editable", None),
+            "rho_edit": getattr(outcome, "root_capture_rho_edit", None),
+            "detail": str(getattr(outcome, "root_capture_detail", "")),
+        },
     }
     if dual_runtime is not None:
         # Emitted only by a Dual run, and into a SEPARATE registry, so a legacy bundle gains no
@@ -626,7 +638,9 @@ def run_v2_shard(
     # stayed inside every declared hard cap.  A typed stop with nothing definitive is a real result
     # and a real FAILURE for this protein: the cohort must be able to count it as such rather than
     # as a success with an empty table.
-    status = "ok" if (outcome.depth_reached > 0 and outcome.best_definitive is not None
+    completed = outcome.depth_reached > 0 or \
+        outcome.stopping_reason is StoppingReason.TERMINAL_BEST_LOOKAHEAD
+    status = "ok" if (completed and outcome.best_definitive is not None
                       and not verdict.breached) else "failed"
     return status, payload
 

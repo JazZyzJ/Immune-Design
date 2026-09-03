@@ -594,6 +594,22 @@ def test_a_segment_that_resolves_everything_stops_the_cycle_with_a_typed_outcome
     assert outcome.cost.segment_logical_dfe == (F.N_STEPS - 1) - R1
 
 
+def test_one_editable_site_returns_the_best_lookahead_without_calling_the_policy():
+    def policy_must_not_run(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("one-position fallback must stop before feedback projection")
+
+    config = dataclasses.replace(
+        _cfg(), sampler=dataclasses.replace(_cfg().sampler, seed=41))
+    outcome = _run(
+        config=config, fixed_tokens={i: 10 for i in range(F.L - 1)},
+        support_policy=policy_must_not_run,
+    )
+    assert outcome.outcome is st.TransitionOutcome.TERMINAL_BEST_LOOKAHEAD
+    assert outcome.selected_endpoint is not None
+    assert outcome.segment is None and outcome.propagated is None
+
+
 # --------------------------------------------------------------------------------------------
 # the oracles are asked about sequences, not about digests
 # --------------------------------------------------------------------------------------------

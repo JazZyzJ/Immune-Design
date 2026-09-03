@@ -1070,9 +1070,9 @@ def admissible_reopen_cardinality(
     parameter, which is the concrete form of PLAN Appendix B's "re-entry coordinate, maturity band,
     and total mask/reopen cardinality are coupled".
 
-    The floor of 1 is PLAN §2.4's "``reopen`` must newly mask at least one previously resolved
-    editable position". An empty range is reported as ``feasible=False`` rather than clamped: it is
-    a fact about the schedule, not something to silently repair.
+    Zero is legal when endpoint writes already land inside the calibrated band. An empty range is
+    reported as ``feasible=False`` rather than clamped: it is a fact about the schedule, not
+    something to silently repair.
     """
     _require_index(n_editable, "n_editable", minimum=1)
     _require_index(n_unresolved_source, "n_unresolved_source")
@@ -1088,7 +1088,7 @@ def admissible_reopen_cardinality(
         )
     pinned = pinned_unresolved_interval(band=band, n_editable=n_editable)
     a = n_endpoint_writes_over_masked
-    lo = max(1, pinned.min_unresolved - n_unresolved_source + a)
+    lo = max(0, pinned.min_unresolved - n_unresolved_source + a)
     # b_new counts previously-RESOLVED positions, so it cannot exceed how many there are.
     hi = min(n_editable - n_unresolved_source, pinned.max_unresolved - n_unresolved_source + a)
     feasible = lo <= hi

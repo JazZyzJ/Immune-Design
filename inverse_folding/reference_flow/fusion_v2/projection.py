@@ -384,10 +384,6 @@ def source_writeback(
     if not decision.write_from_endpoint:
         return reject("write_from_endpoint is empty; a non-null feedback event must write at "
                       "least one endpoint identity")
-    if not decision.reopen:
-        return reject("reopen is empty; a non-null feedback event must reopen at least one "
-                      "position or the segment has nothing to resample")
-
     source_resolved = {p for p in source.editable_positions if source.tokens[p] != source.mask_token_id}
 
     newly_masked = [p for p in decision.reopen if p in source_resolved]
@@ -510,6 +506,12 @@ def source_writeback(
     # ---- the schedule-band gate ---------------------------------------------------------------
     n_editable = len(source.editable_positions)
     n_unresolved = sum(1 for p in source.editable_positions if tokens[p] == source.mask_token_id)
+    if n_unresolved == 0:
+        return reject(
+            "the policy fully resolves the editable domain; q_phi produces live partial states, "
+            "while the one-position terminal best-lookahead fallback is owned by the cycle"
+        )
+
     observed = observe_maturity(
         length_total=len(tokens), n_fixed=len(tokens) - n_editable,
         n_editable=n_editable, n_unresolved_editable=n_unresolved,

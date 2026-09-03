@@ -128,7 +128,8 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
                 for depth in range(2)
             ],
         },
-        "caps": {"max_logical_dfe": 910, "max_definitive_refolds": 20},
+        # Nominal 820 + at most 7*50 recapture DFE = 1170; 10% rounded slack -> 1290.
+        "caps": {"max_logical_dfe": 1290, "max_definitive_refolds": 20},
     },
     "uricase_core0_pilot_d3_k12_r40": {
         "phase": "capability_ladder",
@@ -147,7 +148,8 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
                 for depth in range(3)
             ],
         },
-        "caps": {"max_logical_dfe": 2010, "max_definitive_refolds": 53},
+        # Nominal 1820 + at most 7*50 recapture DFE = 2170; 10% rounded slack -> 2390.
+        "caps": {"max_logical_dfe": 2390, "max_definitive_refolds": 53},
     },
     "highrisk_d4_k24_r40": {
         "phase": "capability_ladder",

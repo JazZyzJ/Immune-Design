@@ -247,6 +247,38 @@ def test_depth_one_shard_needs_no_authorization_marker(tmp_path):
     assert payload["exploratory_depth_override"] is False
 
 
+def test_one_editable_position_is_a_successful_terminal_best_of_k(tmp_path):
+    config = _v2_config()
+    config = dataclasses.replace(
+        config,
+        schedule=dataclasses.replace(
+            config.schedule, depth_cap=1, points=(config.schedule.points[0],)),
+    )
+    runtime = _cfg()
+    runtime = dataclasses.replace(
+        runtime, sampler=dataclasses.replace(runtime.sampler, seed=41))
+
+    def policy_must_not_run(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("one-position fallback must stop before feedback projection")
+
+    status, payload = run_v2_shard(
+        protein_id=PROTEIN, config=config, signature=_signature(config), out_dir=tmp_path,
+        oracles_factory=_factory(cycle_kwargs={
+            "config": runtime,
+            "fixed_tokens": {i: 10 for i in range(LADDER_L) if i != 5},
+            "support_policy": policy_must_not_run,
+        }),
+    )
+
+    assert status == "ok"
+    assert payload["depth_reached"] == 0
+    assert payload["stopping_reason"] == "terminal_best_lookahead"
+    assert payload["terminal_validation"]
+    assert payload["root_capture"]["attempts_used"] == 1
+    assert payload["root_capture"]["n_unresolved_editable"] == 1
+
+
 @pytest.mark.parametrize("owned", ["feedback_enabled", "cost_meter"])
 def test_a_factory_may_not_override_the_runs_arm_identity_or_its_journal(tmp_path, owned):
     """The factory builds oracles; it does not get to say which arm this is.

@@ -34,6 +34,9 @@ from inverse_folding.reference_flow.fusion_v2.config import (  # noqa: E402
     V2ConfigError,
     load_v2_config,
 )
+from inverse_folding.reference_flow.fusion_v2.seeds import (  # noqa: E402
+    ROOT_CAPTURE_MAX_ATTEMPTS,
+)
 
 __all__ = [
     "V2PreflightError",
@@ -134,6 +137,8 @@ class BudgetProjection:
     execution_replicates: int
     #: The depth-0 prefix, paid ONCE per protein by the ladder itself.
     root_capture_logical_dfe: int
+    #: Conditional reserve for fully-resolved roots; zero work is spent when attempt one succeeds.
+    root_capture_retry_reserve_logical_dfe: int
     #: Only depth 0 forks a source pool; deeper rungs inherit the previous rung's descendants.
     per_protein_screen_dfe: int
     per_protein_segment_dfe: int
@@ -142,6 +147,7 @@ class BudgetProjection:
     per_protein_descendant_screen_dfe: int
     per_protein_logical_dfe: int
     total_logical_dfe: int
+    max_total_logical_dfe: int
     #: Head calls the SUPPORT POLICY makes while deciding, per protein.  Zero for every policy that
     #: does not consult the Head; the run's declared per-cycle ceiling times the declared depths for
     #: V2F5A's, which the policy enforces so the number is a bound and not a guess.
@@ -205,12 +211,14 @@ def project_v2_budget(
         scored_endpoints += breadth
 
     root_capture *= execution_replicates
+    root_retry_reserve = root_capture * (ROOT_CAPTURE_MAX_ATTEMPTS - 1)
     screen *= execution_replicates
     segment *= execution_replicates
     descendant_screen *= execution_replicates
     scored_endpoints *= execution_replicates
     per_protein = root_capture + screen + segment + descendant_screen
     total = per_protein * n_proteins
+    max_total = (per_protein + root_retry_reserve) * n_proteins
     # V2F5A: the Head-directed policy scores one leave-one-out counterfactual per legal write
     # candidate WHILE deciding, so a projection counting only the scored endpoints understates the
     # Head budget and ``--dry-run`` would pass a run that then breaches ``max_head_calls`` after
@@ -233,7 +241,7 @@ def project_v2_budget(
     head_calls = (scored_endpoints + counterfactual_head_calls) * int(n_heads)
     refolds = scored_endpoints
     breached = []
-    if total > int(config.caps.max_logical_dfe):
+    if max_total > int(config.caps.max_logical_dfe):
         breached.append("max_logical_dfe")
     if head_calls * n_proteins > int(config.caps.max_head_calls):
         breached.append("max_head_calls")
@@ -244,16 +252,19 @@ def project_v2_budget(
         n_proteins=int(n_proteins), n_steps=n_steps,
         execution_replicates=int(execution_replicates),
         root_capture_logical_dfe=root_capture,
+        root_capture_retry_reserve_logical_dfe=root_retry_reserve,
         per_protein_screen_dfe=screen, per_protein_segment_dfe=segment,
         per_protein_descendant_screen_dfe=descendant_screen,
         per_protein_logical_dfe=per_protein, total_logical_dfe=total,
+        max_total_logical_dfe=max_total,
         per_protein_counterfactual_head_calls=counterfactual_head_calls,
         total_head_calls=head_calls * n_proteins,
         total_definitive_refolds=refolds * n_proteins,
         breached_caps=tuple(breached),
         detail=(
             f"projected from the DECLARED schedule over {execution_replicates} conservative "
-            "execution replicate(s) per protein; GPU-seconds and walltime are not "
+            f"execution replicate(s) per protein, with up to {ROOT_CAPTURE_MAX_ATTEMPTS} "
+            "root-capture attempts; GPU-seconds and walltime are not "
             "projected because no measured per-refold cost is bound to this config"
         ),
     )
@@ -267,7 +278,8 @@ def assert_launch_feasible(projection: BudgetProjection) -> None:
     if not projection.feasible:
         raise V2PreflightError(
             f"declared schedule breaches {list(projection.breached_caps)}: projected "
-            f"{projection.total_logical_dfe} logical DFE, {projection.total_head_calls} Head "
+            f"{projection.max_total_logical_dfe} maximum logical DFE, "
+            f"{projection.total_head_calls} Head "
             f"calls, {projection.total_definitive_refolds} definitive refolds over "
             f"{projection.n_proteins} protein(s)"
         )
@@ -358,6 +370,8 @@ def print_config_payload(
             "n_proteins": projection.n_proteins,
             "execution_replicates": projection.execution_replicates,
             "root_capture_logical_dfe": projection.root_capture_logical_dfe,
+            "root_capture_retry_reserve_logical_dfe":
+                projection.root_capture_retry_reserve_logical_dfe,
             "per_protein_screen_dfe": projection.per_protein_screen_dfe,
             "per_protein_segment_dfe": projection.per_protein_segment_dfe,
             "per_protein_descendant_screen_dfe": projection.per_protein_descendant_screen_dfe,
@@ -365,6 +379,7 @@ def print_config_payload(
             "per_protein_counterfactual_head_calls":
                 projection.per_protein_counterfactual_head_calls,
             "total_logical_dfe": projection.total_logical_dfe,
+            "max_total_logical_dfe": projection.max_total_logical_dfe,
             "total_head_calls": projection.total_head_calls,
             "total_definitive_refolds": projection.total_definitive_refolds,
             "feasible": projection.feasible,

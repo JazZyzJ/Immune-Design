@@ -62,13 +62,25 @@ from ..fusion_v2.state import (
     PositionProvenance,
     ReplayIdentity,
 )
-from ..sampler import ContinuationCheckpoint, ContinuationRequest, _replay_state_hash
+from ..sampler import (
+    ContinuationCheckpoint,
+    ContinuationRequest,
+    InvalidPreterminalRootError,
+    _replay_state_hash,
+)
 
-__all__ = ["V2CaptureError", "adapt_checkpoint_to_live_state", "capture_depth_zero"]
+__all__ = [
+    "V2CaptureError", "FullyResolvedRootError", "adapt_checkpoint_to_live_state",
+    "capture_depth_zero",
+]
 
 
 class V2CaptureError(V2Error):
     """The captured root is not a legal depth-0 V2 state."""
+
+
+class FullyResolvedRootError(V2CaptureError):
+    """A retryable V2 capture miss: the requested checkpoint is already terminal."""
 
 
 def adapt_checkpoint_to_live_state(
@@ -246,24 +258,29 @@ def capture_depth_zero(
     ``fixed_tokens`` is the CONSTRAINT CLASS.  It is passed through to the sampler and becomes the
     state's hard anchors; the adapter never infers an anchor from the trajectory.
     """
-    output = sampler.sample(
-        sequence_length=int(sequence_length),
-        h_values=h_values,
-        denoiser=denoiser,
-        config=config,
-        struct=struct,
-        controller=None,
-        fixed_tokens=fixed_tokens,
-        continuation=ContinuationRequest(at_step=int(at_step), early_stop=True),
-        residue_token_ids=residue_token_ids,
-    )
+    if fixed_tokens and {int(p) for p in fixed_tokens} == set(range(int(sequence_length))):
+        raise V2CaptureError("root has no editable positions")
+    try:
+        output = sampler.sample(
+            sequence_length=int(sequence_length),
+            h_values=h_values,
+            denoiser=denoiser,
+            config=config,
+            struct=struct,
+            controller=None,
+            fixed_tokens=fixed_tokens,
+            continuation=ContinuationRequest(at_step=int(at_step), early_stop=True),
+            residue_token_ids=residue_token_ids,
+        )
+    except InvalidPreterminalRootError as exc:
+        raise FullyResolvedRootError(str(exc)) from exc
     checkpoint = output.continuation_checkpoint
     if checkpoint is None:
         raise V2CaptureError(
             f"no checkpoint was captured at step {at_step}; the request never triggered"
         )
     if checkpoint.maturity.n_unresolved_editable < 1:
-        raise V2CaptureError(
+        raise FullyResolvedRootError(
             f"the root captured at step {at_step} has no unresolved editable position "
             "(rho_edit == 1.0); it is not pre-terminal, so no segment can denoise it and no "
             "lookahead can fork from it"

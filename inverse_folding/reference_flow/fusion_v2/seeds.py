@@ -44,6 +44,7 @@ from .errors import V2Error
 
 __all__ = [
     "V2SeedError", "MatchedPairSeedError", "V2_SEED_ENCODING_VERSION", "V2_SEED_NAMESPACES",
+    "ROOT_CAPTURE_MAX_ATTEMPTS",
     "PAIR_ARM_SLOTS", "V2SeedContext", "FeedbackPairSeedContext", "MatchedPairSeedRecord",
     "derive_pair_id", "assert_matched_pair_seeds", "realized_v2_seed_manifest",
 ]
@@ -58,6 +59,10 @@ V2_SEED_ENCODING_VERSION = "v2seed-enc-1"
 V2_SEED_NAMESPACES = frozenset({
     "v2_depth0_root", "v2_lookahead", "a2_extra_lookahead", "matched_descendant",
 })
+
+# ponytail: eight makes an m=1 capture miss <0.4%; make this config-driven only if one fixed
+# ceiling proves inadequate across editable-domain strata.
+ROOT_CAPTURE_MAX_ATTEMPTS = 8
 
 #: Reporting labels for the two rows of a pair. Never hashed.
 PAIR_ARM_SLOTS = frozenset({"arm_a", "arm_b"})

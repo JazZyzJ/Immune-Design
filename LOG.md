@@ -4442,3 +4442,23 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.98
 - status: implemented and locally validated; cluster pilot rerun pending.
 - next_action: Re-materialize the 54 uricase pilot cells under a new campaign/run root and submit the 18 four-hour ailab jobs.
+
+### L0169
+- timestamp: 2026-09-03T17:30:00-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: At fixed `c_source=50`, highly constrained uricases can reach the checkpoint fully resolved, and the projection contract required a non-empty reopen even when the exact mask-load equation required zero. The pilot therefore crashed on valid `n_editable=1–4` inputs instead of returning a typed result.
+- change_summary: Kept `c_source=50` and added at most eight deterministic V2-only root-capture attempts; attempt 0 preserves the existing sampler seed and later attempts use the existing `v2_depth0_root` seed namespace. Only a fully resolved checkpoint retries; malformed/no-editable inputs still fail immediately. `reopen=0` is now legal exactly when the calibrated mask-load envelope admits zero. A one-editable-position source returns its already Head-ranked, definitively feasible best-of-K endpoint as typed `terminal_best_lookahead`, with depth 0 and no invented projection. Per-protein payloads keep only the final root summary (attempt count, final seed, maturity, status, reason). Preflight separately reports and gates the conditional retry reserve; the uricase D2/K6 and D3/K12 caps are now `1290` and `2390` logical DFE.
+- rationale: Moving `c_source` earlier is unnecessary and worsens all-masked roots. Zero reopen follows directly from `u_proj = u_src - a + b_new`; forcing `b_new >= 1` was an extra architectural constraint. For `n_editable=1`, recursion has no meaningful uncertainty state, so best-of-K is the honest limiting case. Eight attempts reduce the linear-schedule `m=1, c=50` capture-miss probability from about 0.5 to about 0.0039 while normally paying only the attempts actually needed.
+- artifacts:
+  - `inverse_folding/reference_flow/fusion_v2/{policy,projection,schedule,seeds,state}.py`
+  - `inverse_folding/reference_flow/fusion_v2_runtime/{capture,cycle,ladder}.py`
+  - `scripts/{materialize_v2_canary_config,rf_fusion_v2_cohort,rf_fusion_v2_preflight}.py`
+  - corresponding focused tests, `PLAN_RF_REFINE_FUSION_V2.md`, `doc/{FUSION_V2,SCRIPTS}.md`, `PROGRESS.md`
+- evidence: 948 non-overlapping targeted tests passed across sampler-continuation, V2 state/schedule/projection/policy/capture/cycle/segment/ladder, paired and Dual-off recursion, cohort/driver/preflight/materializer; `py_compile` and `git diff --check` passed. The V1 sampler-pristine regression passed and `inverse_folding/reference_flow/sampler.py` remains byte-identical to branch HEAD.
+- impact:
+  - scope: V2 root capture and exact zero-reopen/tiny-domain behavior only. Existing successful first-attempt roots follow the old sampler seed and ordinary `n_editable>1` projections are unchanged unless their exact band equation yields zero reopen.
+  - risk: low
+  - confidence: 0.97
+- status: implemented and locally validated; no cluster job submitted.
+- next_action: Run a nine-cell smoke on the three previously crashing parents, then re-materialize and rerun the full 54-cell prospective pilot under one new code revision if the smoke is mechanically clean.

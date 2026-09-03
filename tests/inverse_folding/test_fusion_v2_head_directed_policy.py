@@ -706,8 +706,8 @@ def test_the_realized_reopen_reproduces_the_band_target_exactly():
 def test_a_band_that_needs_more_writes_than_the_cap_allows_stalls_closed():
     """The cap and the band can DISAGREE, and when they do the transition fails closed.
 
-    With ``u_target = 1`` and ``u_src = 4`` the equation needs ``m_reopen = m_d - 3 >= 1``, i.e. at
-    least four writes -- but a cap of ``ceil(0.1 * 11) = 2`` allows two.  A policy that wrote two
+    With ``u_target = 1`` and ``u_src = 4`` the equation permits ``m_reopen = m_d - 3 >= 0``, i.e. at
+    least three writes -- but a cap of ``ceil(0.1 * 11) = 2`` allows two.  A policy that wrote two
     anyway would land on three unresolved positions while its artifact named a target of one.
     """
     source = _source(SOURCE_SEQ)
@@ -718,7 +718,7 @@ def test_a_band_that_needs_more_writes_than_the_cap_allows_stalls_closed():
                                     calibration=_calibration(fraction=0.1)))
     assert isinstance(result, pol.PolicyRejection)
     assert pol.StallReason.BAND_INFEASIBLE.value in result.reason
-    assert result.decision_evidence.m_band_min == 4
+    assert result.decision_evidence.m_band_min == 3
     assert result.decision_evidence.write_cap == 2
 
 

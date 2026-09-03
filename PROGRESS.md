@@ -553,6 +553,7 @@ disabled — a matched control VIEW, not a second run.
 | V2F7 artifacts / ledger / resume / driver / preflight | done |
 | V2F5A minimal capped Head-directed policy + matched source-geometry control | done 2026-08-07; §9 verdict `immune_directed_transition_supported`, D1/same-Head scope only |
 | Exploratory recursive Uricase sandbox | complete 2026-08-08; Active15, unblinded `D4/K12/r40`, 7–8 shared hard anchors, 325 selected designs, 0 anchor violations; RAR `0045-rf-fusion-v2-active15-h200-final-cohort`; not production authorization |
+| Highly constrained V2 boundary (`n_editable=1–7`) | implemented 2026-09-03: `c_source=50` retained; fully resolved roots get at most 8 deterministic capture attempts; exact zero-reopen partial transitions are legal; `n_editable=1` returns the best definitive K-lookahead at depth 0. Cluster pilot rerun pending |
 
 Tests: prior broad gate 1250 V2 tests (+86 for V2F5A), V1/v0 regressions green (666). The §9
 handoff additions add a targeted `267 passed`: calibration/materializer/reader/preflight/driver plus the core

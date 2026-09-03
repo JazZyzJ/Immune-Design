@@ -840,11 +840,6 @@ class SupportPartition:
                 "write_from_endpoint is empty; a transition that adopts no endpoint identity is "
                 "not a feedback event (PLAN §2.4)"
             )
-        if not self.reopen:
-            raise V2StateError(
-                "reopen is empty; a transition that opens nothing cannot newly mask a previously "
-                "resolved position (PLAN §2.4)"
-            )
         missing = sorted(seen - set(self.reason_by_pos))
         if missing:
             raise V2StateError(
@@ -894,8 +889,8 @@ def carry_is_temporally_legal(
     rolled back. It must be explicitly injected or reopened.
 
     An already-masked position is deliberately a carry rather than a reopen. If it could be
-    labelled ``reopen``, a policy could satisfy PLAN §2.4's non-empty-reopen requirement while
-    newly masking nothing -- a fail-open that the byte-level mask-load accounting would never see.
+    labelled ``reopen``, a policy could claim a reopen action while newly masking nothing -- a
+    fail-open that the byte-level mask-load accounting would never see.
     """
     _require_index(r_step, "r_step")
     _require_index(mask_token_id, "mask_token_id")
@@ -1061,8 +1056,8 @@ class ProjectedPartialState:
             if position not in source_resolved:
                 raise V2StateError(
                     f"position {position} is labelled reopen but was already masked in the source "
-                    "state; an inherited mask is a carry. Otherwise a policy could satisfy the "
-                    "non-empty-reopen requirement while newly masking nothing (PLAN §2.4)"
+                    "state; an inherited mask is a carry. Otherwise a policy could claim a reopen "
+                    "action while newly masking nothing (PLAN §2.4)"
                 )
             if self.tokens[position] != self.mask_token_id:
                 raise V2StateError(
@@ -1308,6 +1303,7 @@ class TransitionOutcome(str, enum.Enum):
     NULL_NO_ADMISSIBLE_ENDPOINT = "null_no_admissible_endpoint"
     NULL_INVALID_POLICY_RESULT = "null_invalid_policy_result"
     NULL_BAND_INCOMPATIBLE = "null_band_incompatible"
+    TERMINAL_BEST_LOOKAHEAD = "terminal_best_lookahead"
     STALLED_NO_NOVEL_DESCENDANT = "stalled_no_novel_descendant"
 
 

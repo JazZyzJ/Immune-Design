@@ -315,7 +315,9 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     projected — no measured per-refold cost is bound to the config, and a projection would be a
     number that reads as fact. The projection transcribes the graph `run_depth_ladder` actually
     executes rather than a symmetric per-depth formula: the root prefix is charged once for the
-    whole ladder (`root_capture_logical_dfe`), only depth 0 forks a source pool (deeper rungs
+    whole ladder (`root_capture_logical_dfe`); a separate
+    `root_capture_retry_reserve_logical_dfe` bounds up to seven deterministic recaptures when the
+    declared checkpoint is already fully resolved. Only depth 0 forks a source pool (deeper rungs
     INHERIT the previous rung's descendants), and EVERY depth charges the descendant pool it forks
     — including the deepest, whose pool the previous version reached only through a next rung that
     does not exist. Head calls and definitive refolds are counted per GENERATED endpoint, so the
@@ -327,8 +329,11 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
 
 17. `scripts/rf_fusion_v2_cohort.py` — the per-protein execution stage the driver calls. `run_v2_shard(..., dual=(overlay, arm))` forwards the resolved arm to the oracle factory and REFUSES a factory that accepted it and returned no runtime: that mismatch is what made `joint`, `a_only` and `b_only` execute identical A-only V2 under three different signatures, and nothing in the artifact said so. A Dual shard also emits `payload['dual_tables']`, built from the objects the cycle and the policy actually decided with rather than recomputed from the legacy tables. `run_v2_mechanism_shard` takes `dual` too (both mechanism arms then share ONE arm's law -- which is not the M1 cross-objective contrast; see the audit). Dual rows are emitted as TOP-LEVEL payload keys so `aggregate_fragments`, which collects by table name, can see them.
     `build_depth_plan(config)` transcribes the declared schedule into the ladder's `DepthPlan`
-    (breadth and coordinates are DECLARED, never allocated); `run_v2_shard(...)` runs the ladder and
-    returns `(status, payload)` rows for the driver's fragment. A typed scientific stop RETURNS
+    (breadth and coordinates are DECLARED, never allocated); `run_v2_shard(...)` runs the ladder,
+    records only the final root-capture summary (`attempts_used`, final seed/maturity/status/reason),
+    and treats a one-editable-position `terminal_best_lookahead` as a successful best-of-K result
+    with depth 0 and no projected state. It returns `(status, payload)` rows for the driver's
+    fragment. A typed scientific stop RETURNS
     rather than raises, so it stays distinguishable from a crash; a shard that stops without a
     definitive design is `failed`, not an empty success. Refuses to build oracles implicitly, so
     `--dry-run` can never cost a GPU allocation. **The frozen config is the runtime authority**:
@@ -546,8 +551,9 @@ real feedback transmission, structure, timing and calibration remain unmeasured.
     `--v0-structure-gate-config` without signing its artifacts as more Canary)
     plus that cell's measured artifacts (runbook §3). The closed
     `uricase_core0_pilot_d2_k6_r40` and `uricase_core0_pilot_d3_k12_r40` profiles implement the
-    anchored uricase screening pilot at exact per-root costs `820 DFE / 18 refolds` and
-    `1820 DFE / 48 refolds`, with close caps `910/20` and `2010/53`.
+    anchored uricase screening pilot at nominal per-root costs `820 DFE / 18 refolds` and
+    `1820 DFE / 48 refolds`. Eight total root-capture attempts add a 350-DFE conditional reserve,
+    giving worst-case DFE `1170/2170` and 10%-slack caps `1290/20` and `2390/53`.
     The closed
     `highrisk_d8_k32_r40` exploratory profile is a single-root, eight-rung, K=32 capability
     schedule with a common `B(40)` lookup; its policy v2 bootstraps the logical reward incumbent

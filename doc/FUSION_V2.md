@@ -238,6 +238,14 @@ The loop is:
 The complete sequence is therefore neither merely ephemeral nor permanently terminal. It is a
 durable archive state and, when selected, a source for the next partial generative state.
 
+For highly constrained inputs, the same method has two boundary rules. A fully resolved capture at
+the declared checkpoint retries only the root prefix, under at most eight deterministic sampler
+seeds; the checkpoint and all downstream parameters stay fixed. A source with exactly one editable
+position stops after the shared best-of-K endpoint screen (`terminal_best_lookahead`) because there
+is no recursive uncertainty state to construct. For larger domains, `reopen` may be empty when the
+exact mask-load equation admits zero; this is a valid write-only partial transition, not a relaxed
+band.
+
 ## 3. State contract
 
 Let $d=0,1,\ldots,D$ index feedback depth. V2 keeps two time coordinates separate:
