@@ -4462,3 +4462,24 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.97
 - status: implemented and locally validated; no cluster job submitted.
 - next_action: Run a nine-cell smoke on the three previously crashing parents, then re-materialize and rerun the full 54-cell prospective pilot under one new code revision if the smoke is mechanically clean.
+
+### L0170
+- timestamp: 2026-09-03T06:48:33-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: The full-data test-set launch inherited the constrained-Uricase root-recapture ceiling and was refused because its 2,200-DFE cap could not cover the unconditional 2,340-DFE maximum.
+- change_summary: Bound root recapture to the existing `caps.max_retries` declaration in both execution and preflight. The full-data campaigns can now declare zero retries, while the two constrained-Uricase profiles explicitly retain seven retries.
+- rationale: Retry count is already a strict config field and hard cap; a second retry knob would create two authorities. Runtime attempts and the preflight reserve must derive from the same declared value.
+- artifacts:
+  - `inverse_folding/reference_flow/fusion_v2_runtime/ladder.py`
+  - `scripts/rf_fusion_v2_cohort.py`
+  - `scripts/rf_fusion_v2_preflight.py`
+  - `scripts/materialize_v2_canary_config.py`
+  - focused regression tests and `PROGRESS.md`
+- evidence: TDD reproduced the constant-eight mismatch. The ladder, cohort, preflight, driver, and materializer suites pass: 102 + 69 = 171 tests; `git diff --check` passes.
+- impact:
+  - scope: V2 root-capture retry count and its projected DFE reserve only; existing first-attempt success behavior is unchanged. The running `f5d4ec9` worktree is untouched.
+  - risk: low
+  - confidence: 0.98
+- status: done
+- next_action: Materialize the four full-data test-set configs with `caps.max_retries: 0` and submit from this isolated revision.

@@ -630,7 +630,7 @@ def test_a_fully_resolved_root_is_retried_with_a_new_seed():
             return super().sample(**kwargs)
 
     sampler = RetryOnce()
-    outcome = _run(sampler=sampler)
+    outcome = _run(sampler=sampler, root_capture_max_retries=1)
 
     assert outcome.root_capture_attempts_used == 2
     assert outcome.root_capture_logical_dfe == 2 * C0
@@ -641,18 +641,18 @@ def test_a_fully_resolved_root_is_retried_with_a_new_seed():
     assert sampler.seeds[0] != sampler.seeds[1]
 
 
-def test_exhausted_root_retries_return_one_small_typed_failure_record():
-    from inverse_folding.reference_flow.fusion_v2.seeds import ROOT_CAPTURE_MAX_ATTEMPTS
-
+@pytest.mark.parametrize("max_retries", [0, 2])
+def test_exhausted_root_retries_return_one_small_typed_failure_record(max_retries):
     class AlwaysResolved:
         def sample(self, **kwargs):
             del kwargs
             raise FullyResolvedRootError("rho_edit == 1.0")
 
-    outcome = _run(sampler=AlwaysResolved())
+    outcome = _run(
+        sampler=AlwaysResolved(), root_capture_max_retries=max_retries)
 
     assert outcome.stopping_reason is StoppingReason.NO_PRETERMINAL_ROOT
-    assert outcome.root_capture_attempts_used == ROOT_CAPTURE_MAX_ATTEMPTS
+    assert outcome.root_capture_attempts_used == max_retries + 1
     assert outcome.root_capture_status == "fully_resolved"
     assert outcome.root_capture_detail == "rho_edit == 1.0"
     assert outcome.root_capture_n_unresolved_editable == 0

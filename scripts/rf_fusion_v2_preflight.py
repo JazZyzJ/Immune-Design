@@ -34,10 +34,6 @@ from inverse_folding.reference_flow.fusion_v2.config import (  # noqa: E402
     V2ConfigError,
     load_v2_config,
 )
-from inverse_folding.reference_flow.fusion_v2.seeds import (  # noqa: E402
-    ROOT_CAPTURE_MAX_ATTEMPTS,
-)
-
 __all__ = [
     "V2PreflightError",
     "BudgetProjection",
@@ -211,7 +207,7 @@ def project_v2_budget(
         scored_endpoints += breadth
 
     root_capture *= execution_replicates
-    root_retry_reserve = root_capture * (ROOT_CAPTURE_MAX_ATTEMPTS - 1)
+    root_retry_reserve = root_capture * int(config.caps.max_retries)
     screen *= execution_replicates
     segment *= execution_replicates
     descendant_screen *= execution_replicates
@@ -263,7 +259,8 @@ def project_v2_budget(
         breached_caps=tuple(breached),
         detail=(
             f"projected from the DECLARED schedule over {execution_replicates} conservative "
-            f"execution replicate(s) per protein, with up to {ROOT_CAPTURE_MAX_ATTEMPTS} "
+            f"execution replicate(s) per protein, with up to "
+            f"{int(config.caps.max_retries) + 1} "
             "root-capture attempts; GPU-seconds and walltime are not "
             "projected because no measured per-refold cost is bound to this config"
         ),

@@ -129,7 +129,11 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
             ],
         },
         # Nominal 820 + at most 7*50 recapture DFE = 1170; 10% rounded slack -> 1290.
-        "caps": {"max_logical_dfe": 1290, "max_definitive_refolds": 20},
+        "caps": {
+            "max_logical_dfe": 1290,
+            "max_definitive_refolds": 20,
+            "max_retries": 7,
+        },
     },
     "uricase_core0_pilot_d3_k12_r40": {
         "phase": "capability_ladder",
@@ -149,7 +153,11 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
             ],
         },
         # Nominal 1820 + at most 7*50 recapture DFE = 2170; 10% rounded slack -> 2390.
-        "caps": {"max_logical_dfe": 2390, "max_definitive_refolds": 53},
+        "caps": {
+            "max_logical_dfe": 2390,
+            "max_definitive_refolds": 53,
+            "max_retries": 7,
+        },
     },
     "highrisk_d4_k24_r40": {
         "phase": "capability_ladder",

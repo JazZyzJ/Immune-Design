@@ -512,6 +512,7 @@ def run_v2_shard(
         master_seed=int(config.identity.master_seed),
         allow_production_depth_gt_1=bool(production_depth_authorized),
         exploratory_depth_override=bool(exploratory_depth_override),
+        root_capture_max_retries=int(config.caps.max_retries),
         feedback_enabled=bool(config.arm.feedback_enabled),
         # Same rule as the arm identity: the run's FROZEN declaration is what the kernel matches
         # the answering policy against, so it comes from the config and never from the factory.

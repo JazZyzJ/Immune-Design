@@ -283,6 +283,7 @@ def test_uricase_core0_pilot_profiles_match_frozen_budget(
     assert projection.per_protein_logical_dfe == logical_dfe
     assert projection.max_total_logical_dfe == max_dfe
     assert config["caps"]["max_logical_dfe"] == cap
+    assert config["caps"]["max_retries"] == 7
     assert projection.total_definitive_refolds == refolds
     assert projection.feasible
 

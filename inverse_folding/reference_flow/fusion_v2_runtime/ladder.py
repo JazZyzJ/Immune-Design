@@ -207,6 +207,7 @@ def run_depth_ladder(
     phase: str | None = None,
     allow_production_depth_gt_1: bool = False,
     exploratory_depth_override: bool = False,
+    root_capture_max_retries: int = ROOT_CAPTURE_MAX_ATTEMPTS - 1,
     **cycle_kwargs: Any,
 ) -> LadderOutcome:
     """Run the declared ladder, one rung at a time, through the one segment executor.
@@ -219,6 +220,13 @@ def run_depth_ladder(
 
     if not isinstance(plan, DepthPlan):
         raise V2LadderError("plan must be a DepthPlan")
+    if (isinstance(root_capture_max_retries, bool)
+            or not isinstance(root_capture_max_retries, int)
+            or root_capture_max_retries < 0):
+        raise V2LadderError(
+            "root_capture_max_retries must be a non-negative int, got "
+            f"{root_capture_max_retries!r}"
+        )
     exploratory = bool(exploratory_depth_override)
     production = bool(allow_production_depth_gt_1)
     if exploratory and production:
@@ -334,7 +342,7 @@ def run_depth_ladder(
     # Journaled here for the same reason the cycle journals its own capture: this prefix is real
     # forward passes, and a process that dies inside it must leave a record that it was started.
     root_event = f"{protein_id}:{lineage.family_id}:ladder_root"
-    for attempt_index in range(ROOT_CAPTURE_MAX_ATTEMPTS):
+    for attempt_index in range(root_capture_max_retries + 1):
         seed = int(config.sampler.seed) if attempt_index == 0 else run_seeds.depth0_root_seed(
             checkpoint_step=root_prefix_dfe, root_index=attempt_index)
         seed = _claim((seed,))[0]

@@ -33,6 +33,9 @@ import pytest
 pytest.importorskip("torch")
 
 from inverse_folding.reference_flow.fusion_v2 import config as cfg  # noqa: E402
+from inverse_folding.reference_flow.fusion_v2_runtime.capture import (  # noqa: E402
+    FullyResolvedRootError,
+)
 from inverse_folding.reference_flow.sampler import (  # noqa: E402
     PositionDependentDFMSampler,
 )
@@ -277,6 +280,23 @@ def test_one_editable_position_is_a_successful_terminal_best_of_k(tmp_path):
     assert payload["terminal_validation"]
     assert payload["root_capture"]["attempts_used"] == 1
     assert payload["root_capture"]["n_unresolved_editable"] == 1
+
+
+def test_config_max_retries_bounds_root_recapture(tmp_path):
+    class AlwaysResolved:
+        def sample(self, **kwargs):
+            del kwargs
+            raise FullyResolvedRootError("rho_edit == 1.0")
+
+    config = _v2_config()
+    config = dataclasses.replace(
+        config, caps=dataclasses.replace(config.caps, max_retries=2))
+    _, payload = _shard(
+        tmp_path, config=config,
+        cycle_kwargs={"sampler": AlwaysResolved()},
+    )
+
+    assert payload["root_capture"]["attempts_used"] == 3
 
 
 @pytest.mark.parametrize("owned", ["feedback_enabled", "cost_meter"])
