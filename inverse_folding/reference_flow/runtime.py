@@ -561,14 +561,11 @@ def make_batched_dplm_denoiser(context: BatchedDPLMDenoiserContext):
 
 
 def _mask_invalid_decoder_logits(logits: torch.Tensor, task: Any) -> None:
-    logits[..., task.alphabet.mask_idx] = -torch.inf
-    logits[..., task.alphabet.unk_idx] = -torch.inf
-    logits[..., task.alphabet.padding_idx] = -torch.inf
-    logits[..., task.alphabet.cls_idx] = -torch.inf
-    logits[..., task.alphabet.eos_idx] = -torch.inf
-    x_id = getattr(task.model, "x_id", None)
-    if x_id is not None:
-        logits[..., int(x_id)] = -torch.inf
+    invalid = [
+        index for index in range(logits.shape[-1])
+        if task.alphabet.get_tok(index) not in CANONICAL_AA
+    ]
+    logits[..., invalid] = -torch.inf
 
 
 def decode_residue_tokens(task: Any, residue_tokens: torch.Tensor) -> str:

@@ -46,11 +46,9 @@ export PS1
 #              NMP_MODE controls original vs accelerated (default: original).
 # MODE=phase_c: evaluate Phase C generated.parquet into schema-aligned
 #               immunogenicity / structural tables.
-#               Set IMM_FULL=1 to additionally emit per-residue hotspot
-#               (imm_head_residues.parquet) and per-peptide NMP
-#               (imm_nmp_peptides.parquet) long tables alongside the
-#               aggregated imm_head/imm_nmp parquets. Default off
-#               preserves prior Phase C behavior.
+#               The long tables imm_head_residues.parquet and
+#               imm_nmp_peptides.parquet are emitted by default alongside the
+#               aggregates; set IMM_FULL=0 to suppress them.
 #               Structural output is canonical v2; CONSTRAINT_MANIFEST supplies anchors.
 MODE="${MODE:-iedb}"
 
@@ -253,7 +251,7 @@ elif [ "${MODE}" = "phase_c" ]; then
     STRONG_BINDER_THRESHOLD="${STRONG_BINDER_THRESHOLD:-2.0}"
     TMALIGN_BIN="${TMALIGN_BIN:-TMalign}"
     TAG="${TAG:-}"
-    IMM_FULL="${IMM_FULL:-0}"
+    IMM_FULL="${IMM_FULL:-1}"
     NMP_OFF="${NMP_OFF:-0}"   # 1 = imm head-only (skip NetMHCIIpan); affects imm/all modes
     CONSTRAINT_MANIFEST="${CONSTRAINT_MANIFEST:-}"
     if [ "${ALLELE}" = "HLA-DRB1*07:01" ]; then

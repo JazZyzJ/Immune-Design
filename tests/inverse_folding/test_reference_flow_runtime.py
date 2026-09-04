@@ -36,14 +36,16 @@ def test_decode_residue_tokens_rejects_non_canonical_outputs():
         decode_residue_tokens(task, torch.tensor([0, 1], dtype=torch.long))
 
 
-def test_make_dplm_denoiser_masks_x_token_logits():
+def test_make_dplm_denoiser_masks_every_noncanonical_token_logit():
     x_id = 4
+    u_id = 10
 
     class _FakeDecoder:
         def __call__(self, batch, encoder_out, need_head_weights=False):
             del batch, encoder_out, need_head_weights
-            logits = torch.zeros((1, 3, 10), dtype=torch.float32)
+            logits = torch.zeros((1, 3, 11), dtype=torch.float32)
             logits[..., x_id] = 100.0
+            logits[..., u_id] = 100.0
             return {"logits": logits}
 
     task = SimpleNamespace(
@@ -59,6 +61,7 @@ def test_make_dplm_denoiser_masks_x_token_logits():
                 7: "<pad>",
                 8: "<cls>",
                 9: "<eos>",
+                10: "U",
             }
         ),
         model=SimpleNamespace(decoder=_FakeDecoder(), x_id=x_id),
@@ -75,6 +78,7 @@ def test_make_dplm_denoiser_masks_x_token_logits():
     denoiser = make_dplm_denoiser(context)
     logits = denoiser(torch.tensor([0, 1], dtype=torch.long), 0.0, None)
     assert torch.isneginf(logits[:, x_id]).all()
+    assert torch.isneginf(logits[:, u_id]).all()
 
 
 def test_make_batched_dplm_denoiser_splits_rows_and_masks_invalid_logits():

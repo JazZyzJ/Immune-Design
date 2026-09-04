@@ -4483,3 +4483,23 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.98
 - status: done
 - next_action: Materialize the four full-data test-set configs with `caps.max_retries: 0` and submit from this isolated revision.
+
+### L0171
+- timestamp: 2026-09-04T04:07:42-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: One full-data DRB1*15:01 cell sampled ESM-1b token 26 (`U`) and correctly failed AA20 decoding; the shared denoiser masked `X` and special tokens but left the other noncanonical vocabulary entries eligible.
+- change_summary: The shared DPLM denoiser now masks every decoder token whose alphabet symbol is outside canonical AA20. The standard Phase-C evaluation launcher now enables `IMM_FULL=1` by default so residue-level Head risk and peptide-level NMP evidence are emitted unless explicitly disabled.
+- rationale: Enumerating individual invalid tokens omitted `B/U/Z/O/./-/<null_1>` and made a rare model draw an experiment-level failure. AA20 is already the runtime contract and is the single correct allowlist.
+- artifacts:
+  - `inverse_folding/reference_flow/runtime.py`
+  - `scripts/submit_benchmark.slurm`
+  - `tests/inverse_folding/test_reference_flow_runtime.py`
+  - `doc/SCRIPTS.md`
+- evidence: The regression reproduced token `U` surviving the old filter, then passed after the AA20 allowlist fix; 29 runtime/model-factory/sampler-constraint tests pass, `bash -n` and `git diff --check` pass.
+- impact:
+  - scope: Fresh DPLM decoder sampling can emit only canonical AA20; standard Phase-C immune submissions now include long-form residue/peptide tables by default. `IMM_FULL=0` remains the explicit opt-out.
+  - risk: low
+  - confidence: 0.99
+- status: done
+- next_action: Replay the one failed DRB1*15:01 cell and launch the completed campaigns' official structure/immune evaluation.
