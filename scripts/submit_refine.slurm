@@ -48,6 +48,8 @@ MODE="${MODE:-refine}"                       # refine | ceiling | fusion
 ALLELE="${ALLELE:-HLA-DRB1*07:01}"
 PROTEINS="${PROTEINS:-all}"
 TARGET_SOURCE="${TARGET_SOURCE:-nmp}"
+OFFICIAL="${OFFICIAL:-0}"
+FINAL_CANDIDATES_PER_PROTEIN="${FINAL_CANDIDATES_PER_PROTEIN:-}"
 
 # MODE=fusion (Head-only RF-Refine Fusion) reads complete RF designs and runs the edit-and-repair
 # loop; it does NOT use NetMHCIIpan. The static #SBATCH --cpus-per-task=8 is NMP-sized — a fusion
@@ -77,6 +79,9 @@ HEAD_CONFIG_DIR="${HEAD_CONFIG_DIR:-${PROJECT_ROOT}/epitope_head/configs}"
 HEAD_VARIANT_ID="${HEAD_VARIANT_ID:-LC1}"
 HEAD_ALLELE_IDX="${HEAD_ALLELE_IDX:-0}"
 HEAD_WINDOW_BATCH_SIZE="${HEAD_WINDOW_BATCH_SIZE:-4096}"
+HEAD_RESIDUE_THRESHOLD="${HEAD_RESIDUE_THRESHOLD:-0.15}"
+HEAD_MAX_TARGET_POSITIONS="${HEAD_MAX_TARGET_POSITIONS:-12}"
+HEAD_AA_PER_POSITION="${HEAD_AA_PER_POSITION:-2}"
 
 # NetMHCIIpan (CPU). NMP_WORKERS matches --cpus-per-task so the 8 ailab cores are saturated.
 NETMHCIIPAN_BIN="${NETMHCIIPAN_BIN:-${PROJECT_ROOT}/netMHCIIpan-4.3/netMHCIIpan}"
@@ -118,9 +123,8 @@ PATIENCE="${PATIENCE:-3}"
 MAX_PAIRS="${MAX_PAIRS:-200}"
 MAX_PATH_MUTATIONS="${MAX_PATH_MUTATIONS:-8}"
 
-# Full-metrics emission (§ evaluate parity): after refinement, emit evaluate_phase_c-schema
-# tables (imm_head/imm_nmp/structural/structural_residues) for EVERY final design by reusing
-# evaluate_phase_c's row builders. Refolds are cache hits, so this is cheap. On by default.
+# Full-metrics emission (§ evaluate parity): every mode emits Head + structure tables;
+# only TARGET_SOURCE=nmp emits imm_nmp. Refolds are cache hits. On by default.
 EMIT_EVAL_METRICS="${EMIT_EVAL_METRICS:-1}"           # 0 => --no-eval-metrics
 STRONG_BINDER_THRESHOLD="${STRONG_BINDER_THRESHOLD:-2.0}"  # imm_nmp rank_EL% strong cutoff (evaluate default)
 HOTSPOT_THRESHOLD="${HOTSPOT_THRESHOLD:-0.5}"         # imm_head hotspot cutoff (evaluate default)
@@ -171,6 +175,12 @@ export HF_HUB_OFFLINE=1
 # TOPB flag is only emitted when non-empty (empty = NMP-all ceiling behavior).
 TOPB_FLAG=()
 [ -n "${TOPB}" ] && TOPB_FLAG=(--topB "${TOPB}")
+OFFICIAL_FLAG=()
+[ "${OFFICIAL}" = "1" ] && OFFICIAL_FLAG=(--official)
+FINAL_CANDIDATES_FLAG=()
+[ -n "${FINAL_CANDIDATES_PER_PROTEIN}" ] && FINAL_CANDIDATES_FLAG=(
+    --final-candidates-per-protein "${FINAL_CANDIDATES_PER_PROTEIN}"
+)
 
 # Post-refine full-metrics emission flags (on by default; EMIT_EVAL_METRICS=0 to skip).
 EVAL_METRICS_FLAG=(--emit-eval-metrics)
@@ -207,21 +217,24 @@ fi
 # e.g. non-enzyme highrisk inpaint runs) — the flag is then omitted and all positions are editable.
 CONSTRAINT_FLAG=(--constraint-manifest "${CONSTRAINT_MANIFEST}")
 [ "${CONSTRAINT_MANIFEST}" = "none" ] && CONSTRAINT_FLAG=()
+NMP_RUNTIME="binary=${NETMHCIIPAN_BIN} workers=${NMP_WORKERS}"
+[ "${TARGET_SOURCE}" = "head" ] && NMP_RUNTIME="disabled"
 
 echo "============================================================"
 echo "RF Refinement"
 echo "  Job ID        : ${SLURM_JOB_ID:-<none>}"
 echo "  Node          : ${SLURM_NODELIST:-<none>}"
 echo "  GPU name      : $(python -c 'import torch; print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")' 2>/dev/null || echo N/A)"
-echo "  CPUs          : ${SLURM_CPUS_PER_TASK:-8}  (NMP workers: ${NMP_WORKERS})"
+echo "  CPUs          : ${SLURM_CPUS_PER_TASK:-8}"
 echo "  Mode          : ${MODE}   target-source: ${TARGET_SOURCE}"
+echo "  Official      : ${OFFICIAL}   final candidates/protein: ${FINAL_CANDIDATES_PER_PROTEIN:-default}"
+echo "  Head targeting: residue local-max >= ${HEAD_RESIDUE_THRESHOLD}; cap=${HEAD_MAX_TARGET_POSITIONS}; AA/pos=${HEAD_AA_PER_POSITION}"
 echo "  Shard         : ${SHARD_IDX} / ${N_SHARDS}  (by ${SHARD_BY}:${SHARD_COST_COL})"
-echo "  NMP splice    : incremental (exact); max_lengths_per_call=${NMP_MAX_LENGTHS_PER_CALL}"
+echo "  NMP runtime   : ${NMP_RUNTIME}"
 echo "  Allele        : ${ALLELE}"
 echo "  Seed table    : ${SEED_TABLE}"
 echo "  Proteins      : ${PROTEINS}"
 echo "  Head ckpt     : ${HEAD_CHECKPOINT}"
-echo "  NMP binary    : ${NETMHCIIPAN_BIN}"
 echo "  Test set      : ${TEST_SET_PARQUET}"
 echo "  PDB root      : ${PDB_ROOT}"
 echo "  Constraints   : ${CONSTRAINT_MANIFEST}"
@@ -297,12 +310,28 @@ if [ "${REFOLD_MODEL}" = "esmfold2_live" ]; then
     )
 fi
 
+NMP_FLAGS=()
+if [ "${TARGET_SOURCE}" = "nmp" ]; then
+    NMP_FLAGS=(
+        --netmhciipan-bin "${NETMHCIIPAN_BIN}"
+        --nmp-workers "${NMP_WORKERS}"
+        --nmp-batch-size "${NMP_BATCH_SIZE}"
+        --nmp-max-lengths-per-call "${NMP_MAX_LENGTHS_PER_CALL}"
+        --nmp-timeout "${NMP_TIMEOUT}"
+    )
+elif [ "${TARGET_SOURCE}" != "head" ]; then
+    echo "FATAL: TARGET_SOURCE must be nmp or head" >&2
+    exit 2
+fi
+
 srun python "${PROJECT_ROOT}/scripts/refine_rf_designs.py" \
     --mode "${MODE}" \
     --seed-table "${SEED_TABLE}" \
     --proteins "${PROTEINS}" \
     --allele "${ALLELE}" \
     --target-source "${TARGET_SOURCE}" \
+    "${OFFICIAL_FLAG[@]}" \
+    "${FINAL_CANDIDATES_FLAG[@]}" \
     "${CONSTRAINT_FLAG[@]}" \
     --test-set-parquet "${TEST_SET_PARQUET}" \
     --pdb-root "${PDB_ROOT}" \
@@ -312,11 +341,10 @@ srun python "${PROJECT_ROOT}/scripts/refine_rf_designs.py" \
     --head-device cuda \
     --head-allele-idx "${HEAD_ALLELE_IDX}" \
     --head-window-batch-size "${HEAD_WINDOW_BATCH_SIZE}" \
-    --netmhciipan-bin "${NETMHCIIPAN_BIN}" \
-    --nmp-workers "${NMP_WORKERS}" \
-    --nmp-batch-size "${NMP_BATCH_SIZE}" \
-    --nmp-max-lengths-per-call "${NMP_MAX_LENGTHS_PER_CALL}" \
-    --nmp-timeout "${NMP_TIMEOUT}" \
+    --head-residue-threshold "${HEAD_RESIDUE_THRESHOLD}" \
+    --head-max-target-positions "${HEAD_MAX_TARGET_POSITIONS}" \
+    --head-aa-per-position "${HEAD_AA_PER_POSITION}" \
+    "${NMP_FLAGS[@]}" \
     --refold-cache-dir "${REFOLD_CACHE_DIR}" \
     --refold-model "${REFOLD_MODEL}" \
     "${ESMFOLD2_FLAGS[@]}" \

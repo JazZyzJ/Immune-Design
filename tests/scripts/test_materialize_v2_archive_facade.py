@@ -415,6 +415,151 @@ def test_feasible_immune_pareto_is_complete_deduplicated_and_input_order_invaria
     assert len(converged["selection_provenance_digest"]) == 64
 
 
+def test_official_multiroot_selection_uses_pareto_layers_and_explicit_candidate_count(
+    tmp_path,
+):
+    specifications = [
+        ("AAAAAAAAA", 0.0, 3.0),
+        ("CCCCCCCCC", 1.0, 1.0),
+        ("DDDDDDDDD", 3.0, 0.0),
+        ("EEEEEEEEE", 2.0, 2.0),
+        ("FFFFFFFFF", 4.0, 4.0),
+    ]
+    bundles = []
+    for root_index in range(4):
+        endpoints = []
+        if root_index == 0:
+            endpoints = [
+                {
+                    "endpoint_id": f"p1:{index}",
+                    "sequence": sequence,
+                    "head_global_risk": risk,
+                    "residue_hotspot": [density] * 9,
+                }
+                for index, (sequence, risk, density) in enumerate(specifications)
+            ]
+        else:
+            # Exact convergence across the other roots closes the four-seed grid without
+            # changing the deduplicated candidate surface.
+            sequence, risk, density = specifications[0]
+            endpoints = [{
+                "endpoint_id": f"p1:r{root_index}:a",
+                "sequence": sequence,
+                "head_global_risk": risk,
+                "residue_hotspot": [density] * 9,
+            }]
+        bundles.append(_write_highrisk_bundle(
+            tmp_path / f"root{root_index}",
+            protein_id="P1",
+            root_index=root_index,
+            endpoints=endpoints,
+        ))
+
+    complete_front = materialize_archive_facade(
+        bundles,
+        mode="feasible_immune_pareto",
+        expected_master_seeds=EXPECTED_MASTER_SEEDS,
+    )
+    official = materialize_archive_facade(
+        bundles,
+        mode="feasible_immune_pareto",
+        official=True,
+        final_candidates_per_protein=4,
+        expected_master_seeds=EXPECTED_MASTER_SEEDS,
+    )
+    explicit_without_official = materialize_archive_facade(
+        bundles,
+        mode="feasible_immune_pareto",
+        final_candidates_per_protein=4,
+        expected_master_seeds=EXPECTED_MASTER_SEEDS,
+    )
+
+    assert set(complete_front["sequence"]) == {
+        "AAAAAAAAA", "CCCCCCCCC", "DDDDDDDDD",
+    }
+    assert list(official["sequence"]) == [
+        "CCCCCCCCC", "AAAAAAAAA", "DDDDDDDDD", "EEEEEEEEE",
+    ]
+    assert list(official["pareto_rank"]) == [1, 1, 1, 2]
+    assert set(official["selection_status"]) == {
+        "official_feasible_immune_pareto",
+    }
+    pd.testing.assert_frame_equal(
+        official.drop(columns=["selection_status", "selection_provenance_digest"]),
+        explicit_without_official.drop(
+            columns=["selection_status", "selection_provenance_digest"]
+        ),
+    )
+    assert set(explicit_without_official["selection_status"]) == {
+        "bounded_feasible_immune_pareto",
+    }
+
+
+def test_official_multiroot_defaults_to_eight_and_candidate_count_must_be_positive(tmp_path):
+    bundles = [
+        _write_highrisk_bundle(
+            tmp_path / f"root{root_index}",
+            protein_id="P1",
+            root_index=root_index,
+            endpoints=[{
+                "endpoint_id": f"p1:r{root_index}",
+                "sequence": "ACDEFGHIK",
+                "head_global_risk": -1.0,
+            }],
+        )
+        for root_index in range(4)
+    ]
+    official = materialize_archive_facade(
+        bundles,
+        mode="feasible_immune_pareto",
+        official=True,
+        expected_master_seeds=EXPECTED_MASTER_SEEDS,
+    )
+    assert len(official) == 1
+
+    with pytest.raises(V2FacadeError, match="final_candidates_per_protein"):
+        materialize_archive_facade(
+            bundles,
+            mode="feasible_immune_pareto",
+            final_candidates_per_protein=0,
+            expected_master_seeds=EXPECTED_MASTER_SEEDS,
+        )
+
+
+@pytest.mark.parametrize(
+    "split_role",
+    ["exploratory_testset_design_v1", "exploratory_fast_generalization_0401"],
+)
+def test_multiroot_testset_split_roles_use_the_same_complete_grid_validator(
+    tmp_path, split_role,
+):
+    bundles = [
+        _write_highrisk_bundle(
+            tmp_path / f"root{root_index}",
+            protein_id="P1",
+            root_index=root_index,
+            endpoints=[{
+                "endpoint_id": f"p1:r{root_index}",
+                "sequence": "ACDEFGHIK",
+                "head_global_risk": -1.0,
+            }],
+            manifest_overrides={"split_role": split_role},
+        )
+        for root_index in range(4)
+    ]
+
+    out = materialize_archive_facade(
+        bundles,
+        mode="feasible_immune_pareto",
+        expected_master_seeds=EXPECTED_MASTER_SEEDS,
+    )
+
+    assert len(out) == 1
+    assert out.iloc[0]["protein_id"] == "P1"
+    assert out.iloc[0]["n_source_roots"] == 4
+    assert out.iloc[0]["selection_status"] == "feasible_immune_pareto"
+
+
 def test_fallback_uses_only_all_root_failures_and_plddt_does_not_change_the_front(tmp_path):
     successful = _write_highrisk_bundle(
         tmp_path / "p1-root0", protein_id="P1", root_index=0,
@@ -1154,3 +1299,34 @@ def test_multiroot_cli_binds_four_repeatable_master_seeds(tmp_path):
     assert json.loads(out.loc[0, "master_seed_grid_json"])["master_seeds"] == list(
         EXPECTED_MASTER_SEEDS
     )
+
+
+def test_multiroot_official_cli_writes_content_bound_selection_manifest(tmp_path):
+    bundles = [
+        _write_highrisk_bundle(
+            tmp_path / f"root{root_index}", protein_id="P1", root_index=root_index,
+            endpoints=[{
+                "endpoint_id": f"p1:{root_index}",
+                "sequence": "ACDEFGHIK",
+            }],
+        )
+        for root_index in range(4)
+    ]
+    output = tmp_path / "official.parquet"
+    argv = [
+        "--mode", "feasible_immune_pareto",
+        "--official",
+        "--final-candidates-per-protein", "3",
+        "--output", str(output),
+    ]
+    for bundle in bundles:
+        argv.extend(["--bundle", str(bundle)])
+    for seed in EXPECTED_MASTER_SEEDS:
+        argv.extend(["--expected-master-seed", str(seed)])
+
+    assert main(argv) == 0
+    manifest = json.loads(output.with_suffix(".manifest.json").read_text())
+    assert manifest["official"] is True
+    assert manifest["requested_candidates_per_protein"] == 3
+    assert manifest["realized_counts"] == {"P1": 1}
+    assert len(manifest["output_sha256"]) == 64

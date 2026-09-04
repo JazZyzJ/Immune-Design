@@ -37,6 +37,9 @@ from inverse_folding.reference_flow.fusion_v2.identity import (  # noqa: E402
     HeadEvaluatorIdentity,
     window_grid_digest,
 )
+from inverse_folding.reference_flow.official_selection import (  # noqa: E402
+    two_axis_pareto_order,
+)
 
 __all__ = ["V2FacadeError", "materialize_archive_facade", "main"]
 
@@ -91,6 +94,11 @@ _MULTIROOT_SPLIT_ROLES = frozenset({
     "exploratory_highrisk_ceiling_v1",
     "exploratory_highrisk_ceiling_v2",
     "exploratory_highrisk_breadth_ceiling_v1",
+    "exploratory_testset_design_v1",
+    # Compatibility identity of the already-launched 2026-08-22 DRB1*04:01 fast campaign. New
+    # test-set campaigns use the generic role above; accepting this exact historical role lets the
+    # same four-root evidence validator close that campaign without relabelling its manifests.
+    "exploratory_fast_generalization_0401",
 })
 _MULTIROOT_COMMON_CONTENT = (
     "cohort_table",
@@ -1370,10 +1378,14 @@ def _multiroot_output(
     front: pd.DataFrame,
     *,
     mode: str,
+    selection_status: str,
     master_seed_grid_json: str,
     master_seed_grid_digest: str,
 ) -> pd.DataFrame:
-    if mode == "feasible_immune_pareto":
+    if "_official_selection_rank" in front.columns:
+        sort_columns = ["protein_id_endpoint", "_official_selection_rank"]
+        ascending = [True, True]
+    elif mode == "feasible_immune_pareto":
         sort_columns = [
             "protein_id_endpoint", "head_global_risk", "head_positive_mass_density",
             "sequence_md5", "endpoint_id",
@@ -1389,7 +1401,7 @@ def _multiroot_output(
     chosen["design_idx"] = chosen.groupby("protein_id_endpoint", sort=False).cumcount()
     chosen["selection_provenance_digest"] = [
         _selection_provenance_digest(
-            row, mode=mode, master_seed_grid_digest=master_seed_grid_digest,
+            row, mode=selection_status, master_seed_grid_digest=master_seed_grid_digest,
         )
         for _, row in chosen.iterrows()
     ]
@@ -1414,8 +1426,10 @@ def _multiroot_output(
         "head_window_grid_digest": chosen["head_window_grid_digest"].astype(str),
         "sequence_md5": chosen["sequence_md5"].astype(str),
         "head_positive_mass_density": chosen["head_positive_mass_density"].astype(float),
-        "pareto_rank": 1,
-        "selection_status": mode,
+        "pareto_rank": chosen.get(
+            "_pareto_layer", pd.Series(1, index=chosen.index),
+        ).astype(int),
+        "selection_status": selection_status,
         "terminal_validated": terminal_validated,
         "structure_evaluated": structure_evaluated,
         "structure_feasible": structure_feasible,
@@ -1446,6 +1460,8 @@ def _materialize_multiroot_selection(
     bundles: Sequence[str | Path],
     *,
     mode: str,
+    official: bool,
+    final_candidates_per_protein: int | None,
     constraint_manifest: str | Path | None,
     expected_master_seeds: Sequence[int] | None,
 ) -> pd.DataFrame:
@@ -1561,29 +1577,53 @@ def _materialize_multiroot_selection(
     if mode == "structure_rejected_fallback":
         metric_columns.extend(["scTM", "pLDDT"])
     collapsed = _collapse_multiroot_sequences(pool, metric_columns=metric_columns)
-    fronts: list[pd.DataFrame] = []
+    selected_groups: list[pd.DataFrame] = []
     for protein_id in sorted(set(map(str, collapsed["protein_id_endpoint"]))):
         protein = collapsed[
             collapsed["protein_id_endpoint"].astype(str) == protein_id
         ].copy()
-        if mode == "feasible_immune_pareto":
-            front = _first_pareto_front(
+        if final_candidates_per_protein is not None:
+            first = protein["head_global_risk"].astype(float).tolist()
+            if mode == "feasible_immune_pareto":
+                second = protein["head_positive_mass_density"].astype(float).tolist()
+            else:
+                # The fallback front minimizes immune mass while maximizing scTM.
+                first = protein["head_positive_mass_density"].astype(float).tolist()
+                second = (-protein["scTM"].astype(float)).tolist()
+            order = two_axis_pareto_order(
+                first=first,
+                second=second,
+                tie_keys=protein["sequence_md5"].astype(str).tolist(),
+            )
+            order = order[:final_candidates_per_protein]
+            picked = protein.iloc[[row.index for row in order]].copy()
+            picked["_pareto_layer"] = [row.pareto_layer for row in order]
+            picked["_official_selection_rank"] = [row.selection_rank for row in order]
+        elif mode == "feasible_immune_pareto":
+            picked = _first_pareto_front(
                 protein,
                 minimize=("head_global_risk", "head_positive_mass_density"),
             )
         else:
-            front = _first_pareto_front(
+            picked = _first_pareto_front(
                 protein,
                 minimize=("head_positive_mass_density",),
                 maximize=("scTM",),
             )
-        fronts.append(front)
-    selected = pd.concat(fronts, ignore_index=True)
+        selected_groups.append(picked)
+    selected = pd.concat(selected_groups, ignore_index=True)
     if selected.empty:
         raise V2FacadeError(f"{mode} selection produced zero rows")
+    if final_candidates_per_protein is None:
+        selection_status = mode
+    elif official:
+        selection_status = f"official_{mode}"
+    else:
+        selection_status = f"bounded_{mode}"
     return _multiroot_output(
         selected,
         mode=mode,
+        selection_status=selection_status,
         master_seed_grid_json=master_seed_grid_json,
         master_seed_grid_digest=master_seed_grid_digest,
     )
@@ -1595,6 +1635,8 @@ def materialize_archive_facade(
     mode: str,
     k: int | None = None,
     require_k: bool = False,
+    official: bool = False,
+    final_candidates_per_protein: int | None = None,
     constraint_manifest: str | Path | None = None,
     expected_master_seeds: Sequence[int] | None = None,
 ) -> pd.DataFrame:
@@ -1607,12 +1649,28 @@ def materialize_archive_facade(
     The two multiroot modes are a separate high-risk selection interface. They alone permit the
     same protein in multiple root bundles; neither can relax the legacy definitive-feasible path.
     """
+    if final_candidates_per_protein is not None and (
+        isinstance(final_candidates_per_protein, bool)
+        or not isinstance(final_candidates_per_protein, int)
+        or final_candidates_per_protein < 1
+    ):
+        raise V2FacadeError("final_candidates_per_protein must be an integer >= 1")
+    if official and final_candidates_per_protein is None:
+        final_candidates_per_protein = 8
     if mode in _MULTIROOT_MODES:
         if k is not None or require_k:
             raise V2FacadeError("k/require_k are invalid in multiroot Pareto modes")
         return _materialize_multiroot_selection(
-            bundles, mode=mode, constraint_manifest=constraint_manifest,
+            bundles,
+            mode=mode,
+            official=bool(official),
+            final_candidates_per_protein=final_candidates_per_protein,
+            constraint_manifest=constraint_manifest,
             expected_master_seeds=expected_master_seeds,
+        )
+    if official or final_candidates_per_protein is not None:
+        raise V2FacadeError(
+            "official/final_candidates_per_protein are valid only in multiroot Pareto modes"
         )
     if mode not in {"elite", "top-k"}:
         raise V2FacadeError("mode must be 'elite' or 'top-k'")
@@ -1778,6 +1836,22 @@ def _parser() -> argparse.ArgumentParser:
             "modes to bind and verify the complete (protein, master_seed) grid"
         ),
     )
+    parser.add_argument(
+        "--official",
+        action="store_true",
+        help=(
+            "emit the paper-facing Pareto-layer panel; defaults to eight candidates per "
+            "protein without changing or deleting the source evidence bundles"
+        ),
+    )
+    parser.add_argument(
+        "--final-candidates-per-protein",
+        type=int,
+        help=(
+            "explicit up-to-N final panel size in multiroot modes; works with or without "
+            "--official and overrides its default N=8"
+        ),
+    )
     parser.add_argument("--output", required=True, help="output generated.parquet path")
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -1791,6 +1865,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         facade = materialize_archive_facade(
             args.bundle, mode=args.mode, k=args.k, require_k=bool(args.require_k),
+            official=bool(args.official),
+            final_candidates_per_protein=args.final_candidates_per_protein,
             constraint_manifest=args.constraint_manifest,
             expected_master_seeds=args.expected_master_seed,
         )
@@ -1798,6 +1874,26 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise SystemExit(f"FATAL: {exc}") from exc
     output.parent.mkdir(parents=True, exist_ok=True)
     facade.to_parquet(output, index=False)
+    if args.official or args.final_candidates_per_protein is not None:
+        requested = args.final_candidates_per_protein
+        if requested is None:
+            requested = 8
+        counts = facade.groupby("protein_id", sort=True).size()
+        manifest = {
+            "schema_version": "rf-fusion-v2-official-selection-v1",
+            "official": bool(args.official),
+            "mode": str(args.mode),
+            "requested_candidates_per_protein": int(requested),
+            "realized_counts": {str(key): int(value) for key, value in counts.items()},
+            "output": str(output),
+            "output_sha256": _sha256_file(output),
+            "source_bundles_preserved": True,
+        }
+        manifest_path = output.with_suffix(".manifest.json")
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     print(
         f"wrote {len(facade)} rows across {facade['protein_id'].nunique()} proteins to {output}"
     )

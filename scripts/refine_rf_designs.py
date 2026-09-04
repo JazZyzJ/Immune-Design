@@ -1,17 +1,24 @@
 #!/usr/bin/env python
-"""RF refinement driver — targeted NMP epitope-core elimination (PLAN_RF_REFINE.md R4).
+"""RF refinement driver -- NMP-core or Head-window targeting (PLAN_RF_REFINE.md R4).
 
 A post-hoc stage between generation (`run_if_phase_c1.py`) and evaluation
-(`evaluate_phase_c.py`). Loads a best-of-N RF design run, refines seeds by mutating
-residual high-risk positions to drive the distinct NMP strong-core count toward 0
-while preserving fold and freezing active-site anchors.
+(`evaluate_phase_c.py`). NMP mode preserves the legacy distinct-core objective. Head
+mode is NMP-free: it finds capped residue-local maxima over the complete Head landscape,
+scores all singles, retains a small Pareto AA set per position, and scores capped full
+double mutants in position round-robin order. Parent-relative improvements must satisfy
+the co-equal ``global_risk`` and positive-mass-density axes while preserving fold and
+freezing active-site anchors.
 
-Pure search logic lives in `inverse_folding/reference_flow/refine.py`; the three
-expensive oracles (immune head, NetMHCIIpan, ESMFold2 refold) are built in
-`build_oracles` and injected into `run_refinement`, so the smoke test can bypass the
-heavy deps by passing fake oracles.
+Pure search logic lives in `inverse_folding/reference_flow/refine.py`; expensive oracles
+are built in `build_oracles` and injected into `run_refinement`. NetMHCIIpan is imported
+and constructed only for ``--target-source nmp``.
 
-Confirmed wiring (PLAN_RF_REFINE §"NMP is BATCHED" + R4 corrections):
+The evidence-rich retention path remains the default. In Head refine mode, ``--official``
+changes only post-search retention: it persists the exact per-seed two-axis front rather than
+dominated admitted history. ``--final-candidates-per-protein`` records an independent downstream
+panel size consumed by the shard merger; neither flag changes search.
+
+Confirmed legacy wiring (PLAN_RF_REFINE §"NMP is BATCHED" + R4 corrections):
 - NMP is batched: nmp_fn(pid, list[seq]) -> list[list[dict]] with rank_EL in FRACTION
   units (raw runner el_rank, NOT the ×100 percent of the eval parquet).
 - run_tmalign returns {"tm_score","rmsd"}; resolve_structure_path takes a test-set row
@@ -28,6 +35,7 @@ import re
 import sys
 from collections import namedtuple
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -40,18 +48,29 @@ from inverse_folding.reference_flow.constraints import load_constraint_manifest
 from inverse_folding.reference_flow.refine import (
     editable_positions,
     enumerate_pairs,
+    enumerate_round_robin_doubles,
     enumerate_singles,
     extract_target_cores,
+    head_objective_dominates,
+    head_first_pareto_front,
+    head_refinement_metrics,
     hotspot_blocks,
     rank_margin_mass,
     refine_sequence,
+    refine_sequence_head,
+    select_head_residue_targets,
+    select_head_single_aa_choices,
     structure_gate,
 )
 
 # Injected oracle bundle; the smoke test builds fakes with this exact shape.
 # window_coords_fn(seq) -> (window_starts_0b, window_ends_0b) for THIS sequence's length
 # (the head window template is length-dependent — a fixed template mis-maps long proteins).
-Oracles = namedtuple("Oracles", ["head_fn", "nmp_fn", "struct_fn", "window_coords_fn"])
+Oracles = namedtuple(
+    "Oracles",
+    ["head_fn", "nmp_fn", "struct_fn", "window_coords_fn", "head_score_fn"],
+    defaults=(None,),
+)
 
 _REFINEMENT_STRUCTURE_METRICS = frozenset(
     {"global_ca_rmsd", "plddt", "sidechain"}
@@ -146,6 +165,13 @@ def _make_target_window_idx_fn(win_starts, win_ends):
 
 # generated.parquet schema (write_phase_c_outputs) — evaluator_ready must match exactly.
 GENERATED_COLUMNS = ["protein_id", "design_idx", "sequence", "seed", "wall_seconds"]
+_SEED_PROVENANCE_COLUMNS = (
+    "seed_group",
+    "selection_rule_id",
+    "source_campaign",
+    "source_depth",
+    "source_root_index",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -207,9 +233,9 @@ def make_propose_fn(oracles: Oracles, protein_id: str, anchors: set, *, max_pair
                     target_window_idx_fn):
     """Block-structured proposer (PLAN §1). Per hotspot block: exhaustive singles over
     the block's editable pocket positions (minus anchors), then head-ranked pairs among
-    the singles (best head-proxy first), capped by ``max_pairs``. head_high editable
-    augmentation is a v0 deferral (pockets only). ``target_window_idx_fn`` is the
-    per-seed (length-correct) core->window map."""
+    the singles (best head-proxy first), capped by ``max_pairs``. This is the legacy
+    NMP-pocket proposer; Head-only residue targeting uses its own two-stage pipeline.
+    ``target_window_idx_fn`` is the per-seed (length-correct) core->window map."""
 
     def propose(seq: str, cores):
         if not cores:
@@ -240,6 +266,79 @@ def make_propose_fn(oracles: Oracles, protein_id: str, anchors: set, *, max_pair
         return candidates
 
     return propose
+
+
+def _head_metrics_batch(oracles, protein_id: str, sequences):
+    """Score complete sequences through the rich Head interface and bind row order."""
+    if not callable(getattr(oracles, "head_score_fn", None)):
+        raise ValueError("--target-source head requires an oracle head_score_fn")
+    sequences = list(sequences)
+    scores = list(oracles.head_score_fn(protein_id, sequences))
+    if len(scores) != len(sequences):
+        raise RuntimeError(
+            f"Head returned {len(scores)} rows for {len(sequences)} sequences"
+        )
+    return [
+        head_refinement_metrics(
+            score,
+            protein_id=protein_id,
+            sequence=sequence,
+        )
+        for sequence, score in zip(sequences, scores)
+    ]
+
+
+def _head_candidate_round(oracles, protein_id, sequence, parent_head, anchors, args):
+    """One exact two-stage Head proposal round for ceiling mode.
+
+    Refine mode implements the same stages across the whole beam so each stage is
+    scored in one batch. Ceiling has one parent, so this helper keeps its candidate
+    and metric rows aligned without rescoring singles.
+    """
+    target = select_head_residue_targets(
+        parent_head,
+        anchors=anchors,
+        threshold=args.head_residue_threshold,
+        max_positions=args.head_max_target_positions,
+    )
+    singles = enumerate_singles(sequence, target.positions)
+    if not singles:
+        return target, [], []
+    single_metrics = _head_metrics_batch(
+        oracles, protein_id, [candidate.seq for candidate in singles]
+    )
+    metrics_by_sequence = {
+        candidate.seq: metrics for candidate, metrics in zip(singles, single_metrics)
+    }
+    choices = select_head_single_aa_choices(
+        singles,
+        metrics_by_sequence,
+        position_order=target.positions,
+        max_aa_per_position=args.head_aa_per_position,
+    )
+    doubles = enumerate_round_robin_doubles(
+        sequence,
+        choices,
+        position_order=target.positions,
+        max_candidates=args.max_pairs,
+    )
+    double_metrics = _head_metrics_batch(
+        oracles, protein_id, [candidate.seq for candidate in doubles]
+    ) if doubles else []
+    return target, singles + doubles, single_metrics + double_metrics
+
+
+def _head_target_payload(target, *, suffix: str) -> dict:
+    """Stable output columns for one residue-target selection."""
+    return {
+        f"head_target_positions_0b{suffix}": list(target.positions),
+        f"head_target_hotspot_values{suffix}": list(target.hotspot_values),
+        f"n_head_residues_above_threshold{suffix}": int(target.n_above_threshold),
+        f"n_head_local_maxima_pre_cap{suffix}": int(
+            target.n_local_maxima_pre_cap
+        ),
+        f"n_head_target_positions{suffix}": len(target.positions),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -414,6 +513,112 @@ def _run_ceiling_seed(oracles, protein_id, seed_seq, design_idx, anchors, args) 
     return out
 
 
+def _run_head_ceiling_seed(
+    oracles, protein_id, seed_seq, design_idx, anchors, args
+) -> list[dict]:
+    """Head-only ceiling over thresholded residue-local maxima."""
+    seed_head = _head_metrics_batch(oracles, protein_id, [seed_seq])[0]
+    seed_metrics = oracles.struct_fn(protein_id, seed_seq)
+    seed_target, pool, head_rows = _head_candidate_round(
+        oracles, protein_id, seed_seq, seed_head, anchors, args
+    )
+    if not pool:
+        return []
+    out = []
+    for candidate, head in zip(pool, head_rows):
+        improving = head_objective_dominates(head, seed_head)
+        target = select_head_residue_targets(
+            head,
+            anchors=anchors,
+            threshold=args.head_residue_threshold,
+            max_positions=args.head_max_target_positions,
+        )
+        metrics = None
+        passed = None
+        if improving:
+            metrics = oracles.struct_fn(protein_id, candidate.seq)
+            passed, _reason = structure_gate(
+                seed_metrics,
+                metrics,
+                scTM_eps=args.scTM_eps,
+                scTM_min=args.gate_scTM_min,
+                cat_max_scRMSD_max=args.gate_cat_max_scRMSD_max,
+                predicted_active_site_min_pLDDT_min=(
+                    args.gate_predicted_active_site_min_pLDDT_min
+                ),
+                scRMSD_max=args.scRMSD_max,
+                active_site_RMSD_max=args.active_site_RMSD_max,
+                max_anchor_sidechain_RMSD_max=args.max_anchor_sidechain_RMSD_max,
+            )
+        out.append({
+            "protein_id": protein_id,
+            "design_idx": int(design_idx),
+            "target_source": "head",
+            "head_candidate_stage": (
+                "single" if len(candidate.positions) == 1 else "double"
+            ),
+            "muts": candidate.desc,
+            "positions": list(candidate.positions),
+            "head_proxy": head.global_risk,
+            "head_global_risk_before": seed_head.global_risk,
+            "head_global_risk": head.global_risk,
+            "head_positive_mass_density_before": seed_head.positive_mass_density,
+            "head_positive_mass_density": head.positive_mass_density,
+            "head_positive_mass_before": seed_head.positive_mass,
+            "head_positive_mass": head.positive_mass,
+            "head_positive_hotspot_positions_before": (
+                seed_head.n_positive_hotspot_positions
+            ),
+            "head_positive_hotspot_positions": head.n_positive_hotspot_positions,
+            "head_residue_threshold": float(args.head_residue_threshold),
+            "head_max_target_positions": int(args.head_max_target_positions),
+            "head_aa_per_position": int(args.head_aa_per_position),
+            "head_max_double_candidates": int(args.max_pairs),
+            **_head_target_payload(seed_target, suffix="_before"),
+            **_head_target_payload(target, suffix=""),
+            "core_count": None,
+            "rank_margin_mass": None,
+            "scTM": None if metrics is None else metrics.scTM,
+            "pLDDT": None if metrics is None else metrics.pLDDT,
+            "passed": passed,
+            "global_ca_RMSD": (
+                None if metrics is None else getattr(metrics, "global_ca_RMSD", None)
+            ),
+            "active_site_sidechain_RMSD": (
+                None
+                if metrics is None
+                else getattr(metrics, "active_site_sidechain_RMSD", None)
+            ),
+            "max_anchor_sidechain_RMSD": (
+                None
+                if metrics is None
+                else getattr(metrics, "max_anchor_sidechain_RMSD", None)
+            ),
+            "max_anchor_atom_distance": (
+                None
+                if metrics is None
+                else getattr(metrics, "max_anchor_atom_distance", None)
+            ),
+            "active_site_complete": (
+                None if metrics is None else getattr(metrics, "active_site_complete", None)
+            ),
+            "active_site_min_pLDDT": (
+                None if metrics is None else getattr(metrics, "active_site_min_pLDDT", None)
+            ),
+            "cat_max_scRMSD": (
+                None if metrics is None else getattr(metrics, "cat_max_scRMSD", None)
+            ),
+            "predicted_active_site_min_pLDDT": (
+                None
+                if metrics is None
+                else getattr(metrics, "predicted_active_site_min_pLDDT", None)
+            ),
+            "improves": bool(improving),
+            "eliminates": None,
+        })
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Refine mode: full beam search per seed -> shortlist
 # --------------------------------------------------------------------------- #
@@ -493,6 +698,161 @@ def _run_refine_seed(oracles, protein_id, seed_seq, orig_design_idx, seed_val, a
     return rich, trace, seed_val
 
 
+def _mutation_summary(reference: str, candidate: str) -> tuple[int, str]:
+    edits = [
+        (idx, before, after)
+        for idx, (before, after) in enumerate(zip(reference, candidate))
+        if before != after
+    ]
+    return len(edits), ",".join(f"{before}{idx}{after}" for idx, before, after in edits)
+
+
+def _run_head_refine_seed(
+    oracles, protein_id, seed_seq, orig_design_idx, seed_val, anchors, args
+):
+    result = refine_sequence_head(
+        protein_id,
+        seed_seq,
+        head_score_fn=oracles.head_score_fn,
+        struct_fn=oracles.struct_fn,
+        anchors=anchors,
+        residue_threshold=args.head_residue_threshold,
+        max_target_positions=args.head_max_target_positions,
+        aa_per_position=args.head_aa_per_position,
+        max_double_candidates=args.max_pairs,
+        scTM_eps=args.scTM_eps,
+        scTM_min=args.gate_scTM_min,
+        cat_max_scRMSD_max=args.gate_cat_max_scRMSD_max,
+        predicted_active_site_min_pLDDT_min=(
+            args.gate_predicted_active_site_min_pLDDT_min
+        ),
+        scRMSD_max=args.scRMSD_max,
+        active_site_RMSD_max=args.active_site_RMSD_max,
+        max_anchor_sidechain_RMSD_max=args.max_anchor_sidechain_RMSD_max,
+        topB=args.topB,
+        beam_width=args.beam_width,
+        max_rounds=args.max_rounds,
+        patience=args.patience,
+        max_path_mutations=args.max_path_mutations,
+        refold_cap=args.refold_cap,
+        allow_structure_unknown=args.allow_structure_unknown,
+        log_fn=(lambda message: print(message, flush=True)),
+    )
+
+    entries = result.shortlist or [{
+        "seq": seed_seq,
+        "head": result.seed_head,
+        "structure": result.seed_structure,
+    }]
+    seed_target = select_head_residue_targets(
+        result.seed_head,
+        anchors=anchors,
+        threshold=args.head_residue_threshold,
+        max_positions=args.head_max_target_positions,
+    )
+    rich = []
+    for entry in entries:
+        sequence = entry["seq"]
+        head = entry["head"]
+        metrics = entry["structure"]
+        target = select_head_residue_targets(
+            head,
+            anchors=anchors,
+            threshold=args.head_residue_threshold,
+            max_positions=args.head_max_target_positions,
+        )
+        n_mutations, mutations = _mutation_summary(seed_seq, sequence)
+        rich.append({
+            "protein_id": protein_id,
+            "orig_design_idx": int(orig_design_idx),
+            "target_source": "head",
+            "sequence_original": seed_seq,
+            "sequence_refined": sequence,
+            "n_mutations": n_mutations,
+            "muts": mutations,
+            "core_count_before": None,
+            "core_count_after": None,
+            "head_global_risk": head.global_risk,
+            "head_global_risk_before": result.seed_head.global_risk,
+            "head_global_risk_after": head.global_risk,
+            "head_positive_mass_density": head.positive_mass_density,
+            "head_positive_mass_before": result.seed_head.positive_mass,
+            "head_positive_mass_after": head.positive_mass,
+            "head_positive_mass_density_before": (
+                result.seed_head.positive_mass_density
+            ),
+            "head_positive_mass_density_after": head.positive_mass_density,
+            "head_positive_hotspot_positions_before": (
+                result.seed_head.n_positive_hotspot_positions
+            ),
+            "head_positive_hotspot_positions_after": (
+                head.n_positive_hotspot_positions
+            ),
+            "head_residue_threshold": float(args.head_residue_threshold),
+            "head_max_target_positions": int(args.head_max_target_positions),
+            "head_aa_per_position": int(args.head_aa_per_position),
+            "head_max_double_candidates": int(args.max_pairs),
+            **_head_target_payload(seed_target, suffix="_before"),
+            **_head_target_payload(target, suffix="_after"),
+            "scTM_after": getattr(metrics, "scTM", None),
+            "pLDDT_after": getattr(metrics, "pLDDT", None),
+            "scRMSD_after": getattr(metrics, "scRMSD", None),
+            "active_site_RMSD_after": getattr(metrics, "active_site_RMSD", None),
+            "global_ca_RMSD_after": getattr(metrics, "global_ca_RMSD", None),
+            "active_site_sidechain_RMSD_after": getattr(
+                metrics, "active_site_sidechain_RMSD", None
+            ),
+            "max_anchor_sidechain_RMSD_after": getattr(
+                metrics, "max_anchor_sidechain_RMSD", None
+            ),
+            "max_anchor_atom_distance_after": getattr(
+                metrics, "max_anchor_atom_distance", None
+            ),
+            "active_site_complete_after": getattr(metrics, "active_site_complete", None),
+            "active_site_min_pLDDT_after": getattr(
+                metrics, "active_site_min_pLDDT", None
+            ),
+            "cat_max_scRMSD_after": getattr(metrics, "cat_max_scRMSD", None),
+            "predicted_active_site_min_pLDDT_after": getattr(
+                metrics, "predicted_active_site_min_pLDDT", None
+            ),
+            "diverged": bool(result.diverged),
+        })
+    if args.official:
+        rich = _retain_official_head_rows(rich)
+    trace = [
+        {
+            "protein_id": protein_id,
+            "orig_design_idx": int(orig_design_idx),
+            "target_source": "head",
+            **row,
+        }
+        for row in result.trace
+    ]
+    return rich, trace, seed_val
+
+
+def _retain_official_head_rows(rows):
+    """Keep the exact per-seed two-axis Head front in official retention mode.
+
+    This is an output-only reduction.  It runs after the complete search has finished, so it
+    cannot alter the beam, proposal stream, structure admissions, or random-number consumption.
+    """
+
+    rows = list(rows)
+    if not rows:
+        return []
+    metrics = [
+        SimpleNamespace(
+            global_risk=float(row["head_global_risk_after"]),
+            positive_mass_density=float(row["head_positive_mass_density_after"]),
+        )
+        for row in rows
+    ]
+    indices = head_first_pareto_front(metrics)
+    return [rows[index] for index in indices]
+
+
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
@@ -529,12 +889,16 @@ def _seeds_from_table(seed_table: str, proteins_arg: str,
     for _, row in df.iterrows():
         pid = str(row["protein_id"])
         lst = seeds_by_protein.setdefault(pid, [])
-        lst.append({
+        seed = {
             "sequence": str(row["sequence"]),
             "design_idx": _seed_design_idx(row, len(lst)),
             "seed": int(row["seed"]) if has_seed and pd.notna(row.get("seed")) else -1,
             "_cost": float(row[cost_col]) if has_cost and pd.notna(row.get(cost_col)) else None,
-        })
+        }
+        for column in _SEED_PROVENANCE_COLUMNS:
+            if column in df.columns and pd.notna(row.get(column)):
+                seed[column] = row[column]
+        lst.append(seed)
     return seeds_by_protein
 
 
@@ -595,14 +959,47 @@ def _gather_seeds(args) -> tuple[dict[str, list[dict]], list[str]]:
 
 
 def run_refinement(args, oracles: Oracles) -> int:
-    # v0 deferrals: fail-fast rather than silently ignoring a non-default switch.
-    if args.target_source != "nmp":
-        raise NotImplementedError(
-            "--target-source head (Mode 2) is deferred in v0; only 'nmp' is wired")
-    if args.head_high_topk:
-        raise NotImplementedError(
-            "--head-high-topk (head-high editable augmentation) is a v0 deferral; pass 0 "
-            "(editable = pockets minus anchors)")
+    if args.official and (args.mode != "refine" or args.target_source != "head"):
+        raise ValueError("--official is supported only by Head refine mode")
+    if args.final_candidates_per_protein is not None and (
+        isinstance(args.final_candidates_per_protein, bool)
+        or int(args.final_candidates_per_protein) < 1
+    ):
+        raise ValueError("--final-candidates-per-protein must be an integer >= 1")
+    if args.target_source == "head" and not callable(
+        getattr(oracles, "head_score_fn", None)
+    ):
+        raise ValueError("--target-source head requires an oracle head_score_fn")
+    if args.target_source == "head":
+        invalid_positive = [
+            name for name in (
+                "beam_width", "patience", "head_max_target_positions",
+                "head_aa_per_position",
+            )
+            if int(getattr(args, name)) < 1
+        ]
+        invalid_nonnegative = [
+            name for name in (
+                "max_rounds", "max_pairs", "max_path_mutations", "refold_cap"
+            )
+            if int(getattr(args, name)) < 0
+        ]
+        if args.topB is not None and int(args.topB) < 0:
+            invalid_nonnegative.append("topB")
+        if (
+            not np.isfinite(float(args.head_residue_threshold))
+            or float(args.head_residue_threshold) < 0.0
+        ):
+            invalid_nonnegative.append("head_residue_threshold")
+        if int(args.head_aa_per_position) > 19:
+            invalid_positive.append("head_aa_per_position")
+        if invalid_positive or invalid_nonnegative:
+            raise ValueError(
+                "Head refinement requires beam_width/patience/head_max_target_positions "
+                ">= 1, head_aa_per_position in [1, 19], and "
+                "head_residue_threshold/max_rounds/max_pairs/max_path_mutations/"
+                "refold_cap/topB >= 0"
+            )
     manifest = load_constraint_manifest(args.constraint_manifest) if args.constraint_manifest else None
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -610,13 +1007,19 @@ def run_refinement(args, oracles: Oracles) -> int:
     n_seeds = sum(len(v) for v in seeds_by_protein.values())
     print(
         f"[refine] mode={args.mode} proteins={len(proteins)} seeds={n_seeds} "
-        f"source={'seed-table' if args.seed_table else 'run-dir'} topB={args.topB} "
+        f"source={'seed-table' if args.seed_table else 'run-dir'} "
+        f"target_source={args.target_source} topB={args.topB} "
         f"beam={args.beam_width} refold_cap={args.refold_cap} strong_rank={args.strong_rank} margin_band={args.margin_band} "
         f"structure_gate={args.structure_gate_profile} "
         f"scTM_min={args.gate_scTM_min} cat_max_scRMSD_max={args.gate_cat_max_scRMSD_max} "
         f"active_site_min_pLDDT_min={args.gate_predicted_active_site_min_pLDDT_min} "
         f"scTM_eps={args.scTM_eps} max_pairs={args.max_pairs} "
-        f"max_path_mutations={args.max_path_mutations}",
+        f"head_residue_threshold={args.head_residue_threshold} "
+        f"head_max_target_positions={args.head_max_target_positions} "
+        f"head_aa_per_position={args.head_aa_per_position} "
+        f"max_path_mutations={args.max_path_mutations} "
+        f"official={args.official} "
+        f"final_candidates_per_protein={args.final_candidates_per_protein}",
         flush=True,
     )
 
@@ -625,7 +1028,12 @@ def run_refinement(args, oracles: Oracles) -> int:
         for pid in proteins:
             for seed in seeds_by_protein[pid]:
                 anchors = _anchors_for(manifest, pid, str(seed["sequence"]))
-                rows.extend(_run_ceiling_seed(
+                runner = (
+                    _run_head_ceiling_seed
+                    if args.target_source == "head"
+                    else _run_ceiling_seed
+                )
+                rows.extend(runner(
                     oracles, pid, str(seed["sequence"]), seed["design_idx"], anchors, args))
         (out_dir / "ceiling").mkdir(exist_ok=True)
         pd.DataFrame(rows).to_parquet(out_dir / "ceiling" / "candidates.parquet", index=False)
@@ -643,10 +1051,19 @@ def run_refinement(args, oracles: Oracles) -> int:
     for pid in proteins:
         for seed in seeds_by_protein[pid]:
             anchors = _anchors_for(manifest, pid, str(seed["sequence"]))
-            rich, trace, seed_val = _run_refine_seed(
+            runner = (
+                _run_head_refine_seed
+                if args.target_source == "head"
+                else _run_refine_seed
+            )
+            rich, trace, seed_val = runner(
                 oracles, pid, str(seed["sequence"]), seed["design_idx"],
                 int(seed.get("seed", -1)), anchors, args)
             for r in rich:
+                if args.official or args.final_candidates_per_protein is not None:
+                    for column in _SEED_PROVENANCE_COLUMNS:
+                        if column in seed:
+                            r[column] = seed[column]
                 didx = per_protein_idx.get(pid, 0)
                 per_protein_idx[pid] = didx + 1
                 r["design_idx"] = didx
@@ -664,9 +1081,29 @@ def run_refinement(args, oracles: Oracles) -> int:
                   flush=True)
 
     rich_df = _flush_refine_outputs(refined_dir, rich_rows, eval_rows, trace_rows)
-    n0 = int((rich_df["core_count_after"] == 0).sum()) if len(rich_df) else 0
+    if args.target_source == "head":
+        n_improved = int(
+            (
+                (rich_df["head_global_risk_after"] <= rich_df["head_global_risk_before"])
+                & (
+                    rich_df["head_positive_mass_density_after"]
+                    <= rich_df["head_positive_mass_density_before"]
+                )
+                & (
+                    (rich_df["head_global_risk_after"] < rich_df["head_global_risk_before"])
+                    | (
+                        rich_df["head_positive_mass_density_after"]
+                        < rich_df["head_positive_mass_density_before"]
+                    )
+                )
+            ).sum()
+        ) if len(rich_df) else 0
+        detail = f"{n_improved} Pareto-improving Head rows"
+    else:
+        n0 = int((rich_df["core_count_after"] == 0).sum()) if len(rich_df) else 0
+        detail = f"{n0} reached count 0"
     print(
-        f"[refine] refine: {len(rich_rows)} refined rows ({n0} reached count 0) "
+        f"[refine] refine: {len(rich_rows)} refined rows ({detail}) "
         f"-> refined/refined_designs.parquet + evaluator_ready.parquet",
         flush=True,
     )
@@ -742,8 +1179,9 @@ def _run_final_metrics(args) -> None:
     re-derives and persists them. Every final sequence was refolded during search,
     so ``refold`` is a cache hit here (keyed on (protein_id, sequence)) and structure is cheap.
 
-    Writes (evaluate basenames, atomic): imm_head.parquet, imm_nmp.parquet, structural.parquet,
-    structural_residues.parquet (+ imm_head_residues / imm_nmp_peptides under --imm-full).
+    Writes Head and canonical structure tables atomically. Legacy NMP mode additionally writes
+    ``imm_nmp.parquet`` (and peptide rows under ``--imm-full``); Head mode never builds NMP and
+    intentionally omits those files.
     NOTE: imm_nmp.n_strong_binders (rank_EL% < strong_binder_threshold, per-window) is a
     DIFFERENT quantity from the search objective core_count_after (distinct 9-mer cores).
     """
@@ -765,8 +1203,10 @@ def _run_final_metrics(args) -> None:
         print("[refine] final-metrics: 0 designs -- skipping", flush=True)
         return
     _test_df, test_lookup = load_test_lookup(args.test_set_parquet)
+    run_nmp = args.target_source == "nmp"
+    immune_outputs = "imm_head/imm_nmp" if run_nmp else "imm_head (NMP disabled)"
     print(
-        f"[refine] final-metrics: {len(gdf)} designs -> imm_head/imm_nmp/structural/"
+        f"[refine] final-metrics: {len(gdf)} designs -> {immune_outputs}/structural/"
         f"structural_residues (imm_full={args.imm_full})",
         flush=True,
     )
@@ -775,25 +1215,29 @@ def _run_final_metrics(args) -> None:
     predictor = build_head_predictor(
         checkpoint_path=args.head_checkpoint, config_dir=args.head_config_dir,
         variant_id=args.head_variant_id, device=args.head_device)
-    nmp_runner = build_nmp_runner(
-        binary_path=args.netmhciipan_bin, batch_size=args.nmp_batch_size,
-        n_workers=args.nmp_workers, timeout=args.nmp_timeout,
-        max_lengths_per_call=args.nmp_max_lengths_per_call)
+    nmp_runner = None
+    if run_nmp:
+        nmp_runner = build_nmp_runner(
+            binary_path=args.netmhciipan_bin, batch_size=args.nmp_batch_size,
+            n_workers=args.nmp_workers, timeout=args.nmp_timeout,
+            max_lengths_per_call=args.nmp_max_lengths_per_call)
     head_df, nmp_df, imm_fail, imm_res_df, imm_pep_df = evaluate_immunogenicity_rows(
         gdf, predictor=predictor, nmp_runner=nmp_runner, allele=args.allele,
         strong_binder_threshold=args.strong_binder_threshold,
         nmp_batch_size=args.nmp_batch_size, hotspot_threshold=args.hotspot_threshold,
-        full=args.imm_full, run_nmp=True, return_full_tables=True)
+        full=args.imm_full, run_nmp=run_nmp, return_full_tables=True)
     del predictor, nmp_runner
     _free_gpu()  # release the head predictor before structural evaluation
 
     # Persist the immunogenicity tables NOW — the NMP re-score is the CPU-costly part of this
     # pass, and a later structural failure must not discard already-completed work.
     _atomic_write(refined_dir, head_df, "imm_head.parquet")
-    _atomic_write(refined_dir, nmp_df, "imm_nmp.parquet")
+    if run_nmp:
+        _atomic_write(refined_dir, nmp_df, "imm_nmp.parquet")
     if args.imm_full:
         _atomic_write(refined_dir, imm_res_df, "imm_head_residues.parquet")
-        _atomic_write(refined_dir, imm_pep_df, "imm_nmp_peptides.parquet")
+        if run_nmp:
+            _atomic_write(refined_dir, imm_pep_df, "imm_nmp_peptides.parquet")
 
     # --- structure: canonical v2 summary + index-addressable side-chain rows ---
     anchor_indices_by_protein = _load_anchor_indices_by_protein(
@@ -829,7 +1273,8 @@ def _run_final_metrics(args) -> None:
         structural_metrics_version="v2",
     )
     print(
-        f"[refine] final-metrics done: imm_head={len(head_df)} imm_nmp={len(nmp_df)} "
+        f"[refine] final-metrics done: imm_head={len(head_df)} "
+        f"imm_nmp={len(nmp_df) if run_nmp else 'disabled'} "
         f"structural={len(structural_df)} structural_residues={len(struct_res_df)} "
         f"failures={len(failures)} -> {refined_dir}",
         flush=True,
@@ -840,7 +1285,7 @@ def _run_final_metrics(args) -> None:
 # Real oracle construction (heavy deps; bypassed by the smoke test)
 # --------------------------------------------------------------------------- #
 def build_oracles(args) -> Oracles:
-    """Build the real (head, nmp, struct, target_window_idx) oracle callables.
+    """Build real Head/structure callables and NMP only for the legacy target mode.
 
     Only place that touches torch / NetMHCIIpan / refold models. See PLAN_RF_REFINE R4(b).
     """
@@ -850,8 +1295,9 @@ def build_oracles(args) -> Oracles:
         "--pdb-root": args.pdb_root,                       # reference backbone for TMalign
         "--head-checkpoint": args.head_checkpoint,         # head predictor weights
         "--head-config-dir": args.head_config_dir,         # head model/ablation/inference yamls
-        "--netmhciipan-bin": args.netmhciipan_bin,         # NetMHCIIpan binary (StandaloneRunner)
     }
+    if args.target_source == "nmp":
+        required["--netmhciipan-bin"] = args.netmhciipan_bin
     missing = [k for k, v in required.items() if not v]
     if missing:
         raise ValueError(f"build_oracles requires: {', '.join(missing)}")
@@ -947,6 +1393,19 @@ def build_oracles(args) -> Oracles:
             rows.append(np.asarray(compact.window_risks))
         return rows[0] if len(rows) == 1 else np.concatenate(rows, axis=0)
 
+    def head_score_fn(pid, seqs):
+        """Rich Head rows for NMP-free mode: global risk plus residue_hotspot."""
+        seqs = list(seqs)
+        scores = []
+        for i in range(0, len(seqs), head_chunk):
+            chunk = seqs[i:i + head_chunk]
+            batch = scorer.score_batch_same_protein(
+                protein_id=pid,
+                records=[(str(j), sequence) for j, sequence in enumerate(chunk)],
+            )
+            scores.extend(batch.scores)
+        return scores
+
     def window_coords_fn(seq):
         # Per-sequence window template (length-dependent) — a fixed template would
         # mis-map cores past its length in ~300aa uricases.
@@ -954,43 +1413,52 @@ def build_oracles(args) -> Oracles:
             protein_id="__windows__", records=[("0", seq)])
         return np.asarray(compact.window_starts_0b), np.asarray(compact.window_ends_0b)
 
-    # --- NMP (batched; FRACTION units) ---
-    from epitope_head.data.netmhciipan_runner import StandaloneRunner
-    from inverse_folding.evaluation.immunogenicity import NMP_PEP_LENGTHS
+    # --- NMP (legacy target mode only; Head mode never imports or constructs it) ---
+    nmp_fn = None
+    if args.target_source == "nmp":
+        from epitope_head.data.netmhciipan_runner import StandaloneRunner
+        from inverse_folding.evaluation.immunogenicity import NMP_PEP_LENGTHS
 
-    runner = StandaloneRunner(
-        binary_path=args.netmhciipan_bin,
-        batch_size=args.nmp_batch_size, subprocess_timeout=args.nmp_timeout,
-        max_lengths_per_call=args.nmp_max_lengths_per_call, n_workers=args.nmp_workers)
+        runner = StandaloneRunner(
+            binary_path=args.netmhciipan_bin,
+            batch_size=args.nmp_batch_size,
+            subprocess_timeout=args.nmp_timeout,
+            max_lengths_per_call=args.nmp_max_lengths_per_call,
+            n_workers=args.nmp_workers,
+        )
 
-    def nmp_fn(pid, seqs):
-        entries = [(f"{pid}__c{i}", s) for i, s in enumerate(seqs)]
-        scored = runner.score_batch(entries, args.allele, NMP_PEP_LENGTHS)
-        out = []
-        for i, seq in enumerate(seqs):
-            key = f"{pid}__c{i}"
-            # NMP is the final gate: a missing/incomplete result must fail-fast, NOT be
-            # read as an empty (= no-epitope) row set (that would silently pass the count).
-            if key not in scored:
-                raise RuntimeError(
-                    f"NetMHCIIpan returned no result for {key}; refusing to treat a failed "
-                    "NMP call as 'no epitope' (NMP is the final gate).")
-            by_len = scored[key]
-            # Every peptide length that FITS the sequence yields windows for a real
-            # (200+aa) design, so a missing fitting length signals a partial failure.
-            missing = [k for k in NMP_PEP_LENGTHS if k <= len(seq) and k not in by_len]
-            if missing:
-                raise RuntimeError(
-                    f"NetMHCIIpan result for {key} is missing peptide lengths {missing}; "
-                    "incomplete scoring would under-count cores — aborting.")
-            rows = []
-            for _pep_len, plist in by_len.items():
-                for ps in plist:
-                    rows.append({"pos": ps.pos, "pep_length": ps.pep_length,
-                                 "peptide": ps.peptide, "core": ps.core,
-                                 "rank_EL": ps.el_rank})  # FRACTION, no ×100
-            out.append(rows)
-        return out
+        def nmp_fn(pid, seqs):
+            entries = [(f"{pid}__c{i}", sequence) for i, sequence in enumerate(seqs)]
+            scored = runner.score_batch(entries, args.allele, NMP_PEP_LENGTHS)
+            out = []
+            for i, sequence in enumerate(seqs):
+                key = f"{pid}__c{i}"
+                if key not in scored:
+                    raise RuntimeError(
+                        f"NetMHCIIpan returned no result for {key}; refusing to treat a failed "
+                        "NMP call as 'no epitope' (NMP is the final gate)."
+                    )
+                by_len = scored[key]
+                missing = [
+                    k for k in NMP_PEP_LENGTHS if k <= len(sequence) and k not in by_len
+                ]
+                if missing:
+                    raise RuntimeError(
+                        f"NetMHCIIpan result for {key} is missing peptide lengths {missing}; "
+                        "incomplete scoring would under-count cores -- aborting."
+                    )
+                rows = []
+                for _pep_len, peptide_scores in by_len.items():
+                    for peptide_score in peptide_scores:
+                        rows.append({
+                            "pos": peptide_score.pos,
+                            "pep_length": peptide_score.pep_length,
+                            "peptide": peptide_score.peptide,
+                            "core": peptide_score.core,
+                            "rank_EL": peptide_score.el_rank,
+                        })
+                out.append(rows)
+            return out
 
     # --- Structure (configured live refold + TMalign vs the WT/target backbone) ---
     from inverse_folding.evaluation.refold import load_refold_model, refold
@@ -1091,8 +1559,13 @@ def build_oracles(args) -> Oracles:
     if callable(getattr(model, "close", None)):
         struct_fn.close = model.close
 
-    return Oracles(head_fn=head_fn, nmp_fn=nmp_fn, struct_fn=struct_fn,
-                   window_coords_fn=window_coords_fn)
+    return Oracles(
+        head_fn=head_fn,
+        nmp_fn=nmp_fn,
+        struct_fn=struct_fn,
+        window_coords_fn=window_coords_fn,
+        head_score_fn=head_score_fn,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1120,7 +1593,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--seeds-per-protein", type=int, default=3)
     p.add_argument("--mode", choices=("ceiling", "refine"), default="refine")
     p.add_argument("--target-source", choices=("nmp", "head"), default="nmp",
-                   help="Mode 1 (nmp, default); 'head' (Mode 2) is deferred in v0")
+                   help="nmp = legacy NMP-core objective; head = NMP-free two-axis Head Pareto "
+                        "objective using thresholded residue-local maxima")
+    p.add_argument(
+        "--official",
+        action="store_true",
+        help=(
+            "Head refine only: persist the exact per-seed two-axis Pareto front instead of "
+            "all admitted history; search behavior and the legacy default are unchanged"
+        ),
+    )
+    p.add_argument(
+        "--final-candidates-per-protein",
+        type=int,
+        default=None,
+        help=(
+            "requested final panel size recorded for merge_refine_shards; explicit values "
+            "override the --official default of eight and do not alter search"
+        ),
+    )
     # head (mirror run_if_phase_c1.py)
     p.add_argument("--head-checkpoint", default=None)
     p.add_argument("--head-config-dir", default=None)
@@ -1131,6 +1622,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--head-chunk", type=int, default=512,
                    help="max candidate seqs per head encoder forward (bounds GPU mem; the "
                         "beam-multiplied pool OOMs the untiled forward on hard seeds)")
+    p.add_argument(
+        "--head-residue-threshold",
+        type=float,
+        default=0.15,
+        help="inclusive residue_hotspot cutoff for Head proposal local maxima",
+    )
+    p.add_argument(
+        "--head-max-target-positions",
+        type=int,
+        default=12,
+        help="maximum residue-local maxima opened per parent and round",
+    )
+    p.add_argument(
+        "--head-aa-per-position",
+        type=int,
+        default=2,
+        help="single-mutant Head Pareto representatives retained per position for doubles",
+    )
     # nmp (mirror evaluate_phase_c.py accelerated knobs)
     p.add_argument("--netmhciipan-bin", default=None, help="path to the NetMHCIIpan binary")
     p.add_argument("--nmp-batch-size", type=int, default=8)
@@ -1226,17 +1735,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--topB", type=int, default=None)
     p.add_argument("--beam-width", type=int, default=8,
-                   help="working states between rounds; head-ranks the pool (cheap), topB caps NMP")
+                   help="working states between rounds; topB caps the downstream candidate pool")
     p.add_argument("--max-rounds", type=int, default=20)
     p.add_argument("--patience", type=int, default=3)
-    p.add_argument("--max-pairs", type=int, default=200)
+    p.add_argument(
+        "--max-pairs",
+        type=int,
+        default=200,
+        help="NMP pair cap; in Head mode, full double-mutant scoring cap per parent/round",
+    )
     p.add_argument("--max-path-mutations", type=int, default=8,
                    help="cheap refold-free cap on total edits per search path (branch-waste bound)")
     p.add_argument("--refold-cap", dest="refold_cap", type=int, default=16,
                    help="max count-dropping candidates refolded per round; bounds refold cost "
                         "and yields the lean ranked shortlist (pass a large value to disable)")
-    p.add_argument("--head-high-topk", type=int, default=0,
-                   help="head-high editable augmentation (v0 deferral: must be 0)")
     p.add_argument("--allow-structure-unknown", action="store_true")
     # full-metrics emission: after refinement, reuse evaluate_phase_c's row builders on the
     # final designs to persist the metrics the search discards (per-window NMP aggregates,

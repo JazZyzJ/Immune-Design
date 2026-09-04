@@ -7,10 +7,13 @@ schemas plus a killable core reaching count 0.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 import scripts.refine_rf_designs as refine_driver
+from types import SimpleNamespace
 
 from inverse_folding.reference_flow.refine import StructureMetrics
 from scripts.refine_rf_designs import (
@@ -20,6 +23,7 @@ from scripts.refine_rf_designs import (
     _load_catalytic_indices_by_protein,
     _load_sharded,
     _run_final_metrics,
+    _retain_official_head_rows,
     build_arg_parser,
     build_oracles,
     run_refinement,
@@ -45,6 +49,37 @@ def _fake_oracles() -> Oracles:
 
     return Oracles(head_fn=head_fn, nmp_fn=nmp_fn, struct_fn=struct_fn,
                    window_coords_fn=lambda seq: (np.array([0]), np.array([len(seq)])))
+
+
+def _fake_head_target_oracles(*, two_peaks=False):
+    """Residue-local Head peaks with forbidden NMP/window-only oracles."""
+    def forbidden_oracle(*_args, **_kwargs):
+        raise AssertionError("Head target mode must not call NMP or window-only Head")
+
+    def head_score_fn(_pid, seqs):
+        scores = []
+        for seq in seqs:
+            active = (12, 20) if two_peaks else (12,)
+            hotspots = np.zeros(len(seq), dtype=float)
+            for rank, position in enumerate(active):
+                hotspots[position] = (
+                    0.30 - 0.05 * rank if seq[position] == "A" else 0.10
+                )
+            scores.append(SimpleNamespace(
+                global_risk=float(sum(seq[position] == "A" for position in active)),
+                residue_hotspot=tuple(hotspots),
+                sequence_length=len(seq),
+                windows=(SimpleNamespace(start_0b=0, end_0b=25, k=25, z=1.0),),
+            ))
+        return scores
+
+    return SimpleNamespace(
+        head_fn=forbidden_oracle,
+        head_score_fn=head_score_fn,
+        nmp_fn=forbidden_oracle,
+        struct_fn=lambda _pid, _seq: StructureMetrics(scTM=0.90, pLDDT=90.0),
+        window_coords_fn=lambda seq: (np.array([0]), np.array([len(seq)])),
+    )
 
 
 def _write_inputs(tmp_path):
@@ -148,6 +183,128 @@ def test_refine_from_seed_table(tmp_path):
     assert a["core_count_after"] == 0   # killable core eliminated, seed sourced from the table
 
 
+def test_head_target_source_is_head_only_and_edits_thresholded_residue_peak(tmp_path):
+    seed_table = tmp_path / "seeds.parquet"
+    pd.DataFrame([{
+        "protein_id": "A",
+        "design_id": "design_0000",
+        "sequence": "A" * 30,
+        "seed": 42,
+    }]).to_parquet(seed_table)
+
+    base = [
+        "--seed-table", str(seed_table), "--allele", "HLA-DRB1_07_01",
+        "--mode", "refine", "--beam-width", "4", "--max-rounds", "3",
+        "--max-pairs", "0", "--head-aa-per-position", "1", "--no-eval-metrics",
+    ]
+    head_out = tmp_path / "head"
+    head_args = build_arg_parser().parse_args(
+        base + ["--target-source", "head", "--out-dir", str(head_out)]
+    )
+
+    assert run_refinement(head_args, _fake_head_target_oracles()) == 0
+    head_row = pd.read_parquet(
+        head_out / "refined" / "refined_designs.parquet"
+    ).iloc[0]
+    assert head_row["sequence_refined"][12] != "A"
+    assert set(np.flatnonzero(np.asarray(list(head_row["sequence_refined"])) != "A")) == {12}
+    assert pd.isna(head_row["core_count_before"])
+    assert pd.isna(head_row["core_count_after"])
+    assert head_row["head_global_risk"] == 0.0
+    assert head_row["head_global_risk_before"] == 1.0
+    assert head_row["head_global_risk_after"] == 0.0
+    assert head_row["head_positive_mass_density"] == pytest.approx(0.10 / 30.0)
+    assert head_row["head_positive_mass_density_before"] == pytest.approx(0.30 / 30.0)
+    assert head_row["head_positive_mass_density_after"] == pytest.approx(0.10 / 30.0)
+    assert head_row["head_positive_hotspot_positions_before"] == 1
+    assert head_row["head_positive_hotspot_positions_after"] == 1
+    assert head_row["head_residue_threshold"] == pytest.approx(0.15)
+    assert list(head_row["head_target_positions_0b_before"]) == [12]
+    assert list(head_row["head_target_hotspot_values_before"]) == [0.30]
+    assert head_row["n_head_residues_above_threshold_before"] == 1
+    assert head_row["n_head_local_maxima_pre_cap_before"] == 1
+    assert head_row["n_head_target_positions_before"] == 1
+    assert list(head_row["head_target_positions_0b_after"]) == []
+    assert head_row["n_head_target_positions_after"] == 0
+
+
+def test_head_ceiling_scores_all_singles_then_capped_round_robin_doubles(tmp_path):
+    seed_table = tmp_path / "seeds.parquet"
+    pd.DataFrame([{
+        "protein_id": "A", "design_id": "design_0000", "sequence": "A" * 30, "seed": 42,
+    }]).to_parquet(seed_table)
+    out_dir = tmp_path / "head_ceiling"
+    args = build_arg_parser().parse_args([
+        "--seed-table", str(seed_table), "--allele", "HLA-DRB1_07_01",
+        "--target-source", "head", "--mode", "ceiling", "--out-dir", str(out_dir),
+        "--head-aa-per-position", "1", "--max-pairs", "1",
+    ])
+
+    assert run_refinement(args, _fake_head_target_oracles(two_peaks=True)) == 0
+    candidates = pd.read_parquet(out_dir / "ceiling" / "candidates.parquet")
+    assert len(candidates) == 2 * 19 + 1
+    assert candidates["head_candidate_stage"].value_counts().to_dict() == {
+        "single": 38,
+        "double": 1,
+    }
+    assert set(position for row in candidates["positions"] for position in row) == {12, 20}
+    assert list(candidates.iloc[-1]["positions"]) == [12, 20]
+
+
+def test_official_head_retention_keeps_exact_per_seed_front_and_default_is_opt_in():
+    rows = [
+        {"sequence_refined": "AAAC", "head_global_risk_after": 0.0,
+         "head_positive_mass_density_after": 2.0},
+        {"sequence_refined": "AAAD", "head_global_risk_after": 1.0,
+         "head_positive_mass_density_after": 0.0},
+        {"sequence_refined": "AAAE", "head_global_risk_after": 2.0,
+         "head_positive_mass_density_after": 2.0},
+    ]
+
+    retained = _retain_official_head_rows(rows)
+
+    assert [row["sequence_refined"] for row in retained] == ["AAAC", "AAAD"]
+    args = build_arg_parser().parse_args(
+        ["--seed-table", "t", "--allele", "A", "--out-dir", "o"]
+    )
+    assert args.official is False
+    assert args.final_candidates_per_protein is None
+
+
+def test_official_head_run_persists_seed_group_and_requested_final_count(tmp_path):
+    seed_table = tmp_path / "seeds.parquet"
+    pd.DataFrame([{
+        "protein_id": "A",
+        "design_id": "design_0000",
+        "sequence": "A" * 30,
+        "seed": 42,
+        "seed_group": "product",
+        "selection_rule_id": "upstream_rule_v1",
+    }]).to_parquet(seed_table)
+    out = tmp_path / "official"
+    args = build_arg_parser().parse_args([
+        "--seed-table", str(seed_table),
+        "--allele", "HLA-DRB1_07_01",
+        "--target-source", "head",
+        "--mode", "refine",
+        "--max-rounds", "1",
+        "--max-pairs", "0",
+        "--head-aa-per-position", "1",
+        "--official",
+        "--final-candidates-per-protein", "5",
+        "--no-eval-metrics",
+        "--out-dir", str(out),
+    ])
+
+    assert run_refinement(args, _fake_head_target_oracles()) == 0
+    refined = pd.read_parquet(out / "refined" / "refined_designs.parquet")
+    assert set(refined["seed_group"]) == {"product"}
+    assert set(refined["selection_rule_id"]) == {"upstream_rule_v1"}
+    config = json.loads((out / "refined" / "refine_config.json").read_text())
+    assert bool(config["official"])
+    assert int(config["final_candidates_per_protein"]) == 5
+
+
 def test_refine_help_lists_key_flags():
     # R4 review fixes + PLAN update: the new seed-table / max-path-mutations knobs must exist.
     parser = build_arg_parser()
@@ -157,7 +314,10 @@ def test_refine_help_lists_key_flags():
             "refinement_structure_metrics", "max_anchor_sidechain_RMSD_max",
             "structural_metrics_v2", "refold_model", "esmfold2_site_packages",
             "structure_gate_profile", "gate_scTM_min", "gate_cat_max_scRMSD_max",
-            "gate_predicted_active_site_min_pLDDT_min"} <= dests
+            "gate_predicted_active_site_min_pLDDT_min", "target_source",
+            "head_residue_threshold", "head_max_target_positions",
+            "head_aa_per_position", "official",
+            "final_candidates_per_protein"} <= dests
 
 
 def test_refiner_defaults_to_esmfold2_and_has_no_numeric_protocol_gate_defaults():
@@ -170,6 +330,25 @@ def test_refiner_defaults_to_esmfold2_and_has_no_numeric_protocol_gate_defaults(
     assert args.gate_scTM_min is None
     assert args.gate_cat_max_scRMSD_max is None
     assert args.gate_predicted_active_site_min_pLDDT_min is None
+    assert args.head_residue_threshold == pytest.approx(0.15)
+    assert args.head_max_target_positions == 12
+    assert args.head_aa_per_position == 2
+
+
+@pytest.mark.parametrize("override", [
+    ["--head-residue-threshold", "-0.1"],
+    ["--head-residue-threshold", "nan"],
+    ["--head-max-target-positions", "0"],
+    ["--head-aa-per-position", "0"],
+    ["--head-aa-per-position", "20"],
+])
+def test_head_target_knobs_fail_closed_before_input_loading(override):
+    args = build_arg_parser().parse_args([
+        "--seed-table", "missing.parquet", "--allele", "A", "--out-dir", "out",
+        "--target-source", "head", *override,
+    ])
+    with pytest.raises(ValueError, match="Head refinement requires"):
+        run_refinement(args, _fake_head_target_oracles())
 
 
 def test_submit_refine_defaults_to_esmfold2_and_requires_runtime_protocol_thresholds():
@@ -182,18 +361,13 @@ def test_submit_refine_defaults_to_esmfold2_and_requires_runtime_protocol_thresh
     assert '${OUT_DIR}/${REFOLD_MODEL}_cache' in launcher
     assert '--refold-cache-dir "${REFOLD_CACHE_DIR}"' in launcher
     assert "protocol gate requires GATE_SCTM_MIN" in launcher
-
-
-def test_deferred_switches_fail_fast():
-    # --target-source head (Mode 2) and non-zero --head-high-topk are v0 deferrals:
-    # they must fail-fast, not silently no-op (review P2).
-    base = ["--run-dir", "x", "--eval-immune-dir", "y", "--allele", "A", "--out-dir", "z"]
-    with pytest.raises(NotImplementedError, match=r"target-source"):
-        run_refinement(build_arg_parser().parse_args(base + ["--target-source", "head"]),
-                       _fake_oracles())
-    with pytest.raises(NotImplementedError, match=r"head-high"):
-        run_refinement(build_arg_parser().parse_args(base + ["--head-high-topk", "3"]),
-                       _fake_oracles())
+    assert 'if [ "${TARGET_SOURCE}" = "nmp" ]; then' in launcher
+    assert 'HEAD_RESIDUE_THRESHOLD="${HEAD_RESIDUE_THRESHOLD:-0.15}"' in launcher
+    assert 'HEAD_MAX_TARGET_POSITIONS="${HEAD_MAX_TARGET_POSITIONS:-12}"' in launcher
+    assert 'HEAD_AA_PER_POSITION="${HEAD_AA_PER_POSITION:-2}"' in launcher
+    assert 'OFFICIAL="${OFFICIAL:-0}"' in launcher
+    assert 'FINAL_CANDIDATES_PER_PROTEIN="${FINAL_CANDIDATES_PER_PROTEIN:-}"' in launcher
+    assert '--final-candidates-per-protein "${FINAL_CANDIDATES_PER_PROTEIN}"' in launcher
 
 
 def test_build_oracles_fail_fast_on_missing_heavy_inputs():
@@ -204,6 +378,16 @@ def test_build_oracles_fail_fast_on_missing_heavy_inputs():
     ])
     with pytest.raises(ValueError, match=r"build_oracles requires"):
         build_oracles(args)
+
+
+def test_head_build_oracles_does_not_require_netmhciipan():
+    args = build_arg_parser().parse_args([
+        "--seed-table", "x", "--allele", "A", "--out-dir", "z",
+        "--target-source", "head",
+    ])
+    with pytest.raises(ValueError) as exc:
+        build_oracles(args)
+    assert "--netmhciipan-bin" not in str(exc.value)
 
 
 def test_build_oracles_validates_sidechain_gate_before_heavy_imports():
@@ -437,6 +621,67 @@ def test_run_final_metrics_writes_v2_to_canonical_paths(tmp_path, monkeypatch):
     assert not (refined_dir / "structural_v2.parquet").exists()
     status = pd.read_json(refined_dir / "final_metrics_status.json", typ="series")
     assert status["structural_metrics_version"] == "v2"
+
+
+def test_run_final_metrics_head_mode_never_builds_or_writes_nmp(tmp_path, monkeypatch):
+    from scripts import evaluate_phase_c as evaluator
+
+    refined_dir = tmp_path / "refined"
+    refined_dir.mkdir()
+    pd.DataFrame([{
+        "protein_id": "P1", "design_idx": 0, "sequence": "AAAA", "seed": 0,
+        "wall_seconds": 0.0,
+    }]).to_parquet(refined_dir / "evaluator_ready.parquet")
+    generated = pd.DataFrame([{
+        "protein_id": "P1", "design_id": "design_0000", "design_idx": 0,
+        "sequence": "AAAA",
+    }])
+    monkeypatch.setattr(evaluator, "load_generated_designs", lambda _path: generated)
+    monkeypatch.setattr(
+        evaluator,
+        "load_test_lookup",
+        lambda _path: (pd.DataFrame(), {"P1": {"sequence": "AAAA"}}),
+    )
+    monkeypatch.setattr(evaluator, "build_head_predictor", lambda **_kwargs: object())
+
+    def forbidden_nmp(**_kwargs):
+        raise AssertionError("Head mode must not construct NetMHCIIpan")
+
+    monkeypatch.setattr(evaluator, "build_nmp_runner", forbidden_nmp)
+    immune_call = {}
+
+    def fake_immune(*_args, **kwargs):
+        immune_call.update(kwargs)
+        return (
+            pd.DataFrame([{"protein_id": "P1", "design_id": "design_0000"}]),
+            pd.DataFrame(),
+            [],
+            pd.DataFrame(),
+            pd.DataFrame(),
+        )
+
+    monkeypatch.setattr(evaluator, "evaluate_immunogenicity_rows", fake_immune)
+    monkeypatch.setattr(evaluator, "_load_anchor_indices_by_protein", lambda *_args: {})
+    monkeypatch.setattr(
+        evaluator,
+        "evaluate_structural_rows",
+        lambda *_args, **_kwargs: (pd.DataFrame(), [], pd.DataFrame()),
+    )
+    monkeypatch.setattr(refine_driver, "_free_gpu", lambda: None)
+    args = build_arg_parser().parse_args([
+        "--seed-table", "unused", "--allele", "A", "--out-dir", str(tmp_path),
+        "--target-source", "head", "--test-set-parquet", "test.parquet",
+        "--pdb-root", "pdb", "--head-checkpoint", "head.pt",
+        "--head-config-dir", "configs", "--esmfold-cache-dir", "cache",
+    ])
+
+    _run_final_metrics(args)
+
+    assert immune_call["run_nmp"] is False
+    assert immune_call["nmp_runner"] is None
+    assert (refined_dir / "imm_head.parquet").exists()
+    assert not (refined_dir / "imm_nmp.parquet").exists()
+    assert not (refined_dir / "imm_nmp_peptides.parquet").exists()
 
 
 def test_run_final_metrics_skips_when_no_evaluator_ready(tmp_path, capsys):

@@ -9,8 +9,10 @@ refinement, and a wrong block grouping would break whack-a-mole co-targeting.
 import importlib.util
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 _PATH = (pathlib.Path(__file__).resolve().parents[2]
          / "inverse_folding" / "reference_flow" / "refine.py")
@@ -94,6 +96,405 @@ def test_pairs_skip_same_position_dedup_and_respect_max():
         diffs = [i for i in range(len(seq)) if seq[i] != c.seq[i]]
         assert set(diffs) == set(c.positions)
     assert len(enumerate_pairs(seq, choices, max_pairs=1)) == 1
+
+
+def _window(start, end, z):
+    return SimpleNamespace(start_0b=start, end_0b=end, k=end - start, z=z)
+
+
+def test_head_metrics_use_fusion_positive_mass_density():
+    metrics = refine.head_refinement_metrics(
+        SimpleNamespace(
+            global_risk=1.25,
+            residue_hotspot=(-1.0, 1.0, 2.0, 0.0),
+            sequence_length=4,
+            windows=(_window(0, 3, 1.0), _window(1, 4, 2.0)),
+        ),
+        protein_id="P",
+        sequence="ACDE",
+    )
+    assert metrics.positive_mass == 3.0
+    assert metrics.positive_mass_density == 0.75
+    assert metrics.n_positive_hotspot_positions == 2
+
+
+def test_head_residue_targets_apply_inclusive_threshold_local_maxima_anchor_and_cap():
+    metrics = refine.head_refinement_metrics(
+        SimpleNamespace(
+            global_risk=1.0,
+            residue_hotspot=(0.15, 0.30, 0.10, 0.40, 0.20, 0.10, 0.35, 0.10),
+            sequence_length=8,
+            windows=(_window(0, 8, 1.0),),
+        ),
+        protein_id="P",
+        sequence="ACDEFGHI",
+    )
+    target = refine.select_head_residue_targets(
+        metrics,
+        anchors={3},
+        threshold=0.15,
+        max_positions=2,
+    )
+    # The anchored 0.40 peak is masked before maxima detection, so its editable
+    # 0.20 neighbour remains discoverable. The cap keeps the two strongest peaks.
+    assert target.positions == (6, 1)
+    assert target.hotspot_values == (0.35, 0.30)
+    assert target.n_above_threshold == 4
+    assert target.n_local_maxima_pre_cap == 3
+
+
+def test_head_residue_targets_collapse_plateau_and_allow_zero_targets():
+    plateau = refine.HeadRefinementMetrics(
+        global_risk=0.0,
+        positive_mass=0.8,
+        positive_mass_density=0.16,
+        mean_hotspot=0.16,
+        max_hotspot=0.20,
+        n_positive_hotspot_positions=5,
+        residue_hotspot=(0.10, 0.20, 0.20, 0.20, 0.10),
+        windows=(_window(0, 5, 0.0),),
+    )
+    target = refine.select_head_residue_targets(
+        plateau, anchors=set(), threshold=0.15, max_positions=12
+    )
+    assert target.positions == (2,)
+
+    flat = refine.replace(
+        plateau,
+        positive_mass=0.56,
+        positive_mass_density=0.112,
+        mean_hotspot=0.112,
+        max_hotspot=0.14,
+        residue_hotspot=(0.14,) * 5,
+    )
+    target = refine.select_head_residue_targets(
+        flat, anchors=set(), threshold=0.15, max_positions=12
+    )
+    assert target.positions == ()
+    assert target.n_above_threshold == 0
+    assert target.n_local_maxima_pre_cap == 0
+
+
+def test_head_target_mode_fails_closed_without_valid_window_table():
+    base = dict(global_risk=1.0, residue_hotspot=(1.0,) * 4, sequence_length=4)
+    with pytest.raises(ValueError, match="windows are required"):
+        refine.head_refinement_metrics(
+            SimpleNamespace(**base), protein_id="P", sequence="ACDE"
+        )
+    with pytest.raises(ValueError, match="invalid span/k"):
+        refine.head_refinement_metrics(
+            SimpleNamespace(**base, windows=(_window(0, 5, 1.0),)),
+            protein_id="P",
+            sequence="ACDE",
+        )
+
+
+def _head_metrics(global_risk, density, *, length=4):
+    return refine.HeadRefinementMetrics(
+        global_risk=global_risk,
+        positive_mass=density * length,
+        positive_mass_density=density,
+        mean_hotspot=0.0,
+        max_hotspot=0.0,
+        n_positive_hotspot_positions=0,
+        residue_hotspot=(0.0,) * length,
+        windows=(_window(0, length, 0.0),),
+    )
+
+
+def test_head_single_aa_selection_keeps_each_axis_extreme_per_position():
+    seed = "AAAA"
+    candidates = [
+        Candidate("A0C", "CAAA", (0,)),
+        Candidate("A0D", "DAAA", (0,)),
+        Candidate("A0E", "EAAA", (0,)),
+        Candidate("A2C", "AACA", (2,)),
+        Candidate("A2D", "AADA", (2,)),
+    ]
+    metrics = {
+        "CAAA": _head_metrics(0.70, 0.50),
+        "DAAA": _head_metrics(0.90, 0.30),
+        "EAAA": _head_metrics(0.80, 0.40),
+        "AACA": _head_metrics(0.60, 0.60),
+        "AADA": _head_metrics(0.65, 0.55),
+    }
+    selected = refine.select_head_single_aa_choices(
+        candidates,
+        metrics,
+        position_order=(0, 2),
+        max_aa_per_position=2,
+    )
+    assert [row.seq for row in selected[0]] == ["CAAA", "DAAA"]
+    # One candidate dominates the other on both axes, so the first Pareto layer
+    # contributes one AA and the second layer fills the explicit cap.
+    assert [row.seq for row in selected[2]] == ["AACA", "AADA"]
+
+
+def test_position_pair_round_robin_covers_each_position_once_per_round():
+    pairs = refine.round_robin_position_pairs((9, 3, 7, 1))
+    assert len(pairs) == 6
+    assert len(set(pairs)) == 6
+    assert set(pairs) == {
+        (1, 3), (1, 7), (1, 9), (3, 7), (3, 9), (7, 9)
+    }
+    for offset in range(0, 6, 2):
+        assert sorted(position for pair in pairs[offset:offset + 2] for position in pair) \
+            == [1, 3, 7, 9]
+
+
+@pytest.mark.parametrize("n_positions", range(2, 10))
+def test_position_pair_round_robin_is_complete_for_odd_and_even_counts(n_positions):
+    positions = tuple(range(n_positions))
+    pairs = refine.round_robin_position_pairs(positions)
+    expected = {
+        (left, right)
+        for left in positions
+        for right in positions
+        if left < right
+    }
+    assert set(pairs) == expected
+    assert len(pairs) == len(expected)
+    pairs_per_round = n_positions // 2
+    for offset in range(0, len(pairs), pairs_per_round):
+        round_pairs = pairs[offset:offset + pairs_per_round]
+        flattened = [position for pair in round_pairs for position in pair]
+        assert len(flattened) == len(set(flattened))
+
+
+def test_round_robin_doubles_cover_position_pairs_before_second_aa_combo():
+    seed = "AAAA"
+    choices = {
+        0: (Candidate("A0C", "CAAA", (0,)), Candidate("A0D", "DAAA", (0,))),
+        1: (Candidate("A1C", "ACAA", (1,)), Candidate("A1D", "ADAA", (1,))),
+        2: (Candidate("A2C", "AACA", (2,)), Candidate("A2D", "AADA", (2,))),
+        3: (Candidate("A3C", "AAAC", (3,)), Candidate("A3D", "AAAD", (3,))),
+    }
+    doubles = refine.enumerate_round_robin_doubles(
+        seed,
+        choices,
+        position_order=(0, 1, 2, 3),
+        max_candidates=6,
+    )
+    assert len(doubles) == 6
+    assert {candidate.positions for candidate in doubles} == {
+        (0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)
+    }
+    assert all(candidate.seq[p] == "C" for candidate in doubles for p in candidate.positions)
+
+
+def test_default_head_double_cap_covers_every_twelve_position_pair_three_times():
+    seed = "A" * 12
+    choices = {}
+    for position in range(12):
+        first = seed[:position] + "C" + seed[position + 1:]
+        second = seed[:position] + "D" + seed[position + 1:]
+        choices[position] = (
+            Candidate(f"A{position}C", first, (position,)),
+            Candidate(f"A{position}D", second, (position,)),
+        )
+    doubles = refine.enumerate_round_robin_doubles(
+        seed,
+        choices,
+        position_order=tuple(range(12)),
+        max_candidates=200,
+    )
+    pair_counts = {}
+    for candidate in doubles:
+        pair_counts[candidate.positions] = pair_counts.get(candidate.positions, 0) + 1
+    assert len(doubles) == 200
+    assert len(pair_counts) == 66
+    assert min(pair_counts.values()) == 3
+    assert max(pair_counts.values()) == 4
+
+
+def test_head_pareto_dominance_keeps_axes_coequal():
+    def metrics(global_risk, density):
+        return refine.HeadRefinementMetrics(
+            global_risk=global_risk,
+            positive_mass=density * 10,
+            positive_mass_density=density,
+            mean_hotspot=0.0,
+            max_hotspot=0.0,
+            n_positive_hotspot_positions=0,
+            residue_hotspot=(0.0,) * 10,
+            windows=(_window(0, 10, 0.0),),
+        )
+
+    incumbent = metrics(1.0, 0.5)
+    tradeoff = metrics(0.8, 0.6)
+    dominant = metrics(0.9, 0.5)
+    assert refine.head_objective_dominates(tradeoff, incumbent) is False
+    assert refine.head_objective_dominates(dominant, incumbent) is True
+    assert refine.head_first_pareto_front([incumbent, tradeoff, dominant]) == (1, 2)
+
+
+def test_head_refinement_rejects_global_gain_that_worsens_positive_mass_density():
+    seed = "AA"
+    structure_calls = []
+
+    def head_score(_protein_id, sequences):
+        return [
+            SimpleNamespace(
+                global_risk=1.0 if sequence == seed else 0.9,
+                residue_hotspot=(1.0, 0.0) if sequence == seed else (2.0, 0.0),
+                sequence_length=2,
+                windows=(_window(0, 2, 1.0),),
+            )
+            for sequence in sequences
+        ]
+
+    def structure(_protein_id, sequence):
+        structure_calls.append(sequence)
+        return _OK
+
+    result = refine.refine_sequence_head(
+        "P",
+        seed,
+        head_score_fn=head_score,
+        struct_fn=structure,
+        anchors=set(),
+        residue_threshold=0.15,
+        max_target_positions=12,
+        aa_per_position=1,
+        max_double_candidates=0,
+        alphabet="AC",
+        max_rounds=2,
+        patience=1,
+        beam_width=2,
+        refold_cap=2,
+    )
+    assert result.shortlist == []
+    assert result.diverged is True
+    assert structure_calls == [seed]
+
+
+def test_head_refinement_scores_singles_then_full_double_and_admits_synergy():
+    seed = "AAAA"
+    head_batches = []
+    structure_calls = []
+
+    def head_score(_protein_id, sequences):
+        head_batches.append(tuple(sequences))
+        rows = []
+        for sequence in sequences:
+            n_mutations = sum(a != b for a, b in zip(seed, sequence))
+            if n_mutations == 0:
+                risk, hotspot = 1.0, (0.30, 0.0, 0.25, 0.0)
+            elif n_mutations == 1:
+                # Each single is a tradeoff and cannot advance the beam alone.
+                risk, hotspot = 0.9, (0.35, 0.0, 0.25, 0.0)
+            else:
+                risk, hotspot = 0.8, (0.20, 0.0, 0.20, 0.0)
+            rows.append(SimpleNamespace(
+                global_risk=risk,
+                residue_hotspot=hotspot,
+                sequence_length=4,
+                windows=(_window(0, 4, risk),),
+            ))
+        return rows
+
+    def structure(_protein_id, sequence):
+        structure_calls.append(sequence)
+        return _OK
+
+    result = refine.refine_sequence_head(
+        "P",
+        seed,
+        head_score_fn=head_score,
+        struct_fn=structure,
+        anchors=set(),
+        residue_threshold=0.15,
+        max_target_positions=12,
+        aa_per_position=1,
+        max_double_candidates=1,
+        alphabet="AC",
+        max_rounds=1,
+        beam_width=2,
+        refold_cap=2,
+    )
+    assert len(result.shortlist) == 1
+    assert result.shortlist[0]["seq"] == "CACA"
+    assert head_batches == [(seed,), ("CAAA", "AACA"), ("CACA",)]
+    assert structure_calls == [seed, "CACA"]
+    assert result.trace[0]["n_single_candidates"] == 2
+    assert result.trace[0]["n_retained_single_aas"] == 2
+    assert result.trace[0]["n_double_candidates"] == 1
+
+
+def test_head_beam_accumulates_single_edits_across_rounds():
+    seed = "AAAA"
+
+    def head_score(_protein_id, sequences):
+        rows = []
+        for sequence in sequences:
+            changed = {position for position in (0, 2) if sequence[position] != "A"}
+            hotspot = tuple(
+                0.10 if position in changed else 0.30 if position in (0, 2) else 0.0
+                for position in range(4)
+            )
+            rows.append(SimpleNamespace(
+                global_risk=float(2 - len(changed)),
+                residue_hotspot=hotspot,
+                sequence_length=4,
+                windows=(_window(0, 4, float(2 - len(changed))),),
+            ))
+        return rows
+
+    result = refine.refine_sequence_head(
+        "P",
+        seed,
+        head_score_fn=head_score,
+        struct_fn=lambda _protein_id, _sequence: _OK,
+        anchors=set(),
+        residue_threshold=0.15,
+        max_target_positions=12,
+        aa_per_position=1,
+        max_double_candidates=0,
+        alphabet="AC",
+        max_rounds=2,
+        beam_width=4,
+        refold_cap=4,
+        max_path_mutations=2,
+    )
+    assert "CACA" in {row["seq"] for row in result.shortlist}
+    assert [row["n_single_candidates"] for row in result.trace] == [2, 2]
+    assert all(row["n_double_candidates"] == 0 for row in result.trace)
+
+
+def test_head_refinement_low_landscape_returns_no_targets_without_candidate_scoring():
+    seed = "AAAA"
+    head_batches = []
+    structure_calls = []
+
+    def head_score(_protein_id, sequences):
+        head_batches.append(tuple(sequences))
+        return [SimpleNamespace(
+            global_risk=-9.0,
+            residue_hotspot=(0.14,) * 4,
+            sequence_length=4,
+            windows=(_window(0, 4, -9.0),),
+        ) for _sequence in sequences]
+
+    def structure(_protein_id, sequence):
+        structure_calls.append(sequence)
+        return _OK
+
+    result = refine.refine_sequence_head(
+        "P",
+        seed,
+        head_score_fn=head_score,
+        struct_fn=structure,
+        anchors=set(),
+        residue_threshold=0.15,
+        max_target_positions=12,
+        aa_per_position=2,
+        max_double_candidates=200,
+        max_rounds=3,
+    )
+    assert result.shortlist == []
+    assert result.trace == []
+    assert head_batches == [(seed,)]
+    assert structure_calls == [seed]
 
 
 # --------------------------------------------------------------------------- #

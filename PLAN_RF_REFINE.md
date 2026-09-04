@@ -33,9 +33,21 @@ sampler's `fixed_tokens` inpainting path is the deferred alternate in §9).
 
 ## 1. Scientific Framing And Frozen Decisions (authoritative for v0)
 
-**Objective (primary):** minimise the number of **distinct NMP strong epitope cores**
+**Mode-1 objective (default):** minimise the number of **distinct NMP strong epitope cores**
 (`rank_EL < 2%`), target **0**. This is the `n_distinct_cores` metric of RAR 0024 (median 5,
 range 1–12 over char23/0701; Q00511 = 3). Head risk is an inner-loop proxy, not the objective.
+
+**Mode-2 objective (Head-only):** NetMHCIIpan is neither built nor called. Each parent/round reads
+the complete `HeadScore.residue_hotspot` landscape, keeps editable residue-local maxima at or above
+the Head-identity-bound threshold `0.15`, and caps the target set at 12 positions. The threshold is
+a proposal prominence cutoff, not an absolute immunogenicity probability. All 19 non-parent AAs
+are scored at every target; each position retains a small two-axis Pareto AA set; full double
+mutants are emitted in position round-robin order and capped before exact Head scoring. Complete
+candidates are retained only when they Pareto-dominate their parent on the two lower-is-better
+Fusion export axes: `global_risk` and
+`sum(max(residue_hotspot, 0))/sequence_length`. No scalar weight combines the axes, and no
+Head-derived NMP 9-mer or P1/P4/P6/P9 assignment is invented. Structure and hard-anchor gates are
+identical to Mode 1.
 
 **Roles — Mode 1 (NMP-dominant, the v0 default):**
 - **NMP** defines the target cores, is the periodic in-loop check, and the **final gate**.
@@ -100,9 +112,9 @@ inputs with no repository defaults. Active-site geometry is all-heavy-side-chain
 global full-trace C-alpha superposition; it is never a local C-alpha shell RMSD. The legacy
 seed-relative gate remains available only through an explicit compatibility profile.
 
-**Two modes (keep the interface).** `--target-source nmp` (Mode 1, default) vs
-`--target-source head` (Mode 2, deferred use — to demonstrate head-beats-NMP once blood data
-exists). v0 implements Mode 1 fully; Mode 2 is a wired switch.
+**Two modes (keep the interface).** `--target-source nmp` (Mode 1, default) preserves the
+NMP-core search behavior. `--target-source head` (Mode 2) is an isolated NMP-free path using
+Head hotspot localization and the two-axis Pareto objective above.
 
 **R0/E0 candidate-level agreement is the load-bearing risk** (distinct from the sequence-level
 0.635 in RAR 0024): does head rank the NMP-eliminating candidates into `topB`? E0 measures it
@@ -506,13 +518,19 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
   **(c) `run_refinement(args, oracles)`**: load `generated.parquet` + `imm_head.parquet`; per
   protein pick top `--seeds-per-protein` designs by `global_risk`; anchors via
   `build_run_constraints(load_constraint_manifest(args.constraint_manifest), {pid: seq},
-  aa_to_token=...)`; `head_high_positions` = top-`head-high-topk` per-residue-head positions in
-  each core span; `propose_fn` = block enumeration (`hotspot_blocks` → per block
+  aa_to_token=...)`. In NMP mode, `propose_fn` = block enumeration (`hotspot_blocks` → per block
   `enumerate_singles`, head-rank the singles, `enumerate_pairs` on top (pos,AA), cap `--max-pairs`).
-  - `--mode ceiling`: propose once per seed, score ALL with head + NMP, refold every
-    count/margin-improving candidate; write `ceiling/candidates.parquet` (`protein_id,
-    design_idx, muts, positions, head_proxy, core_count, rank_margin_mass, scTM, pLDDT,
-    passed, eliminates`).
+  In Head mode, threshold/cap the complete residue landscape (`--head-residue-threshold`,
+  `--head-max-target-positions`), score every single in one Head batch, and retain at most
+  `--head-aa-per-position` Pareto representatives per position. A tournament round-robin covers
+  distinct position pairs before revisiting an AA combination for any pair; `--max-pairs` caps
+  the resulting full double-mutant Head batch per parent/round. Singles and doubles both remain
+  eligible for the beam, which accumulates accepted edits across rounds before the same structure
+  gate.
+  - `--mode ceiling`: propose once per seed and score every candidate under the selected mode.
+    NMP mode refolds count/margin improvements; Head mode calls no NMP and refolds two-axis
+    Pareto improvements. Both write `ceiling/candidates.parquet` with mode-specific objective
+    columns plus structure verdicts.
   - `--mode refine`: run `refine_sequence(...)` per seed; write **both** outputs:
     - `refined/refined_designs.parquet` (rich: `protein_id, design_idx, sequence_original,
       sequence_refined, n_mutations, muts, core_count_before, core_count_after, scTM_after,
@@ -523,6 +541,18 @@ def refine_sequence(protein_id, seed_seq, *, propose_fn, head_fn, nmp_fn, struct
       wall_seconds`), with `sequence = sequence_refined` and the SAME `(protein_id, design_idx)`
       as the rich file (join key). This is the drop-in `--generated` input for E1 re-eval.
     - `refined/refine_trace.parquet` + `refined/refine_config.json`.
+
+  **Official publication/retention switch (additive compatibility contract).** The historical
+  evidence-rich behavior above remains the default. `--official` is valid only for Head refine
+  mode and changes no proposal, beam, structure gate, oracle call, seed, or stopping decision; it
+  persists only each seed's exact global two-axis Pareto front to `refined_designs` and
+  `evaluator_ready`, while retaining the compact round trace and resolved config. The independent
+  `--final-candidates-per-protein N` records the requested publication-panel size and takes
+  precedence over the official default `N=8`; `merge_refine_shards.py` applies it after all shards
+  close. Final selection is lineage-balanced: each seed contributes at most its
+  minimum-global-risk member, and those representatives are ordered by the frozen two-axis
+  Pareto-layer / full-pool rank-sum / sequence-MD5 law. Source seed groups remain
+  separate. Neither switch deletes legacy artifacts or changes the default output contract.
 
 - [ ] **Step 4:** run smoke → PASS. **Step 5:** commit `feat(refine): driver with ceiling +
   refine modes, real oracles, evaluator-ready output (R4)`.
@@ -643,13 +673,15 @@ python scripts/evaluate_phase_c.py --generated <out>/refined/evaluator_ready.par
 | `max_path_mutations` | 8 | cheap refold-free cap bounding branch-waste on stacked edits. |
 | `refold_cap` | 16 / round | max count-dropping candidates refolded per round (top by count↓, then edits↓). **Essential:** single mutations kill cores readily (H2ETE7: 2003/2208 candidates dropped count) so unbounded refold explodes (80 min GPU); the cap bounds ESMFold AND is exactly the lean ranked shortlist wanted. |
 | `allow_structure_unknown` | `False` | v0 refolds+gates ONLY count-dropping (output) candidates; margin-progress states enter the beam with no refold. |
-| `topB` | **64** for refine (`None` only for a small ceiling probe) | head-prunes the pool before NMP. NMP-all (`None`) proved infeasible on multi-core seeds (H2ETE7 r1: pool 2208 → 60 min NMP → walltime kill). head proxy = target-window risk, so top-B surfaces count-droppers by construction; 32–64 is safe when droppers are abundant. |
+| `topB` | **64** for refine (`None` only for a small ceiling probe) | NMP mode head-prunes before NMP. Head mode applies the same cap only after rich Head scoring and complete first-front extraction; both axis minima are retained without scalarization. |
 | `beam_width` | 4 | working states carried between rounds; larger multiplies the pool (`beam × per-state enumeration`) — the second explosion factor. |
 | `max_rounds` / `patience` | 20 / 3 | stop on count 0, budget, or stalled (count,margin). |
-| `max_pairs` / `max_points` | 200 / 2 | singles+pairs primary; triples only for stuck blocks. |
-| `head_high_topk` | 0 (v0) | extra in-span high-head positions for a core's editable set; **v0 deferral** — non-zero fail-fasts, editable = pockets − anchors (needs per-residue head, not wired). |
+| `max_pairs` / `max_points` | 200 / 2 | NMP pair cap; in Head mode, full double-mutant scoring cap per parent/round after per-position AA pruning. |
+| `head_residue_threshold` | 0.15 | Inclusive threshold for editable residue-local maxima under the frozen Head identity; not a transferable probability threshold. |
+| `head_max_target_positions` | 12 | Total residue-local-max cap per parent/round. On the frozen 656-seed table, local maxima at 0.15 were median 5, p90 10, p95 12, max 16. |
+| `head_aa_per_position` | 2 | Retain the per-position global-risk and positive-mass-density Pareto extremes for double composition. |
 | `seeds_per_protein` | 3 | refine top-k best-of-N (different basins). |
-| `target_source` | `nmp` | Mode 1; `head` = Mode 2 switch (deferred). |
+| `target_source` | `nmp` | `nmp` preserves Mode 1; `head` selects the NMP-free two-axis Mode 2 path. |
 | allele | DRB1*07:01 | single-allele objective; multi-allele (union of cores) deferred. |
 
 ---
@@ -689,7 +721,9 @@ jointly-coherent multi-position edits.
   `test_structure_floor_blocks_fold_breaking_elimination_and_beam`. ✓
 - Effect ceiling before cost: `--mode ceiling` (R4), E0. ✓
 - Block enumeration + whack-a-mole: R2 + `hotspot_blocks` (R1), driver `propose_fn` (R4). ✓
-- Editable = pockets ∪ high-head − anchors: `editable_positions` (R1), `--head-high-topk` (R4). ✓
+- Editable positions: NMP pockets minus anchors in Mode 1; thresholded/capped residue-local maxima
+  minus anchors in Mode 2. Head mode scores all singles, prunes AAs independently per position,
+  then scores capped round-robin full doubles. ✓
 - Structure gate vs WT backbone, floor scTM₀: `structure_gate` (R3), `struct_fn` via
   `run_tmalign` vs `--pdb-root` (R4). ✓
 - Evaluator-ready output pinned to the generated.parquet schema (drop-in re-eval): R4, E1. ✓

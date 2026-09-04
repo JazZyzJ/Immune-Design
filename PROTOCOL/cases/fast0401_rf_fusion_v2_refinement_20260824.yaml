@@ -1,0 +1,160 @@
+tag: fast0401_rf_fusion_v2_refinement_20260824
+date: 2026-08-24
+goal: >-
+  Second-stage Head refinement of the frozen fast0401 RF Fusion V2 four-root grid: seed a bounded
+  local edit search from the definitive-feasible pool (up to 8 per protein), refine every seed
+  under the same full-data production Head the generation used, and produce an untruncated
+  per-seed Pareto surface plus a one-per-seed product panel.
+protocol: PROTOCOL/rf_fusion_v2_refinement.md
+runner: PROTOCOL/rf_fusion_v2_refinement.runner.md
+status: run
+supersedes: null
+
+inputs:
+  allele: HLA-DRB1*04:01
+  generation:
+    case: PROTOCOL/cases/fast0401_rf_fusion_v2_design_20260822.yaml
+    campaign_id: fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34_v1
+    run_root: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d
+    cells: 1140
+    endpoint_rows: 40332
+    grid_closed: true
+  test_set_parquet: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/fast/fast_v2_HLA-DRB1_04_01.parquet
+  test_set_sha256: 77c92e79117dfe3e439f2b49f89375e201a7f735d3267413c09e5a5d1d0f5b58
+  pdb_root: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/0401
+  eligible_endpoints_after_dedup: 36536
+  eligible_proteins: 259
+
+config:
+  code_revision: 21cd73d22bad7a42ebb9dae82925b3e623449cb8
+  launcher: scripts/submit_refine.slurm
+  driver: scripts/refine_rf_designs.py
+  merger: scripts/merge_refine_shards.py
+  run_local_driver: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/refine/fast0401_v2_head_refine_20260824T040952Z/submit_fast0401_head_refine.sh
+  selection_doc: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/refine/fast0401_v2_head_refine_20260824T040952Z/SELECTION.md
+  mode: refine
+  target_source: head
+  refold_model: esmfold2_live
+
+cli_overrides:
+  head_residue_threshold: 0.15
+  head_max_target_positions: 12
+  head_aa_per_position: 2
+  max_pairs: 200
+  beam_width: 8
+  max_rounds: 12
+  patience: 2
+  max_path_mutations: 6
+  refold_cap: 12
+  topB: 64
+  structure_gate_profile: legacy
+  sctm_eps: 0.05
+  constraint_manifest: none
+  refinement_structure_metrics: global_ca_rmsd,plddt
+  emit_eval_metrics: 1
+  imm_full: 0
+  esmfold2_num_loops: 3
+  esmfold2_num_sampling_steps: 50
+  esmfold2_num_diffusion_samples: 1
+  esmfold2_seed: 0
+  resources:
+    partition: ailab
+    qos: gpu-short
+    gpu_request: gpu:1
+    cpus_per_task: 2
+    memory_gb: 96
+    walltime_hours: 4
+    n_array: 16
+    conda_env: immune-design
+
+models:
+  head: drb0401 full-data production a1res03 epoch_34
+  head_checkpoint: /scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head_fulldata/drb0401/epoch_34.pt
+  head_checkpoint_sha256: 12e8018fed5a9255e5e467811cd8c8b4520fd1ab7cdad281d93c75472b6ffb23
+  head_identity_matches_generation: true
+  head_variant_id: LC1
+  refolder: esmfold2_live
+  nmp: absent by construction
+
+criteria:
+  seed_source: definitive-feasible pool (NOT the materialized Pareto front)
+  eligibility_predicates:
+    - archive.feasibility_level == definitive
+    - complete_endpoints.structure_evaluated AND structure_feasible
+    - terminal_validation.structure_definitive
+    - terminal_validation.immune_passed
+  dedup_key: [protein_id, sequence_md5]
+  seed_ordering: pareto_layer asc -> within-protein mean rank of (global_risk, positive_mass_density) asc -> sequence_md5 asc
+  seeds_per_protein_max: 8
+  selection_rule_id: fast0401_multiroot_head_pareto_layers_rank_sum_top8_v1
+  failed_protein_rule: both structure_failed_best_sctm AND wild_type_seed, per protein
+  output_front_truncation: none
+  product_panel_rule: one per seed, min head_global_risk_after, md5 tie-break
+  structure_gate: seed-relative scTM >= seed.scTM - 0.05, no absolute floor
+  stopping: patience on exact beam equality; NO minimum-improvement epsilon
+
+outputs:
+  run_root:
+    dir: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/refine/fast0401_v2_head_refine_20260824T040952Z
+  seed_table:
+    file: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/refine/fast0401_v2_head_refine_20260824T040952Z/seeds/refine_seeds.parquet
+    sha256: 7e7204e14679df538aa82f34814d8f971a6c6809f55d892466031b19618dd3f4
+    rows: 2082
+    proteins: 284
+    rows_by_group:
+      v2_head_pareto_top8: 2030
+      structure_failed_best_sctm: 26
+      wild_type_seed: 26
+    proteins_by_group:
+      v2_head_pareto_top8: 258
+      structure_failed_best_sctm: 26
+      wild_type_seed: 26
+    proteins_with_full_8: 252
+    proteins_with_fewer_than_8: {2RDZ_D: 1, 3S98_A: 2, 6UUE_A: 5, 9DIV_A: 1, 9L2Q_B: 1, 9MG8_A: 4}
+    selected_sctm_median: 0.9479
+    selected_sctm_min: 0.7002
+    selected_head_risk_median: -9.7696
+    failed_group_sctm_range: [0.322, 0.675]
+  seed_table_resubmit:
+    file: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/refine/fast0401_v2_head_refine_20260824T040952Z/seeds/refine_seeds_6TN1_AAA.parquet
+    sha256: 5f353ae07cdf30eefaf8a0f594f7ed6a2ec7eb4686b8d3ac138745287f9abd91
+    rows: 8
+    reason: reference is a .cif; restored after the main submission, same frozen selection
+  jobs:
+    main:
+      id: 12860315
+      n_array: 16
+      out_dir: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/refine/fast0401_v2_head_refine_20260824T040952Z/cohort
+    resubmit_6TN1_AAA:
+      id: 12861947
+      n_array: 1
+      out_dir_basename: cohort_6TN1_AAA
+      state_at_case_write: PENDING (QOSMaxGRESPerUser; the 16 main shards hold the whole ailab GPU quota)
+    cancelled:
+      - id: 12861854
+        reason: OUT_DIR was clobbered to the shared cohort dir; N_ARRAY=1 creates no shard subdir, so refined output would have landed where the merger does not look. Cancelled before any output was written; driver patched to honour an external OUT_DIR.
+  merged: null
+  report: null
+  product_panel: null
+
+notes:
+  - >-
+    Excluded before submission: 6TN1_AAA had no .pdb under PDB_ROOT (its reference is a .cif).
+    Restored the same day after the test-set row was corrected; verified end-to-end through
+    resolve_structure_path then prepare_reference_context (497 residues, matching the test-set
+    sequence_length) before resubmitting from the SAME frozen selection table. Nothing re-selected.
+  - >-
+    The refinement Head is the generation's Head, byte-identical (sha 12e8018f...). Refining
+    against a CV fold or a full-data run's leaky best.pt would change the objective mid-pipeline.
+  - >-
+    structure_failed_best_sctm and wild_type_seed are DIAGNOSTIC, not product. Their seeds start
+    below the generation structure floor of scTM 0.70. Filter on seed_group before reporting any
+    product-level number.
+  - >-
+    ESMFold2 is not deterministic at these settings (40 designs folded twice: |dscTM| median
+    0.0024, max 0.121, 0/40 exact). Compare distributions, not individual designs; a refinement
+    delta_scTM of the same order as this noise means not distinguishable, not degraded.
+  - >-
+    Patience has no minimum-improvement epsilon, unlike generation's epsilon_R=0.005. MAX_ROUNDS
+    was non-binding on the 0701 cohort (median 4, max 7, 0/654 at the cap) but that is an
+    empirical observation, not a guarantee.
