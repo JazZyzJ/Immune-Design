@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from scripts.build_protenix_jsons import LIGAND_SMILES, build_sequences_block
+import pytest
+
+from scripts.build_protenix_jsons import (
+    LIGAND_SMILES,
+    build_a3m_index,
+    build_sequences_block,
+)
 
 ZN = "[Zn+2]"
 ADO = "C1=NC(=C2C(=N1)N(C=N2)[C@H]3[C@@H]([C@@H]([C@H](O3)CO)O)O)N"
@@ -74,3 +80,28 @@ def test_multiple_partners_keep_order():
 def test_no_partners_is_byte_for_byte_the_old_behaviour():
     assert build_sequences_block("AAAA", 4) == build_sequences_block("AAAA", 4, partners=None)
     assert build_sequences_block("AAAA", 4, partners=[]) == build_sequences_block("AAAA", 4)
+
+
+def test_a3m_index_accepts_disjoint_shard_directories(tmp_path):
+    shard_0 = tmp_path / "000"
+    shard_1 = tmp_path / "001"
+    shard_0.mkdir()
+    shard_1.mkdir()
+    (shard_0 / "P1.a3m").write_text(">P1\nAAAA\n")
+    (shard_1 / "P2.a3m").write_text(">P2\nCCCC\n")
+
+    index = build_a3m_index([str(shard_0), str(shard_1)])
+    assert list(index) == ["P1", "P2"]
+    assert index["P2"] == str((shard_1 / "P2.a3m").resolve())
+
+
+def test_a3m_index_rejects_duplicate_id_across_shards(tmp_path):
+    shard_0 = tmp_path / "000"
+    shard_1 = tmp_path / "001"
+    shard_0.mkdir()
+    shard_1.mkdir()
+    (shard_0 / "P1.a3m").write_text(">P1\nAAAA\n")
+    (shard_1 / "P1.a3m").write_text(">P1\nAAAA\n")
+
+    with pytest.raises(ValueError, match="duplicate A3M"):
+        build_a3m_index([str(shard_0), str(shard_1)])

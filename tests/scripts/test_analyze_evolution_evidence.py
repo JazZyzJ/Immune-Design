@@ -168,6 +168,45 @@ def test_complete_ec_validation_and_sigma_cutoffs(tmp_path: Path) -> None:
         read_complete_ec_table(incomplete, wt)
 
 
+def test_zero_coupling_table_suppresses_sigma_without_dropping_parent() -> None:
+    wt = AA20
+    ecs = _complete_ec_table(wt)
+    ecs["cn"] = 0.0
+
+    per_position, ranked, stability = compute_coupling_evidence(ecs, wt)
+
+    assert set(per_position["sigma_evidence_status"]) == {
+        "unavailable_nonpositive_cn"
+    }
+    sigma_columns = [
+        "sigma_0p5L",
+        "sigma_L",
+        "sigma_2L",
+        "sigma_0p5L_pct",
+        "sigma_L_pct",
+        "sigma_2L_pct",
+        "sigma_robust_pct",
+    ]
+    assert per_position[sigma_columns].isna().all().all()
+    assert not ranked[["in_top_0p5L", "in_top_L", "in_top_2L"]].any().any()
+    assert len(stability) == 9
+    assert stability["value"].isna().all()
+
+    mask_input = per_position.assign(
+        protein_id="PZERO",
+        C_nogap_min=1.0,
+        pWT_nogap_min=1.0,
+        gap_frac_max=0.0,
+    )
+    _, summary, positions, payload = build_lock_masks(
+        mask_input, covariance_status="qualified"
+    )
+    sigma_summary = summary.loc[summary["kind"].eq("covariance")]
+    assert set(sigma_summary["status"]) == {"suppressed_degenerate_couplings"}
+    assert not positions["mask"].str.startswith("sigma").any()
+    assert payload["sigma_evidence_status"] == "unavailable_nonpositive_cn"
+
+
 def test_lock_masks_emit_exact_lists_and_suppress_unqualified_sigma(tmp_path: Path) -> None:
     frame = pd.DataFrame(
         {

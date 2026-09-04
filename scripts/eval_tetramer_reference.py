@@ -926,7 +926,9 @@ def main(argv=None) -> int:
             "alanine_scan_repack_bound": False,
             "alanine_scan_repack_unbound": False,
             "ddg_sign_convention": "mutant_minus_wildtype",
-            "interpretable_sidechain_scan_excludes": ["ALA", "GLY", "PRO"],
+            "interpretable_sidechain_scan_excludes": [
+                "ALA", "GLY", "PRO", "DISULFIDE_CYS"
+            ],
         },
         "software": {
             "numpy": np.__version__,

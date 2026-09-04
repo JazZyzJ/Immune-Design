@@ -537,6 +537,65 @@ def compute_coupling_evidence(
             "wt_aa": list(wt),
         }
     )
+    if not np.isfinite(long_range["cn"].to_numpy(dtype=float)).all():
+        raise ValueError("long-range cn values must all be finite")
+    cutoff_means: dict[str, float] = {}
+    for fraction in sorted(pair_fractions):
+        label = PAIR_LABELS[float(fraction)]
+        n_pairs = int(math.ceil(float(fraction) * length))
+        if len(long_range) < n_pairs:
+            raise ValueError(
+                f"only {len(long_range)} long-range ECs available; need {n_pairs} for sigma"
+            )
+        cutoff_means[label] = float(long_range.iloc[:n_pairs]["cn"].mean())
+    sigma_evidence_status = (
+        "available"
+        if all(value > 0 for value in cutoff_means.values())
+        else "unavailable_nonpositive_cn"
+    )
+    per_position["sigma_evidence_status"] = sigma_evidence_status
+
+    if sigma_evidence_status != "available":
+        for fraction in sorted(pair_fractions):
+            label = PAIR_LABELS[float(fraction)]
+            per_position[f"sigma_{label}"] = np.nan
+            per_position[f"sigma_{label}_pct"] = np.nan
+            per_position[f"sigma_{label}_rank_desc"] = pd.array(
+                [pd.NA] * length, dtype="Int64"
+            )
+            per_position[f"top_{label}_partners_1b"] = ""
+            per_position[f"top_{label}_partners_0b"] = ""
+            per_position[f"in_top_{label}"] = False
+            ranked[f"in_top_{label}"] = False
+        per_position["sigma_robust_pct"] = np.nan
+        stability_rows = []
+        labels = ("0p5L", "L", "2L")
+        for left_index, left in enumerate(labels):
+            for right in labels[left_index + 1 :]:
+                stability_rows.append(
+                    {
+                        "metric": "spearman",
+                        "cutoff_left": left,
+                        "cutoff_right": right,
+                        "percentile_threshold": np.nan,
+                        "value": np.nan,
+                    }
+                )
+                for threshold, metric in (
+                    (0.9, "jaccard_top10"),
+                    (0.8, "jaccard_top20"),
+                ):
+                    stability_rows.append(
+                        {
+                            "metric": metric,
+                            "cutoff_left": left,
+                            "cutoff_right": right,
+                            "percentile_threshold": threshold,
+                            "value": np.nan,
+                        }
+                    )
+        return per_position, ranked, pd.DataFrame(stability_rows)
+
     sigma_by_label: dict[str, np.ndarray] = {}
     pct_by_label: dict[str, np.ndarray] = {}
     top_by_label: dict[str, pd.DataFrame] = {}
@@ -652,10 +711,25 @@ def build_lock_masks(
         "exploratory": "exploratory_not_hard_lock",
         "insufficient": "suppressed_low_neff",
     }[covariance_status]
+    sigma_evidence_values = (
+        per_position["sigma_evidence_status"].drop_duplicates().astype(str).tolist()
+        if "sigma_evidence_status" in per_position
+        else ["available"]
+    )
+    if len(sigma_evidence_values) != 1 or sigma_evidence_values[0] not in {
+        "available",
+        "unavailable_nonpositive_cn",
+    }:
+        raise ValueError(
+            f"invalid sigma_evidence_status values: {sigma_evidence_values}"
+        )
+    sigma_evidence_status = sigma_evidence_values[0]
+    if sigma_evidence_status != "available":
+        sigma_status = "suppressed_degenerate_couplings"
     for threshold, suffix in ((0.9, "90"), (0.8, "80")):
         for metric, postfix in (("sigma_L_pct", "L"), ("sigma_robust_pct", "robust")):
             mask = (frame[metric] >= threshold) & (frame["gap_frac_max"] <= 0.5)
-            if covariance_status == "insufficient":
+            if covariance_status == "insufficient" or sigma_evidence_status != "available":
                 mask = pd.Series(False, index=frame.index)
             definitions.append(
                 {
@@ -737,6 +811,7 @@ def build_lock_masks(
             "position_1b": "one-based protein position; position_1b = index_0b + 1",
         },
         "covariance_status": covariance_status,
+        "sigma_evidence_status": sigma_evidence_status,
         "masks": masks_json,
     }
     return frame, pd.DataFrame(summaries), position_table, payload
@@ -1383,6 +1458,14 @@ def run_analysis(
     coupling, ranked_ecs, sigma_stability = compute_coupling_evidence(
         ecs, wt, min_sequence_separation=min_sequence_separation
     )
+    sigma_evidence_values = (
+        coupling["sigma_evidence_status"].drop_duplicates().astype(str).tolist()
+    )
+    if len(sigma_evidence_values) != 1:
+        raise ValueError(
+            f"expected one sigma evidence status, found {sigma_evidence_values}"
+        )
+    sigma_evidence_status = sigma_evidence_values[0]
     per_position = conservation_stable.merge(
         coupling, on=["index_0b", "position_1b", "wt_aa"], validate="one_to_one"
     )
@@ -1551,6 +1634,7 @@ def run_analysis(
             "complete_pair_count": len(ecs),
             "min_sequence_separation": min_sequence_separation,
             "sigma_pair_fractions": list(DEFAULT_PAIR_FRACTIONS),
+            "sigma_evidence_status": sigma_evidence_status,
             "sigma_definition": (
                 "per-position sum of cn over top fraction*L long-range pairs divided by "
                 "mean cn of those pairs (EVcouplings enrichment definition)"

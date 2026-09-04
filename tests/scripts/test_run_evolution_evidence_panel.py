@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import pandas as pd
@@ -283,3 +285,101 @@ def test_serial_slurm_is_one_non_array_all_parent_process() -> None:
     assert '"${EVCOUPLINGS_PYTHON}" -u "${PANEL_RUNNER}"' in script
     assert "--plmc-manifest" in script
     assert "--expected-parent-count" in script
+
+
+def test_sharded_array_worker_stages_exact_wt_subset_and_calls_panel_runner(
+    tmp_path: Path,
+) -> None:
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "submit_evolution_evidence_array.slurm"
+    )
+    shard_root = tmp_path / "normalized_shards"
+    shard = shard_root / "000"
+    shard.mkdir(parents=True)
+    manifest = shard / "plmc_manifest.tsv"
+    manifest.write_text(
+        "protein_id\tquery_id\talignment_path\tcovariance_gate\t"
+        "neff_exact\tneff_per_length\n"
+        f"P1\tP1\t{shard / 'P1' / 'focus_cov60.fasta'}\tqualified\t10\t2\n"
+        f"P2\tP2\t{shard / 'P2' / 'focus_cov60.fasta'}\texploratory\t5\t1\n"
+    )
+    wt_root = tmp_path / "all_wt"
+    wt_root.mkdir()
+    (wt_root / "P1.fasta").write_text(">P1\nACDE\n")
+    (wt_root / "P2.fasta").write_text(">P2\nACDF\n")
+    (wt_root / "UNEXPECTED.fasta").write_text(">UNEXPECTED\nACDG\n")
+    plmc_root = tmp_path / "plmc"
+    plmc_root.mkdir()
+    output_root = tmp_path / "work" / "evolution_shards"
+    runner = tmp_path / "run_evolution_evidence_panel.py"
+    runner.write_text("# test runner\n")
+    capture = tmp_path / "args.txt"
+    staged = tmp_path / "staged_wt.txt"
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"${EVOLUTION_ARGS_CAPTURE:?}\"\n"
+        "args=(\"$@\")\n"
+        "for ((i=0; i<${#args[@]}; i++)); do\n"
+        "  if [[ \"${args[$i]}\" == '--wt-root' ]]; then\n"
+        "    find \"${args[$((i+1))]}\" -maxdepth 1 -type f -printf '%f\\n' | sort > \"${EVOLUTION_WT_CAPTURE:?}\"\n"
+        "  fi\n"
+        "done\n"
+    )
+    fake_python.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(worker),
+            str(shard_root),
+            str(wt_root),
+            str(plmc_root),
+            str(output_root),
+            str(fake_python),
+            str(runner),
+            "64",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "SLURM_ARRAY_TASK_ID": "0",
+            "SLURM_ARRAY_JOB_ID": "12345",
+            "SLURM_CPUS_PER_TASK": "4",
+            "EVOLUTION_ARGS_CAPTURE": str(capture),
+            "EVOLUTION_WT_CAPTURE": str(staged),
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert staged.read_text().splitlines() == ["P1.fasta", "P2.fasta"]
+    args = capture.read_text().splitlines()
+    assert args[0:2] == ["-u", str(runner)]
+    assert args[args.index("--plmc-manifest") + 1] == str(manifest)
+    assert args[args.index("--plmc-root") + 1] == str(plmc_root)
+    assert args[args.index("--output-root") + 1] == str(output_root / "000")
+    assert args[args.index("--expected-parent-count") + 1] == "2"
+    staged_root = Path(args[args.index("--wt-root") + 1])
+    assert not staged_root.exists()
+
+
+def test_sharded_array_worker_is_cpu_only_and_shell_valid() -> None:
+    worker = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "submit_evolution_evidence_array.slurm"
+    )
+    syntax = subprocess.run(
+        ["bash", "-n", str(worker)], text=True, capture_output=True, check=False
+    )
+    assert syntax.returncode == 0, syntax.stderr
+    script = worker.read_text()
+    assert "#SBATCH --partition=cpu" in script
+    assert "#SBATCH --cpus-per-task=4" in script
+    assert "#SBATCH --gres" not in script
+    assert "SLURM_ARRAY_TASK_ID" in script
+    assert "mktemp -d" in script

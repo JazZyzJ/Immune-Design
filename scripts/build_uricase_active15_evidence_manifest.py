@@ -18,6 +18,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
+import pandas as pd
+
 try:
     from scripts.aggregate_uricase_active15_evidence import (
         JoinContractError,
@@ -85,11 +87,11 @@ def _build_row(
     *,
     protein_id: str,
     sequence: str,
-    evolution_root: Path,
+    evolution_dir: Path,
     contact_root: Path,
-    energy_root: Path,
+    energy_roots: Sequence[Path],
 ) -> dict[str, str]:
-    evolution_dir = (evolution_root / protein_id).resolve()
+    evolution_dir = evolution_dir.resolve()
     required_evolution = {
         name: _require_file(
             evolution_dir / name,
@@ -168,7 +170,23 @@ def _build_row(
             f"{protein_id}: contact metadata differs from the frozen 5A/5-4-1 contract"
         )
 
-    energy_dir = (energy_root / protein_id).resolve()
+    energy_candidates = [
+        (root / protein_id).resolve()
+        for root in energy_roots
+        if (root / protein_id / f"{protein_id}_{ENERGY_TABLE_SUFFIX}").is_file()
+        and (root / protein_id / "metadata.json").is_file()
+    ]
+    if not energy_candidates:
+        raise JoinContractError(
+            f"missing production artifact for {protein_id} energy across roots: "
+            f"{list(map(str, energy_roots))}"
+        )
+    if len(energy_candidates) != 1:
+        raise JoinContractError(
+            f"{protein_id}: expected exactly one complete energy root, found "
+            f"{energy_candidates}"
+        )
+    energy_dir = energy_candidates[0]
     energy_table = _require_file(
         energy_dir / f"{protein_id}_{ENERGY_TABLE_SUFFIX}",
         label=f"{protein_id} energy alanine scan",
@@ -210,9 +228,21 @@ def _build_row(
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--parent-fasta", type=Path, required=True)
-    parser.add_argument("--evolution-root", type=Path, required=True)
+    evolution = parser.add_mutually_exclusive_group(required=True)
+    evolution.add_argument("--evolution-root", type=Path)
+    evolution.add_argument(
+        "--evolution-panel-manifest",
+        type=Path,
+        help="Parquet/TSV with unique protein_id and absolute output_dir columns.",
+    )
     parser.add_argument("--contact-root", type=Path, required=True)
-    parser.add_argument("--energy-root", type=Path, required=True)
+    parser.add_argument(
+        "--energy-root",
+        type=Path,
+        action="append",
+        required=True,
+        help="Repeat for absent-only base and repair roots; exactly one must be complete per parent.",
+    )
     parser.add_argument("--expected-parent-count", type=int, default=15)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args(argv)
@@ -224,20 +254,48 @@ def run(args: argparse.Namespace) -> Path:
         raise JoinContractError(f"manifest output already exists: {output}")
 
     parent_fasta = _require_file(args.parent_fasta, label="parent FASTA")
-    evolution_root = _require_root(args.evolution_root, label="evolution")
     contact_root = _require_root(args.contact_root, label="contact")
-    energy_root = _require_root(args.energy_root, label="energy")
+    energy_roots = [
+        _require_root(path, label=f"energy[{index}]")
+        for index, path in enumerate(args.energy_root)
+    ]
     sequences, order = read_parent_fasta(
         parent_fasta,
         expected_parent_count=args.expected_parent_count,
     )
+    if args.evolution_root is not None:
+        evolution_root = _require_root(args.evolution_root, label="evolution")
+        evolution_dirs = {
+            protein_id: (evolution_root / protein_id).resolve() for protein_id in order
+        }
+    else:
+        panel_path = _require_file(
+            args.evolution_panel_manifest, label="evolution panel manifest"
+        )
+        panel = (
+            pd.read_parquet(panel_path)
+            if panel_path.suffix.lower() == ".parquet"
+            else pd.read_csv(panel_path, sep="\t")
+        )
+        required = {"protein_id", "output_dir"}
+        if not required.issubset(panel.columns) or panel["protein_id"].astype(str).duplicated().any():
+            raise JoinContractError(
+                "evolution panel manifest requires unique protein_id/output_dir rows"
+            )
+        panel = panel[panel["protein_id"].astype(str).isin(order)].copy()
+        if set(panel["protein_id"].astype(str)) != set(order):
+            raise JoinContractError("evolution panel manifest does not cover the parent FASTA")
+        evolution_dirs = {
+            str(row.protein_id): Path(str(row.output_dir)).expanduser().resolve()
+            for row in panel.itertuples(index=False)
+        }
     rows = [
         _build_row(
             protein_id=protein_id,
             sequence=sequences[protein_id],
-            evolution_root=evolution_root,
+            evolution_dir=evolution_dirs[protein_id],
             contact_root=contact_root,
-            energy_root=energy_root,
+            energy_roots=energy_roots,
         )
         for protein_id in order
     ]

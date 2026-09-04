@@ -11,8 +11,9 @@ are dropped only with an explicit per-row ledger entry.
 Panel-style FASTA headers such as ``Q00511|Aspergillus_flavus|len:302`` use the
 first pipe-delimited field as the safe protein ID by default.  A3M lookup is
 explicit: use ``--a3m PROTEIN_ID=PATH``/``--a3m-map`` for arbitrary ColabFold
-filenames, or ``--a3m-dir`` only when filenames are exactly
-``<PROTEIN_ID>.a3m``.  Directory-mode mismatches fail before any output is made.
+filenames, or repeat ``--a3m-dir`` for one or more deterministic shard
+directories whose union contains exactly ``<PROTEIN_ID>.a3m`` for every query.
+Directory-mode missing, unexpected, or duplicate mappings fail before any output is made.
 Distinct full source headers are retained even when their accession token collides.
 """
 
@@ -223,24 +224,42 @@ def _manifest_a3m_mapping(path: Path, query_ids: set[str]) -> dict[str, Path]:
     return mapping
 
 
-def _directory_a3m_mapping(path: Path, query_ids: set[str]) -> dict[str, Path]:
-    if not path.is_dir():
-        raise MsaContractError(f"A3M directory does not exist: {path}")
+def _directory_a3m_mapping(paths: Sequence[Path], query_ids: set[str]) -> dict[str, Path]:
+    if not paths:
+        raise MsaContractError("at least one A3M directory is required")
     expected_names = {f"{protein_id}.a3m" for protein_id in query_ids}
-    actual_paths = sorted(path.glob("*.a3m"))
-    actual_names = {candidate.name for candidate in actual_paths}
+    mapping: dict[str, Path] = {}
+    unexpected: list[str] = []
+    for raw_path in paths:
+        path = raw_path.expanduser().resolve()
+        if not path.is_dir():
+            raise MsaContractError(f"A3M directory does not exist: {path}")
+        for candidate in sorted(path.glob("*.a3m")):
+            if candidate.name not in expected_names:
+                unexpected.append(str(candidate))
+                continue
+            protein_id = candidate.stem
+            if protein_id in mapping:
+                raise MsaContractError(
+                    "duplicate query A3M across shard directories: "
+                    f"{protein_id} -> {mapping[protein_id]}, {candidate.resolve()}"
+                )
+            mapping[protein_id] = candidate.resolve()
+    actual_names = {f"{protein_id}.a3m" for protein_id in mapping}
     if actual_names != expected_names:
         missing = sorted(expected_names - actual_names)
-        unexpected = sorted(actual_names - expected_names)
         raise MsaContractError(
-            "A3M directory mapping mismatch: expected exact <protein_id>.a3m names; "
-            f"missing={missing}, unexpected={unexpected}. Use --a3m-map for arbitrary "
+            "A3M directory mapping mismatch: expected exact shard union of "
+            "<protein_id>.a3m names; "
+            f"missing={missing}, unexpected={sorted(unexpected)}. Use --a3m-map for arbitrary "
             "ColabFold filenames."
         )
-    return {
-        protein_id: (path / f"{protein_id}.a3m").resolve()
-        for protein_id in sorted(query_ids)
-    }
+    if unexpected:
+        raise MsaContractError(
+            "A3M directory mapping mismatch: unexpected A3M files "
+            f"{sorted(unexpected)}"
+        )
+    return {protein_id: mapping[protein_id] for protein_id in sorted(query_ids)}
 
 
 def _validate_mapping_keys(mapping: dict[str, Path], query_ids: set[str]) -> None:
@@ -744,7 +763,11 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument(
         "--a3m-dir",
         type=Path,
-        help="Directory containing exactly <protein_id>.a3m for every query.",
+        action="append",
+        help=(
+            "Directory containing a disjoint shard of <protein_id>.a3m files; "
+            "repeat so the directory union exactly covers every query."
+        ),
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
@@ -775,7 +798,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.a3m_map is not None:
         mapping = _manifest_a3m_mapping(args.a3m_map.resolve(), query_ids)
     else:
-        mapping = _directory_a3m_mapping(args.a3m_dir.resolve(), query_ids)
+        mapping = _directory_a3m_mapping(args.a3m_dir, query_ids)
     # Parse and validate every target before expensive N_eff computation or writes.
     targets = [normalize_target(query, mapping[query.protein_id]) for query in queries]
     prepare_outputs(

@@ -416,7 +416,7 @@ def test_functional_analog_lock_and_energy_tier_change_the_free_set(
     assert provenance["functional_analog_hard_lock"] is True
     assert provenance["gate_policy"] == (
         "C80_or_eligible_sigma80_or_full5_or_functional_analog"
-        "_or_ddg_ge1_reu_or_scanned_AGP"
+        "_or_ddg_ge1_reu_or_scanned_AGP_or_scanned_disulfide_CYS"
     )
     assert "numbering_contract" in provenance
     assert 5 not in raw["entries"][0]["free_positions_0b"]
@@ -431,6 +431,77 @@ def test_functional_analog_lock_and_energy_tier_change_the_free_set(
     assert launch.iloc[0].sampler_config_resolved_sha256 == (
         "f2cd1204d6eaafd0eb46a9b13bb4687e392100434de22aa93936f135cb3fa343"
     )
+
+
+def test_disulfide_cys_is_a_hard_lock_without_numeric_ddg(tmp_path: Path) -> None:
+    inputs = _make_inputs(tmp_path)
+    core_path = inputs["evidence_dir"] / "epitope_core_position_evidence.parquet"
+    core = pd.read_parquet(core_path)
+    target = core["index_0b"].eq(13)
+    core.loc[target, "energy_position_status"] = (
+        "scanned_noninterpretable_disulfide_CYS"
+    )
+    for column in (
+        "in_energy_ddg_gt0_reu",
+        "in_energy_ddg_ge1_reu",
+        "in_energy_ddg_ge2_reu",
+    ):
+        core.loc[target, column] = pd.NA
+    _rewrite_core_evidence(inputs, core)
+
+    output_dir = tmp_path / "bundle"
+    assert main(_argv(inputs, output_dir)) == 0
+    ledger = pd.read_parquet(
+        output_dir / "decision" / "core_anchor_decisions.parquet"
+    )
+    row = ledger.loc[
+        ledger["allele"].eq("HLA-DRB1_04_01")
+        & ledger["core_start_0b"].eq(5)
+        & ledger["core_register"].eq("P9")
+    ].iloc[0]
+    assert bool(row.blocked)
+    assert "energy_scanned_noninterpretable_disulfide_CYS" in json.loads(
+        row.blocked_reasons_json
+    )
+    assert not bool(row.included_in_free_set)
+
+
+@pytest.mark.parametrize(
+    ("sigma_status", "sigma_membership"),
+    [
+        ("descriptive_ec_gate_fail", False),
+        ("suppressed_low_neff", pd.NA),
+        ("suppressed_degenerate_couplings", pd.NA),
+    ],
+)
+def test_noneligible_sigma_statuses_do_not_lock_safe_anchors(
+    tmp_path: Path,
+    sigma_status: str,
+    sigma_membership: object,
+) -> None:
+    inputs = _make_inputs(tmp_path)
+    core_path = inputs["evidence_dir"] / "epitope_core_position_evidence.parquet"
+    core = pd.read_parquet(core_path)
+    target = core["index_0b"].eq(13)
+    core.loc[target, "sigma_hard_lock_status"] = sigma_status
+    core["in_sigma80_robust"] = pd.array(
+        core["in_sigma80_robust"], dtype="boolean"
+    )
+    core.loc[target, "in_sigma80_robust"] = sigma_membership
+    _rewrite_core_evidence(inputs, core)
+
+    output_dir = tmp_path / "bundle"
+    assert main(_argv(inputs, output_dir)) == 0
+    ledger = pd.read_parquet(
+        output_dir / "decision" / "core_anchor_decisions.parquet"
+    )
+    row = ledger.loc[
+        ledger["allele"].eq("HLA-DRB1_04_01")
+        & ledger["core_start_0b"].eq(5)
+        & ledger["core_register"].eq("P9")
+    ].iloc[0]
+    assert bool(row.safe_anchor)
+    assert "qualified_sigma80_robust" not in json.loads(row.blocked_reasons_json)
 
 
 def test_structure_sequence_mismatch_fails_without_publishing(tmp_path: Path) -> None:

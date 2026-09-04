@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Submit all rows of a query-centered PLMC manifest as a bounded CPU array.
+# Submit all rows of a query-centered PLMC manifest as a bounded batched CPU array.
 #
 # Every path is caller-supplied. --output-root must live under a run/ layer and
 # --log-dir under a logs/ layer. Explicit sbatch stdout/stderr paths keep runtime
-# products and scheduler logs separated.
+# products and scheduler logs separated. Manifest rows are distributed by stride
+# over a fixed scheduler-task count to remain below array/QOS submit limits.
 
 set -euo pipefail
 : "${PS1:=}"
@@ -19,6 +20,7 @@ LOG_DIR=""
 PLMC_BINARY=""
 EVCOUPLINGS_PYTHON=""
 MAX_CONCURRENT=15
+ARRAY_TASK_COUNT=512
 DRY_RUN=0
 SBATCH_ARGS=()
 
@@ -34,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --max-concurrent)
             MAX_CONCURRENT="${2:?missing value for --max-concurrent}"
+            shift 2
+            ;;
+        --array-task-count)
+            ARRAY_TASK_COUNT="${2:?missing value for --array-task-count}"
             shift 2
             ;;
         --sbatch-arg)
@@ -57,6 +63,18 @@ if [[ ! "${MAX_CONCURRENT}" =~ ^[1-9][0-9]*$ ]]; then
     echo "FATAL: --max-concurrent must be a positive integer" >&2
     exit 2
 fi
+if [[ ! "${ARRAY_TASK_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "FATAL: --array-task-count must be a positive integer" >&2
+    exit 2
+fi
+for argument in "${SBATCH_ARGS[@]}"; do
+    case "${argument}" in
+        --array=*|--output=*|--error=*|--dependency=*|--parsable)
+            echo "FATAL: --sbatch-arg may not override launcher-owned option: ${argument}" >&2
+            exit 2
+            ;;
+    esac
+done
 if [[ ! -f "${MANIFEST}" ]]; then
     echo "FATAL: manifest not found: ${MANIFEST}" >&2
     exit 2
@@ -98,9 +116,18 @@ if [[ ! -f "${WORKER}" ]]; then
 fi
 mkdir -p "${OUTPUT_ROOT}" "${LOG_DIR}"
 
+scheduler_tasks="${ARRAY_TASK_COUNT}"
+if ((n_rows < ARRAY_TASK_COUNT)); then
+    scheduler_tasks="${n_rows}"
+fi
+array_last="$((scheduler_tasks - 1))"
+printf 'PLMC array rows=%s scheduler_tasks=%s row_stride=%s max_concurrent=%s\n' \
+    "${n_rows}" "${scheduler_tasks}" "${scheduler_tasks}" "${MAX_CONCURRENT}"
+
 command=(
     sbatch
-    "--array=0-$((n_rows - 1))%${MAX_CONCURRENT}"
+    --parsable
+    "--array=0-${array_last}%${MAX_CONCURRENT}"
     "--output=${LOG_DIR}/plmc_%A_%a.out"
     "--error=${LOG_DIR}/plmc_%A_%a.err"
 )
@@ -112,13 +139,23 @@ command+=(
     "${PLMC_BINARY}"
     "${EVCOUPLINGS_PYTHON}"
     "${SCRIPT_DIR}/run_evolution_plmc.py"
+    0
+    "${n_rows}"
+    "${scheduler_tasks}"
+    1
 )
 
-printf 'PLMC array rows=%s command=' "${n_rows}"
+printf 'PLMC batched command='
 printf '%q ' "${command[@]}"
 printf '\n'
 if [[ "${DRY_RUN}" == "1" ]]; then
     echo "DRY_RUN=1: no job submitted"
 else
-    "${command[@]}"
+    submit_output="$("${command[@]}")"
+    job_id="${submit_output%%;*}"
+    if [[ ! "${job_id}" =~ ^[0-9]+$ ]]; then
+        echo "FATAL: sbatch returned an invalid job id: ${submit_output}" >&2
+        exit 2
+    fi
+    echo "PLMC submitted_job_id=${job_id}"
 fi

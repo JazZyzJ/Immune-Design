@@ -494,13 +494,26 @@ def _blocked_reasons(
     if _as_bool(row["in_C80_stable"], label=f"{label} in_C80_stable"):
         reasons.append("C80_stable")
     sigma_status = str(row["sigma_hard_lock_status"])
-    if sigma_status not in {"eligible", "exploratory_not_hard_lock"}:
+    if sigma_status not in {
+        "eligible",
+        "exploratory_not_hard_lock",
+        "descriptive_ec_gate_fail",
+        "suppressed_low_neff",
+        "suppressed_degenerate_couplings",
+    }:
         raise ContractError(f"{label}: unsupported sigma_hard_lock_status={sigma_status!r}")
-    sigma80 = _as_bool(
-        row["in_sigma80_robust"], label=f"{label} in_sigma80_robust"
-    )
-    if sigma_status == "eligible" and sigma80:
-        reasons.append("qualified_sigma80_robust")
+    sigma80_raw = row["in_sigma80_robust"]
+    if sigma_status in {"suppressed_low_neff", "suppressed_degenerate_couplings"}:
+        if not pd.isna(sigma80_raw):
+            raise ContractError(
+                f"{label}: suppressed sigma membership must be null"
+            )
+    else:
+        sigma80 = _as_bool(
+            sigma80_raw, label=f"{label} in_sigma80_robust"
+        )
+        if sigma_status == "eligible" and sigma80:
+            reasons.append("qualified_sigma80_robust")
     if _as_bool(
         row["in_full_contact_5of5"], label=f"{label} in_full_contact_5of5"
     ):
@@ -523,6 +536,12 @@ def _blocked_reasons(
         if not pd.isna(energy_flag):
             raise ContractError(f"{label}: AGP energy membership must be null")
         reasons.append("energy_scanned_noninterpretable_AGP")
+    elif energy_status == "scanned_noninterpretable_disulfide_CYS":
+        if not pd.isna(energy_flag):
+            raise ContractError(
+                f"{label}: disulfide Cys energy membership must be null"
+            )
+        reasons.append("energy_scanned_noninterpretable_disulfide_CYS")
     elif energy_status == "not_scanned":
         if pd.isna(energy_flag) or _as_bool(
             energy_flag, label=f"{label} {energy_column}"
@@ -540,7 +559,13 @@ def _gate_policy_string(
     terms = ["C80", "eligible_sigma80", "full5"]
     if lock_functional_analogs:
         terms.append("functional_analog")
-    terms.extend([ENERGY_DDG_TIERS[energy_ddg_tier][1].replace("energy_", ""), "scanned_AGP"])
+    terms.extend(
+        [
+            ENERGY_DDG_TIERS[energy_ddg_tier][1].replace("energy_", ""),
+            "scanned_AGP",
+            "scanned_disulfide_CYS",
+        ]
+    )
     return "_or_".join(terms)
 
 
@@ -1291,6 +1316,7 @@ def run(args: argparse.Namespace) -> Path:
                     ),
                     ENERGY_DDG_TIERS[energy_ddg_tier][1],
                     "energy_scanned_noninterpretable_AGP",
+                    "energy_scanned_noninterpretable_disulfide_CYS",
                 ],
                 "energy_ddg_tier": energy_ddg_tier,
                 "homolog_analog_is_annotation_only": not lock_functional_analogs,

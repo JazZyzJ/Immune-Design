@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from scripts.aggregate_uricase_active15_evidence import JoinContractError, main
+from scripts.merge_uricase_evidence_join_shards import merge_shards
 
 
 ALLELES = ("HLA-DRB1_04_01", "HLA-DRB1_07_01", "HLA-DRB1_15_01")
@@ -786,6 +787,117 @@ def test_join_writes_four_tables_with_nullable_evidence_and_exact_baseline(tmp_p
     assert (out_dir / "parent_ec_contact_validation.tsv").is_file()
 
 
+def test_join_accepts_one_explicit_allele_and_parquet_core_inputs(tmp_path: Path) -> None:
+    paths = _build_fixture(tmp_path)
+    allele = "HLA-DRB1_15_01"
+    cores = pd.read_csv(paths["cores"])
+    baseline = pd.read_csv(paths["baseline"])
+    cores_path = tmp_path / "cores_1501.parquet"
+    baseline_path = tmp_path / "baseline_1501.parquet"
+    cores[cores.allele.eq(allele)].to_parquet(cores_path, index=False)
+    baseline[baseline.allele.eq(allele)].to_parquet(baseline_path, index=False)
+    out_dir = tmp_path / "out_1501"
+
+    assert main(
+        [
+            "--parent-fasta", str(paths["fasta"]),
+            "--evidence-manifest", str(paths["manifest"]),
+            "--cores-long", str(cores_path),
+            "--open-policy-baseline", str(baseline_path),
+            "--legacy-identity-map", str(paths["legacy"]),
+            "--homolog-analog-annotations", str(paths["analogs"]),
+            "--expected-parent-count", "2",
+            "--allele", allele,
+            "--out-dir", str(out_dir),
+        ]
+    ) == 0
+    expanded = pd.read_parquet(out_dir / "epitope_core_position_evidence.parquet")
+    assert len(expanded) == 2 * 9
+    assert set(expanded.allele) == {allele}
+    metadata = json.loads((out_dir / "join_metadata.json").read_text())
+    assert metadata["cohort"]["alleles"] == [allele]
+
+
+def test_parent_shards_are_an_exact_partition_of_the_full_join(tmp_path: Path) -> None:
+    paths = _build_fixture(tmp_path)
+    full_dir = tmp_path / "full"
+    _run(paths, full_dir)
+
+    shard_dirs = []
+    for shard_index in range(2):
+        shard_dir = tmp_path / f"shard_{shard_index:03d}"
+        shard_dirs.append(shard_dir)
+        assert main(
+            [
+                "--parent-fasta", str(paths["fasta"]),
+                "--evidence-manifest", str(paths["manifest"]),
+                "--cores-long", str(paths["cores"]),
+                "--open-policy-baseline", str(paths["baseline"]),
+                "--legacy-identity-map", str(paths["legacy"]),
+                "--homolog-analog-annotations", str(paths["analogs"]),
+                "--expected-parent-count", "2",
+                "--n-shards", "2",
+                "--shard-index", str(shard_index),
+                "--out-dir", str(shard_dir),
+            ]
+        ) == 0
+        metadata = json.loads((shard_dir / "join_metadata.json").read_text())
+        assert metadata["shard"] == {
+            "count": 2,
+            "full_parent_count": 2,
+            "index": shard_index,
+            "selection": "round_robin",
+        }
+        assert metadata["cohort"]["parent_ids"] == [f"P{shard_index + 1}"]
+
+    table_keys = {
+        "parent_position_evidence": ["protein_id", "index_0b"],
+        "epitope_core_position_evidence": [
+            "protein_id", "allele", "core_start_0b", "core_offset_0b"
+        ],
+        "core_policy_mask_tradeoff": [
+            "protein_id", "allele", "core_start_0b", "open_policy", "evidence_mask"
+        ],
+        "parent_allele_policy_mask_tradeoff": [
+            "protein_id", "allele", "open_policy", "evidence_mask"
+        ],
+        "parent_ec_contact_validation": ["protein_id"],
+    }
+    for table, key in table_keys.items():
+        expected = pd.read_parquet(full_dir / f"{table}.parquet")
+        observed = pd.concat(
+            [pd.read_parquet(path / f"{table}.parquet") for path in shard_dirs],
+            ignore_index=True,
+        )
+        expected = expected.sort_values(key).reset_index(drop=True)
+        observed = observed.sort_values(key).reset_index(drop=True)
+        pd.testing.assert_frame_equal(
+            observed.convert_dtypes(), expected.convert_dtypes(), check_like=True
+        )
+
+    merged_dir = tmp_path / "merged"
+    merge_shards(
+        shard_root=tmp_path,
+        shard_name_pattern="shard_{index:03d}",
+        parent_fasta=paths["fasta"],
+        expected_parent_count=2,
+        n_shards=2,
+        out_dir=merged_dir,
+        command="test merge",
+    )
+    merged_metadata = json.loads((merged_dir / "join_metadata.json").read_text())
+    assert merged_metadata["cohort"]["parent_ids"] == ["P1", "P2"]
+    assert merged_metadata["shards"]["count"] == 2
+    for table, key in table_keys.items():
+        expected = pd.read_parquet(full_dir / f"{table}.parquet").sort_values(key)
+        observed = pd.read_parquet(merged_dir / f"{table}.parquet").sort_values(key)
+        pd.testing.assert_frame_equal(
+            observed.reset_index(drop=True).convert_dtypes(),
+            expected.reset_index(drop=True).convert_dtypes(),
+            check_like=True,
+        )
+
+
 def _set_covariance_gate(
     paths: dict[str, Path], *, covariance_status: str, neff_per_length: float
 ) -> None:
@@ -865,6 +977,48 @@ def test_insufficient_sigma_is_nullable_not_false_free_space(tmp_path: Path) -> 
     ]
     assert sigma.n_collision_positions.isna().all()
     assert sigma.n_positions_not_in_mask.isna().all()
+
+
+def test_degenerate_sigma_column_is_normalized_and_suppressed(tmp_path: Path) -> None:
+    paths = _build_fixture(tmp_path)
+    parent_dir = paths["manifest"].parent / "evolution" / "P1"
+    position_path = parent_dir / "per_position_evolution.tsv"
+    positions = pd.read_csv(position_path, sep="\t")
+    positions["sigma_evidence_status"] = "unavailable_nonpositive_cn"
+    for mask in MASKS:
+        if mask.startswith("sigma"):
+            positions[f"in_{mask}"] = False
+    positions.to_csv(position_path, sep="\t", index=False)
+
+    masks_path = parent_dir / "wt_lock_masks.json"
+    masks = json.loads(masks_path.read_text())
+    for mask, definition in masks["masks"].items():
+        if mask.startswith("sigma"):
+            definition["status"] = "suppressed_degenerate_couplings"
+            definition["n_positions"] = 0
+            definition["positions_index_0b"] = []
+            definition["positions_position_1b"] = []
+            definition["position_labels"] = []
+    masks_path.write_text(json.dumps(masks))
+
+    metadata_path = parent_dir / "analysis_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["ec_table"] = {
+        "sigma_evidence_status": "unavailable_nonpositive_cn"
+    }
+    metadata_path.write_text(json.dumps(metadata))
+
+    out_dir = tmp_path / "out"
+    _run(paths, out_dir)
+    parent = pd.read_parquet(out_dir / "parent_position_evidence.parquet")
+    p1 = parent[parent.protein_id.eq("P1")]
+    assert set(p1.sigma_evidence_status) == {"unavailable_nonpositive_cn"}
+    assert p1.in_sigma80_robust.isna().all()
+    validation = pd.read_parquet(out_dir / "parent_ec_contact_validation.parquet")
+    assert (
+        validation.set_index("protein_id").loc["P1", "sigma_hard_lock_status"]
+        == "suppressed_degenerate_couplings"
+    )
 
 
 def test_core_sequence_mismatch_fails_before_output(tmp_path: Path) -> None:
@@ -1011,6 +1165,42 @@ def test_energy_reversed_chain_pair_is_matched_as_undirected(tmp_path: Path) -> 
     assert p1.loc[1, "energy_catalytic_ddg_bind_mean_reu"] == pytest.approx(2.5)
 
 
+def test_disulfide_cys_is_retained_as_scanned_noninterpretable(tmp_path: Path) -> None:
+    paths = _build_fixture(tmp_path)
+    energy_path, metadata_path = _p1_energy_paths(paths)
+    energy = pd.read_parquet(energy_path)
+    # The same canonical Cys is disulfide-bound in only one biological
+    # interface. Global position evidence must use any(disulfide)/all(interpretable).
+    disulfide = energy["wt_residue_name3"].eq("CYS") & energy[
+        "interface_pair"
+    ].eq("A:B")
+    energy["is_disulfide_cysteine"] = disulfide
+    energy.loc[disulfide, "is_interpretable_sidechain_alanine"] = False
+    for column in (
+        "ddg_bind_mean_reu",
+        "ddg_bind_min_reu",
+        "ddg_bind_max_reu",
+        "ddg_bind_chain_range_reu",
+    ):
+        energy.loc[disulfide, column] = float("nan")
+    energy.to_parquet(energy_path, index=False)
+    metadata = json.loads(metadata_path.read_text())
+    metadata["parameters"]["interpretable_sidechain_scan_excludes"].append(
+        "DISULFIDE_CYS"
+    )
+    metadata_path.write_text(json.dumps(metadata))
+
+    out_dir = tmp_path / "out"
+    _run(paths, out_dir)
+    row = pd.read_parquet(
+        out_dir / "parent_position_evidence.parquet"
+    ).set_index(["protein_id", "index_0b"]).loc[("P1", 1)]
+    assert row.energy_position_status == "scanned_noninterpretable_disulfide_CYS"
+    assert bool(row.energy_is_disulfide_cysteine)
+    assert pd.isna(row.in_energy_ddg_ge1_reu)
+    assert pd.isna(row.energy_ddg_bind_max_reu)
+
+
 def test_energy_rejects_contact_source_sha_drift(tmp_path: Path) -> None:
     paths = _build_fixture(tmp_path)
     contact_path = _p1_residue_pairs_path(paths)
@@ -1061,4 +1251,3 @@ def test_energy_rejects_numeric_qc_drift(tmp_path: Path) -> None:
     with pytest.raises(JoinContractError, match="chain range differs"):
         _run(paths, out_dir)
     assert not out_dir.exists()
-

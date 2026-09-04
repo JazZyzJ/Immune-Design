@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from scripts.aggregate_uricase_active15_evidence import (
@@ -145,6 +146,39 @@ def test_builds_exact_available_manifest_atomically(tmp_path: Path) -> None:
         if column.endswith("_path")
     )
     assert Path(row["evolution_dir"]).is_absolute()
+
+
+def test_accepts_metadata_only_evolution_panel_manifest(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    panel = tmp_path / "evolution_panel.parquet"
+    pd.DataFrame(
+        [{"protein_id": "P1", "output_dir": str(paths["evolution_root"] / "P1")}]
+    ).to_parquet(panel, index=False)
+    argv = _argv(paths)
+    root_index = argv.index("--evolution-root")
+    argv[root_index : root_index + 2] = ["--evolution-panel-manifest", str(panel)]
+
+    assert main(argv) == 0
+    with paths["output"].open(newline="") as handle:
+        row = next(csv.DictReader(handle, delimiter="\t"))
+    assert Path(row["evolution_dir"]) == (paths["evolution_root"] / "P1").resolve()
+
+
+def test_selects_one_complete_energy_root_across_base_and_repair(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    base = paths["energy_root"]
+    repair = tmp_path / "repair_energy"
+    (repair / "P1").mkdir(parents=True)
+    argv = _argv(paths)
+    root_index = argv.index("--energy-root")
+    argv[root_index : root_index + 2] = [
+        "--energy-root", str(repair), "--energy-root", str(base)
+    ]
+
+    assert main(argv) == 0
+    with paths["output"].open(newline="") as handle:
+        row = next(csv.DictReader(handle, delimiter="\t"))
+    assert Path(row["energy_metadata_path"]).parent == (base / "P1").resolve()
 
 
 def test_missing_required_artifact_fails_without_partial_output(tmp_path: Path) -> None:

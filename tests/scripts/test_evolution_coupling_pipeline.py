@@ -249,6 +249,66 @@ def test_directory_mapping_is_exact_and_fails_on_colabfold_name_mismatch(
         )
 
 
+def test_repeated_a3m_directories_form_one_exact_shard_union(tmp_path: Path) -> None:
+    query = _write(tmp_path / "query.fasta", ">P1\nACDEF\n>P2\nACDEY\n")
+    shard_0 = tmp_path / "raw" / "000"
+    shard_1 = tmp_path / "raw" / "001"
+    shard_0.mkdir(parents=True)
+    shard_1.mkdir(parents=True)
+    _write(shard_0 / "P1.a3m", ">P1\nACDEF\n")
+    _write(shard_1 / "P2.a3m", ">P2\nACDEY\n")
+
+    assert (
+        msa_cli.main(
+            [
+                "--query-fasta",
+                str(query),
+                "--a3m-dir",
+                str(shard_0),
+                "--a3m-dir",
+                str(shard_1),
+                "--output-dir",
+                str(tmp_path / "normalized"),
+                "--neff-engine",
+                "none",
+            ]
+        )
+        == 0
+    )
+    rows = list(
+        csv.DictReader(
+            (tmp_path / "normalized" / "plmc_manifest.tsv").open(), delimiter="\t"
+        )
+    )
+    assert [row["protein_id"] for row in rows] == ["P1", "P2"]
+
+
+def test_repeated_a3m_directories_reject_duplicate_query_file(tmp_path: Path) -> None:
+    query = _write(tmp_path / "query.fasta", ">P1\nACDEF\n")
+    shard_0 = tmp_path / "raw" / "000"
+    shard_1 = tmp_path / "raw" / "001"
+    shard_0.mkdir(parents=True)
+    shard_1.mkdir(parents=True)
+    _write(shard_0 / "P1.a3m", ">P1\nACDEF\n")
+    _write(shard_1 / "P1.a3m", ">P1\nACDEF\n")
+
+    with pytest.raises(msa_cli.MsaContractError, match="duplicate query A3M"):
+        msa_cli.main(
+            [
+                "--query-fasta",
+                str(query),
+                "--a3m-dir",
+                str(shard_0),
+                "--a3m-dir",
+                str(shard_1),
+                "--output-dir",
+                str(tmp_path / "normalized"),
+                "--neff-engine",
+                "none",
+            ]
+        )
+
+
 def test_query_fasta_rejects_duplicate_sequences_and_unsafe_ids(tmp_path: Path) -> None:
     duplicate = _write(
         tmp_path / "duplicate.fasta",
@@ -458,6 +518,59 @@ def test_array_launcher_builds_bounded_cpu_submission_with_log_layer(
     assert "--gres" not in result.stdout
 
 
+def test_array_launcher_batches_manifest_above_cluster_array_and_qos_limits(
+    tmp_path: Path,
+) -> None:
+    rows = "".join(
+        f"P{i}\tP{i}\t/a/{i}/focus.fasta\tunqualified\t1\t0.2\n"
+        for i in range(2502)
+    )
+    manifest = _write(
+        tmp_path / "work" / "plmc_manifest.tsv",
+        "protein_id\tquery_id\talignment_path\tcovariance_gate\tneff_exact\tneff_per_length\n"
+        + rows,
+    )
+    binary = _write(tmp_path / "plmc", "fake\n")
+    binary.chmod(0o755)
+    python = _write(tmp_path / "python", "fake\n")
+    python.chmod(0o755)
+    log_root = tmp_path / "logs" / "plmc"
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(LAUNCHER),
+            "--manifest",
+            str(manifest),
+            "--output-root",
+            str(tmp_path / "run" / "plmc"),
+            "--log-dir",
+            str(log_root),
+            "--plmc-binary",
+            str(binary),
+            "--evcouplings-python",
+            str(python),
+            "--max-concurrent",
+            "64",
+            "--array-task-count",
+            "512",
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PLMC array rows=2502 scheduler_tasks=512" in result.stdout
+    assert "--array=0-511%64" in result.stdout
+    assert f"--output={log_root}/plmc_%A_%a.out" in result.stdout
+    assert "--dependency" not in result.stdout
+    # Worker suffix: row_offset=0, stop_exclusive=2502, row_stride=512,
+    # overwrite=1. This maps all 2502 rows over only 512 scheduler tasks.
+    assert " 0 2502 512 1 " in result.stdout
+
+
 def test_slurm_worker_is_cpu_only_and_shell_valid() -> None:
     syntax = subprocess.run(
         ["bash", "-n", str(WORKER)], text=True, capture_output=True, check=False
@@ -522,6 +635,120 @@ def test_slurm_worker_uses_explicit_runner_when_sbatch_copies_script_to_spool(
     srun_args = capture.read_text().splitlines()
     assert str(explicit_runner) in srun_args
     assert not any("/var/spool/slurmd/" in argument for argument in srun_args)
+
+
+def test_slurm_worker_applies_manifest_row_offset_for_chunked_array(
+    tmp_path: Path,
+) -> None:
+    alignment_a = _write(tmp_path / "work" / "a.fasta", ">A\nACDEF\n")
+    alignment_b = _write(tmp_path / "work" / "b.fasta", ">B\nACDEY\n")
+    manifest = _write(
+        tmp_path / "work" / "plmc_manifest.tsv",
+        "protein_id\tquery_id\talignment_path\tcovariance_gate\tneff_exact\tneff_per_length\n"
+        f"A\tA\t{alignment_a}\tqualified\t50\t10\n"
+        f"B\tB\t{alignment_b}\tunqualified\t1\t0.2\n",
+    )
+    binary = _write(tmp_path / "bin" / "plmc", "fake\n")
+    binary.chmod(0o755)
+    python = _write(tmp_path / "bin" / "python", "fake\n")
+    python.chmod(0o755)
+    runner = _write(tmp_path / "repo" / "runner.py", "fake\n")
+    capture = tmp_path / "srun_args.txt"
+    fake_srun = _write(
+        tmp_path / "fakebin" / "srun",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"${SRUN_CAPTURE:?}\"\n",
+    )
+    fake_srun.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(WORKER),
+            str(manifest),
+            str(tmp_path / "run" / "plmc"),
+            str(binary),
+            str(python),
+            str(runner),
+            "1",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_srun.parent}:{os.environ['PATH']}",
+            "SRUN_CAPTURE": str(capture),
+            "SLURM_ARRAY_TASK_ID": "0",
+            "SLURM_CPUS_PER_TASK": "8",
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    args = capture.read_text().splitlines()
+    assert args[args.index("--query-id") + 1] == "B"
+    assert args[args.index("--output-prefix") + 1].endswith("/B/plmc")
+
+
+def test_slurm_worker_processes_strided_rows_and_enables_atomic_retry(
+    tmp_path: Path,
+) -> None:
+    alignments = {
+        protein_id: _write(
+            tmp_path / "work" / f"{protein_id}.fasta",
+            f">{protein_id}\nACDE{suffix}\n",
+        )
+        for protein_id, suffix in (("A", "F"), ("B", "Y"), ("C", "W"))
+    }
+    manifest = _write(
+        tmp_path / "work" / "plmc_manifest.tsv",
+        "protein_id\tquery_id\talignment_path\tcovariance_gate\tneff_exact\tneff_per_length\n"
+        + "".join(
+            f"{protein_id}\t{protein_id}\t{path}\tunqualified\t1\t0.2\n"
+            for protein_id, path in alignments.items()
+        ),
+    )
+    binary = _write(tmp_path / "bin" / "plmc", "fake\n")
+    binary.chmod(0o755)
+    python = _write(tmp_path / "bin" / "python", "fake\n")
+    python.chmod(0o755)
+    runner = _write(tmp_path / "repo" / "runner.py", "fake\n")
+    capture = tmp_path / "srun_args.txt"
+    fake_srun = _write(
+        tmp_path / "fakebin" / "srun",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >> \"${SRUN_CAPTURE:?}\"\n"
+        "printf '<END>\\n' >> \"${SRUN_CAPTURE:?}\"\n",
+    )
+    fake_srun.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(WORKER),
+            str(manifest),
+            str(tmp_path / "run" / "plmc"),
+            str(binary),
+            str(python),
+            str(runner),
+            "0",
+            "3",
+            "2",
+            "1",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_srun.parent}:{os.environ['PATH']}",
+            "SRUN_CAPTURE": str(capture),
+            "SLURM_ARRAY_TASK_ID": "0",
+            "SLURM_CPUS_PER_TASK": "8",
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = capture.read_text().split("<END>\n")
+    calls = [call.splitlines() for call in calls if call.strip()]
+    assert [call[call.index("--query-id") + 1] for call in calls] == ["A", "C"]
+    assert all("--overwrite" in call for call in calls)
 
 
 def test_serial_launcher_submits_one_job_with_one_log_pair(tmp_path: Path) -> None:

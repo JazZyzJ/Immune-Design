@@ -17,6 +17,7 @@ from inverse_folding.evaluation.complex_interfaces import (
     pair_salt_bridges,
     parse_rosetta_ddg_scan_log,
     parse_rosetta_scorefile,
+    _reconcile_rosetta_alanine_rows,
     summarize_interface_pairs,
 )
 from scripts.eval_complex_gate import add_interface_wt_normalization, tier1_from_summary
@@ -271,6 +272,98 @@ def test_parse_and_aggregate_rosetta_ddg_scan_output():
     assert by_position.loc[0, "n_chain_sides"] == 2
     assert by_position.loc[0, "ddg_bind_mean_reu"] == pytest.approx(2.1)
     assert by_position.loc[0, "ddg_bind_chain_range_reu"] == pytest.approx(0.2)
+
+
+def test_disulfide_cysteines_omitted_by_rosetta_are_retained_as_noninterpretable():
+    rows = []
+    rows += _residue("A", 10, "CYS", (0.0, 0.0, 0.0), sidechain=None)
+    rows += _residue("A", 20, "CYS", (0.0, 3.0, 0.0), sidechain=None)
+    rows += _residue("B", 11, "LEU", (0.0, 0.0, 3.0))
+    rows.extend(
+        [
+            ((1.0, 1.0, 0.0), "A", 10, "CYS", "SG", "S", False),
+            ((1.0, 3.05, 0.0), "A", 20, "CYS", "SG", "S", False),
+        ]
+    )
+    arr = _atom_array(rows)
+    candidates = pd.DataFrame(
+        [
+            {
+                "source_chain": "A", "rosetta_chain": "A", "res_id": res_id,
+                "ins_code": "", "wt_residue_name3": "CYS",
+                "is_interpretable_sidechain_alanine": True,
+            }
+            for res_id in (10, 20)
+        ]
+        + [
+            {
+                "source_chain": "B", "rosetta_chain": "B", "res_id": 11,
+                "ins_code": "", "wt_residue_name3": "LEU",
+                "is_interpretable_sidechain_alanine": True,
+            }
+        ]
+    )
+    parsed = pd.DataFrame(
+        [
+            {
+                "rosetta_chain": "B", "res_id": 11,
+                "wt_residue_name3": "LEU", "mut_residue_name3": "ALA",
+                "ddg_bind_reu": 1.25,
+            }
+        ]
+    )
+
+    merged = _reconcile_rosetta_alanine_rows(
+        arr,
+        candidates,
+        parsed,
+        chain_a="A",
+        chain_b="B",
+    )
+
+    disulfides = merged[merged["is_disulfide_cysteine"]]
+    assert set(disulfides.res_id) == {10, 20}
+    assert disulfides.ddg_bind_reu.isna().all()
+    assert not disulfides.is_interpretable_sidechain_alanine.any()
+    assert merged.loc[merged.res_id.eq(11), "ddg_bind_reu"].iloc[0] == pytest.approx(1.25)
+
+
+def test_one_sided_disulfide_makes_homomer_position_noninterpretable():
+    long = pd.DataFrame(
+        [
+            {
+                "interface_pair": "A:C",
+                "source_chain": "A",
+                "res_id": 145,
+                "ins_code": "",
+                "wt_residue_name3": "CYS",
+                "ddg_bind_reu": float("nan"),
+                "is_native_alanine": False,
+                "is_glycine_to_alanine": False,
+                "is_proline_to_alanine": False,
+                "is_disulfide_cysteine": True,
+                "is_interpretable_sidechain_alanine": False,
+            },
+            {
+                "interface_pair": "A:C",
+                "source_chain": "C",
+                "res_id": 145,
+                "ins_code": "",
+                "wt_residue_name3": "CYS",
+                "ddg_bind_reu": -117.0,
+                "is_native_alanine": False,
+                "is_glycine_to_alanine": False,
+                "is_proline_to_alanine": False,
+                "is_disulfide_cysteine": False,
+                "is_interpretable_sidechain_alanine": True,
+            },
+        ]
+    )
+    by_position = aggregate_homomer_alanine_scan(long).iloc[0]
+    assert bool(by_position.is_disulfide_cysteine)
+    assert not bool(by_position.is_interpretable_sidechain_alanine)
+    assert by_position.ddg_bind_mean_reu == pytest.approx(-117.0)
+    assert pd.isna(by_position.sidechain_ddg_bind_rank_desc)
 
 
 def test_parse_rosetta_scorefile_preserves_canonical_interface_fields(tmp_path):

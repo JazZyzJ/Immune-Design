@@ -340,6 +340,7 @@ def read_evidence_manifest(
     path: Path,
     *,
     parent_ids: set[str],
+    selected_parent_ids: set[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
@@ -364,6 +365,9 @@ def read_evidence_manifest(
             "evidence manifest cohort differs from FASTA: "
             f"missing={sorted(parent_ids - set(ids))}, unexpected={sorted(set(ids) - parent_ids)}"
         )
+    selected_parent_ids = parent_ids if selected_parent_ids is None else selected_parent_ids
+    if not selected_parent_ids or not selected_parent_ids.issubset(parent_ids):
+        raise JoinContractError("selected evidence-manifest parents must be a non-empty subset")
 
     def resolve(raw: str) -> Path | None:
         if not raw:
@@ -376,6 +380,8 @@ def read_evidence_manifest(
     specs: dict[str, dict[str, Any]] = {}
     for row in rows:
         protein_id = row["protein_id"]
+        if protein_id not in selected_parent_ids:
+            continue
         evolution_status = row["evolution_status"]
         if evolution_status not in {"available", "unavailable"}:
             raise JoinContractError(
@@ -485,7 +491,17 @@ def _validate_position_identity(
     return frame
 
 
-def _sigma_hard_lock_status(covariance_status: str, gate_status: str) -> str:
+def _sigma_hard_lock_status(
+    covariance_status: str,
+    gate_status: str,
+    sigma_evidence_status: str = "available",
+) -> str:
+    if sigma_evidence_status == "unavailable_nonpositive_cn":
+        return "suppressed_degenerate_couplings"
+    if sigma_evidence_status != "available":
+        raise JoinContractError(
+            f"unknown sigma evidence status {sigma_evidence_status!r}"
+        )
     if covariance_status == "qualified":
         if gate_status == "pass":
             return "eligible"
@@ -516,6 +532,7 @@ def _empty_ec_validation(protein_id: str, status: str) -> dict[str, Any]:
         "minimum_sequence_separation": EC_MIN_SEQUENCE_SEPARATION,
         "top_L_tetramer_precision_gate": EC_GATE_THRESHOLD,
         "top_L_gate_status": "unavailable",
+        "sigma_evidence_status": "unavailable",
         "sigma_hard_lock_status": "unavailable",
         "inherited_reference_top_L_precision": None,
         "inherited_reference_definition_status": "not_provided",
@@ -569,6 +586,7 @@ def load_evolution_evidence(
                 "model_neff_per_length": None,
                 "complete_ec_path": None,
                 "metadata_contact_gate_status": "unavailable",
+                "sigma_evidence_status": "unavailable",
             }
             for mask in EVOLUTION_MASKS:
                 registry[(protein_id, mask)] = {
@@ -597,6 +615,8 @@ def load_evolution_evidence(
         )
         frame = pd.read_csv(position_path, sep="\t")
         _require_columns(frame, EVOLUTION_REQUIRED_COLUMNS, f"{protein_id} evolution")
+        if "sigma_evidence_status" not in frame:
+            frame["sigma_evidence_status"] = "available"
         frame = _validate_position_identity(
             frame,
             protein_id=protein_id,
@@ -637,6 +657,25 @@ def load_evolution_evidence(
             raise JoinContractError(
                 f"{protein_id}: N_eff/L does not match covariance_status"
             )
+        sigma_evidence_values = set(frame["sigma_evidence_status"].astype(str))
+        if len(sigma_evidence_values) != 1:
+            raise JoinContractError(f"{protein_id}: nonuniform sigma_evidence_status")
+        sigma_evidence_status = next(iter(sigma_evidence_values))
+        if sigma_evidence_status not in {
+            "available",
+            "unavailable_nonpositive_cn",
+        }:
+            raise JoinContractError(
+                f"{protein_id}: invalid sigma_evidence_status "
+                f"{sigma_evidence_status!r}"
+            )
+        metadata_sigma_status = str(
+            metadata.get("ec_table", {}).get("sigma_evidence_status", "available")
+        )
+        if metadata_sigma_status != sigma_evidence_status:
+            raise JoinContractError(
+                f"{protein_id}: sigma evidence status metadata mismatch"
+            )
         metadata_contact_gate_status = str(
             metadata.get("contact_gate", {}).get("status", "not_computed")
         )
@@ -652,13 +691,18 @@ def load_evolution_evidence(
         # Only the direct five-model residue-pair validation below can authorize
         # sigma as a hard lock.  A static/legacy comparison remains provenance.
         contact_gate_status = "pending_ensemble_contact_validation"
-        sigma_use = _sigma_hard_lock_status(covariance_status, contact_gate_status)
+        sigma_use = _sigma_hard_lock_status(
+            covariance_status,
+            contact_gate_status,
+            sigma_evidence_status,
+        )
         ec_sources[protein_id] = {
             "evolution_status": "available",
             "covariance_status": covariance_status,
             "model_neff_per_length": neff_per_length,
             "complete_ec_path": complete_ec_path,
             "metadata_contact_gate_status": metadata_contact_gate_status,
+            "sigma_evidence_status": sigma_evidence_status,
         }
         payload_masks = masks_payload.get("masks")
         if not isinstance(payload_masks, dict) or set(payload_masks) != set(EVOLUTION_MASKS):
@@ -672,11 +716,15 @@ def load_evolution_evidence(
             expected_status = (
                 "available"
                 if not mask.startswith("sigma")
-                else {
-                    "qualified": "qualified",
-                    "exploratory": "exploratory_not_hard_lock",
-                    "insufficient": "suppressed_low_neff",
-                }[covariance_status]
+                else (
+                    "suppressed_degenerate_couplings"
+                    if sigma_evidence_status == "unavailable_nonpositive_cn"
+                    else {
+                        "qualified": "qualified",
+                        "exploratory": "exploratory_not_hard_lock",
+                        "insufficient": "suppressed_low_neff",
+                    }[covariance_status]
+                )
             )
             if status != expected_status:
                 raise JoinContractError(
@@ -691,7 +739,10 @@ def load_evolution_evidence(
                 raise JoinContractError(
                     f"{protein_id}: {mask} position list differs between TSV and JSON"
                 )
-            if status == "suppressed_low_neff":
+            if status in {
+                "suppressed_low_neff",
+                "suppressed_degenerate_couplings",
+            }:
                 frame[f"in_{mask}"] = pd.array([pd.NA] * len(frame), dtype="boolean")
             else:
                 frame[f"in_{mask}"] = pd.array(source_membership, dtype="boolean")
@@ -1148,6 +1199,7 @@ def load_energy_evidence(
         "energy_rosetta_score_function",
         "energy_position_status",
         "energy_scanned",
+        "energy_is_disulfide_cysteine",
         "energy_is_interpretable_sidechain_alanine",
         "energy_n_biological_interfaces_scanned",
         "energy_interface_pairs_json",
@@ -1196,6 +1248,8 @@ def load_energy_evidence(
         )
         frame = _read_table(energy_path)
         _require_columns(frame, ENERGY_REQUIRED_COLUMNS, f"{protein_id} energy")
+        if "is_disulfide_cysteine" not in frame:
+            frame["is_disulfide_cysteine"] = False
         metadata = _read_json(metadata_path)
         if metadata.get("schema_version") != "tetramer_reference_metrics_v2":
             raise JoinContractError(f"{protein_id}: unsupported energy metadata schema")
@@ -1218,13 +1272,15 @@ def load_energy_evidence(
             raise JoinContractError(
                 f"{protein_id}: energy scan does not use the frozen 5 A interface cutoff"
             )
-        if set(parameters.get("interpretable_sidechain_scan_excludes", [])) != {
-            "ALA",
-            "GLY",
-            "PRO",
-        }:
+        interpretation_excludes = set(
+            parameters.get("interpretable_sidechain_scan_excludes", [])
+        )
+        if interpretation_excludes not in (
+            {"ALA", "GLY", "PRO"},
+            {"ALA", "GLY", "PRO", "DISULFIDE_CYS"},
+        ):
             raise JoinContractError(
-                f"{protein_id}: energy interpretability exclusions differ from ALA/GLY/PRO"
+                f"{protein_id}: unsupported energy interpretability exclusions"
             )
         score_function = str(parameters.get("rosetta_score_function", ""))
         if score_function != "ref2015":
@@ -1530,6 +1586,11 @@ def load_energy_evidence(
             "ddg_bind_chain_range_reu",
             "min_cross_chain_heavy_atom_distance_a",
         )
+        disulfide = _strict_bool_series(
+            frame["is_disulfide_cysteine"],
+            label=f"{protein_id} energy is_disulfide_cysteine",
+        )
+        frame["is_disulfide_cysteine"] = disulfide
         for column in numeric_columns:
             try:
                 frame[column] = pd.to_numeric(frame[column], errors="raise").astype(float)
@@ -1537,14 +1598,27 @@ def load_energy_evidence(
                 raise JoinContractError(
                     f"{protein_id}: energy {column} must be numeric"
                 ) from exc
-            if frame[column].isna().any() or not frame[column].map(math.isfinite).all():
+            if frame[column].dropna().map(lambda value: not math.isfinite(value)).any():
                 raise JoinContractError(
-                    f"{protein_id}: energy {column} must be finite"
+                    f"{protein_id}: energy {column} contains an infinite value"
                 )
+            missing_or_nonfinite = frame[column].isna() | ~frame[column].map(
+                lambda value: math.isfinite(value) if not pd.isna(value) else False
+            )
+            allowed_missing = (
+                disulfide
+                if column != "min_cross_chain_heavy_atom_distance_a"
+                else pd.Series(False, index=frame.index)
+            )
+            if (missing_or_nonfinite & ~allowed_missing).any():
+                raise JoinContractError(
+                    f"{protein_id}: energy {column} must be finite outside disulfide Cys"
+                )
+        measured = ~disulfide
         if not (
             frame["ddg_bind_min_reu"].le(frame["ddg_bind_mean_reu"])
             & frame["ddg_bind_mean_reu"].le(frame["ddg_bind_max_reu"])
-        ).all():
+        )[measured].all():
             raise JoinContractError(f"{protein_id}: inconsistent energy min/mean/max")
         if not frame["min_cross_chain_heavy_atom_distance_a"].lt(
             interface_cutoff_a
@@ -1556,7 +1630,8 @@ def load_energy_evidence(
         if not all(
             math.isclose(observed, expected, abs_tol=1e-6)
             for observed, expected in zip(
-                frame["ddg_bind_chain_range_reu"], measured_range
+                frame.loc[measured, "ddg_bind_chain_range_reu"],
+                measured_range.loc[measured],
             )
         ):
             raise JoinContractError(
@@ -1574,6 +1649,7 @@ def load_energy_evidence(
             "is_native_alanine",
             "is_glycine_to_alanine",
             "is_proline_to_alanine",
+            "is_disulfide_cysteine",
             "is_interpretable_sidechain_alanine",
         ):
             frame[boolean_column] = _strict_bool_series(
@@ -1583,8 +1659,15 @@ def load_energy_evidence(
         expected_native_alanine = residue_names.eq("ALA")
         expected_glycine = residue_names.eq("GLY")
         expected_proline = residue_names.eq("PRO")
+        if (frame["is_disulfide_cysteine"] & ~residue_names.eq("CYS")).any():
+            raise JoinContractError(
+                f"{protein_id}: disulfide flag is set on a non-Cys residue"
+            )
         expected_interpretable = ~(
-            expected_native_alanine | expected_glycine | expected_proline
+            expected_native_alanine
+            | expected_glycine
+            | expected_proline
+            | frame["is_disulfide_cysteine"]
         )
         if not (
             frame["is_native_alanine"].eq(expected_native_alanine)
@@ -1610,6 +1693,9 @@ def load_energy_evidence(
         base["energy_use_status"] = "descriptive_available"
         base["energy_position_status"] = "not_scanned"
         base["energy_scanned"] = pd.array([False] * len(base), dtype="boolean")
+        base["energy_is_disulfide_cysteine"] = pd.array(
+            [False] * len(base), dtype="boolean"
+        )
         base["energy_is_interpretable_sidechain_alanine"] = pd.array(
             [pd.NA] * len(base), dtype="boolean"
         )
@@ -1632,19 +1718,29 @@ def load_energy_evidence(
             interpretable_values = set(
                 group["is_interpretable_sidechain_alanine"].astype(bool)
             )
-            if len(interpretable_values) != 1:
+            disulfide = bool(group["is_disulfide_cysteine"].any())
+            if len(interpretable_values) != 1 and not disulfide:
                 raise JoinContractError(
                     f"{protein_id}: inconsistent energy interpretability at index {index_0b}"
                 )
-            interpretable = next(iter(interpretable_values))
+            interpretable = bool(
+                group["is_interpretable_sidechain_alanine"].all()
+            )
+            if disulfide and interpretable:
+                raise JoinContractError(
+                    f"{protein_id}: disulfide Cys is interpretable at index {index_0b}"
+                )
             ddg_max = float(group["ddg_bind_mean_reu"].max())
             ddg_min = float(group["ddg_bind_mean_reu"].min())
             base.loc[hit, "energy_scanned"] = True
-            base.loc[hit, "energy_position_status"] = (
-                "measured_interpretable"
-                if interpretable
-                else "scanned_noninterpretable_AGP"
-            )
+            if disulfide:
+                position_status = "scanned_noninterpretable_disulfide_CYS"
+            elif interpretable:
+                position_status = "measured_interpretable"
+            else:
+                position_status = "scanned_noninterpretable_AGP"
+            base.loc[hit, "energy_position_status"] = position_status
+            base.loc[hit, "energy_is_disulfide_cysteine"] = disulfide
             base.loc[
                 hit, "energy_is_interpretable_sidechain_alanine"
             ] = interpretable
@@ -1717,6 +1813,9 @@ def load_energy_evidence(
 
     energy = pd.concat(rows, ignore_index=True)
     energy["energy_scanned"] = pd.array(energy["energy_scanned"], dtype="boolean")
+    energy["energy_is_disulfide_cysteine"] = pd.array(
+        energy["energy_is_disulfide_cysteine"], dtype="boolean"
+    )
     energy["energy_is_interpretable_sidechain_alanine"] = pd.array(
         energy["energy_is_interpretable_sidechain_alanine"], dtype="boolean"
     )
@@ -2092,7 +2191,9 @@ def _score_direct_ec_contact_validation(
     )
     row["top_L_gate_status"] = gate_status
     row["sigma_hard_lock_status"] = _sigma_hard_lock_status(
-        str(source["covariance_status"]), gate_status
+        str(source["covariance_status"]),
+        gate_status,
+        str(source["sigma_evidence_status"]),
     )
     return row
 
@@ -2125,6 +2226,7 @@ def compute_direct_ec_contact_validation(
             {
                 "covariance_status": source["covariance_status"],
                 "model_neff_per_length": source["model_neff_per_length"],
+                "sigma_evidence_status": source["sigma_evidence_status"],
                 "structure_status": structure_source["structure_status"],
                 "structure_mechanism_status": structure_source[
                     "structure_mechanism_status"
@@ -2141,7 +2243,9 @@ def compute_direct_ec_contact_validation(
         row["ec_contact_validation_status"] = pending_status
         row["top_L_gate_status"] = pending_status
         row["sigma_hard_lock_status"] = _sigma_hard_lock_status(
-            covariance_status, pending_status
+            covariance_status,
+            pending_status,
+            str(source["sigma_evidence_status"]),
         )
         direct_ready = (
             structure_source["structure_status"] == "qualified"
@@ -2307,18 +2411,48 @@ def load_legacy_identity_annotations(
         return base
     if long.duplicated(["protein_id", "tier", "label"]).any():
         raise JoinContractError("legacy identity-required annotations contain duplicate roles")
-    for (protein_id, index_0b), group in long.groupby(["protein_id", "index_0b"], sort=False):
-        hit = base["protein_id"].eq(protein_id) & base["index_0b"].eq(index_0b)
-        base.loc[hit, "legacy_identity_required_overlap"] = True
-        base.loc[hit, "legacy_identity_required_hard_anchor"] = bool(
-            group["tier"].eq("hard_anchor").any()
+    summaries = []
+    for (protein_id, index_0b), group in long.groupby(
+        ["protein_id", "index_0b"], sort=False
+    ):
+        summaries.append(
+            {
+                "protein_id": protein_id,
+                "index_0b": int(index_0b),
+                "legacy_identity_required_overlap": True,
+                "legacy_identity_required_hard_anchor": bool(
+                    group["tier"].eq("hard_anchor").any()
+                ),
+                "legacy_identity_required_monitored_shell": bool(
+                    group["tier"].eq("monitored_shell").any()
+                ),
+                "legacy_identity_required_labels_json": json.dumps(
+                    sorted(group["label"].astype(str).tolist()), separators=(",", ":")
+                ),
+            }
         )
-        base.loc[hit, "legacy_identity_required_monitored_shell"] = bool(
-            group["tier"].eq("monitored_shell").any()
-        )
-        base.loc[hit, "legacy_identity_required_labels_json"] = json.dumps(
-            sorted(group["label"].astype(str).tolist()), separators=(",", ":")
-        )
+    annotations = pd.DataFrame(summaries)
+    defaults = {
+        "legacy_identity_required_overlap": False,
+        "legacy_identity_required_hard_anchor": False,
+        "legacy_identity_required_monitored_shell": False,
+        "legacy_identity_required_labels_json": "[]",
+    }
+    base = base.drop(columns=list(defaults)).merge(
+        annotations,
+        on=["protein_id", "index_0b"],
+        how="left",
+        sort=False,
+        validate="one_to_one",
+    )
+    for column, default in defaults.items():
+        base[column] = base[column].where(base[column].notna(), default)
+    for column in (
+        "legacy_identity_required_overlap",
+        "legacy_identity_required_hard_anchor",
+        "legacy_identity_required_monitored_shell",
+    ):
+        base[column] = pd.array(base[column], dtype="boolean")
     return base
 
 
@@ -2327,6 +2461,7 @@ def load_homolog_analog_annotations(
     path: Path | None,
     canonical: pd.DataFrame,
     sequences: dict[str, str],
+    valid_parent_ids: set[str] | None = None,
 ) -> pd.DataFrame:
     base = canonical[["protein_id", "index_0b"]].copy()
     if path is None:
@@ -2346,11 +2481,13 @@ def load_homolog_analog_annotations(
         "source",
     }
     _require_columns(frame, required, "homolog analog annotations")
-    unexpected = sorted(set(frame["protein_id"].astype(str)) - set(sequences))
+    valid_parent_ids = set(sequences) if valid_parent_ids is None else valid_parent_ids
+    unexpected = sorted(set(frame["protein_id"].astype(str)) - valid_parent_ids)
     if unexpected:
         raise JoinContractError(
             f"homolog analog annotations contain noncohort parents: {unexpected}"
         )
+    frame = frame[frame["protein_id"].astype(str).isin(sequences)].copy()
     annotation_key = [
         "protein_id",
         "target_index_0b",
@@ -2381,20 +2518,10 @@ def load_homolog_analog_annotations(
     base["homolog_analog_mapping_statuses_json"] = "[]"
     base["homolog_analog_sources_json"] = "[]"
     base["homolog_analog_annotations_json"] = "[]"
+    summaries = []
     for (protein_id, index_0b), group in frame.groupby(
         ["protein_id", "target_index_0b"], sort=False
     ):
-        hit = base["protein_id"].eq(str(protein_id)) & base["index_0b"].eq(int(index_0b))
-        base.loc[hit, "homolog_analog_overlap"] = True
-        base.loc[hit, "homolog_analog_roles_json"] = json.dumps(
-            sorted(group["analog_role"].astype(str).tolist()), separators=(",", ":")
-        )
-        base.loc[hit, "homolog_analog_mapping_statuses_json"] = json.dumps(
-            sorted(set(group["mapping_status"].astype(str))), separators=(",", ":")
-        )
-        base.loc[hit, "homolog_analog_sources_json"] = json.dumps(
-            sorted(set(group["source"].astype(str))), separators=(",", ":")
-        )
         records: list[dict[str, Any]] = []
         for record in group.sort_values(
             ["target_index_0b", "analog_role", "mapping_status", "source"]
@@ -2408,9 +2535,49 @@ def load_homolog_analog_annotations(
                 else:
                     clean_record[column] = value
             records.append(clean_record)
-        base.loc[hit, "homolog_analog_annotations_json"] = json.dumps(
-            records, separators=(",", ":"), sort_keys=True
+        summaries.append(
+            {
+                "protein_id": str(protein_id),
+                "index_0b": int(index_0b),
+                "homolog_analog_overlap": True,
+                "homolog_analog_roles_json": json.dumps(
+                    sorted(group["analog_role"].astype(str).tolist()),
+                    separators=(",", ":"),
+                ),
+                "homolog_analog_mapping_statuses_json": json.dumps(
+                    sorted(set(group["mapping_status"].astype(str))),
+                    separators=(",", ":"),
+                ),
+                "homolog_analog_sources_json": json.dumps(
+                    sorted(set(group["source"].astype(str))), separators=(",", ":")
+                ),
+                "homolog_analog_annotations_json": json.dumps(
+                    records, separators=(",", ":"), sort_keys=True
+                ),
+            }
         )
+    if not summaries:
+        return base
+    annotations = pd.DataFrame(summaries)
+    defaults = {
+        "homolog_analog_overlap": False,
+        "homolog_analog_roles_json": "[]",
+        "homolog_analog_mapping_statuses_json": "[]",
+        "homolog_analog_sources_json": "[]",
+        "homolog_analog_annotations_json": "[]",
+    }
+    base = base.drop(columns=list(defaults)).merge(
+        annotations,
+        on=["protein_id", "index_0b"],
+        how="left",
+        sort=False,
+        validate="one_to_one",
+    )
+    for column, default in defaults.items():
+        base[column] = base[column].where(base[column].notna(), default)
+    base["homolog_analog_overlap"] = pd.array(
+        base["homolog_analog_overlap"], dtype="boolean"
+    )
     return base
 
 
@@ -2447,8 +2614,10 @@ def load_and_expand_cores(
     parent_positions: pd.DataFrame,
     sequences: dict[str, str],
     order: Sequence[str],
+    alleles: Sequence[str] = ALLELES,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    cores_all = pd.read_csv(path)
+    alleles = tuple(alleles)
+    cores_all = _read_table(path)
     _require_columns(cores_all, CORE_REQUIRED_COLUMNS, "WT epitope cores")
     cores = cores_all[cores_all["protein_id"].astype(str).isin(order)].copy()
     if cores.empty:
@@ -2457,7 +2626,7 @@ def load_and_expand_cores(
         raise JoinContractError("duplicate protein/allele/core_start rows")
     if set(cores["protein_id"].astype(str)) != set(order):
         raise JoinContractError("one or more FASTA parents lack WT epitope cores")
-    if set(cores["allele"].astype(str)) != set(ALLELES):
+    if set(cores["allele"].astype(str)) != set(alleles):
         raise JoinContractError(
             f"core allele set differs from frozen contract: {sorted(set(cores['allele']))}"
         )
@@ -2465,7 +2634,7 @@ def load_and_expand_cores(
         zip(cores["protein_id"].astype(str), cores["allele"].astype(str), strict=True)
     )
     expected_parent_alleles = {
-        (protein_id, allele) for protein_id in order for allele in ALLELES
+        (protein_id, allele) for protein_id in order for allele in alleles
     }
     if observed_parent_alleles != expected_parent_alleles:
         raise JoinContractError("every parent must have at least one core for every frozen allele")
@@ -2544,12 +2713,14 @@ def validate_baseline(
     core_positions: pd.DataFrame,
     sequences: dict[str, str],
     order: Sequence[str],
+    alleles: Sequence[str] = ALLELES,
 ) -> pd.DataFrame:
-    baseline_all = pd.read_csv(path)
+    alleles = tuple(alleles)
+    baseline_all = _read_table(path)
     _require_columns(baseline_all, BASELINE_REQUIRED_COLUMNS, "open-policy baseline")
     baseline = baseline_all[
         baseline_all["protein_id"].astype(str).isin(order)
-        & baseline_all["allele"].astype(str).isin(ALLELES)
+        & baseline_all["allele"].astype(str).isin(alleles)
     ].copy()
     key = ["protein_id", "allele", "open_policy"]
     if baseline.duplicated(key).any():
@@ -2557,7 +2728,7 @@ def validate_baseline(
     expected_keys = {
         (protein_id, allele, policy)
         for protein_id in order
-        for allele in ALLELES
+        for allele in alleles
         for policy in POLICY_OFFSETS
     }
     observed_keys = set(
@@ -2756,13 +2927,14 @@ def build_parent_policy_tradeoff(
     registry: dict[tuple[str, str], dict[str, str]],
     sequences: dict[str, str],
     order: Sequence[str],
+    alleles: Sequence[str] = ALLELES,
 ) -> pd.DataFrame:
     baseline_lookup = baseline.set_index(["protein_id", "allele", "open_policy"])
     position_lookup = parent_positions.set_index(["protein_id", "index_0b"])
     rows = []
     for protein_id in order:
         length = len(sequences[protein_id])
-        for allele in ALLELES:
+        for allele in alleles:
             allele_cores = core_positions[
                 core_positions["protein_id"].eq(protein_id)
                 & core_positions["allele"].eq(allele)
@@ -2935,13 +3107,35 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--legacy-identity-map", type=Path, required=True)
     parser.add_argument("--homolog-analog-annotations", type=Path, required=True)
     parser.add_argument("--expected-parent-count", type=int, default=15)
+    parser.add_argument(
+        "--allele",
+        action="append",
+        dest="alleles",
+        help=(
+            "Frozen allele tag to include; repeat as needed. Defaults to the historical "
+            "04:01/07:01/15:01 Active-15 set."
+        ),
+    )
     parser.add_argument("--q00511-protein-id", default="Q00511")
     parser.add_argument("--q00511-reference-top-l-precision", type=float)
+    parser.add_argument(
+        "--n-shards",
+        type=int,
+        help="Round-robin parent shard count; requires --shard-index.",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        help="Zero-based round-robin parent shard index; requires --n-shards.",
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
     return parser.parse_args(argv)
 
 
 def run(args: argparse.Namespace, *, command: str) -> dict[str, Any]:
+    alleles = tuple(getattr(args, "alleles", None) or ALLELES)
+    if not alleles or len(set(alleles)) != len(alleles):
+        raise JoinContractError("allele scope must be non-empty and unique")
     out_dir = args.out_dir.expanduser().resolve()
     if out_dir.exists() and (not out_dir.is_dir() or any(out_dir.iterdir())):
         raise JoinContractError(f"output directory must be absent or empty: {out_dir}")
@@ -2958,14 +3152,29 @@ def run(args: argparse.Namespace, *, command: str) -> dict[str, Any]:
         label: ledger.add(label, path) for label, path in input_paths.items()
     }
     analog_path = resolved_inputs["homolog_analog_annotations"]
-    sequences, order = read_parent_fasta(
+    all_sequences, all_order = read_parent_fasta(
         resolved_inputs["parent_fasta"],
         expected_parent_count=args.expected_parent_count,
     )
+    n_shards = getattr(args, "n_shards", None)
+    shard_index = getattr(args, "shard_index", None)
+    if (n_shards is None) != (shard_index is None):
+        raise JoinContractError("--n-shards and --shard-index must be supplied together")
+    if n_shards is not None:
+        if n_shards < 1 or not 0 <= shard_index < n_shards:
+            raise JoinContractError("invalid parent shard count/index")
+        order = all_order[shard_index::n_shards]
+        if not order:
+            raise JoinContractError("selected parent shard is empty")
+        sequences = {protein_id: all_sequences[protein_id] for protein_id in order}
+    else:
+        order = all_order
+        sequences = all_sequences
     canonical = build_canonical_grid(sequences, order)
     specs = read_evidence_manifest(
         resolved_inputs["evidence_manifest"],
-        parent_ids=set(order),
+        parent_ids=set(all_order),
+        selected_parent_ids=set(order),
     )
     evolution, evolution_registry, ec_sources = load_evolution_evidence(
         canonical=canonical,
@@ -3012,6 +3221,7 @@ def run(args: argparse.Namespace, *, command: str) -> dict[str, Any]:
         path=analog_path,
         canonical=canonical,
         sequences=sequences,
+        valid_parent_ids=set(all_order),
     )
     parent_positions = build_parent_position_evidence(
         canonical=canonical,
@@ -3026,6 +3236,7 @@ def run(args: argparse.Namespace, *, command: str) -> dict[str, Any]:
         parent_positions=parent_positions,
         sequences=sequences,
         order=order,
+        alleles=alleles,
     )
     baseline = validate_baseline(
         path=resolved_inputs["open_policy_baseline"],
@@ -3033,6 +3244,7 @@ def run(args: argparse.Namespace, *, command: str) -> dict[str, Any]:
         core_positions=core_positions,
         sequences=sequences,
         order=order,
+        alleles=alleles,
     )
     registry = {
         **evolution_registry,
@@ -3057,6 +3269,7 @@ def run(args: argparse.Namespace, *, command: str) -> dict[str, Any]:
         registry=registry,
         sequences=sequences,
         order=order,
+        alleles=alleles,
     )
 
     tables = {
@@ -3115,8 +3328,18 @@ def run(args: argparse.Namespace, *, command: str) -> dict[str, Any]:
                 "canonical_position_count": int(len(canonical)),
                 "core_count": int(len(cores)),
                 "core_position_count": int(len(core_positions)),
-                "alleles": list(ALLELES),
+                "alleles": list(alleles),
             },
+            "shard": (
+                {
+                    "index": int(shard_index),
+                    "count": int(n_shards),
+                    "selection": "round_robin",
+                    "full_parent_count": len(all_order),
+                }
+                if n_shards is not None
+                else None
+            ),
             "numbering": {
                 "index_0b": "zero-based mature canonical parent position",
                 "position_1b": "index_0b + 1",
@@ -3155,7 +3378,9 @@ def run(args: argparse.Namespace, *, command: str) -> dict[str, Any]:
                         "energy_ddg_ge2_reu": ">=2",
                     },
                     "status": "descriptive_energy_only",
-                    "noninterpretable_native_residues": ["ALA", "GLY", "PRO"],
+                    "noninterpretable_native_residues": [
+                        "ALA", "GLY", "PRO", "DISULFIDE_CYS"
+                    ],
                     "noninterpretable_membership": "NA",
                     "unscanned_membership": False,
                     "bsa_rank_is_not_mechanism": True,

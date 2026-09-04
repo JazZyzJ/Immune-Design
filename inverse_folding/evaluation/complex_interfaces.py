@@ -566,12 +566,114 @@ def parse_rosetta_ddg_scan_log(text: str) -> tuple[float, pd.DataFrame]:
     return wt_values[0], out
 
 
+def _reconcile_rosetta_alanine_rows(
+    arr,
+    candidates: pd.DataFrame,
+    parsed: pd.DataFrame,
+    *,
+    chain_a: str,
+    chain_b: str,
+    disulfide_cutoff: float = 2.5,
+) -> pd.DataFrame:
+    """Retain Rosetta-omitted covalent disulfide Cys as noninterpretable rows."""
+    key = ["rosetta_chain", "res_id"]
+    expected = set(map(tuple, candidates[key].to_numpy()))
+    observed = set(map(tuple, parsed[key].to_numpy()))
+    missing = sorted(expected - observed)
+    extra = sorted(observed - expected)
+    if extra:
+        raise ValueError(
+            f"Rosetta alanine-scan residue mismatch for {chain_a}:{chain_b}; "
+            f"missing={missing}, extra={extra}"
+        )
+
+    disulfide_keys: set[tuple[str, int]] = set()
+    if missing:
+        protein = canonical_protein_atoms(arr)
+        dimer = protein[
+            np.isin(protein.chain_id.astype(str), [str(chain_a), str(chain_b)])
+        ]
+        insertions = _ins_codes(dimer)
+        cysteine_sg = (dimer.res_name.astype(str) == "CYS") & (
+            dimer.atom_name.astype(str) == "SG"
+        )
+        for rosetta_chain, res_id in missing:
+            source_chain = chain_a if str(rosetta_chain) == "A" else chain_b
+            candidate = candidates[
+                candidates["rosetta_chain"].astype(str).eq(str(rosetta_chain))
+                & candidates["res_id"].astype(int).eq(int(res_id))
+            ]
+            if len(candidate) != 1 or str(candidate.iloc[0]["wt_residue_name3"]) != "CYS":
+                raise ValueError(
+                    f"Rosetta alanine-scan residue mismatch for {chain_a}:{chain_b}; "
+                    f"missing={missing}, extra={extra}"
+                )
+            insertion = str(candidate.iloc[0].get("ins_code", ""))
+            target = (
+                cysteine_sg
+                & (dimer.chain_id.astype(str) == str(source_chain))
+                & (dimer.res_id.astype(int) == int(res_id))
+                & (insertions.astype(str) == insertion)
+            )
+            other = cysteine_sg & ~target
+            if not target.any() or not other.any():
+                raise ValueError(
+                    f"Rosetta alanine-scan residue mismatch for {chain_a}:{chain_b}; "
+                    f"missing={missing}, extra={extra}"
+                )
+            min_distance = float(
+                np.linalg.norm(
+                    dimer.coord[target][:, None, :] - dimer.coord[other][None, :, :],
+                    axis=-1,
+                ).min()
+            )
+            if min_distance > disulfide_cutoff:
+                raise ValueError(
+                    f"Rosetta alanine-scan residue mismatch for {chain_a}:{chain_b}; "
+                    f"missing={missing}, extra={extra}"
+                )
+            disulfide_keys.add((str(rosetta_chain), int(res_id)))
+
+    merged = candidates.merge(
+        parsed,
+        on=key,
+        how="left",
+        validate="one_to_one",
+        suffixes=("", "_rosetta"),
+    )
+    merged["is_disulfide_cysteine"] = [
+        (str(row.rosetta_chain), int(row.res_id)) in disulfide_keys
+        for row in merged.itertuples(index=False)
+    ]
+    disulfide = merged["is_disulfide_cysteine"]
+    merged.loc[disulfide, "wt_residue_name3_rosetta"] = "CYS"
+    merged.loc[disulfide, "mut_residue_name3"] = "ALA"
+    merged.loc[disulfide, "ddg_bind_reu"] = np.nan
+    merged.loc[disulfide, "is_interpretable_sidechain_alanine"] = False
+    mismatch = merged[
+        merged["wt_residue_name3"] != merged["wt_residue_name3_rosetta"]
+    ]
+    if not mismatch.empty:
+        columns = [
+            "source_chain", "res_id", "wt_residue_name3", "wt_residue_name3_rosetta"
+        ]
+        raise ValueError(
+            f"Rosetta residue identity mismatch for {chain_a}:{chain_b}: "
+            f"{mismatch[columns].to_dict('records')}"
+        )
+    return merged.drop(columns=["wt_residue_name3_rosetta"])
+
+
 def aggregate_homomer_alanine_scan(scan_df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate side-specific homomer alanine scans to one row per interface/residue index."""
+    scan_df = scan_df.copy()
+    if "is_disulfide_cysteine" not in scan_df:
+        scan_df["is_disulfide_cysteine"] = False
     required = {
         "interface_pair", "source_chain", "res_id", "ins_code", "wt_residue_name3",
         "ddg_bind_reu", "is_native_alanine", "is_glycine_to_alanine",
-        "is_proline_to_alanine", "is_interpretable_sidechain_alanine",
+        "is_proline_to_alanine", "is_disulfide_cysteine",
+        "is_interpretable_sidechain_alanine",
     }
     missing = sorted(required - set(scan_df.columns))
     if missing:
@@ -587,6 +689,7 @@ def aggregate_homomer_alanine_scan(scan_df: pd.DataFrame) -> pd.DataFrame:
         is_native_alanine=("is_native_alanine", "all"),
         is_glycine_to_alanine=("is_glycine_to_alanine", "all"),
         is_proline_to_alanine=("is_proline_to_alanine", "all"),
+        is_disulfide_cysteine=("is_disulfide_cysteine", "any"),
         is_interpretable_sidechain_alanine=("is_interpretable_sidechain_alanine", "all"),
     ).reset_index()
     out["ddg_bind_chain_range_reu"] = (
@@ -603,7 +706,7 @@ def aggregate_homomer_alanine_scan(scan_df: pd.DataFrame) -> pd.DataFrame:
             out = out.merge(values, on=group_columns, how="left", validate="one_to_one")
     out["ddg_bind_rank_desc"] = out.groupby("interface_pair")[
         "ddg_bind_mean_reu"
-    ].rank(method="min", ascending=False).astype(int)
+    ].rank(method="min", ascending=False).astype("Int64")
     out["sidechain_ddg_bind_rank_desc"] = pd.Series(pd.NA, index=out.index, dtype="Int64")
     interpretable = out["is_interpretable_sidechain_alanine"]
     out.loc[interpretable, "sidechain_ddg_bind_rank_desc"] = (
@@ -769,40 +872,13 @@ def run_rosetta_alanine_scan(
             )
 
         wt_binding_dg, parsed = parse_rosetta_ddg_scan_log(result.stdout)
-        expected_keys = candidates[["rosetta_chain", "res_id"]]
-        observed_keys = parsed[["rosetta_chain", "res_id"]]
-        if set(map(tuple, expected_keys.to_numpy())) != set(map(tuple, observed_keys.to_numpy())):
-            missing = sorted(
-                set(map(tuple, expected_keys.to_numpy()))
-                - set(map(tuple, observed_keys.to_numpy()))
-            )
-            extra = sorted(
-                set(map(tuple, observed_keys.to_numpy()))
-                - set(map(tuple, expected_keys.to_numpy()))
-            )
-            raise ValueError(
-                f"Rosetta alanine-scan residue mismatch for {chain_a}:{chain_b}; "
-                f"missing={missing}, extra={extra}"
-            )
-        merged = candidates.merge(
+        merged = _reconcile_rosetta_alanine_rows(
+            arr,
+            candidates,
             parsed,
-            on=["rosetta_chain", "res_id"],
-            how="left",
-            validate="one_to_one",
-            suffixes=("", "_rosetta"),
+            chain_a=chain_a,
+            chain_b=chain_b,
         )
-        identity_mismatch = merged[
-            merged["wt_residue_name3"] != merged["wt_residue_name3_rosetta"]
-        ]
-        if not identity_mismatch.empty:
-            mismatch_columns = [
-                "source_chain", "res_id", "wt_residue_name3", "wt_residue_name3_rosetta"
-            ]
-            raise ValueError(
-                f"Rosetta residue identity mismatch for {chain_a}:{chain_b}: "
-                f"{identity_mismatch[mismatch_columns].to_dict('records')}"
-            )
-        merged = merged.drop(columns=["wt_residue_name3_rosetta"])
         merged["wt_binding_dg_reu"] = wt_binding_dg
         merged["mut_binding_dg_reu"] = wt_binding_dg + merged["ddg_bind_reu"]
         merged["ddg_sign_convention"] = "mutant_minus_wildtype"

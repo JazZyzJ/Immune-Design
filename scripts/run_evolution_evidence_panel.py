@@ -494,6 +494,30 @@ def validate_parent_output(protein_id: str, out_dir: Path) -> dict[str, object]:
         masks_json.get("masks", {})
     ) != EXPECTED_MASKS:
         raise PanelContractError(f"WT-lock masks JSON mismatch for {protein_id}")
+    sigma_evidence_status = metadata.get("ec_table", {}).get(
+        "sigma_evidence_status", "available"
+    )
+    if sigma_evidence_status not in {
+        "available",
+        "unavailable_nonpositive_cn",
+    }:
+        raise PanelContractError(
+            f"invalid sigma evidence status for {protein_id}: {sigma_evidence_status!r}"
+        )
+    if sigma_evidence_status == "unavailable_nonpositive_cn":
+        sigma_masks = mask_summary.loc[mask_summary["kind"].eq("covariance")]
+        if (
+            not per_position["sigma_evidence_status"]
+            .astype(str)
+            .eq(sigma_evidence_status)
+            .all()
+            or sigma_masks["n_positions"].astype(int).sum() != 0
+            or set(sigma_masks["status"].astype(str))
+            != {"suppressed_degenerate_couplings"}
+        ):
+            raise PanelContractError(
+                f"degenerate sigma evidence was not suppressed for {protein_id}"
+            )
 
     required_potts = {
         "H_total",

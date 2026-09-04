@@ -8,6 +8,11 @@
 # Usage:
 #   sbatch --output=<logs>/cfmsa_%j.out --error=<logs>/cfmsa_%j.err \
 #     scripts/submit_tetramer_msa_local.slurm <QUERY.fasta> <RESULT_DIR> [extra colabfold_search flags]
+# Deterministic shard-array mode:
+#   QUERY_SHARD_DIR=<frozen>/shards RESULT_SHARD_DIR=<work>/raw_shards \
+#     sbatch --array=0-63%8 --output=<logs>/cfmsa_%A_%a.out \
+#       --error=<logs>/cfmsa_%A_%a.err scripts/submit_tetramer_msa_local.slurm
+# Each task reads shard_<zero-padded task id>.fasta and writes into <RESULT_SHARD_DIR>/<id>/.
 #
 #SBATCH --job-name=cf_msa_local
 #SBATCH --account=kaiyijiang
@@ -30,7 +35,34 @@ export PS1="${PS1:-}"
 module load colabfold/1.5.5
 
 DB="${COLABFOLD_DB:-/scratch/gpfs/KAIYIJIANG/databases/colabfold}"
-QUERY="${1:?QUERY.fasta}"; RESULT="${2:?RESULT_DIR}"; shift 2
+QUERY_SHARD_DIR="${QUERY_SHARD_DIR:-}"
+RESULT_SHARD_DIR="${RESULT_SHARD_DIR:-}"
+if [ -n "$QUERY_SHARD_DIR" ] || [ -n "$RESULT_SHARD_DIR" ]; then
+  if [ -z "$QUERY_SHARD_DIR" ] || [ -z "$RESULT_SHARD_DIR" ]; then
+    echo "FATAL: shard-array mode requires both QUERY_SHARD_DIR and RESULT_SHARD_DIR" >&2
+    exit 2
+  fi
+  if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    echo "FATAL: shard-array mode requires SLURM_ARRAY_TASK_ID" >&2
+    exit 2
+  fi
+  if [ "$#" -ne 0 ]; then
+    echo "FATAL: shard-array mode does not accept positional arguments" >&2
+    exit 2
+  fi
+  printf -v SHARD_TAG "%03d" "$SLURM_ARRAY_TASK_ID"
+  QUERY="${QUERY_SHARD_DIR}/shard_${SHARD_TAG}.fasta"
+  RESULT="${RESULT_SHARD_DIR}/${SHARD_TAG}"
+else
+  QUERY="${1:?QUERY.fasta}"
+  RESULT="${2:?RESULT_DIR}"
+  shift 2
+fi
+[ -f "$QUERY" ] || { echo "FATAL: query FASTA not found: $QUERY" >&2; exit 2; }
+if [ -e "$RESULT" ] && [ -n "$(find "$RESULT" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+  echo "FATAL: result directory is nonempty; refusing a partial overwrite: $RESULT" >&2
+  exit 2
+fi
 mkdir -p "$RESULT"
 
 # --gpu-server 0: one batch call loads the GPU DB once for all queries (no separate persistent
