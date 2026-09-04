@@ -51,6 +51,8 @@ _SELECTION_AUTHORITY_COLUMNS = (
 )
 _SELECTION_STATUSES = frozenset({
     "feasible_immune_pareto",
+    "official_feasible_immune_pareto",
+    "official_structure_rejected_fallback",
     "structure_rejected_fallback",
 })
 
@@ -270,12 +272,12 @@ def _validate_selection_authority(df: pd.DataFrame) -> None:
             raise ValueError("terminal_validated must be boolean selection authority")
         if not isinstance(feasible, (bool, np.bool_)):
             raise ValueError("structure_feasible must be boolean selection authority")
-        if status == "feasible_immune_pareto" and not (terminal and feasible):
+        if status.endswith("feasible_immune_pareto") and not (terminal and feasible):
             raise ValueError(
                 "feasible_immune_pareto requires terminal_validated=true and "
                 "structure_feasible=true"
             )
-        if status == "structure_rejected_fallback" and (terminal or feasible):
+        if status.endswith("structure_rejected_fallback") and (terminal or feasible):
             raise ValueError(
                 "structure_rejected_fallback requires terminal_validated=false and "
                 "structure_feasible=false"

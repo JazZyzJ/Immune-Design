@@ -4503,3 +4503,20 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - confidence: 0.99
 - status: done
 - next_action: Replay the one failed DRB1*15:01 cell and launch the completed campaigns' official structure/immune evaluation.
+
+### L0172
+- timestamp: 2026-09-04T04:13:59-04:00
+- type: FIX
+- module: RF/FUSION_V2
+- trigger: Official V2 facades label selection authority with `official_` prefixes, while Phase-C evaluation accepted only the legacy unprefixed statuses.
+- change_summary: Phase-C selection-authority validation now accepts the two official feasible/fallback statuses and applies the existing feasibility invariants to both prefixed and unprefixed forms.
+- rationale: Official retention changes panel cardinality, not the terminal or structure authority contract; rejecting its signed facade prevents standard downstream evaluation.
+- artifacts:
+  - `scripts/evaluate_phase_c.py`
+- evidence: Targeted validation accepted both official statuses and retained the existing terminal/structure fail-closed checks; the Phase-C script suite and diff checks pass.
+- impact:
+  - scope: Phase-C loading of official V2 facades only; legacy statuses and all other validation are unchanged.
+  - risk: low
+  - confidence: 0.99
+- status: done
+- next_action: Materialize the completed full-data campaigns with `--official` and submit their structure/immune evaluations.
