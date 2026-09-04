@@ -14,7 +14,6 @@ This file is append-only and follows rules defined in the active stage plans (`P
 - trigger: <why this log entry exists>
 - change_summary: <one-line factual statement>
 - rationale: <reasoning or hypothesis>
-- second_pass: The workflow review confirmed seven further P1s, all of the same KIND -- a declared quantity that nothing binds to the object that realizes it. (1) The declared substrate never bound the runtime sampler config: a 140-step runtime under a 100-step declaration burned 654 logical DFE against a launch gate that had authorized 374, and a runtime temperature of 3.0 was accepted silently while the manifest reported 1.0. Now checked field by field BEFORE the ladder pays its root prefix. (2) The diagnostic-policy gate keyed on a config string, and `config.DIAGNOSTIC_VALUE_PREFIX = "diag_"` was not even the same vocabulary as `policy.EXPLICIT_PROBE_POLICY_ID = "explicit_probe"` -- declaring the probe HONESTLY walked past the phase gate. One vocabulary now, owned by `policy`, plus a typed `DeclaredPolicy`: the parse-time half makes a diagnostic declaration in a production phase unconstructible, the runtime half makes the kernel check only that the ANSWERING identity is the declared object. (3) `bind_cumulative_reference` never bound its content digest to the reference sequence. (4) The gate's `CumulativeSafetyReference` and the artifact's `SafetyReferenceBinding` were never reconciled. (5) `incremental_gate_enabled: true` made every legal config unlaunchable -- a defect introduced by this same entry's admission wiring; depth 0 now records a typed `IncrementalInapplicable` minted only from a parentless ledger, and the gate binds from depth 1. (6) Cohort-level hard caps were never checked against realized work: four proteins each under `max_logical_dfe` breached it together and the driver exited 0. (7) PLAN §4.3's matched extra-lookahead allocation had no non-test caller, so `a2_views` reported a hardcoded `matched_extra_lookaheads: 0` that reads as "compute-matched". Six further findings that met the artifact/verifiability bar were fixed with them: order-dependent ledger aggregation, empty `cost_event_ids` on every endpoint, an archive row digest frozen pre-promotion, `q_phi` binding the checkpoint but not the sampler horizon `S`, a fabricated per-position commit coordinate where the sampler already reported the real one, and the whole-landscape `N_H` measurement reaching no artifact.
 - artifacts:
   - <absolute-or-workspace path>
 - evidence: <tests/commands/check summaries, or N/A>
@@ -4422,101 +4421,88 @@ This file is append-only and follows rules defined in the active stage plans (`P
   - doc/DUAL_ALLELE_DUALF0_AUDIT.md J.2, J.3, J.4
 
 ### L0168
-- timestamp: 2026-09-02T13:30:00-04:00
+- timestamp: 2026-09-04T06:05:36-04:00
 - type: FIX
 - module: RF/FUSION_V2
-- trigger: The uricase core0 pilot uses near-whole-sequence hard-anchor manifests. The high-risk structure preset claimed an scTM-only gate but configured `sidechain_max_anchor`, so every fixed residue was incorrectly treated as active-site geometry and could reject an otherwise scTM-feasible endpoint.
-- change_summary: Added explicit `active_site_metric: none`, made the feasibility gate skip active-site geometry in that mode, and prevented the structure producer from computing unused anchor metrics. Updated `rf_refine_fusion_highrisk_sctm070.yaml` to enforce only `scTM >= 0.70`; hard anchors remain unchanged sequence-identity constraints. Added the closed uricase D2/K6 and D3/K12 pilot profiles.
-- rationale: Constraint manifests define immutable sequence positions, not a catalytic-site annotation. Conflating the two turns the near-WT search-space complement into a near-global 2 Å side-chain structure gate. An explicit mode is safer than a numeric sentinel and preserves fail-closed behavior for both existing active-site metrics.
+- trigger: Constrained uricase launches and official facades exposed five related operational gaps in the shared Fusion V2 path.
+- change_summary: Closed the shared path once: scTM-only structure gates no longer reinterpret every hard anchor as an active-site atom; constrained roots carry explicit boundary state; root recapture retries are config-bound and budgeted; DPLM sampling is restricted to AA20; and Phase-C accepts the two validated official-facade statuses.
+- rationale: These are one launch/evaluation reliability unit. Separate repair narratives obscured the final contract and encouraged later agents to reason from superseded intermediate states.
 - artifacts:
-  - `inverse_folding/reference_flow/fusion/{config,oracles}.py`
-  - `scripts/run_rf_refine_fusion.py`
+  - `inverse_folding/reference_flow/{runtime,fusion/*,fusion_v2/*,fusion_v2_runtime/*}.py`
+  - `scripts/{materialize_v2_canary_config,rf_fusion_v2_cohort,rf_fusion_v2_preflight,run_rf_refine_fusion,evaluate_phase_c}.py`
   - `inverse_folding/reference_flow/configs/rf_refine_fusion_highrisk_sctm070.yaml`
-  - `scripts/materialize_v2_canary_config.py`
-  - `tests/inverse_folding/test_reference_flow_fusion_{config,runner}.py`
-  - `tests/scripts/test_materialize_v2_policy_qualification.py`
-- evidence: 152 targeted config, gate, V2-oracle, and materializer tests passed; real-driver dry-run remains required on the re-materialized pilot configs before resubmission.
+  - corresponding focused tests
+- evidence: Five reviewed commits (`048edbc`, `f5d4ec9`, `5a9c325`, `10b36fb`, `4a1c166`) are linear descendants of the prior mainline; targeted Fusion V2/runtime/evaluation tests pass after integration.
 - impact:
-  - scope: Only configs that explicitly select `active_site_metric: none` skip active-site geometry. Existing legacy and side-chain active-site presets retain their prior fail-closed behavior.
-  - risk: low
+  - scope: constrained-root generation, retry accounting, DPLM token domain, and official-facade evaluation
+  - risk: medium
   - confidence: 0.98
-- status: implemented and locally validated; cluster pilot rerun pending.
-- next_action: Re-materialize the 54 uricase pilot cells under a new campaign/run root and submit the 18 four-hour ailab jobs.
+- status: done
+- next_action: none
 
 ### L0169
-- timestamp: 2026-09-03T17:30:00-04:00
-- type: FIX
-- module: RF/FUSION_V2
-- trigger: At fixed `c_source=50`, highly constrained uricases can reach the checkpoint fully resolved, and the projection contract required a non-empty reopen even when the exact mask-load equation required zero. The pilot therefore crashed on valid `n_editable=1–4` inputs instead of returning a typed result.
-- change_summary: Kept `c_source=50` and added at most eight deterministic V2-only root-capture attempts; attempt 0 preserves the existing sampler seed and later attempts use the existing `v2_depth0_root` seed namespace. Only a fully resolved checkpoint retries; malformed/no-editable inputs still fail immediately. `reopen=0` is now legal exactly when the calibrated mask-load envelope admits zero. A one-editable-position source returns its already Head-ranked, definitively feasible best-of-K endpoint as typed `terminal_best_lookahead`, with depth 0 and no invented projection. Per-protein payloads keep only the final root summary (attempt count, final seed, maturity, status, reason). Preflight separately reports and gates the conditional retry reserve; the uricase D2/K6 and D3/K12 caps are now `1290` and `2390` logical DFE.
-- rationale: Moving `c_source` earlier is unnecessary and worsens all-masked roots. Zero reopen follows directly from `u_proj = u_src - a + b_new`; forcing `b_new >= 1` was an extra architectural constraint. For `n_editable=1`, recursion has no meaningful uncertainty state, so best-of-K is the honest limiting case. Eight attempts reduce the linear-schedule `m=1, c=50` capture-miss probability from about 0.5 to about 0.0039 while normally paying only the attempts actually needed.
+- timestamp: 2026-09-04T06:05:37-04:00
+- type: FEATURE
+- module: RF/REFINEMENT
+- trigger: Paper-facing Fusion outputs needed an NMP-free Head refinement path and a deterministic bounded delivery surface.
+- change_summary: Added Head-only refinement using thresholded residue-hotspot local maxima, batched single substitutions, per-position two-axis Pareto representatives, bounded double mutants, parent-relative Head Pareto admission, and the shared official selection law for final per-seed/per-protein panels. NetMHCIIpan is neither constructed nor called in Head mode; legacy NMP mode is unchanged.
+- rationale: The complete task is proposal, structure-safe refinement, and deterministic output retention. Recording three proposal revisions and a later output wrapper separately made obsolete mechanisms look current.
 - artifacts:
-  - `inverse_folding/reference_flow/fusion_v2/{policy,projection,schedule,seeds,state}.py`
-  - `inverse_folding/reference_flow/fusion_v2_runtime/{capture,cycle,ladder}.py`
-  - `scripts/{materialize_v2_canary_config,rf_fusion_v2_cohort,rf_fusion_v2_preflight}.py`
-  - corresponding focused tests, `PLAN_RF_REFINE_FUSION_V2.md`, `doc/{FUSION_V2,SCRIPTS}.md`, `PROGRESS.md`
-- evidence: 948 non-overlapping targeted tests passed across sampler-continuation, V2 state/schedule/projection/policy/capture/cycle/segment/ladder, paired and Dual-off recursion, cohort/driver/preflight/materializer; `py_compile` and `git diff --check` passed. The V1 sampler-pristine regression passed and `inverse_folding/reference_flow/sampler.py` remains byte-identical to branch HEAD.
+  - `inverse_folding/reference_flow/{refine,official_selection}.py`
+  - `scripts/{refine_rf_designs,merge_refine_shards,materialize_v2_archive_facade}.py`
+  - `scripts/submit_refine.slurm`
+  - `inverse_folding/reference_flow/configs/rf_refine_head_standard_v1.env`
+  - `PROTOCOL/rf_fusion_v2_refinement{,.runner}.md`
+  - corresponding focused tests
+- evidence: The consolidated refinement/official suite passes 148 tests; compile and shell syntax checks pass.
 - impact:
-  - scope: V2 root capture and exact zero-reopen/tiny-domain behavior only. Existing successful first-attempt roots follow the old sampler seed and ordinary `n_editable>1` projections are unchanged unless their exact band equation yields zero reopen.
-  - risk: low
-  - confidence: 0.97
-- status: implemented and locally validated; no cluster job submitted.
-- next_action: Run a nine-cell smoke on the three previously crashing parents, then re-materialize and rerun the full 54-cell prospective pilot under one new code revision if the smoke is mechanically clean.
-
-### L0170
-- timestamp: 2026-09-03T06:48:33-04:00
-- type: FIX
-- module: RF/FUSION_V2
-- trigger: The full-data test-set launch inherited the constrained-Uricase root-recapture ceiling and was refused because its 2,200-DFE cap could not cover the unconditional 2,340-DFE maximum.
-- change_summary: Bound root recapture to the existing `caps.max_retries` declaration in both execution and preflight. The full-data campaigns can now declare zero retries, while the two constrained-Uricase profiles explicitly retain seven retries.
-- rationale: Retry count is already a strict config field and hard cap; a second retry knob would create two authorities. Runtime attempts and the preflight reserve must derive from the same declared value.
-- artifacts:
-  - `inverse_folding/reference_flow/fusion_v2_runtime/ladder.py`
-  - `scripts/rf_fusion_v2_cohort.py`
-  - `scripts/rf_fusion_v2_preflight.py`
-  - `scripts/materialize_v2_canary_config.py`
-  - focused regression tests and `PROGRESS.md`
-- evidence: TDD reproduced the constant-eight mismatch. The ladder, cohort, preflight, driver, and materializer suites pass: 102 + 69 = 171 tests; `git diff --check` passes.
-- impact:
-  - scope: V2 root-capture retry count and its projected DFE reserve only; existing first-attempt success behavior is unchanged. The running `f5d4ec9` worktree is untouched.
-  - risk: low
+  - scope: additive Head-only refinement and optional official output materialization
+  - risk: medium
   - confidence: 0.98
 - status: done
-- next_action: Materialize the four full-data test-set configs with `caps.max_retries: 0` and submit from this isolated revision.
+- next_action: use the official switch only for declared paper-facing output panels
+
+### L0170
+- timestamp: 2026-09-04T06:05:38-04:00
+- type: DATA
+- module: DATA_SELECTION
+- trigger: The benchmark cohorts mixed chain-level selection units, stale Tier-1 allele annotations, and non-versioned construction steps; high-risk sets inherited those ambiguities.
+- change_summary: Implemented the content-bound IF benchmark v3 stage/release pipeline, corrected structure resolution, built the 3,015-row DRB1*15:01 working cohort, reorganized DRB1*07:01 and DRB1*04:01 to 2,015/2,029 exact-sequence selection units, and rebuilt single- and dual-allele high-risk products on two-arm NMP burden with a diagnostic Head floor. Retired the completed one-off Tier-1 append and legacy-cohort retrofit CLIs; their audited artifacts and final rules remain authoritative.
+- rationale: Dataset construction and high-risk derivation share one membership/provenance contract. Temporary migration programs are not reusable production interfaces.
+- artifacts:
+  - `inverse_folding/evaluation/if_benchmark_v3/`
+  - `scripts/{build_if_benchmark_v3,preflight_if_benchmark_v3,build_highrisk_demo,build_dual_allele_hardset}.py`
+  - `scripts/assemble_if_test_set.py`
+  - `scripts/{submit_if_benchmark_v3,submit_if_baselines}.slurm`
+  - `PROTOCOL/if_benchmark_test_set_construction{,.runner}.md`
+  - `PROTOCOL/rf_fusion_v2_test_set_design{,.runner}.md`
+  - corresponding focused tests and case records
+- evidence: The current dataset suite passes 215 tests. DRB1*15:01 has 3,015 resolvable IF-ready rows; the 0701/0401 reorganized sets and high-risk products are complete working artifacts but have not passed `release_validate`.
+- impact:
+  - scope: benchmark construction, legacy cohort membership repair, and high-risk subset derivation
+  - risk: medium
+  - confidence: 0.97
+- status: working datasets complete; versioned release pending
+- next_action: run the v3 release gate before publishing any cohort as a sealed benchmark
 
 ### L0171
-- timestamp: 2026-09-04T04:07:42-04:00
-- type: FIX
-- module: RF/FUSION_V2
-- trigger: One full-data DRB1*15:01 cell sampled ESM-1b token 26 (`U`) and correctly failed AA20 decoding; the shared denoiser masked `X` and special tokens but left the other noncanonical vocabulary entries eligible.
-- change_summary: The shared DPLM denoiser now masks every decoder token whose alphabet symbol is outside canonical AA20. The standard Phase-C evaluation launcher now enables `IMM_FULL=1` by default so residue-level Head risk and peptide-level NMP evidence are emitted unless explicitly disabled.
-- rationale: Enumerating individual invalid tokens omitted `B/U/Z/O/./-/<null_1>` and made a rare model draw an experiment-level failure. AA20 is already the runtime contract and is the single correct allowlist.
+- timestamp: 2026-09-04T06:05:39-04:00
+- type: FEATURE
+- module: URICASE/ALL6388_EVIDENCE_CORE_RELEASE
+- trigger: Uricase generation needed parent-specific evolutionary, tetramer, relay, contact, and energy evidence instead of projecting one Q00511 constraint across the family.
+- change_summary: Frozen the 6,388-parent cohort and DRB1*15:01 core universe; completed query-centered MSA/PLMC and evolutionary evidence for 6,387 computable parents; completed five-sample Protenix holo predictions and structure/contact/energy reduction; joined 5,255 qualified parents to immune cores; and emitted 5,108 strict near-WT constraint manifests with explicit blocked/no-evidence states.
+- rationale: Intermediate queue, repair, and shard events are implementation history. The reusable evidence unit is the final content-bound parent/core decision and launch-manifest handoff.
 - artifacts:
-  - `inverse_folding/reference_flow/runtime.py`
-  - `scripts/submit_benchmark.slurm`
-  - `tests/inverse_folding/test_reference_flow_runtime.py`
-  - `doc/SCRIPTS.md`
-- evidence: The regression reproduced token `U` surviving the old filter, then passed after the AA20 allowlist fix; 29 runtime/model-factory/sampler-constraint tests pass, `bash -n` and `git diff --check` pass.
+  - `PLAN_URICASE_ALL6388_EV_STRUCTURE_CORE_RELEASE.md`
+  - `inverse_folding/analysis/evolution_evidence.py`
+  - `inverse_folding/evaluation/complex_interfaces.py`
+  - registered uricase evolution/MSA/contact/energy/core-release producers and launchers
+  - corresponding focused tests
+  - `/scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/therapeutic_enzymes/uricase_all6388_ev_structure_v1/`
+- evidence: Exact 6,387-parent PLMC/evolution and 31,935-sample Protenix parity were audited; the final join contains 18,310 cores (14,808 openable, 3,502 blocked); 5,108 manifests round-trip through the runtime; the consolidated uricase suite passes 127 tests.
 - impact:
-  - scope: Fresh DPLM decoder sampling can emit only canonical AA20; standard Phase-C immune submissions now include long-form residue/peptide tables by default. `IMM_FULL=0` remains the explicit opt-out.
-  - risk: low
-  - confidence: 0.99
-- status: done
-- next_action: Replay the one failed DRB1*15:01 cell and launch the completed campaigns' official structure/immune evaluation.
-
-### L0172
-- timestamp: 2026-09-04T04:13:59-04:00
-- type: FIX
-- module: RF/FUSION_V2
-- trigger: Official V2 facades label selection authority with `official_` prefixes, while Phase-C evaluation accepted only the legacy unprefixed statuses.
-- change_summary: Phase-C selection-authority validation now accepts the two official feasible/fallback statuses and applies the existing feasibility invariants to both prefixed and unprefixed forms.
-- rationale: Official retention changes panel cardinality, not the terminal or structure authority contract; rejecting its signed facade prevents standard downstream evaluation.
-- artifacts:
-  - `scripts/evaluate_phase_c.py`
-- evidence: Targeted validation accepted both official statuses and retained the existing terminal/structure fail-closed checks; the Phase-C script suite and diff checks pass.
-- impact:
-  - scope: Phase-C loading of official V2 facades only; legacy statuses and all other validation are unchanged.
-  - risk: low
-  - confidence: 0.99
-- status: done
-- next_action: Materialize the completed full-data campaigns with `--official` and submit their structure/immune evaluations.
+  - scope: all-family uricase evidence and strict DRB1*15:01 constraint handoff
+  - risk: medium
+  - confidence: 0.99 for artifact integrity; no claim about designed-sequence activity
+- status: evidence and handoff complete; RF generation not launched
+- next_action: launch only from the frozen manifest when the RF compute schedule is authorized

@@ -3,7 +3,7 @@
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
 > Read this first every session. For event history see `LOG.md`.
 >
-> **Last synced**: 2026-08-20T08:02:02-04:00
+> **Last synced**: 2026-09-04T06:05:39-04:00
 > **Branch**: fusion_rf_refine
 
 ---
@@ -94,12 +94,72 @@
 
 ## Module L → Data Selection (PLAN_DATA_SEL.md)
 
+- **v3 DRB1\*15:01 test set — BUILT AND IN `if_ready/main` (2026-08-31).** Authority is `PROTOCOL/if_benchmark_test_set_construction.md` (`if-benchmark-test-set/3`). `if_ready/main/test_proteins_if_ready_HLA-DRB1_15_01.parquet` = **3015 proteins (15 Tier 1 + 3000 Tier 2)**, structures `pdbs_if_ready/HLA-DRB1_15_01/` (3015 cleaned single-chain `.cif`), head scores `if_ready/main/head_scores_HLA-DRB1_15_01.parquet` (full-data head `drb1501/epoch_24.pt`; global_risk min/median/max -9.100 / -7.206 / 5.330, 0 nulls). Verified: `protein_id` unique, **0 CATH-overlapping rows**, `if_sequence_coverage` min 0.8, lengths 81-497, Tier 2 `coverage_fraction` median 0.38 spanning 0->1, 0 missing structures. Assembled from the artifacts of build `ifbench-v3-drb1501-r5000-20260831T015704Z` (186 c7_nmp query shards + the 15 sealed Tier 1 rows). **Caveat: this is a usable working dataset, not a content-bound release** — it did not go through `release_validate`, so there is no sealed release id. That chain must be completed before any external release.
+
+- **0701 / 0401 membership reorganized to the v3 selection-unit rule (2026-09-01) — candidate, `if_ready/main` NOT moved.** Both cohorts were assembled at CHAIN level, so **450/2879 (15.6%)** and **408/2843 (14.4%)** of their rows were repeat copies of a sequence already present (about half are several chains of one PDB entry, e.g. `6QFS_B/D/G/H`; worst multiplicities are 15x on 0701 and 26x on 0401). PROTOCOL C2 makes the exact normalized sequence the selection unit to stop exactly this. The redundancy is not neutral — it skews short and immunogenic: collapsing moves the **WT** marginal by 0701 NMP `n_strong` median 52→49 / Head `global_risk` −0.627→−0.788, and 0401 65→59 / −3.116→−3.626.
+  - Output `run/inverse_folding/cohort_v3_reorg_20260901/<tag>/test_proteins_if_ready_<tag>.v3reorg.parquet` (+ `.manifest.json`, `.histogram.csv`, `.dropped.json`). **0701 2879 → 2015** (collapse 2429, Tier 1 15 + Tier 2 2000 drawn from a 2414 CATH-clean pool); **0401 2843 → 2029** (collapse 2435, Tier 1 29 + Tier 2 2000 from a 2406 pool). Both Tier 2 draws use the frozen C7 law (`coverage_fraction`, 20 bins, `min_per_bin` 40, `peak_to_tail` 3.0, seed 42). Final tables have unique `protein_id` AND unique `sequence`.
+  - `coverage_fraction` (the C7 axis) did not exist for these cohorts and was computed once on all 5,722 WT sequences (NetMHCIIpan 4.3, lengths 12–25, `%Rank_EL < 2`; 2 x 24 CPU shards, all complete). The audited migration artifacts retain the exact inputs and outputs; its one-off CLI has been retired. Both deduped pools are a broad **plateau**, not a peak (0701 median 0.377, 0401 0.435), so the Gaussian mostly trims the centre and the `min_per_bin` floor pins the thin right tail — reshaping is real but modest at target 2000.
+  - **No generation or evaluation was re-run.** Every surviving row is an unchanged row of the source cohort, so existing tables are reused by subsetting: `eval_subset/` holds the filtered `imm_head`/`imm_nmp`/`structural` for the pmpnn and Gumbel baselines. Coverage of the new membership is 2014/2015 (0701, gap `6TN1_AAA`) and 2015/2029 (0401, gap = the 14 native Tier 1 rows recorded in L0170 after those baselines ran).
+  - **Effect on the headline baseline numbers is small**: design-level medians move by only −0.06/+0.02 (0701 pmpnn/gumbel Head), −0.08/−0.04 (0401 pmpnn/gumbel Head), ≤0.003 scTM, −0.0006 NMP strong_frac. The large 0.51-unit shift is on the **WT** marginal, not on designs — baseline designs sit near a de-immunization floor (~−8.8) that compresses between-protein heterogeneity. What the collapse actually fixes is the **independent-unit count** (2879 rows were 2429 proteins) and the correspondingly overstated paired-comparison precision, not the reported design medians.
+  - Redundancy concentrates downstream and those derived sets are NOT yet rebuilt: `highrisk_nod_v1` 0401 **15/100** and 0701 11/100 duplicate sequences, `fast_v2` 21/285 and 18/286, `pilot_v3` 2/50 and 0/50.
+  - Deliberately **not** a v3 release: membership rebuild only, no content-bound seal, build id, or audit chain. Promoting it into `if_ready/main` is a separate decision — every RF campaign, NoD baseline, and derived cohort currently binds the chain-level membership.
+
+- **High-risk + dual-allele sets rebuilt on the NMP axis (2026-09-02).** Authority is
+`PROTOCOL/if_benchmark_test_set_construction.md` §C12.1/C12.2. **Selection axis is NetMHCIIpan, not
+the Head** — selecting on an extreme of the same quantity you then report inflates the effect by
+regression to the mean, and this project already measured that inflation (raw Head Δ −0.66/−1.37 →
+guidance residual ≈ −0.07…−0.44). NMP is external to the optimization loop, so its noise is
+independent of the Head's and the reported Head improvement is uninflated.
+  - **Single-allele** `if_ready/highrisk/highrisk_nmp2arm_v2_<allele>.parquet`, **250 each**: rank
+by `min` over the two generator arms' NMP percentile (Gumbel primary, ProteinMPNN secondary), Head
+enters only as a 0.20 floor, `--min-coverage 0.8`. Primary-arm medians, cohort → set:
+0701 NMP 0.0116→0.0270 (**2.32×**) / Head −8.118→−0.069 (**Δ +8.05**);
+0401 0.0157→0.0441 (**2.80×**) / −8.825→−1.831 (**Δ +6.99**);
+1501 0.0145→0.0426 (**2.95×**) / −7.795→−1.925 (**Δ +5.87**).
+The floor is nearly inert by design — it replaced 5/7/2 of 250 rows and left the selected NMP
+median unchanged to four decimals — and its exclusions are kept in
+`.head_floor_excluded.parquet` because the NMP-high/Head-low rows are candidate Head failures.
+Sizing: the two arms' top-X% NMP sets intersect at 219/282/281 at top-20%, so `n=250` (≈top-17–22%)
+is the smallest well-powered depth. The three sets share almost nothing (pairwise 4–9 of 250,
+union 730) — three independent demonstrations, not three views of one set.
+  - **Dual-allele** `if_ready/highrisk/dual_hardset_0701x0401_v1.parquet`, **236 ranked** on the
+`.c2collapse` basis. Pair choice is forced by measurement, not preference: shared sequences
+0701×0401 **358** vs 195/171; cross-allele NMP Spearman **+0.358** vs +0.216/+0.114; Head CV
+Pearson 0.508/0.429 vs 0.354; and 0701×0401 already carries the dual cohort, calibration overlays,
+RF campaign and scored comparator. Rank = `min` over the four (allele, arm) NMP percentiles; Head
+floor is min over the two **alleles** (arms averaged) — min over all four excluded 52% of the pool.
+Ships the whole ranked pool with `dual_hardrank`; depth is the consumer's choice (top-50 threshold
+0.564, top-100 0.380, top-150 0.237).
+  - **A dual set as a subset of the single-allele hard sets does not exist**: at top-20% of both
+alleles the intersection is **2 proteins**. The immune landscape is strongly allele-specific, which
+is the same fact that motivates a dual objective.
+  - **Head↔NMP agreement is stable and worth reporting**: gumbel/pmpnn Spearman +0.698/+0.699
+(0701), +0.621/+0.645 (0401), +0.606/+0.595 (1501) — a property of the allele/model pair, not of a
+sampler (the two arms agree with each other only +0.43/+0.44/+0.50 on Head), and it tracks Head CV
+quality exactly. High enough that the Head learns real immune signal, far enough from 1 that NMP is
+a genuine independent validator; the sets the two axes select overlap only 18–33% by Jaccard.
+  - **0701 Gumbel NMP filled the last gap** — it had never been run over the full pool.
+`run/benchmark/gumbel_0701_nmp_20260901/eval_fulldata/HLA-DRB1_07_01/gumbel_0701_imm_full_head_fulldata_e29/`
+(23,024 rows, 0 failures, 128 shards). The Head recomputation reproduces the
+2026-08-22 table to max|Δ| 0.020 / mean|Δ| 9.3e-4, i.e. within known Head repeatability drift.
+  - Arm directories: `run/benchmark/_hardset_arms_20260901/` pairs each arm's full-data Head with
+its NMP table plus a `PROVENANCE.txt`. For ProteinMPNN on 0701/0401 these come from different runs
+(full-data Head + reusable legacy NMP), and reading both from the legacy directory would silently
+pick up a superseded checkpoint.
+  - `highrisk_nod_v1_*` / `highrisk_pmpnn_demo_v1_*` are **superseded**: they let the Head into
+selection and sit on chain-level cohorts carrying duplicates (0401 15/100, 0701 11/100).
+  - Legacy cohorts now ship two bases: `.c2collapse` (2,429/2,435; the basis for derived products,
+since the C7 Gaussian only shrinks an already-scarce pool — it cut the dual pool 358→253 for no
+benefit) and `.v3reorg` (2,015/2,029; the primary-benchmark basis).
+
 - **`if_ready/` is organized by target** (each in its own folder): `main/` (canonical test set + sidecars + `load_coords_gate_<tag>.json`), `pilot/`, `fast/`, `highrisk/`, `h_maps_v2/` (shared head-risk maps), `_ARCHIVED/` (`fast_v1`, `h_maps_v1`, `highrisk_demo_v1_pmpnn_only`).
 - **Main test set = v2 (Tier 1 + Tier 2 only; Tier 3 removed).** Tier 2 selection: NMP-only, structure-blind, unimodal-Gaussian over `coverage_fraction` (μ=median, peak:tail=3, min-per-bin=40). **IF-ready truncation filter applied: all rows have `if_sequence_coverage ≥ 0.8`** (heavily-truncated structure fragments removed — they deviate from whole-protein redesign and collapse structurally; 0701 −135, 0401 −186). `build_if_ready_test_set.py --min-coverage` now defaults to 0.8. Canonical files (npoff h_maps):
   | allele | `test_proteins_<tag>.parquet` | `if_ready/main/test_proteins_if_ready_<tag>.parquet` | `if_ready/h_maps_v2/h_maps_<tag>.parquet` |
   |--------|-------------------------------|--------------------------------------------------|--------------------------------------------|
   | DRB1\*07:01 | 2879 (T1 15 / T2 2864) | 2879 | 2879 (covers 100%) |
-  | DRB1\*04:01 | 2829 (T1 15 / T2 2814) | 2829 | 2829 (covers 100%) |
+  | DRB1\*04:01 | 2844 (T1 30 / T2 2814) | 2843 (T1 29 / T2 2814) | 2829 (covers the 2814 T2 + 15 foreign T1 only) |
+  - **0401 carries TWO Tier 1 blocks**, told apart by `tier1_allele_match`. `False` = the 15 proteins copied from the 07:01 cohort, whose `experimental_epitopes_json` holds **07:01** spans. `True` = the allele-native block (`tier1_candidates_DRB1_04_01.json`, 366 peptide-verified 04:01 spans), 15 raw / 14 IF-ready — `3POW_A` is raw-only, rejected by the 0.8 coverage floor at 0.715. **Any experimentally-anchored 04:01 epitope claim uses the native block only, and the two blocks must not be pooled into one Tier 1 statistic.** Native rows also carry `tier1_chain_range`, `experimental_epitopes_chain_json` (spans projected into the chain frame of `original_sequence`), `head_ckpt_tag`, and a measured `cath_overlap_id`/`cath_overlap_identity`. `4ACP_A_T1` shares a cleaned backbone with Tier 2 `4ACP_A` (different SIFTS crop) — drop one before any statistic assuming independent backbones. The completed migration artifacts are authoritative; rules remain in `PROTOCOL/if_benchmark_test_set_construction.md`.
+  - **Head provenance is mixed on 0401.** Native Tier 1 rows were scored with the full-data production Head (`run/epitope_head_fulldata/drb0401/epoch_34.pt`, `head_ckpt_tag` set); the other 2829 rows' Head columns come from the older `npoff` `best.pt` and carry a null tag because no per-row record exists. Recomputing them under the full-data Head is open work.
   - Phase C: `TEST_SET_PARQUET=if_ready/main/test_proteins_if_ready_<tag>.parquet`, `H_MAPS_PARQUET=if_ready/h_maps_v2/h_maps_<tag>.parquet` (optional; omit for constant_one / controller-only arms), `PDB_ROOT=pdbs_if_ready/<tag>`. Unified allele tag = full `HLA-DRB1_07_01` form on disk everywhere. SLURM `submit_if_phase_c.slurm` H_MAPS default = `h_maps_v2`; set `H_MAPS_PARQUET=` (empty) to run without an h-map.
   - CLIs: `select_tier2_v2.py` (merge shards + stratified sample); `prescreen_tier2.py --selection-mode nmp_only` (`--nmp-screen-lengths/--n-shards/--sample`); lib `inverse_folding/evaluation/{sampling.py,immunogenicity.compute_coverage_fraction}`.
 - **Diagnostic / demonstration subsets (allele-specific, subsets of canonical if_ready):**
@@ -107,12 +167,11 @@
     - **pilot_v3 (CURRENT, 2026-07-17)** `if_ready/pilot/pilot_v3_<tag>.parquet` (+`.fasta`) — **0701 50 / 0401 50**, stratified UNIFORMLY over de-immunization difficulty on the unguided **NoD** baseline. Difficulty = median NMP `strong_frac` over **all 8** NoD designs (cleanest estimate); axis = **NMP-only** (head is RF guidance → diagnostic only). 10 equal-frequency quantile bins × 5, difficulty per-bin monotone, selected span [0.000,~0.07]. `build_pilot_difficulty.py`. Regression note: the highrisk NoD-selection bias is a *second-order* effect for a uniform set + qualitative iteration (severe only for extreme-tail + quantitative claims), so all-8 binning is fine; for a rigorous quantitative per-bin method-vs-NoD number, reserve a disjoint `--half-b-designs` or regenerate a fresh NoD baseline for the 50 proteins at eval time.
     - **pilot_v2** `if_ready/pilot/pilot_v2_<tag>.parquet` — **0701 47 / 0401 49**, `coverage_fraction` mid-load band [p40,p75] + 5 Tier-1 anchors. Generator-independent but difficulty-blind. Retained: it is the cohort of the SC-GR planner (`PLAN_PLANNER_SC_GR.md`). `build_pilot_v2.py`.
   - **fast** `if_ready/fast/fast_v2_<tag>.parquet` — **0701 286 / 0401 285** (was 300; truncated removed). 15 Tier 1 + Tier 2 uniform across coverage. Global sanity. Carries a `coverage_fraction` column.
-  - **highrisk (0701 + 0401 done; 1501 pending)** `if_ready/highrisk/` — top-100 by `min(nmp_pct, head_pct)` (NMP strong-window burden AND epitope-head global_risk both high; `if_sequence_coverage ≥ 0.8`; `build_highrisk_demo.py`).
-    - **`highrisk_nod_v1_HLA-DRB1_07_01`** (CURRENT, 2026-07-09) — **primary = NoD full-pool baseline** (RF's own DFM kernel with guidance OFF, `c1_null`; **2879 proteins × 8 diverse designs**, temp 1.0, seed 42; a1res03 fold0 head). Kernel-consistent baseline for the RF-validation/iteration highrisk set (NoD = same DFM sampler as every guided C1/C2/C3/D arm). sel_nmp 0.030–0.082 / sel_head 1.66–4.60; `pmpnn_nmp/head` diagnostic + sorted FASTA. NoD gen `run/inverse_folding/baselines/nod_full_v1/`, imm `run/benchmark/if_phase_c/nod_full_v1/`.
-    - **`highrisk_nod_v1_HLA-DRB1_04_01`** (CURRENT, 2026-07-10) — same NoD full-pool recipe on 0401 (**2829 proteins × 8 diverse designs**, a1res03 0401 fold0 head; gen 16 ailab shards, imm 192 cpu/qos=short shards ~110 min). 100 proteins, sel_nmp 0.046–0.114 / sel_head 0.42–4.6. **0401 test set now complete** (main + fast + pilot + highrisk).
-    - **`highrisk_dplm_iter_v1_*` — STALE** (see sibling `.STALE.md`): selected on the DPLM-native **argmax** C0 baseline (all 8 designs identical → degenerate median-over-8; also a different sampler than the DFM RF arms). Superseded by `nod_v1`; **overlap 29/100** (71 picks changed). Do not use.
-    - `highrisk_pmpnn_demo_v1_<tag>` (primary=ProteinMPNN → demonstration / beat the reported baseline) — **unaffected** (ProteinMPNN sampling is diverse); still valid. Each row carries cross-baseline `nmp`/`head` diagnostics.
-    - **Status (2026-07-10)**: 0701 + 0401 NoD baselines + highrisk done; NoD 0701 full struct eval done (scTM median 0.938, ≥0.5 90%). **B1-vs-NoD regression-aware analysis done**: after correcting for highrisk being a NoD-extreme set, B1 shows a *modest genuine* head de-immunization (raw head Δ −0.66/−1.37 is largely regression-inflated; guidance residual ≈ −0.07…−0.44) and **essentially no NetMHCIIpan benefit over regression**, structure preserved for ~80%. A clean de-immunization claim needs a non-NoD-selected eval set. 1501 baseline pending.
+  - **highrisk (CURRENT)** — use the `highrisk_nmp2arm_v2_<allele>.parquet` sets and
+    `dual_hardset_0701x0401_v1.parquet` described above. The July
+    `highrisk_nod_v1_*`, `highrisk_pmpnn_demo_v1_*`, and `highrisk_dplm_iter_v1_*`
+    cohorts are retained only for reproducing historical runs; none is a current selection basis.
+
 - **Uricase case study (standalone, not in main test set).** Files under `uricases/`:
   - `uricase_caseset_if_ready_unified.parquet` — **6388** (6387 exact-deduped + **Pegloticase** appended as the last row 2026-07-03; **all 26 `characterized` retained**; near-redundancy intentionally NOT removed). Source: 4958 AFDB + 1429 ESMFold2 + **1 AF3** (Pegloticase). Dedup recorded in `uricase_caseset_if_ready_unified.manifest.json`.
   - **Pegloticase** (recombinant pig–baboon chimeric therapeutic uricase / Krystexxa; 298 aa, P16164 variant 98.7% id): structure from **AF3 full-MSA** prediction (local-DB, pLDDT 0.947 / pTM 0.94; `pdbs_if_ready/Pegloticase.pdb`, `structure_source=af3`, coverage 1.0). Projects cleanly (8/8 Q00511 anchors, triad-complete, `viability=projected`, `design_viable=True`); `validate_against_sequence` passes vs the committed manifest.
@@ -193,8 +252,26 @@
   - CLI: `scripts/run_proteinmpnn_baseline.py` (wraps vendored `DRAKES/drakes_protein/ProteinMPNN/`)
   - SLURM: `MODE=proteinmpnn ALLELE=... [APPLY_NMP_FILTER=1] sbatch scripts/submit_if_baselines.slurm`
   - Generates ``--num-seq-per-target`` designs per PDB, optional argmin-NMP-risk selection per protein
-  - Current PMPNN v2 full-set run: output root `run/inverse_folding/baselines/proteinmpnn/v2_8design_20260604T024603Z/`; input staging preflight passed for 0701 3139/3139 and 0401 3147/3147 with continuous CA residue numbering. Generation/evaluation metrics are not yet recorded.
+  - **Original full generation + legacy immune summary (complete):** Della `run/inverse_folding/baselines/proteinmpnn/v2_8design_20260604T024603Z/` contains 0701 **3139 x 8 = 25112** and 0401 **3147 x 8 = 25176** designs. Legacy Head + NetMHCIIpan 4.3 summaries at `run/benchmark/if_phase_c/HLA-DRB1_<tag>/proteinmpnn_v2_8design_20260604T024603Z_DRB1_<tag>_imm/` exactly cover every generated `(protein_id, design_idx)`, with zero failures/nulls/duplicates. The Head checkpoints are superseded (`cnn_himp_v1_npoff` for 0701; `LC1_drb0401_aug` for 0401); NMP remains reusable.
+  - **Current production-Head reference (2026-08-24; Head-only, no new NMP):** source facades and ESMFold2 reference root are on Della at `run/benchmark/baselines_esmfold2/20260822T081252Z/`. Full-data Head results are `eval_fulldata/HLA-DRB1_04_01/pmpnn_0401_imm_head_fulldata_e34/` (checkpoint `run/epitope_head_fulldata/drb0401/epoch_34.pt`, SHA256 `12e8018f...`; **22624 = 2828 x 8**, residue rows 5207544, risk median -8.6865, best-of-8 median -9.5386) and `eval_fulldata/HLA-DRB1_07_01/pmpnn_0701_imm_head_fulldata_e29/` (checkpoint `run/epitope_head_fulldata/drb0701/epoch_29.pt`, SHA256 `144ae7c8...`; **23024 = 2878 x 8**, residue rows 5384016, risk median -8.3659, best-of-8 median -9.2670). Generated/Head keys match exactly and failures are empty within each facade.
+  - **Local canonical return:** `mhc-if-local:/Users/jerry/Project/MHC-IF/Results/Reference/IFBaselines/proteinmpnn/v2_8design_20260604T024603Z_complete_20260607/`; full-data Head tables are under `eval_immune_head_a1res03_fulldata/HLA-DRB1_{04_01,07_01}/`, with protocol/integrity in `README_esmfold2_head_fulldata.md` and the cross-baseline summary in sibling `IFBaselines/full_data_head_update_20260824.json`.
+  - **Coverage caveat:** the 2026-08-24 facades omit `6TN1_AAA`, so current production-Head coverage is 2828/2829 (0401) and 2878/2879 (0701), not the complete current main sets. The original ProteinMPNN generation already contains 8 designs for `6TN1_AAA`; its Head rows can be repaired additively without regenerating ProteinMPNN. The 0401 ESMFold2 structure table was repaired to 2829 x 8 on 2026-08-24, but both full-data Head tables and the 0701 structure reference remain at 2828/2878 proteins respectively.
+- **N2b (DPLM-native Gumbel baseline): 0701 + 0401, both complete (0401 added 2026-08-28).** Full generation is Della `run/inverse_folding/baselines/dplm_native_full_v2_gumbel/HLA-DRB1_07_01/c0_HLA-DRB1_07_01_dplm_native_full_v2_n8_gumbel_t1p0_seed42_20260708T001931Z/`: **2879 x 8 = 23032**, zero failures. The current facade/full-data Head/ESMFold2 reference covers **2878 x 8 = 23024**, again omitting `6TN1_AAA`; full-data Head is `run/benchmark/baselines_esmfold2/20260822T081252Z/eval_fulldata/HLA-DRB1_07_01/gumbel_0701_imm_head_fulldata_e29/` (Head SHA256 `144ae7c8...`, residue rows 5384016, risk median -8.4068, best-of-8 median -9.2936, zero failures). Local canonical return: `mhc-if-local:/Users/jerry/Project/MHC-IF/Results/Reference/IFBaselines/DPLM_native_gumbel_full_v2_HLA-DRB1_07_01/`. This current full-set reference is Head-only; NetMHCIIpan was not run over the complete Gumbel set (only later 0701 high-risk subsets have NMP evidence).
+- **N2b-0401 (DPLM-native Gumbel baseline, HLA-DRB1\*04:01) — COMPLETE 2026-08-28.** Protocol transcribed knob-for-knob from the 0701 `run_config.yaml` (`gumbel_argmax`, n=8, temp 1.0, `max_iter` 100, seed 42, batch 8, same DPLM adapter checkpoint digest `b6ca4f7e...`). Generation Della `run/inverse_folding/baselines/dplm_native_full_v2_gumbel/HLA-DRB1_04_01/c0_HLA-DRB1_04_01_dplm_native_full_v2_n8_gumbel_t1p0_seed42_20260828T161837Z/`: **2829 x 8 = 22632**, zero failures, all 8 designs unique for all 2829 proteins, `generated.parquet` sha256 `adf73654...`. Unlike the pmpnn/gumbel ESMFold2 facades this covers the FULL 2829 (`6TN1_AAA` resolves via its `.cif`). Run as 8 GPU shards merged by the campaign-local fail-closed `merge_generation.py` (`_campaign_20260828T161837Z/`, which also holds the README and both submit drivers); `design_seed = seed + design_idx` is protein-independent so sharding is protocol-neutral. **Generation used `immune-design-blackwell` (torch 2.7.1+cu128)** because the rtx6000 nodes are RTX PRO 6000 (sm_120) and the default `immune-design` (torch 2.5.1) has no sm_120 kernels — same sampler protocol as 0701, different numerics, recorded in the merged `run_config.yaml:sharded_generation.conda_env_note`. Eval root `run/benchmark/dplm_native_full_v2_gumbel_0401/20260828T161837Z/`: **immune** `eval_fulldata/HLA-DRB1_04_01/gumbel_0401_imm_full_head_fulldata_e34/` (Head `run/epitope_head_fulldata/drb0401/epoch_34.pt` sha256 `12e8018f...` + NetMHCIIpan 4.3 accelerated, `IMM_FULL=1`; 192 CPU shards, 0 failures; imm_head/imm_nmp 22632 rows each, imm_head_residues 5,211,520, imm_nmp_peptides 67,416,440) — **Head global_risk median -8.8350, best-of-8 median -9.6038; NMP strong_frac median 0.01679**. **structure** `eval/HLA-DRB1_04_01/gumbel_0401_struct_esmfold2/` (ESMFold2 3/50/1, 22632-entry refold cache in `fold/gumbel_0401/cache/`, 0 failures) — **scTM median 0.9472, >=0.5 91.1%, >=0.7 85.6%**. Same-allele/same-Head/same-2829-protein contrast: ProteinMPNN 0401 is Head `-8.6865` / best-of-8 `-9.5386` and scTM median `0.9605` (>=0.5 95.7%), i.e. Gumbel is slightly less immunogenic but slightly less foldable than ProteinMPNN on 0401. This is the first Gumbel full-set reference with NetMHCIIpan over the COMPLETE pool (0701's is Head-only). Not yet returned to Mac.
 - **N3 (Level 3 DRAKES)**: **dropped** — not needed for paper; can be added as reviewer response if requested
+- **N2c (1501 baselines: ProteinMPNN + DPLM-native Gumbel) — COMPLETE 2026-08-31.** Both arms on the new v3 1501 test set (**3015 proteins x 8 = 24120 designs each**), evaluated with the current stack. Campaign glue `run/inverse_folding/baselines/_campaign_1501_20260831T182652Z/` (README, `merge_shards.py`, both submit drivers, `PATHS.env`, `verify_smoke.py`). Protocol transcribed knob-for-knob from the 0701/0401 references: ProteinMPNN `v_48_020`, 8 seq/target, T=0.1, batch 1, seed 42, no NMP filter; Gumbel `gumbel_argmax`, n=8, T=1.0, `max_iter` 100, batch 8, seed 42, same DPLM adapter digest `b6ca4f7e...` as 0701/0401.
+  - Generation Della `baselines/proteinmpnn/HLA-DRB1_15_01/v3_8design_20260831T182652Z/` (`generated.parquet` sha256 `8407d59a...`) and `baselines/dplm_native_full_v2_gumbel/HLA-DRB1_15_01/c0_HLA-DRB1_15_01_dplm_native_full_v2_n8_gumbel_t1p0_seed42_20260831T182652Z/` (sha256 `28d75da2...`). Zero failures in both; Gumbel has all 8 designs unique for 3014/3015 proteins (one sampler collision, so its fold cache is 24119 unique `(protein_id, sequence)` keys while all 24120 rows are scored).
+  - Eval root `run/benchmark/baselines_1501/20260831T182652Z/`. **Immune** `eval_fulldata/HLA-DRB1_15_01/{pmpnn,gumbel}_1501_imm_full_head_fulldata_e24/` (full-data Head `run/epitope_head_fulldata/drb1501/epoch_24.pt` + NetMHCIIpan 4.3 accelerated, `IMM_FULL=1`; 128 CPU shards x 1.5 h, 0 failures; imm_head/imm_nmp 24120 rows each, imm_head_residues 5,664,912, imm_nmp_peptides 73,399,368). **Structure** `eval/HLA-DRB1_15_01/{pmpnn,gumbel}_1501_struct_esmfold2/` (ESMFold2 3/50/1, refold cache in `fold/{pmpnn,gumbel}_1501/cache/`, 0 failures).
+  - Same-allele/same-Head/same-3015-protein contrast:
+
+| | Head global_risk med | best-of-8 med | NMP strong_frac med | scTM med | scTM>=0.5 | scTM>=0.7 | recovery med |
+|---|---|---|---|---|---|---|---|
+| ProteinMPNN | -8.0920 | -8.7677 | 0.01469 | 0.9501 | 96.7% | 88.9% | 0.4803 |
+| DPLM-native Gumbel | -7.8046 | -8.7645 | 0.01490 | 0.9340 | 92.6% | 83.2% | 0.5911 |
+
+    Same direction as 0401: Gumbel recovers more of the native sequence but folds slightly worse; on 1501 it is also marginally *more* immunogenic by Head (the 0401 ordering was the other way), while NMP strong_frac is effectively tied. Both arms carry NetMHCIIpan over the COMPLETE pool.
+  - Ran entirely on **ailab (H200, sm_90) under the default `immune-design` env** — the same env family as the 0701 reference; 0401 needed `immune-design-blackwell` only because rtx6000 is sm_120. Both arms sharded 8-way over proteins (protocol-neutral: `design_seed = seed + design_idx` is protein-independent, ProteinMPNN seeds per target), merged by the fail-closed campaign-local `merge_shards.py`. Not yet returned to Mac.
+
 - **Blocked by**: Phase C (need unguided baseline candidate pool from C0)
 - **Comparison structure for paper**:
   1. Level 1 post-hoc filter (N1) — from C0 candidates
@@ -247,6 +324,7 @@
   - h_maps schema includes `sequence_md5` column (2026-05-08); old h_map parquets must be regenerated
   - **Standard RF refinement structure contract (2026-07-13)**: `scripts/refine_rf_designs.py` / `submit_refine.slurm` now default to the persistent isolated `esmfold2_live` worker (final metrics read the same normalized ESMFold2 cache). The standard gate is the protocol trio `scTM`, direct-functional `cat_max_scRMSD`, and `predicted_active_site_min_pLDDT`; all three thresholds are required per-run inputs with no repository defaults. The previous seed-relative/whole-anchor gate is available only via explicit `structure_gate_profile=legacy`.
   - **Standard RF refinement Head target mode (2026-08-21)**: `TARGET_SOURCE=head` is a separate NMP-free path. Each parent/round reads the complete residue landscape, keeps editable `residue_hotspot >= 0.15` local maxima, and caps them at 12 positions. On the frozen 656-seed table this yields median 5 / p90 10 / p95 12 local maxima (max 16; 2.59% exceed the cap), versus median 48 / p90 102 raw residues above 0.15. Head scores all singles in one batch, retains two per-position Pareto AA representatives, then scores at most 200 full doubles per parent in position round-robin order; singles and doubles both enter the multi-round beam. Candidates must improve without worsening either `global_risk` or `positive_mass_density=sum(max(residue_hotspot,0))/L`; the existing structure/anchor gate is unchanged. Head-mode final evaluation omits NMP artifacts, and shard merging emits the complete per-seed two-axis first front instead of count-0/top-k outputs. `TARGET_SOURCE=nmp` retains the legacy behavior.
+  - **Official RF output surface (2026-08-30, COMPLETE):** the evidence-rich V2/refinement paths remain defaults. V2 multiroot materialization and Head refinement expose opt-in `--official`; explicit `--final-candidates-per-protein N` overrides the official default `N=8` and also works without official retention. V2 selection uses the frozen full-pool Pareto-layer/rank-sum/MD5 law. Refinement official retention writes the exact per-seed front after an unchanged search; merge finalization keeps at most one minimum-global-risk row per seed and keeps `seed_group` strata separate. Source bundles and legacy products are never deleted. Replay on the frozen 0701 evidence recovered V2 strict8 membership exactly (`656/656`, symmetric difference 0), reduced refinement history `7,347 -> 3,117` with exact front identity, and reproduced the existing one-per-seed panel `672/672` exactly (groups `656/14/2`). Real count overrides yielded N=`1/4/8` panels of `100/346/672` rows across product/diagnostic strata. Targeted regression: 158 passed; compile, shell syntax and diff checks pass.
   - **D1 monitor-only controller (2026-05-21, L0092)**:
     - `inverse_folding/reference_flow/controller_config.py` — strict D1 YAML schema with `controller_config_hash` provenance helper; preset `configs/d1_monitor.yaml`
     - `inverse_folding/reference_flow/head_scoring.py` — `OnlineHeadScorer` + `StaticWindowCache` (parquet + sidecar meta), fail-fast on `(seq_md5, allele, checkpoint_digest, head_config_hash, score_scale, window_k_min, window_k_max)` drift
@@ -553,7 +631,7 @@ disabled — a matched control VIEW, not a second run.
 | V2F7 artifacts / ledger / resume / driver / preflight | done |
 | V2F5A minimal capped Head-directed policy + matched source-geometry control | done 2026-08-07; §9 verdict `immune_directed_transition_supported`, D1/same-Head scope only |
 | Exploratory recursive Uricase sandbox | complete 2026-08-08; Active15, unblinded `D4/K12/r40`, 7–8 shared hard anchors, 325 selected designs, 0 anchor violations; RAR `0045-rf-fusion-v2-active15-h200-final-cohort`; not production authorization |
-| Highly constrained V2 boundary (`n_editable=1–7`) | implemented 2026-09-03: `c_source=50` retained; fully resolved roots get at most `1 + caps.max_retries` deterministic capture attempts (`7` retries in the two constrained-Uricase profiles, `0` for the full-data test-set campaigns); exact zero-reopen partial transitions are legal; `n_editable=1` returns the best definitive K-lookahead at depth 0. Cluster pilot rerun pending |
+| Highly constrained V2 boundary (`n_editable=1–7`) | mainline integration complete 2026-09-04: scTM-only gating, config-bound root retries, exact zero-reopen transitions, AA20-only DPLM sampling, and official-facade evaluation are closed. The branch-local core0 pilot completed 54/54 cells (47 definitive elites, 7 true `no_admissible_endpoint`); its frozen production profile remains on `origin/codex/uricase-core0-pilot` and is not yet merged or launched. |
 
 Tests: prior broad gate 1250 V2 tests (+86 for V2F5A), V1/v0 regressions green (666). The §9
 handoff additions add a targeted `267 passed`: calibration/materializer/reader/preflight/driver plus the core
@@ -672,6 +750,32 @@ overlap between the cohort and either Head's full fitting pool.
 `--dual-overlay` cross-check and the `objective_digest`/`typed_stop` labelling defects remain.
 `active_worst` is 50/50 on WT but 81/89 role A on the Fusion primary — the two alleles look
 unequally steerable, which this run generates as a hypothesis and does not test.
+
+## All-6388 uricase EV/structure + DRB1*15:01 near-WT release
+
+> **EVIDENCE AND STRICT HANDOFF COMPLETE; RF GENERATION NOT LAUNCHED.** Authority:
+> `PLAN_URICASE_ALL6388_EV_STRUCTURE_CORE_RELEASE.md`. Persistent root:
+> `work/immune-design/therapeutic_enzymes/uricase_all6388_ev_structure_v1/`.
+
+- **Frozen cohort:** 6,388 unique IF-ready parents; 89 WT-clean and 6,299 non-clean under
+  DRB1*15:01. `A0AAV7HJZ4` has a signed MSA exclusion, leaving 6,387 computable parents.
+- **Evolution:** query-centered MSA/PLMC and ten-file evolutionary evidence are complete and
+  audited for 6,387/6,387 parents. Evidence classes: 335 qualified, 5,707 exploratory, 345
+  insufficient; the zero-coupling `A0ABD0Y943` retains conservation/Potts evidence with sigma
+  explicitly unavailable.
+- **Tetramer evidence:** Protenix produced five holo samples for every computable parent
+  (31,935 CIF + 31,935 confidence JSON, exact parity). Contact/relay reduction is terminal for all
+  parents; 5,321 are energy-eligible and representative-sample Rosetta energy is complete for
+  5,321/5,321.
+- **Core join:** 5,255 structure-qualified, WT-nonclean parents; 18,310 WT cores, 14,808 openable
+  and 3,502 blocked. The canonical evidence join has exact unique keys and complete provenance.
+- **Strict handoff:** `07_core_release_1501_strict_v1/` contains 5,108 runtime-validated manifests;
+  147 parents are explicit `no_openable_core`. Fixed fraction median/min is 0.98020/0.91545,
+  free positions span 1–29, and there are zero free/gate collisions.
+- **Next phase is branch-local:** `origin/codex/uricase-core0-pilot` freezes the constrained
+  production profile after a 54-cell pilot (47 definitive elites, 7 true
+  `no_admissible_endpoint`; 61 core0 endpoints across 7/18 proteins). Production remains
+  unmaterialized and unlaunched; the branch is intentionally not merged into main yet.
 
 ## Active-15 uricase core-release v2 — 44-cell B1Aopen generation (2026-08-03)
 
