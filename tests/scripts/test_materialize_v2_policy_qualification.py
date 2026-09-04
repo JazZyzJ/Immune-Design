@@ -247,6 +247,55 @@ def test_highrisk_d4_k24_profile_changes_only_breadth_identity_and_caps(tmp_path
     assert projection.feasible
 
 
+def test_testset_profile_reuses_frozen_d4_k12_algorithm_under_honest_identity(tmp_path):
+    template, args, frozen = _case(tmp_path)
+    args.run_max_head_calls = 6000
+    args.esmfold2_model = "biohub/ESMFold2"
+    args.esmfold2_num_loops = 3
+    args.esmfold2_num_sampling_steps = 50
+    args.esmfold2_num_diffusion_samples = 1
+    args.esmfold2_seed = 0
+
+    payload = json.loads(args.policy_calibration_json.read_text())
+    payload["head_directed"]["lineage_incumbent_depth0_rule"] = (
+        "best_admissible_depth0"
+    )
+    _replace_calibrated_value(
+        payload["head_directed"], "donor_improvement_epsilon", 0.005,
+    )
+    _replace_calibrated_value(
+        payload["head_directed"], "local_contribution_tolerance",
+        0.017012596130371094,
+    )
+    spec = tmp_path / "policy-v2-testset.json"
+    spec.write_text(json.dumps({
+        "policy_id": "head_directed_capped", "policy_version": "v2",
+    }))
+    payload["policy_spec_sha256"] = hashlib.sha256(spec.read_bytes()).hexdigest()
+    args.policy_calibration_json.write_text(json.dumps(payload))
+    frozen["projection_policy_spec"] = payload["policy_spec_sha256"]
+
+    args.exploratory_profile = "highrisk_d4_k12_r40"
+    highrisk = fill_config(template, args=args, frozen=frozen, runtime={})
+    args.exploratory_profile = "testset_d4_k12_r40"
+    config = fill_config(template, args=args, frozen=frozen, runtime={})
+
+    assert config["identity"]["phase"] == "capability_ladder"
+    assert config["identity"]["split_role"] == "exploratory_testset_design_v1"
+    assert config["schedule"]["schedule_id"] == "testset-d4-k12-r40-global-v1"
+    assert config["schedule"]["points"] == highrisk["schedule"]["points"]
+    assert config["caps"] == highrisk["caps"]
+    algorithm_keys = set(config) - {"identity", "schedule", "caps"}
+    assert {key: config[key] for key in algorithm_keys} == {
+        key: highrisk[key] for key in algorithm_keys
+    }
+
+    projection = project_v2_budget(load_v2_config(config), n_proteins=1)
+    assert projection.per_protein_logical_dfe == 1990
+    assert projection.total_definitive_refolds == 60
+    assert projection.feasible
+
+
 @pytest.mark.parametrize(
     ("profile", "depth", "width", "logical_dfe", "max_dfe", "cap", "refolds"),
     [

@@ -111,6 +111,32 @@ EXPLORATORY_PROFILES: dict[str, dict[str, Any]] = {
             "max_definitive_refolds": 64,
         },
     },
+    "testset_d4_k12_r40": {
+        "phase": "capability_ladder",
+        "split_role": "exploratory_testset_design_v1",
+        "support_policy_version": "v2",
+        "schedule": {
+            "schedule_id": "testset-d4-k12-r40-global-v1",
+            "coordinate_law": "progressive_checkpoint",
+            "depth_cap": 4,
+            "active_population_width": 1,
+            "min_lookahead_tail_steps": 10,
+            "points": [
+                {"depth": depth, "r_step": 40, "c_source_step": 50 + 10 * depth,
+                 "c_next_step": 60 + 10 * depth, "n_lookaheads": 12,
+                 "band_key": "step40"}
+                for depth in range(4)
+            ],
+        },
+        # The generic single-allele test-set profile freezes the algorithm proven by the
+        # high-risk D4/K12 campaign but carries an honest, non-high-risk split identity.  The
+        # protocol/case binds the actual cohort and full-data Head; those are content inputs, not
+        # reasons to duplicate this schedule under one profile name per allele or subset.
+        "caps": {
+            "max_logical_dfe": 2200,
+            "max_definitive_refolds": 64,
+        },
+    },
     "uricase_core0_pilot_d2_k6_r40": {
         "phase": "capability_ladder",
         "split_role": "exploratory_uricase_core0_pilot_v1",

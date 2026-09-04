@@ -61,11 +61,31 @@ def main() -> None:
                     help="selection baseline (imm_nmp.parquet + imm_head.parquet)")
     ap.add_argument("--output", required=True)
     ap.add_argument("--n-target", type=int, required=True)
-    ap.add_argument("--rank-mode", choices=("both_nmp_head", "nmp"), default="both_nmp_head",
-                    help="both_nmp_head: rank by min(nmp_pct, head_pct); nmp: rank by nmp only")
+    ap.add_argument("--secondary-imm-dir", default=None,
+                    help="SECOND generator arm's imm dir. Required by the *_min_arms rank modes, "
+                         "which rank by agreement between two independent samplers instead of "
+                         "between two scoring axes of one sampler.")
+    ap.add_argument("--rank-mode",
+                    choices=("both_nmp_head", "nmp", "nmp_min_arms", "head_min_arms"),
+                    default="both_nmp_head",
+                    help="both_nmp_head: min(nmp_pct, head_pct) on the primary arm; "
+                         "nmp: nmp_pct on the primary arm; "
+                         "nmp_min_arms / head_min_arms: min of that axis's percentile across the "
+                         "primary and secondary arms (needs --secondary-imm-dir)")
     ap.add_argument("--diag-imm-dir", action="append", default=[],
                     help="LABEL=DIR extra baseline(s) to attach as <LABEL>_nmp/<LABEL>_head "
                          "diagnostic columns (repeatable)")
+    ap.add_argument("--head-floor-pct", type=float, default=0.0,
+                    help="Drop candidates whose head percentile is below this BEFORE ranking "
+                         "(two-arm modes use min over arms; single-arm modes use the primary). "
+                         "Purpose is figure hygiene, not co-ranking: a protein the Head already "
+                         "scores as low-risk has no Head headroom, so it is a guaranteed non-mover "
+                         "on the reported axis. Keep it small (~0.2): a bottom truncation at 0.2 "
+                         "enriches selection noise ~5x less than ranking by head would, so the "
+                         "non-circularity of an NMP-selected set survives it. Excluded rows are "
+                         "written to <output>.head_floor_excluded.parquet — they are exactly the "
+                         "NMP-high/Head-low disagreements, i.e. candidate Head failures worth "
+                         "keeping rather than discarding.")
     ap.add_argument("--min-coverage", type=float, default=0.0,
                     help="drop candidates whose if_sequence_coverage < this before ranking "
                          "(excludes heavily-truncated structure fragments; 0 disables)")
@@ -86,7 +106,39 @@ def main() -> None:
     a["nmp_pct"] = a["nmp"].rank(pct=True)
     a["head_pct"] = a["head"].rank(pct=True)
     a["both_min_pct"] = a[["nmp_pct", "head_pct"]].min(axis=1)
-    rank_key = "both_min_pct" if args.rank_mode == "both_nmp_head" else "nmp_pct"
+
+    two_arm = args.rank_mode in ("nmp_min_arms", "head_min_arms")
+    if two_arm:
+        if not args.secondary_imm_dir:
+            sys.exit(f"FATAL: --rank-mode {args.rank_mode} requires --secondary-imm-dir")
+        axis = "nmp" if args.rank_mode == "nmp_min_arms" else "head"
+        sec = _axes(Path(args.secondary_imm_dir), canon).dropna()
+        a = a.join(sec.add_prefix("sec_"), how="inner")
+        if a.empty:
+            sys.exit("FATAL: the two arms share no scored protein")
+        a[f"sec_{axis}_pct"] = a[f"sec_{axis}"].rank(pct=True)
+        # min over arms on the OTHER axis, so --head-floor-pct can cut the
+        # NMP-high / Head-low tail without letting head enter the ranking.
+        a["head_min_pct"] = pd.concat(
+            [a["head_pct"], a["sec_head"].rank(pct=True)], axis=1).min(axis=1)
+        # min of the two arms' percentiles: a protein is hard only if BOTH samplers
+        # left it hard, which is what makes the set sampler-independent.
+        a["arm_min_pct"] = a[[f"{axis}_pct", f"sec_{axis}_pct"]].min(axis=1)
+        print(f"  two-arm rank on '{axis}': {len(a)} proteins scored by both arms")
+    elif args.secondary_imm_dir:
+        sys.exit("FATAL: --secondary-imm-dir given but --rank-mode is single-arm")
+
+    rank_key = {"both_nmp_head": "both_min_pct", "nmp": "nmp_pct",
+                "nmp_min_arms": "arm_min_pct", "head_min_arms": "arm_min_pct"}[args.rank_mode]
+
+    excluded = None
+    if args.head_floor_pct > 0:
+        floor_col = "head_min_pct" if two_arm else "head_pct"
+        below = a[floor_col] < args.head_floor_pct
+        excluded = a[below].copy()
+        a = a[~below]
+        print(f"  head floor: drop {floor_col} < {args.head_floor_pct} -> "
+              f"{len(excluded)} excluded, pool {len(a)}")
 
     if len(a) < args.n_target:
         sys.exit(f"FATAL: only {len(a)} scored proteins, need {args.n_target}")
@@ -98,10 +150,18 @@ def main() -> None:
         dax = _axes(d, canon)
         sel = sel.join(dax.rename(columns={"nmp": f"{label}_nmp", "head": f"{label}_head"}))
 
-    diag_cols = [c for c in sel.columns if c not in ("nmp_pct", "head_pct")]
+    drop = {"nmp_pct", "head_pct", "sec_nmp_pct", "sec_head_pct"}
+    # head_min_pct is kept: it records where the floor bit
+    diag_cols = [c for c in sel.columns if c not in drop]
     out = (canon_df.merge(sel[diag_cols].reset_index(), on="protein_id", how="inner")
            .sort_values("highrisk_rank"))
     out.to_parquet(args.output, index=False)
+
+    if excluded is not None and len(excluded):
+        ex_path = Path(str(args.output).replace(".parquet", "") + ".head_floor_excluded.parquet")
+        ex_out = canon_df.merge(excluded.reset_index(), on="protein_id", how="inner")
+        ex_out.to_parquet(ex_path, index=False)
+        print(f"  head-floor exclusions -> {ex_path} ({len(ex_out)} rows)")
 
     print(f"[highrisk] {args.output}  n={len(out)} (rank-mode={args.rank_mode})")
     print(f"  primary NMP strong_frac min/med = {sel['sel_nmp'].min():.3f}/{sel['sel_nmp'].median():.3f}")

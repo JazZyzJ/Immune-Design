@@ -95,8 +95,15 @@ case "${MODE}" in
             ALLELE_FILE_TAG="HLA-DRB1_04_01"
             PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/HLA-DRB1_04_01"
             TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/main/test_proteins_if_ready_HLA-DRB1_04_01.parquet"
+        elif [[ "${ALLELE}" =~ ^HLA-DRB[0-9]\*[0-9]{2}:[0-9]{2}$ ]]; then
+            # Any other well-formed DRB allele (e.g. HLA-DRB1*15:01): derive the
+            # file tag and the standard if_ready paths. Callers may still
+            # override PDB_ROOT / TEST_SET_PARQUET explicitly.
+            ALLELE_FILE_TAG="${ALLELE//[*:]/_}"
+            PDB_ROOT_DEFAULT="${WORK_DIR}/if_test_set/pdbs_if_ready/${ALLELE_FILE_TAG}"
+            TEST_SET_PARQUET_DEFAULT="${WORK_DIR}/if_test_set/if_ready/main/test_proteins_if_ready_${ALLELE_FILE_TAG}.parquet"
         else
-            echo "Unsupported ALLELE=${ALLELE}; expected HLA-DRB1*07:01 or HLA-DRB1*04:01" >&2
+            echo "Unsupported ALLELE=${ALLELE}; expected an HLA-DRB<n>*NN:NN allele" >&2
             exit 2
         fi
 

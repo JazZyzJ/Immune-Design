@@ -105,7 +105,44 @@ def _allele_tag(allele: str) -> str:
     return "".join(c if (c.isalnum() or c in ("-", ".")) else "_" for c in allele)
 
 
-def _load_tier1(path: str, pdb_dir: str) -> list:
+# Structure files are not uniformly `<id>.pdb` under `pdb_dir`. The initial bulk download is
+# flat, but structures added later land in a per-allele subdirectory -- named either with the
+# short digits form (`0401`) or the full allele tag (`HLA-DRB1_04_01`) -- and a minority are
+# `.cif` rather than `.pdb`. `pdb_path` is a data contract read downstream, so it has to name a
+# file that actually exists instead of a guessed one.
+_STRUCTURE_EXTENSIONS = (".pdb", ".cif")
+
+
+def _pdb_subdir_candidates(allele_tag: str | None) -> list:
+    """Per-allele subdirectory names to probe, most specific spelling first."""
+    if not allele_tag:
+        return []
+    digits = "".join(c for c in allele_tag if c.isdigit())
+    short = digits[-4:] if len(digits) >= 4 else ""
+    return [s for s in (short, allele_tag) if s]
+
+
+def _resolve_pdb_relpath(
+    protein_id: str, pdb_dir: str | None = None, allele_tag: str | None = None
+) -> str:
+    """Return the `pdbs/`-relative path of the structure that is actually on disk.
+
+    Probes the flat layout first, then each per-allele subdirectory, trying `.pdb` before
+    `.cif` at each level. Falls back to the legacy `pdbs/<id>.pdb` guess when nothing resolves
+    (or when no ``pdb_dir`` is supplied) so the assembler still runs before structures have been
+    downloaded; the caller reports how many entries fell back.
+    """
+    safe = _safe_file_id(protein_id)
+    if pdb_dir:
+        for sub in ["", *_pdb_subdir_candidates(allele_tag)]:
+            for ext in _STRUCTURE_EXTENSIONS:
+                rel = f"{sub}/{safe}{ext}" if sub else f"{safe}{ext}"
+                if os.path.isfile(os.path.join(pdb_dir, rel)):
+                    return f"pdbs/{rel}"
+    return f"pdbs/{safe}.pdb"
+
+
+def _load_tier1(path: str, pdb_dir: str, allele_tag: str | None = None) -> list:
     """Load Tier 1 candidates, extracting WT sequences from PDBs."""
     with open(path) as f:
         candidates = json.load(f)
@@ -127,7 +164,7 @@ def _load_tier1(path: str, pdb_dir: str) -> list:
             "tier": 1,
             "sequence": seq,
             "sequence_length": len(seq),
-            "pdb_path": f"pdbs/{_safe_file_id(pid)}.pdb",
+            "pdb_path": _resolve_pdb_relpath(pid, pdb_dir, allele_tag),
             "resolution": c.get("resolution"),
             "cath_overlap_flag": False,
             "cath_overlap_id": None,
@@ -145,7 +182,7 @@ def _load_tier1(path: str, pdb_dir: str) -> list:
     return entries
 
 
-def _load_tier2(path: str) -> list:
+def _load_tier2(path: str, pdb_dir: str | None = None, allele_tag: str | None = None) -> list:
     """Load Tier 2 pre-screened parquet (already has scores from prescreen)."""
     df = pd.read_parquet(path)
     entries = []
@@ -159,7 +196,7 @@ def _load_tier2(path: str) -> list:
             "tier": 2,
             "sequence": seq,
             "sequence_length": int(row.get("sequence_length", len(seq))),
-            "pdb_path": f"pdbs/{_safe_file_id(row['protein_id'])}.pdb",
+            "pdb_path": _resolve_pdb_relpath(row["protein_id"], pdb_dir, allele_tag),
             "resolution": row.get("resolution"),
             "cath_overlap_flag": bool(row.get("cath_overlap_flag", False)),
             "cath_overlap_id": row.get("cath_overlap_id"),
@@ -181,6 +218,8 @@ def _load_tier2_from_checkpoints(
     head_ckpt_path: str,
     nmp_ckpt_path: str,
     min_strong_windows: int,
+    pdb_dir: str | None = None,
+    allele_tag: str | None = None,
 ) -> list:
     """Reconstruct Tier 2 entries from prescreen checkpoints without diversity sampling."""
     sequences = _read_merged_fasta(candidate_fasta_path)
@@ -220,7 +259,7 @@ def _load_tier2_from_checkpoints(
             "tier": 2,
             "sequence": seq,
             "sequence_length": len(seq),
-            "pdb_path": f"pdbs/{_safe_file_id(protein_id)}.pdb",
+            "pdb_path": _resolve_pdb_relpath(protein_id, pdb_dir, allele_tag),
             "resolution": None,
             "cath_overlap_flag": False,
             "cath_overlap_id": None,
@@ -238,7 +277,7 @@ def _load_tier2_from_checkpoints(
     return entries
 
 
-def _load_tier3(path: str, pdb_dir: str) -> list:
+def _load_tier3(path: str, pdb_dir: str, allele_tag: str | None = None) -> list:
     """Load Tier 3 candidates from JSON candidate list or uricase prescreen parquet."""
     if path.endswith(".parquet"):
         df = pd.read_parquet(path)
@@ -253,7 +292,7 @@ def _load_tier3(path: str, pdb_dir: str) -> list:
                 "tier": 3,
                 "sequence": seq,
                 "sequence_length": int(row.get("sequence_length", len(seq))),
-                "pdb_path": f"pdbs/{_safe_file_id(row['protein_id'])}.pdb",
+                "pdb_path": _resolve_pdb_relpath(row["protein_id"], pdb_dir, allele_tag),
                 "resolution": row.get("resolution"),
                 "cath_overlap_flag": False,
                 "cath_overlap_id": None,
@@ -288,7 +327,7 @@ def _load_tier3(path: str, pdb_dir: str) -> list:
             "tier": 3,
             "sequence": seq,
             "sequence_length": len(seq),
-            "pdb_path": f"pdbs/{_safe_file_id(pid)}.pdb",
+            "pdb_path": _resolve_pdb_relpath(pid, pdb_dir, allele_tag),
             "resolution": c.get("resolution"),
             "cath_overlap_flag": False,
             "cath_overlap_id": None,
@@ -398,20 +437,39 @@ def main() -> int:
 
     # ── Load all tiers ───────────────────────────────────────────────────
     print("[1/5] Loading tier entries...")
-    tier1 = _load_tier1(args.tier1_json, args.pdb_dir)
+    tier1 = _load_tier1(args.tier1_json, args.pdb_dir, allele_tag)
     if args.tier2_parquet is not None:
-        tier2 = _load_tier2(args.tier2_parquet)
+        tier2 = _load_tier2(args.tier2_parquet, args.pdb_dir, allele_tag)
     else:
         tier2 = _load_tier2_from_checkpoints(
             candidate_fasta_path=args.tier2_candidate_merged_fasta,
             head_ckpt_path=args.tier2_head_ckpt_parquet,
             nmp_ckpt_path=args.tier2_nmp_ckpt_parquet,
             min_strong_windows=args.tier2_min_strong_windows,
+            pdb_dir=args.pdb_dir,
+            allele_tag=allele_tag,
         )
-    tier3 = _load_tier3(args.tier3_json, args.pdb_dir)
+    tier3 = _load_tier3(args.tier3_json, args.pdb_dir, allele_tag)
     print(f"  Tier 1: {len(tier1)}, Tier 2: {len(tier2)}, Tier 3: {len(tier3)}")
 
     all_entries = tier1 + tier2 + tier3
+
+    # `pdb_path` is a downstream data contract, so surface any entry whose structure could not
+    # be located: those rows carry the legacy `pdbs/<id>.pdb` guess and will not resolve.
+    # `pdb_path` is emitted as "pdbs/<rel>" where <rel> is relative to --pdb-dir.
+    unresolved = [
+        e["protein_id"]
+        for e in all_entries
+        if not os.path.isfile(
+            os.path.join(args.pdb_dir, e["pdb_path"].split("/", 1)[1])
+        )
+    ]
+    if unresolved:
+        print(
+            f"  WARNING: {len(unresolved)}/{len(all_entries)} entries have no structure on disk; "
+            f"their pdb_path is an unverified fallback: {', '.join(unresolved[:10])}"
+            + (" ..." if len(unresolved) > 10 else "")
+        )
 
     # ── Generate WT artifacts ────────────────────────────────────────────
     print("[2/5] Generating WT artifacts...")

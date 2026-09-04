@@ -1,0 +1,36 @@
+# NetMHCIIpan version 4.3i
+
+# Input is in FASTA format
+
+# Peptide length 15
+
+# Prediction Mode: EL with Context
+
+# Threshold for Strong binding peptides (%Rank)  1.00%
+# Threshold for Weak binding peptides (%Rank)    5.00%
+
+# DRB1_1501 : Distance to training data  0.000 (using nearest neighbor DRB1_1501)
+
+# Allele: DRB1_1501
+--------------------------------------------------------------------------------------------------------------------------------------------
+ Pos               MHC              Peptide   Of        Core  Core_Rel Inverted        Identity      Score_EL %Rank_EL  Exp_Bind  BindLevel
+--------------------------------------------------------------------------------------------------------------------------------------------
+   3         DRB1_1501      DEFGHIKLMNPQRST    5   IKLMNPQRS     0.980        0         S000000      0.276402     4.11        NA   <= WB
+   5         DRB1_1501      FGHIKLMNPQRSTVW    3   IKLMNPQRS     1.000        0         S000000      0.150247     6.93        NA
+   6         DRB1_1501      GHIKLMNPQRSTVWY    2   IKLMNPQRS     0.960        0         S000000      0.119007     8.27        NA
+  23         DRB1_1501      DEFGHIKLMNPQRST    5   IKLMNPQRS     1.000        0         S000000      0.238994     4.76        NA   <= WB
+  25         DRB1_1501      FGHIKLMNPQRSTVW    3   IKLMNPQRS     1.000        0         S000000      0.150247     6.93        NA
+  26         DRB1_1501      GHIKLMNPQRSTVWY    2   IKLMNPQRS     0.960        0         S000000      0.119007     8.27        NA
+  43         DRB1_1501      DEFGHIKLMNPQRST    5   IKLMNPQRS     1.000        0         S000000      0.238994     4.76        NA   <= WB
+  45         DRB1_1501      FGHIKLMNPQRSTVW    3   IKLMNPQRS     1.000        0         S000000      0.150247     6.93        NA
+  46         DRB1_1501      GHIKLMNPQRSTVWY    2   IKLMNPQRS     0.960        0         S000000      0.119007     8.27        NA
+  63         DRB1_1501      DEFGHIKLMNPQRST    5   IKLMNPQRS     1.000        0         S000000      0.238994     4.76        NA   <= WB
+  65         DRB1_1501      FGHIKLMNPQRSTVW    3   IKLMNPQRS     1.000        0         S000000      0.150247     6.93        NA
+  66         DRB1_1501      GHIKLMNPQRSTVWY    2   IKLMNPQRS     0.960        0         S000000      0.119007     8.27        NA
+  83         DRB1_1501      DEFGHIKLMNPQRST    5   IKLMNPQRS     1.000        0         S000000      0.238994     4.76        NA   <= WB
+  84         DRB1_1501      EFGHIKLMNPQRSTV    4   IKLMNPQRS     1.000        0         S000000      0.094858     9.55        NA
+  85         DRB1_1501      FGHIKLMNPQRSTVW    3   IKLMNPQRS     1.000        0         S000000      0.187021     5.85        NA
+  86         DRB1_1501      GHIKLMNPQRSTVWY    2   IKLMNPQRS     1.000        0         S000000      0.204133     5.43        NA
+--------------------------------------------------------------------------------------------------------------------------------------------
+Number of strong binders: 0 Number of weak binders: 5
+--------------------------------------------------------------------------------------------------------------------------------------------

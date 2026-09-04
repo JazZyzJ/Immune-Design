@@ -1,0 +1,161 @@
+tag: fast0401_rf_fusion_v2_design_20260822
+date: 2026-08-22
+goal: >-
+  Run the frozen single-allele RF Fusion V2 D4/K12 four-root design process over the complete
+  DRB1*04:01 fast_v2 IF-ready cohort using the full-data production Head, preserving every cell
+  and preparing generation outputs for later comparison and refinement.
+protocol: PROTOCOL/rf_fusion_v2_test_set_design.md
+runner: PROTOCOL/rf_fusion_v2_test_set_design.runner.md
+status: run
+
+inputs:
+  allele: HLA-DRB1*04:01
+  head_allele: DRB1_0401
+  test_set_parquet: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/if_ready/fast/fast_v2_HLA-DRB1_04_01.parquet
+  test_set_sha256: 77c92e79117dfe3e439f2b49f89375e201a7f735d3267413c09e5a5d1d0f5b58
+  n_proteins: 285
+  sequence_length_min: 88
+  sequence_length_max: 499
+  pdb_root: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/if_test_set/pdbs_if_ready/HLA-DRB1_04_01
+  backbone_coverage: 285
+  policy_calibration_json: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/artifacts/head_policy_v2_eps005_0401_full_e34.json
+  hotspot_json: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/artifacts/global_relaxed_hotspot_0401_full_e34.json
+  band_json: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_highrisk/highrisk_ceiling_global_d8k32_v1_0701/artifacts/global_B_r40.json
+  reference_manifest: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/references.json
+  stratum_manifest: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/strata.json
+  materialization_summary: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/analysis/materialization_summary.json
+  submission_manifest: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/analysis/submission_manifest.json
+  nod_n8_comparator:
+    file: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/baselines/nod_full_v1/HLA-DRB1_04_01/HLA-DRB1_04_01/nod_full_v1_n8_t1p0_seed42_merged/generated.parquet
+    sha256: b2734f3d08433228f8cf1d8a95be6c51e02fe848bb0df5c3fe36a8784eda2c33
+    n_designs: 2280
+    designs_per_protein: 8
+    unique_per_protein: 8
+    runtime_role: comparator only; not a Fusion parent or runtime input
+
+config:
+  code_revision: 21cd73d22bad7a42ebb9dae82925b3e623449cb8
+  frozen_project_root: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/code_snapshots/Immune-Design_21cd73d
+  campaign_id: fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34_v1
+  realized_profile: fast0401_d4_k12_r40
+  standard_successor_profile: testset_d4_k12_r40
+  realized_split_role: exploratory_fast_generalization_0401
+  standard_successor_split_role: exploratory_testset_design_v1
+  template: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/artifacts/v2_canary_state_transition_0401.template.yaml
+  policy_spec: inverse_folding/reference_flow/configs/v2_head_directed_capped_policy_v2.json
+  sampler: inverse_folding/reference_flow/configs/c1_constant_clean_no_remask.yaml
+  structure_gate: inverse_folding/reference_flow/configs/rf_refine_fusion_highrisk_sctm070.yaml
+  resolved_config_dir: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/resolved_configs
+  campaign_setup_script: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d/analysis/prepare_fast0401_v2_campaign.py
+  campaign_setup_script_sha256: 41c03724297a2b3c08a50e6f8e42d5dc24116fe775fdf4217678561f87fcbeeb
+  n_resolved_configs: 1140
+  n_args_files: 1140
+  n_structure_runtime_files: 1140
+
+cli_overrides:
+  roots: 4
+  master_seeds: [20260811, 20260812, 20260813, 20260814]
+  cells_per_job: 95
+  jobs: 12
+  policy_max_counterfactual_head_calls_per_cycle: 499
+  run_max_head_calls: 6000
+  esmfold2_model_registry: biohub
+  esmfold2_model_name: ESMFold2
+  esmfold2_num_loops: 3
+  esmfold2_num_sampling_steps: 50
+  esmfold2_num_diffusion_samples: 1
+  esmfold2_seed: 0
+  resources:
+    partition: ailab
+    qos: gpu-medium
+    gpu_request: gpu:h200:1
+    cpus_per_task: 4
+    memory_gb: 64
+    walltime_hours: 7
+    conda_env: immune-design
+
+models:
+  head: drb0401 full-data production a1res03 epoch_34
+  head_checkpoint: /scratch/gpfs/KAIYIJIANG/zijie/run/epitope_head_fulldata/drb0401/epoch_34.pt
+  head_checkpoint_sha256: 12e8018fed5a9255e5e467811cd8c8b4520fd1ab7cdad281d93c75472b6ffb23
+  head_config_dir: epitope_head/configs
+  head_config_hash: acb178be390f07c36c054b32e9c8108821523fc7881235b55ee0deed455dcf4c
+  dplm_checkpoint: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/dplm_v1_adapter/seed42_20260319_094244/checkpoints/best.ckpt
+  structure_backend: /scratch/gpfs/KAIYIJIANG/zijie/model_cache/hf/hub/models--biohub--ESMFold2/snapshots/1ebf0e3481a5184eb6171d40615c79e384b48796/model.safetensors
+  structure_backend_sha256: 138fd4350d6892b81ce6be7ff9bf5a93ae9d4d3751f46a27438a3f9f0dcefa0e
+  esmfold2_site_packages: /home/zc1519/.conda/envs/esmfold2/lib/python3.12/site-packages
+
+criteria:
+  depth_cap: 4
+  r_step: 40
+  n_lookaheads_per_rung: 12
+  active_population_width: 1
+  n_roots_per_protein: 4
+  checkpoints: [50, 60, 70, 80, 90]
+  support_policy_version: 2
+  donor_improvement_epsilon_raw_logit: 0.005
+  local_contribution_tolerance_raw_logit: 0.017012596130371094
+  write_cap_editable_fraction: 0.05
+  structure_sctm_min: 0.70
+  hotspot_gate_value_raw_logit: 1000000.0
+  incremental_hotspot_gate_enabled: false
+  protein_specific_calibration: false
+  nmp_in_runtime: false
+  archive_elite_only: false
+  exact_projected_logical_dfe_per_cell: 1990
+  exact_projected_definitive_refolds_per_cell: 60
+  max_projected_head_calls_longest_cell: 2056
+
+outputs:
+  work_root:
+    dir: /scratch/gpfs/KAIYIJIANG/zijie/work/immune-design/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d
+  run_root:
+    dir: /scratch/gpfs/KAIYIJIANG/zijie/run/inverse_folding/v2_generalization/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d
+  log_root:
+    dir: /scratch/gpfs/KAIYIJIANG/zijie/logs/fusion_v2/fast0401_d4k12_r40_v2_eps005_4root_fullhead_e34__21cd73d
+  jobs:
+    n: 12
+    ids: [12772903, 12772904, 12772907, 12772920, 12772922, 12772925,
+          12772941, 12772942, 12772946, 12772947, 12772951, 12772952]
+    slurm_state: FAILED 3:0 for 12/12; expected serial-launcher partial status, no timeout
+    elapsed_range: 05:00:35 to 05:22:31
+    max_rss_range_gb: 40.85 to 42.67
+  generation_bundles:
+    n: 1140
+    complete_manifest_count: 1140
+    clean_realized_caps: 1140
+    successful_cells: 1013
+    zero_ok_cells: 127
+    successful_proteins: 259
+    all_root_failed_proteins: 26
+    root_success_count_distribution: {0: 26, 1: 3, 2: 6, 3: 2, 4: 248}
+  raw_tables:
+    archive_rows: 40332
+    complete_endpoint_rows: 40332
+    structure_evaluation_rows: 40332
+    terminal_validation_rows: 36538
+    missing_standard_tables: 0
+  selection:
+    status: pending four-root feasible/fallback materialization
+    feasible_immune_pareto: null
+    structure_rejected_fallback: null
+  refinement:
+    status: reserved for follow-up agent
+    input: null
+    output: null
+
+notes:
+  - >-
+    This run predates the tracked generic test-set profile. Its campaign-local preparation used the
+    same D4/K12 algorithm under the honest split identity exploratory_fast_generalization_0401.
+    The archive exporter explicitly accepts this historical identity; future cohorts use
+    testset_d4_k12_r40 / exploratory_testset_design_v1.
+  - >-
+    The full-data Head is a deployment instrument and has no held-out metric by construction. The
+    scientific Head performance claims remain the five-fold CV results.
+  - >-
+    The reused B(40) artifact is Head-free and its absolute unresolved-mass axis is nonbinding; the
+    cohort is unconstrained. It must not be reused for a hard-anchor cohort.
+  - >-
+    No selection or refinement output is claimed yet. Flip status to selected only after the two
+    standard generation surfaces are materialized and recorded.

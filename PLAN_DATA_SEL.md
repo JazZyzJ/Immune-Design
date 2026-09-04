@@ -1,5 +1,13 @@
 # Data Selection & Evaluation Pipeline Plan
 
+> **STATUS (2026-08-28): historical design record, not the operative document.**
+> This plan was last revised 2026-06-04 and stops before three changes that define the shipped
+> set: Tier 3 removal (`LOG.md` L0106), the `if_sequence_coverage >= 0.8` truncation filter
+> (L0126), and the move to the full-data production Head. For what the cohort must satisfy today
+> — including which constraints here are retired — read
+> **`PROTOCOL/if_benchmark_test_set_construction.md`**. Cite this plan only for the provenance of
+> a frozen value. Individual superseded decisions are marked inline in §7.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **For Claude:** REQUIRED WORKFLOWS: use `superpowers:writing-plans` for planning updates and `superpowers:test-driven-development` for key module/function/pipeline checks.
@@ -509,13 +517,20 @@ This task involves manual scientific curation. The user performs the manual step
 
 1. Frozen:
    - CATH overlap uses MMseqs2 sequence identity > 30%, not PDB code matching
-2. Frozen:
+2. Frozen, but **never implemented as written** (see PROTOCOL C2):
    - epitope-head training overlap is annotated but not excluded
+   - `head_train_overlap_flag` was written as a hardcoded `False` (`prescreen_tier2.py:683`) and no
+     search was ever run, so the shipped column carries no information. Under the full-data Head
+     the real rate is 14.8 % (0701) / 18.1 % (0401) of the main set at 30 % identity / 80 % query
+     coverage, and Tier 1 is 15/15 (0701) by construction. The policy (annotate, split-report, do
+     not exclude) still stands; the measurement is now mandatory.
 3. **SUPERSEDED by §12 (Tier 2 v2, 2026-06-03)**:
    - ~~Tier 2 requires dual-scorer agreement (NMP ≥ 5 strong windows AND head risk in top 50%)~~
    - The dual-scorer rule is retired for the Tier 2 v2 rebuild. The epitope head is the guidance signal and must not gate test-set selection (selection bias inflates RF; see §8 risk #4). Tier 2 v2 selection is **NMP-only**. See §12.
-4. Frozen:
-   - Tier 3 requires NMP ≥ 3 windows at %Rank < 5% AND literature evidence
+4. **SUPERSEDED by `LOG.md` L0106 (2026-06-04)** — Tier 3 was removed from the main test set
+   entirely; uricase is now a standalone case study under `if_test_set/uricases/`. The main set is
+   Tier 1 + Tier 2 only.
+   - ~~Tier 3 requires NMP ≥ 3 windows at %Rank < 5% AND literature evidence~~
 5. Frozen:
    - MMseqs2 parameters: `--min-seq-id 0.3 --cov-mode 0 -c 0.8`
 6. Frozen:
@@ -524,8 +539,16 @@ This task involves manual scientific curation. The user performs the manual step
    - exact PDB candidate pool source for Tier 2 (RCSB query vs existing curated list)
 8. Open:
    - whether Tier 3 proteins with only AF2 structures (no X-ray) are acceptable
-9. Open:
-   - Tier 2 max_per_topology (proposed: 2) and target total (proposed: 50)
+9. **RETIRED by §12 (Tier 2 v2)** — CATH-topology diversity sampling is incompatible with the
+   structure-blind selection rule; `cath_topology` is null for every shipped Tier 2 row and the
+   column is vestigial. The realized Tier 2 size is ~2.8k per allele, not 50.
+   - ~~Tier 2 max_per_topology (proposed: 2) and target total (proposed: 50)~~
+
+10. Added after this plan was frozen — see `PROTOCOL/if_benchmark_test_set_construction.md`:
+    - `if_sequence_coverage >= 0.8` truncation filter (L0126)
+    - `pdb_path` must resolve against disk rather than be constructed (L0170)
+    - the epitope Head is the full-data production fixed-epoch checkpoint; `best.pt` is banned
+    - h-maps are no longer a product of this pipeline
 
 ## 8. Risk Register (Execution-Level)
 
@@ -598,6 +621,11 @@ Total ≈ 2× the original NMP cost, for full-pool, head-free coverage. The doub
 ### 12.4 Materialization (after selection)
 
 Tier 2 v2 selection → replace Tier 2 rows in the assembled `test_proteins_<allele>.parquet` (keep existing Tier 1 + updated Tier 3) → download structures for any new Tier 2 protein_ids → `build_if_ready_test_set.py` → `precompute_h_maps.py` rerun against the updated IF-ready parquet (B2). Both alleles (HLA-DRB1*07:01 and HLA-DRB1*04:01).
+
+> **Amended after execution.** Tier 3 was removed from the main set the day after this section
+> ran (L0106), so the materialization is Tier 1 + Tier 2 only. The `precompute_h_maps.py` step is
+> also no longer part of the release — RF Fusion V2 does not read an h-map. See
+> `PROTOCOL/if_benchmark_test_set_construction.md` §"What is no longer a product".
 
 ### 12.5 Implementation surface
 

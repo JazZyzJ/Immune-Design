@@ -5,6 +5,7 @@ import pandas as pd
 from scripts.assemble_if_test_set import (
     _load_tier2_from_checkpoints,
     _load_tier3,
+    _resolve_pdb_relpath,
     _safe_file_id,
 )
 
@@ -149,3 +150,67 @@ def test_load_tier3_uses_safe_pdb_path_for_parquet_input(tmp_path):
     assert "|" not in entries[0]["pdb_path"]
     assert ":" not in entries[0]["pdb_path"]
     assert "_Pp_5_" in entries[0]["pdb_path"]
+
+
+# --- pdb_path must name a file that exists, not a guessed <id>.pdb -----------------
+
+
+def _touch(root, rel):
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("ATOM\n")
+    return p
+
+
+def test_resolve_pdb_relpath_finds_flat_pdb(tmp_path):
+    _touch(tmp_path, "1ABC_A.pdb")
+    assert _resolve_pdb_relpath("1ABC_A", str(tmp_path), "HLA-DRB1_04_01") == "pdbs/1ABC_A.pdb"
+
+
+def test_resolve_pdb_relpath_finds_short_allele_subdir(tmp_path):
+    """Structures added after the bulk download live in a per-allele subdir."""
+    _touch(tmp_path, "0401/1ABC_A.pdb")
+    assert _resolve_pdb_relpath("1ABC_A", str(tmp_path), "HLA-DRB1_04_01") == "pdbs/0401/1ABC_A.pdb"
+
+
+def test_resolve_pdb_relpath_finds_cif_in_allele_subdir(tmp_path):
+    """The 6TN1_AAA case: the structure only ever existed as .cif."""
+    _touch(tmp_path, "0401/6TN1_AAA.cif")
+    assert _resolve_pdb_relpath("6TN1_AAA", str(tmp_path), "HLA-DRB1_04_01") == "pdbs/0401/6TN1_AAA.cif"
+
+
+def test_resolve_pdb_relpath_finds_long_allele_subdir(tmp_path):
+    _touch(tmp_path, "HLA-DRB1_15_01/2XYZ_B.cif")
+    assert (
+        _resolve_pdb_relpath("2XYZ_B", str(tmp_path), "HLA-DRB1_15_01")
+        == "pdbs/HLA-DRB1_15_01/2XYZ_B.cif"
+    )
+
+
+def test_resolve_pdb_relpath_prefers_flat_pdb_over_subdir_cif(tmp_path):
+    _touch(tmp_path, "1ABC_A.pdb")
+    _touch(tmp_path, "0401/1ABC_A.cif")
+    assert _resolve_pdb_relpath("1ABC_A", str(tmp_path), "HLA-DRB1_04_01") == "pdbs/1ABC_A.pdb"
+
+
+def test_resolve_pdb_relpath_falls_back_to_legacy_guess_when_absent(tmp_path):
+    """The assembler must still run before structures are downloaded."""
+    assert _resolve_pdb_relpath("1ABC_A", str(tmp_path), "HLA-DRB1_04_01") == "pdbs/1ABC_A.pdb"
+
+
+def test_resolve_pdb_relpath_without_pdb_dir_keeps_legacy_behaviour(tmp_path):
+    assert _resolve_pdb_relpath("weird/id", None, None) == f"pdbs/{_safe_file_id('weird/id')}.pdb"
+
+
+def test_resolve_pdb_relpath_sanitizes_protein_id(tmp_path):
+    _touch(tmp_path, "0401/weird_id.cif")
+    assert _resolve_pdb_relpath("weird/id", str(tmp_path), "HLA-DRB1_04_01") == "pdbs/0401/weird_id.cif"
+
+
+def test_load_tier3_emits_resolved_cif_path(tmp_path):
+    pdb_dir = tmp_path / "pdbs"
+    _touch(pdb_dir, "0401/6TN1_AAA.cif")
+    src = tmp_path / "tier3.json"
+    src.write_text(json.dumps([{"protein_id": "6TN1_AAA", "sequence": "AAAA"}]))
+    entries = _load_tier3(str(src), str(pdb_dir), allele_tag="HLA-DRB1_04_01")
+    assert [e["pdb_path"] for e in entries] == ["pdbs/0401/6TN1_AAA.cif"]
