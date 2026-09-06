@@ -1,6 +1,6 @@
 ---
 name: RAR-make
-description: 'Use when you have finished a data analysis, computation, measurement, or diagnostic whose result another agent or a future session will reuse, i.e. you are about to write an analysis summary, results doc, findings note, or handoff that must be reproducible and objective rather than a human-facing report. Symptoms you are violating this: writing "bottom line", "interpretation", "caveats", or "next steps".'
+description: Create or update a Reproducible Analysis Record only when the user explicitly invokes RAR-make or requests RAR archiving.
 ---
 
 # RAR: make — write a Reproducible Analysis Record
@@ -16,14 +16,21 @@ A Reproducible Analysis Record (RAR) is an objective, reproducible, machine-reus
 of ONE analysis, written so a DIFFERENT agent can reuse the result WITHOUT re-running it.
 It is NOT a human report.
 
-Core principle: **state what was measured and what came out; never state what you conclude
-it means.**
+Within `record.md`, separate measured results and prespecified criteria from interpretation.
+This format does not constrain the human-facing answer, which may explain conclusions,
+limitations, and next steps as requested.
 
-## When to use
+## Invocation boundary
 
-- You finished an analysis whose numbers another agent/session will consume.
-- You are about to write an "analysis summary", "results doc", or "handoff".
-- NOT for human reports, narrative status, or history logs — those allow conclusions.
+- Use only when the user invokes `$RAR-make`, asks to create/update a RAR record,
+  or explicitly includes RAR archiving in the task. An earlier explicit request
+  within the same task remains authorization; do not ask again at the end.
+- Completing an analysis, producing reusable numbers, writing a summary or handoff,
+  and using words such as "interpretation" or "next steps" are not triggers.
+- Without an explicit RAR request, deliver the requested analysis and artifacts
+  without creating a record, querying the registry, or routinely asking about archiving.
+- A generic request to save results or write a report does not imply RAR archiving.
+- RAR skill maintenance is not a request to archive the maintenance work.
 
 ## The contract (fixed logic chain: Objective → Inputs → Method → Results)
 
@@ -60,7 +67,8 @@ from the method" — the actual numbers must be on disk. The CLI rejects an empt
 | `## Suggested next steps` | (omit entirely) |
 | "clearly real", "materially worse", "concerning" | the number + the criterion it is compared against |
 
-Want to add a conclusion? STOP — it belongs in a human report, not a RAR.
+Put interpretive conclusions in the accompanying answer or report. Continue the
+authorized task; a record-format distinction is not a reason to stop for approval.
 
 ## Workflow
 
@@ -88,10 +96,12 @@ once per repo with `python3 $CLI init --root <path>`.
 **Re-doing a superseded analysis:** `commit … --supersedes <old-id>` so `RAR-find` returns
 only the live record.
 
-## Red flags — STOP, you are writing a report not a record
+## Record-only checks
 
-- Writing "Bottom line", "Interpretation", "Caveats", "Next steps".
-- "I'll note the table can be regenerated" → NO, persist it to `data/`.
-- Putting Results before Method to lead with the finding.
-- Any judgement adjective ("clearly", "materially", "concerning", "as expected").
-- Committing with an empty `data/` (the result lives only in prose).
+Keep `record.md` factual, retain the Objective → Inputs → Method → Results chain,
+and persist its reported results in `data/`. State methodological limitations as
+facts. Check the actual artifacts before committing; a description of how to
+regenerate a missing table does not replace that table.
+
+These checks apply only after an explicit RAR request. They neither trigger
+archiving nor prohibit interpretation in the human-facing deliverable.

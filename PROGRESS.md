@@ -1,7 +1,7 @@
 # Progress Snapshot
 
 > **Purpose**: Live status of each workstream. Overwritten (not append-only).
-> Read this first every session. For event history see `LOG.md`.
+> Read the summary and relevant workstream when project status is needed. For event history see `LOG.md`.
 >
 > **Last synced**: 2026-09-04T06:05:39-04:00
 > **Branch**: fusion_rf_refine
