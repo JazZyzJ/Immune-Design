@@ -1,6 +1,6 @@
 # Immune-Design
 
-MHC-II-aware protein design with MESSI (Fusion V2), a residue-level epitope Head,
+MHC-II-aware protein design with MESSI, a residue-level epitope Head,
 Head-guided refinement, and independent immune/structure evaluation.
 
 ## Installation And Models
