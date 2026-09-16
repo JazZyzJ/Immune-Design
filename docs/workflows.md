@@ -1,5 +1,8 @@
 # Official Workflows
 
+See [Configuration Scope](configs.md) for the exact official-run recipe,
+selected target constraints and checkpoint-derived full-data training configs.
+
 ## Head
 
 Use `scripts/score_head.py` for JSON inference and `scripts/precompute_h_maps.py`

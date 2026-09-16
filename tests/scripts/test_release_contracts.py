@@ -6,6 +6,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from scripts.refine_rf_designs import build_arg_parser
 from scripts.rf_fusion_v2_cohort import ShardInputs, _terminal_stop_label
@@ -15,6 +16,54 @@ from inverse_folding.reference_flow.fusion_v2.dual_config import dual_overlay_pa
 from inverse_folding.reference_flow.fusion_v2.joint_objective import arm_objective_digest
 from tests.inverse_folding.test_fusion_v2_dual_config import overlay
 from tests.inverse_folding.test_fusion_v2_dual_arms import ARMS, _objective
+
+
+def test_selected_release_constraints_and_full_data_recipes():
+    import hashlib
+    from inverse_folding.reference_flow.constraints import load_constraint_manifest
+
+    root = Path(__file__).resolve().parents[2]
+    entries = json.loads((root / 'examples/constraints/manifest.json').read_text())['constraints']
+    assert len(entries) == 12
+    for item in entries:
+        path = root / item['file']
+        expected = item.get('sha256', item['source_sha256'])
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
+        manifest = load_constraint_manifest(path)
+        assert manifest.num_hard_anchors_total == item['n_fixed']
+        entry = yaml.safe_load(path.read_text())['entries'][0]
+        if 'free_positions_0b' in entry:
+            seq = entry['source_sequence']
+            assert hashlib.md5(seq.encode()).hexdigest() == entry['sequence_md5']
+            constraint = manifest.constraint_for_protein(item['protein_id'])
+            constraint.validate_against_sequence(seq)
+            fixed = set(constraint.hard_anchor_indices)
+            free = set(entry['free_positions_0b'])
+            assert not fixed & free
+            assert fixed | free == set(range(len(seq)))
+    for allele, epochs in [('0701', 30), ('0401', 35), ('1501', 25)]:
+        train = yaml.safe_load((root / f'epitope_head/configs/full_data/drb{allele}.yaml').read_text())['train']
+        assert train['max_epochs'] == epochs
+        assert train['early_stopping_patience'] > epochs
+        assert train['loss']['objective_mode'] == 'mixed_margin'
+        assert train['loss']['lambda_iou_rank'] == 1.0
+        assert train['residue']['lambda_residue'] == 0.3
+
+
+def test_official_and_family_recipes_are_not_interchangeable():
+    root = Path(__file__).resolve().parents[2]
+    official = json.loads((root / 'examples/messi_official.json').read_text())
+    family = json.loads((root / 'examples/uricase_family_historical.json').read_text())
+    template = yaml.safe_load((root / official['template']).read_text())
+    assert template['caps']['max_retries'] == 0
+    assert official['schedule']['depth_cap'] == 4
+    assert family['schedule']['depth_cap'] == 3
+    assert family['local_contribution_tolerance'] == 0
+    for allele, config in official['alleles'].items():
+        assert len(config['root_seeds']) == 4
+        assert config['caps'] == template['caps']
+        expected = 1.9073486328125e-06 if allele == '0701' else 0.017012596130371094
+        assert config['head_directed']['local_contribution_tolerance']['value'] == expected
 
 
 def test_public_refinement_defaults_to_head_and_exact_front():
