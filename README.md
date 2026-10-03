@@ -15,6 +15,8 @@ This repo is organized to track **code/config/tests/docs**, not large raw/genera
 
 ## Environment
 
+For cluster backups and transfers through TigerData, see [TIGERDATA_TRANSFER.md](TIGERDATA_TRANSFER.md).
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -90,4 +92,3 @@ python -m pytest tests/epitope_head/data/test_module_*_contract.py
 python -m pytest tests/epitope_head/training/test_module_*_contract.py
 python -m pytest tests/epitope_head/inference/test_module_f_contract.py
 ```
-
